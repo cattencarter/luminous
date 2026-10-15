@@ -1,0 +1,5199 @@
+<?xml version="1.0" encoding="utf-8" standalone="yes" ?>
+<!-- <Luminous> Luminous's own window: everything Luminous adds for photography,
+     in one place, laid out in sections. Photo mode is always on. Tabs in
+     working order: Scene, Tone, Colour, Effects, Render, Save / Load (a
+     floppy disk), Settings (a gear); panel names are not the labels
+     (luminous_light is Scene, luminous_look Tone, luminous_lens Effects,
+     luminous_snapshot Render, luminous_presets Save / Load,
+     luminous_graphics Settings). Every tab ends with its reset and a way to
+     the shot. Most effects have one main slider; the arrow shows its finer
+     settings (LuminousFloater::refreshOptions).
+     A sidebar: no title bar, held against the right edge over the world,
+     full height, with the tabs as a column of their own on its right
+     (LuminousSideTabs, made in code); the tab container's own row is
+     hidden. Clicking the open tab folds it to the column. Its place and
+     size are set in code, not here. -->
+<floater
+ can_close="false"
+ can_drag_on_left="false"
+ can_minimize="false"
+ can_resize="false"
+ header_height="0"
+ height="780"
+ layout="topleft"
+ min_height="120"
+ min_width="26"
+ name="luminous"
+ positioning="none"
+ save_rect="false"
+ show_title="false"
+ single_instance="true"
+ title="Luminous"
+ width="356">
+	<panel
+	 background_visible="true"
+	 bg_alpha_image="Window_NoTitle_Background"
+	 bg_opaque_image="Window_NoTitle_Foreground"
+	 follows="left|top|bottom"
+	 height="780"
+	 layout="topleft"
+	 left="0"
+	 name="luminous_box"
+	 top="0"
+	 width="330">
+	<text
+	 follows="left|top"
+	 font="SansSerifBold"
+	 height="16"
+	 layout="topleft"
+	 left="10"
+	 name="luminous_box_title"
+	 top="6"
+	 width="290">Scene</text>
+	<button
+	 follows="right|top"
+	 height="16"
+	 image_pressed="Icon_Close_Press"
+	 image_unselected="Icon_Close_Foreground"
+	 label=""
+	 layout="topleft"
+	 left="306"
+	 name="luminous_box_close"
+	 tool_tip="Close the panel. Click a tab to open it again."
+	 top="6"
+	 width="16">
+		<button.commit_callback
+		 function="Luminous.SidebarClose" />
+	</button>
+	<tab_container
+	 follows="left|top|bottom"
+	 halign="center"
+	 height="754"
+	 hide_tabs="true"
+	 layout="topleft"
+	 left="0"
+	 name="luminous_tabs"
+	 tab_min_width="50"
+	 tab_position="top"
+	 top="26"
+	 width="330">
+		<panel
+		 follows="all"
+		 height="687"
+		 label="Scene"
+		 layout="topleft"
+		 name="luminous_light"
+		 tool_tip="The scene itself: sky and sun, light in the air, shadows, and fixes for reflections and hair.">
+			<scroll_container
+			 follows="all"
+			 height="643"
+			 layout="topleft"
+			 left="0"
+			 name="luminous_light_scroll"
+			 opaque="false"
+			 reserve_scroll_corner="false"
+			 top="0"
+			 width="330">
+				<panel
+				 background_visible="false"
+				 follows="left|top"
+				 height="556"
+				 layout="topleft"
+				 left="0"
+				 name="luminous_light_content"
+				 top="0"
+				 width="316">
+					<layout_stack
+					 animate="false"
+					 border_size="0"
+					 follows="left|top|right"
+					 height="556"
+					 layout="topleft"
+					 left="0"
+					 name="luminous_light_stack"
+					 orientation="vertical"
+					 top="0"
+					 width="316">
+						<layout_panel
+						 auto_resize="false"
+						 follows="left|top|right"
+						 height="34"
+						 layout="topleft"
+						 name="light_env_lp"
+						 user_resize="false"
+						 width="316">
+							<text
+							 follows="left|top"
+							 font="SansSerifBold"
+							 height="16"
+							 layout="topleft"
+							 left="10"
+							 mouse_opaque="true"
+							 name="light_env_title"
+							 tool_tip="The sky and the sun. Only you see them."
+							 top="8"
+							 width="96">Environment</text>
+							<button
+							 follows="left|top"
+							 height="18"
+							 image_overlay="Inv_SettingsSky"
+							 label=""
+							 layout="topleft"
+							 left="108"
+							 name="light_env_personal"
+							 tab_stop="false"
+							 tool_tip="Opens Personal Lighting, for the sky's own settings: colours, haze, clouds, sun and moon."
+							 top="7"
+							 width="22">
+								<button.commit_callback
+								 function="Floater.ToggleOrBringToFront"
+								 parameter="env_adjust_snapshot" />
+							</button>
+							<view_border
+							 bevel_style="in"
+							 follows="left|top|right"
+							 height="0"
+							 layout="topleft"
+							 left="10"
+							 name="light_env_line"
+							 top="28"
+							 width="296" />
+						</layout_panel>
+						<layout_panel
+						 auto_resize="false"
+						 follows="left|top|right"
+						 height="26"
+						 layout="topleft"
+						 name="env_sky_lp"
+						 user_resize="false"
+						 width="316">
+							<text
+							 follows="left|top"
+							 height="16"
+							 layout="topleft"
+							 left="20"
+							 name="env_sky_label"
+							 top="7"
+							 width="110">Sky</text>
+							<combo_box
+							 control_name="LuminousEnvTemplate"
+							 follows="left|top"
+							 height="20"
+							 layout="topleft"
+							 left="141"
+							 name="env_sky"
+							 tool_tip="The sky you see: the region's own, one of Luminous's, or one of your PBR skies from inventory. Only you see it."
+							 top="3"
+							 width="165">
+								<combo_box.commit_callback
+								 function="Luminous.Environment" />
+							</combo_box>
+						</layout_panel>
+						<layout_panel
+						 auto_resize="false"
+						 follows="left|top|right"
+						 height="26"
+						 layout="topleft"
+						 name="env_sun_lp"
+						 user_resize="false"
+						 width="316">
+							<text
+							 follows="left|top"
+							 height="16"
+							 layout="topleft"
+							 left="20"
+							 name="env_sun_label"
+							 top="7"
+							 width="110">Sun direction</text>
+							<slider
+							 control_name="LuminousEnvSunAzimuth"
+							 decimal_digits="0"
+							 follows="left|top"
+							 height="16"
+							 increment="1"
+							 initial_value="90"
+							 label=""
+							 label_width="0"
+							 layout="topleft"
+							 left="141"
+							 max_val="360"
+							 min_val="0"
+							 name="env_sun_azimuth"
+							 text_width="44"
+							 tool_tip="Where the sun is around you. Turn it until the light falls on the face as you want: from the side for shape, from behind for a glow in the hair."
+							 top="4"
+							 width="165">
+								<slider.commit_callback
+								 function="Luminous.EnvSun" />
+							</slider>
+						</layout_panel>
+						<layout_panel
+						 auto_resize="false"
+						 follows="left|top|right"
+						 height="26"
+						 layout="topleft"
+						 name="env_height_lp"
+						 user_resize="false"
+						 width="316">
+							<text
+							 follows="left|top"
+							 height="16"
+							 layout="topleft"
+							 left="20"
+							 name="env_height_label"
+							 top="7"
+							 width="110">Sun height</text>
+							<slider
+							 control_name="LuminousEnvSunElevation"
+							 decimal_digits="0"
+							 follows="left|top"
+							 height="16"
+							 increment="1"
+							 initial_value="30"
+							 label=""
+							 label_width="0"
+							 layout="topleft"
+							 left="141"
+							 max_val="90"
+							 min_val="-10"
+							 name="env_sun_elevation"
+							 text_width="44"
+							 tool_tip="How high the sun is: low for warm light and long shadows, high for short ones."
+							 top="4"
+							 width="165">
+								<slider.commit_callback
+								 function="Luminous.EnvSun" />
+							</slider>
+						</layout_panel>
+						<layout_panel
+						 auto_resize="false"
+						 follows="left|top|right"
+						 height="34"
+						 layout="topleft"
+						 name="light_atmos_lp"
+						 user_resize="false"
+						 width="316">
+							<text
+							 follows="left|top"
+							 font="SansSerifBold"
+							 height="16"
+							 layout="topleft"
+							 left="10"
+							 mouse_opaque="true"
+							 name="light_atmos_title"
+							 tool_tip="Light you can see in the air: haze, beams and rays. Shows most looking toward the light."
+							 top="8"
+							 width="216">Atmosphere</text>
+							<view_border
+							 bevel_style="in"
+							 follows="left|top|right"
+							 height="0"
+							 layout="topleft"
+							 left="10"
+							 name="light_atmos_line"
+							 top="28"
+							 width="296" />
+						</layout_panel>
+						<layout_panel
+						 auto_resize="false"
+						 follows="left|top|right"
+						 height="26"
+						 layout="topleft"
+						 name="vol_lp"
+						 user_resize="false"
+						 width="316">
+							<button
+							 control_name="LuminousUIVolumetricOptions"
+							 follows="left|top"
+							 height="10"
+							 image_pressed="Accordion_ArrowClosed_Press"
+							 image_pressed_selected="Accordion_ArrowOpened_Press"
+							 image_selected="Accordion_ArrowOpened_Off"
+							 image_unselected="Accordion_ArrowClosed_Off"
+							 is_toggle="true"
+							 label=""
+							 layout="topleft"
+							 left="8"
+							 name="vol_options"
+							 tool_tip="Show or hide the finer settings. The slider beside the name sets them too."
+							 top="7"
+							 width="10" />
+							<button
+							 follows="left|top"
+							 height="18"
+							 image_overlay="Luminous_Effect_Live"
+							 label=""
+							 layout="topleft"
+							 left="20"
+							 name="volumetric_mode"
+							 tab_stop="false"
+							 top="5"
+							 width="22" />
+							<text
+							 follows="left|top"
+							 height="16"
+							 layout="topleft"
+							 left="46"
+							 mouse_opaque="true"
+							 name="volumetric_name"
+							 tool_tip="Sunlight glowing in the air, with beams where things cast shadows. Shows most looking toward the sun. Needs Shadows on in Graphics preferences."
+							 top="7"
+							 width="91">Volumetric light</text>
+							<slider
+							 control_name="LuminousPhotoVolumetricAmount"
+							 decimal_digits="2"
+							 enabled_control="LuminousPhotoVolumetricLight"
+							 follows="left|top"
+							 height="16"
+							 increment="0.01"
+							 initial_value="0.5"
+							 label=""
+							 label_width="0"
+							 layout="topleft"
+							 left="141"
+							 max_val="1"
+							 min_val="0"
+							 name="vol_amount"
+							 text_width="44"
+							 tool_tip="From a faint glow to thick haze."
+							 top="4"
+							 width="165">
+								<slider.commit_callback
+								 function="Luminous.Master"
+								 parameter="Volumetric" />
+							</slider>
+						</layout_panel>
+						<layout_panel
+						 auto_resize="false"
+						 follows="left|top|right"
+						 height="100"
+						 layout="topleft"
+						 name="vol_options_lp"
+						 user_resize="false"
+						 width="316">
+							<slider
+							 control_name="LuminousPhotoVolumetricDensity"
+							 decimal_digits="3"
+							 follows="left|top"
+							 height="16"
+							 increment="0.001"
+							 initial_value="0.005"
+							 label="Density"
+							 label_width="102"
+							 layout="topleft"
+							 left="36"
+							 max_val="0.05"
+							 min_val="0"
+							 name="volumetric_density"
+							 text_width="44"
+							 tool_tip="How hazy the air is: 0.005 a glow, 0.02 hazy, 0.04 and up fog."
+							 top="4"
+							 width="270" />
+							<slider
+							 control_name="LuminousPhotoVolumetricAnisotropy"
+							 decimal_digits="2"
+							 follows="left|top"
+							 height="16"
+							 increment="0.01"
+							 initial_value="0.6"
+							 label="Toward the sun"
+							 label_width="102"
+							 layout="topleft"
+							 left="36"
+							 max_val="0.95"
+							 min_val="0"
+							 name="volumetric_anisotropy"
+							 text_width="44"
+							 tool_tip="How much the glow gathers round the sun. With the sun behind you, lower shows more."
+							 top="28"
+							 width="270" />
+							<slider
+							 control_name="LuminousPhotoVolumetricDistance"
+							 decimal_digits="0"
+							 follows="left|top"
+							 height="16"
+							 increment="1"
+							 initial_value="128"
+							 label="Distance (m)"
+							 label_width="102"
+							 layout="topleft"
+							 left="36"
+							 max_val="512"
+							 min_val="8"
+							 name="volumetric_distance"
+							 text_width="44"
+							 tool_tip="How far from the camera the air glows, in metres."
+							 top="52"
+							 width="270" />
+							<text
+							 follows="left|top"
+							 height="16"
+							 layout="topleft"
+							 left="36"
+							 mouse_opaque="true"
+							 name="volumetric_needs_shadows"
+							 tool_tip="Volumetric light needs shadows: with Shadows set to None in Graphics preferences it shows nothing."
+							 top="76"
+							 width="209">Needs sun shadows.</text>
+						</layout_panel>
+						<layout_panel
+						 auto_resize="false"
+						 follows="left|top|right"
+						 height="26"
+						 layout="topleft"
+						 name="beams_lp"
+						 user_resize="false"
+						 width="316">
+							<button
+							 control_name="LuminousUIBeamsOptions"
+							 follows="left|top"
+							 height="10"
+							 image_pressed="Accordion_ArrowClosed_Press"
+							 image_pressed_selected="Accordion_ArrowOpened_Press"
+							 image_selected="Accordion_ArrowOpened_Off"
+							 image_unselected="Accordion_ArrowClosed_Off"
+							 is_toggle="true"
+							 label=""
+							 layout="topleft"
+							 left="8"
+							 name="beams_options"
+							 tool_tip="Show or hide the finer settings. The slider beside the name sets them too."
+							 top="7"
+							 width="10" />
+							<button
+							 follows="left|top"
+							 height="18"
+							 image_overlay="Luminous_Effect_Live"
+							 label=""
+							 layout="topleft"
+							 left="20"
+							 name="beams_mode"
+							 tab_stop="false"
+							 top="5"
+							 width="22" />
+							<text
+							 follows="left|top"
+							 height="16"
+							 layout="topleft"
+							 left="46"
+							 mouse_opaque="true"
+							 name="beams_name"
+							 tool_tip="Beams in the air from projector lights. Needs a projector shining into view; best in the dark."
+							 top="7"
+							 width="91">Projector beams</text>
+							<slider
+							 control_name="LuminousPhotoBeamsAmount"
+							 decimal_digits="2"
+							 enabled_control="LuminousPhotoProjectorBeams"
+							 follows="left|top"
+							 height="16"
+							 increment="0.01"
+							 initial_value="0.5"
+							 label=""
+							 label_width="0"
+							 layout="topleft"
+							 left="141"
+							 max_val="1"
+							 min_val="0"
+							 name="beams_amount"
+							 text_width="44"
+							 tool_tip="How strongly projector beams show."
+							 top="4"
+							 width="165">
+								<slider.commit_callback
+								 function="Luminous.Master"
+								 parameter="Beams" />
+							</slider>
+						</layout_panel>
+						<layout_panel
+						 auto_resize="false"
+						 follows="left|top|right"
+						 height="56"
+						 layout="topleft"
+						 name="beams_options_lp"
+						 user_resize="false"
+						 width="316">
+							<slider
+							 control_name="LuminousPhotoProjectorBeamsDensity"
+							 decimal_digits="2"
+							 follows="left|top"
+							 height="16"
+							 increment="0.01"
+							 initial_value="0.4"
+							 label="Strength"
+							 label_width="102"
+							 layout="topleft"
+							 left="36"
+							 max_val="2"
+							 min_val="0"
+							 name="beams_density"
+							 text_width="44"
+							 tool_tip="How bright the beams are; 0 none."
+							 top="4"
+							 width="270" />
+							<slider
+							 control_name="LuminousPhotoProjectorBeamsAnisotropy"
+							 decimal_digits="2"
+							 follows="left|top"
+							 height="16"
+							 increment="0.01"
+							 initial_value="0.3"
+							 label="Toward the light"
+							 label_width="102"
+							 layout="topleft"
+							 left="36"
+							 max_val="0.95"
+							 min_val="0"
+							 name="beams_anisotropy"
+							 text_width="44"
+							 tool_tip="Low shows a beam well from the side; high mostly when you look into the light."
+							 top="28"
+							 width="270" />
+						</layout_panel>
+						<layout_panel
+						 auto_resize="false"
+						 follows="left|top|right"
+						 height="26"
+						 layout="topleft"
+						 name="shafts_lp"
+						 user_resize="false"
+						 width="316">
+							<button
+							 control_name="LuminousUIShaftsOptions"
+							 follows="left|top"
+							 height="10"
+							 image_pressed="Accordion_ArrowClosed_Press"
+							 image_pressed_selected="Accordion_ArrowOpened_Press"
+							 image_selected="Accordion_ArrowOpened_Off"
+							 image_unselected="Accordion_ArrowClosed_Off"
+							 is_toggle="true"
+							 label=""
+							 layout="topleft"
+							 left="8"
+							 name="shafts_options"
+							 tool_tip="Show or hide the finer settings. The slider beside the name sets them too."
+							 top="7"
+							 width="10" />
+							<button
+							 follows="left|top"
+							 height="18"
+							 image_overlay="Luminous_Effect_Live"
+							 label=""
+							 layout="topleft"
+							 left="20"
+							 name="shafts_mode"
+							 tab_stop="false"
+							 top="5"
+							 width="22" />
+							<text
+							 follows="left|top"
+							 height="16"
+							 layout="topleft"
+							 left="46"
+							 mouse_opaque="true"
+							 name="shafts_name"
+							 tool_tip="Rays fanning out from the sun or moon. Needs it in or near the picture, partly hidden by leaves, a roof or the like."
+							 top="7"
+							 width="91">Sun shafts</text>
+							<slider
+							 control_name="LuminousPhotoShaftsAmount"
+							 decimal_digits="2"
+							 enabled_control="LuminousPhotoSunShafts"
+							 follows="left|top"
+							 height="16"
+							 increment="0.01"
+							 initial_value="0.5"
+							 label=""
+							 label_width="0"
+							 layout="topleft"
+							 left="141"
+							 max_val="1"
+							 min_val="0"
+							 name="shafts_amount"
+							 text_width="44"
+							 tool_tip="How strong and long the rays are."
+							 top="4"
+							 width="165">
+								<slider.commit_callback
+								 function="Luminous.Master"
+								 parameter="Shafts" />
+							</slider>
+						</layout_panel>
+						<layout_panel
+						 auto_resize="false"
+						 follows="left|top|right"
+						 height="80"
+						 layout="topleft"
+						 name="shafts_options_lp"
+						 user_resize="false"
+						 width="316">
+							<slider
+							 control_name="LuminousPhotoSunShaftsStrength"
+							 decimal_digits="2"
+							 follows="left|top"
+							 height="16"
+							 increment="0.01"
+							 initial_value="1"
+							 label="Strength"
+							 label_width="102"
+							 layout="topleft"
+							 left="36"
+							 max_val="3"
+							 min_val="0"
+							 name="shafts_strength"
+							 text_width="44"
+							 tool_tip="How bright the rays are; 0 none."
+							 top="4"
+							 width="270" />
+							<slider
+							 control_name="LuminousPhotoSunShaftsLength"
+							 decimal_digits="2"
+							 follows="left|top"
+							 height="16"
+							 increment="0.01"
+							 initial_value="0.9"
+							 label="Length"
+							 label_width="102"
+							 layout="topleft"
+							 left="36"
+							 max_val="1"
+							 min_val="0.1"
+							 name="shafts_length"
+							 text_width="44"
+							 tool_tip="How far the rays reach from the sun."
+							 top="28"
+							 width="270" />
+							<slider
+							 control_name="LuminousPhotoSunShaftsSoftness"
+							 decimal_digits="2"
+							 follows="left|top"
+							 height="16"
+							 increment="0.01"
+							 initial_value="0.3"
+							 label="Softness"
+							 label_width="102"
+							 layout="topleft"
+							 left="36"
+							 max_val="1"
+							 min_val="0"
+							 name="shafts_softness"
+							 text_width="44"
+							 tool_tip="Low: crisp, separate rays. High: a soft fan."
+							 top="52"
+							 width="270" />
+						</layout_panel>
+						<layout_panel
+						 auto_resize="false"
+						 follows="left|top|right"
+						 height="34"
+						 layout="topleft"
+						 name="light_shadows_lp"
+						 user_resize="false"
+						 width="316">
+							<text
+							 follows="left|top"
+							 font="SansSerifBold"
+							 height="16"
+							 layout="topleft"
+							 left="10"
+							 mouse_opaque="true"
+							 name="light_shadows_title"
+							 tool_tip="How shadows and shade fall. Often subtle until you look closely."
+							 top="8"
+							 width="216">Shadows</text>
+							<view_border
+							 bevel_style="in"
+							 follows="left|top|right"
+							 height="0"
+							 layout="topleft"
+							 left="10"
+							 name="light_shadows_line"
+							 top="28"
+							 width="296" />
+						</layout_panel>
+						<layout_panel
+						 auto_resize="false"
+						 follows="left|top|right"
+						 height="26"
+						 layout="topleft"
+						 name="shadow_strength_lp"
+						 user_resize="false"
+						 width="316">
+							<slider
+							 control_name="LuminousPhotoShadowStrength"
+							 decimal_digits="2"
+							 follows="left|top"
+							 height="16"
+							 increment="0.01"
+							 initial_value="1"
+							 label="Shadow strength"
+							 label_width="105"
+							 layout="topleft"
+							 left="36"
+							 max_val="1"
+							 min_val="0"
+							 name="shadow_strength"
+							 text_width="44"
+							 tool_tip="How dark shadows are: 1 full, lower lets some light through, 0 none."
+							 top="4"
+							 width="270" />
+						</layout_panel>
+						<layout_panel
+						 auto_resize="false"
+						 follows="left|top|right"
+						 height="26"
+						 layout="topleft"
+						 name="softsh_lp"
+						 user_resize="false"
+						 width="316">
+							<button
+							 control_name="LuminousUISoftShadowsOptions"
+							 follows="left|top"
+							 height="10"
+							 image_pressed="Accordion_ArrowClosed_Press"
+							 image_pressed_selected="Accordion_ArrowOpened_Press"
+							 image_selected="Accordion_ArrowOpened_Off"
+							 image_unselected="Accordion_ArrowClosed_Off"
+							 is_toggle="true"
+							 label=""
+							 layout="topleft"
+							 left="8"
+							 name="softsh_options"
+							 tool_tip="Show or hide the finer settings."
+							 top="7"
+							 width="10" />
+							<button
+							 follows="left|top"
+							 height="18"
+							 image_overlay="Luminous_Effect_Live"
+							 label=""
+							 layout="topleft"
+							 left="20"
+							 name="soft_shadows_mode"
+							 tab_stop="false"
+							 top="5"
+							 width="22" />
+							<text
+							 follows="left|top"
+							 height="16"
+							 layout="topleft"
+							 left="46"
+							 mouse_opaque="true"
+							 name="soft_shadows_name"
+							 tool_tip="Shadows sharp where things touch and softer further away, as real ones. Needs Shadows on in Graphics preferences."
+							 top="7"
+							 width="91">Soft shadows</text>
+							<slider
+							 decimal_digits="3"
+							 enabled_control="LuminousPhotoSoftShadows"
+							 follows="left|top"
+							 height="16"
+							 increment="0.005"
+							 initial_value="0.69"
+							 label=""
+							 label_width="0"
+							 layout="topleft"
+							 left="141"
+							 max_val="1"
+							 min_val="0"
+							 name="softsh_amount"
+							 show_text="false"
+							 tool_tip="How soft shadows get: 0 sharp, 1 a clear day, 2.5 a hazy day, higher softer. Shadows from high up, as leaves overhead, soften most."
+							 top="4"
+							 width="121">
+								<slider.commit_callback
+								 function="Luminous.LogSlider"
+								 parameter="softsh_amount" />
+							</slider>
+							<text
+							 follows="left|top"
+							 height="16"
+							 layout="topleft"
+							 left="262"
+							 name="softsh_amount_value"
+							 top="4"
+							 width="44">2.50</text>
+						</layout_panel>
+						<layout_panel
+						 auto_resize="false"
+						 follows="left|top|right"
+						 height="28"
+						 layout="topleft"
+						 name="softsh_options_lp"
+						 user_resize="false"
+						 width="316">
+							<slider
+							 control_name="RenderShadowBlurSize"
+							 decimal_digits="2"
+							 follows="left|top"
+							 height="16"
+							 increment="0.05"
+							 initial_value="1.4"
+							 label="Edge blur"
+							 label_width="102"
+							 layout="topleft"
+							 left="36"
+							 max_val="4"
+							 min_val="0"
+							 name="softsh_edge_blur"
+							 text_width="44"
+							 tool_tip="Softens shadow edges a little, live and in renders; 0 none."
+							 top="4"
+							 width="270" />
+						</layout_panel>
+						<layout_panel
+						 auto_resize="false"
+						 follows="left|top|right"
+						 height="26"
+						 layout="topleft"
+						 name="contact_lp"
+						 user_resize="false"
+						 width="316">
+							<button
+							 control_name="LuminousUIContactOptions"
+							 follows="left|top"
+							 height="10"
+							 image_pressed="Accordion_ArrowClosed_Press"
+							 image_pressed_selected="Accordion_ArrowOpened_Press"
+							 image_selected="Accordion_ArrowOpened_Off"
+							 image_unselected="Accordion_ArrowClosed_Off"
+							 is_toggle="true"
+							 label=""
+							 layout="topleft"
+							 left="8"
+							 name="contact_options"
+							 tool_tip="Show or hide the finer settings."
+							 top="7"
+							 width="10" />
+							<button
+							 follows="left|top"
+							 height="18"
+							 image_overlay="Luminous_Effect_Live"
+							 label=""
+							 layout="topleft"
+							 left="20"
+							 name="contact_mode"
+							 tab_stop="false"
+							 top="5"
+							 width="22" />
+							<text
+							 follows="left|top"
+							 height="16"
+							 layout="topleft"
+							 left="46"
+							 mouse_opaque="true"
+							 name="contact_name"
+							 tool_tip="Small, sharp shadows where things touch: fingers on skin, feet on the floor. Needs Shadows on in Graphics preferences."
+							 top="7"
+							 width="91">Contact shadows</text>
+							<slider
+							 control_name="LuminousPhotoContactShadowsStrength"
+							 decimal_digits="2"
+							 enabled_control="LuminousPhotoContactShadows"
+							 follows="left|top"
+							 height="16"
+							 increment="0.01"
+							 initial_value="1"
+							 label=""
+							 label_width="0"
+							 layout="topleft"
+							 left="141"
+							 max_val="1"
+							 min_val="0"
+							 name="contact_strength"
+							 text_width="44"
+							 tool_tip="How dark contact shadows are; 0 none."
+							 top="4"
+							 width="165" />
+						</layout_panel>
+						<layout_panel
+						 auto_resize="false"
+						 follows="left|top|right"
+						 height="28"
+						 layout="topleft"
+						 name="contact_options_lp"
+						 user_resize="false"
+						 width="316">
+							<slider
+							 decimal_digits="3"
+							 follows="left|top"
+							 height="16"
+							 increment="0.005"
+							 initial_value="0.74"
+							 label="Length"
+							 label_width="102"
+							 layout="topleft"
+							 left="36"
+							 max_val="1"
+							 min_val="0"
+							 name="contact_length"
+							 show_text="false"
+							 tool_tip="How far contact shadows reach: short where things touch, longer for folds and gaps."
+							 top="4"
+							 width="226">
+								<slider.commit_callback
+								 function="Luminous.LogSlider"
+								 parameter="contact_length" />
+							</slider>
+							<text
+							 follows="left|top"
+							 height="16"
+							 layout="topleft"
+							 left="262"
+							 name="contact_length_value"
+							 top="4"
+							 width="44">0.30</text>
+						</layout_panel>
+						<layout_panel
+						 auto_resize="false"
+						 follows="left|top|right"
+						 height="26"
+						 layout="topleft"
+						 name="ao_lp"
+						 user_resize="false"
+						 width="316">
+							<button
+							 control_name="LuminousUIAOOptions"
+							 follows="left|top"
+							 height="10"
+							 image_pressed="Accordion_ArrowClosed_Press"
+							 image_pressed_selected="Accordion_ArrowOpened_Press"
+							 image_selected="Accordion_ArrowOpened_Off"
+							 image_unselected="Accordion_ArrowClosed_Off"
+							 is_toggle="true"
+							 label=""
+							 layout="topleft"
+							 left="8"
+							 name="ao_options"
+							 tool_tip="Show or hide the finer settings. The slider beside the name sets them too."
+							 top="7"
+							 width="10" />
+							<button
+							 follows="left|top"
+							 height="18"
+							 image_overlay="Luminous_Effect_Live"
+							 label=""
+							 layout="topleft"
+							 left="20"
+							 name="gtao_mode"
+							 tab_stop="false"
+							 top="5"
+							 width="22" />
+							<text
+							 follows="left|top"
+							 height="16"
+							 layout="topleft"
+							 left="46"
+							 mouse_opaque="true"
+							 name="gtao_name"
+							 tool_tip="Soft darkening in creases, corners and where things meet. Shows most in shade."
+							 top="7"
+							 width="91">GTAO</text>
+							<slider
+							 control_name="LuminousPhotoAOAmount"
+							 decimal_digits="2"
+							 enabled_control="LuminousPhotoAO"
+							 follows="left|top"
+							 height="16"
+							 increment="0.01"
+							 initial_value="0.5"
+							 label=""
+							 label_width="0"
+							 layout="topleft"
+							 left="141"
+							 max_val="1"
+							 min_val="0"
+							 name="ao_amount"
+							 text_width="44"
+							 tool_tip="How deep and wide the darkening is."
+							 top="4"
+							 width="165">
+								<slider.commit_callback
+								 function="Luminous.Master"
+								 parameter="AO" />
+							</slider>
+						</layout_panel>
+						<layout_panel
+						 auto_resize="false"
+						 follows="left|top|right"
+						 height="104"
+						 layout="topleft"
+						 name="ao_options_lp"
+						 user_resize="false"
+						 width="316">
+							<slider
+							 decimal_digits="3"
+							 follows="left|top"
+							 height="16"
+							 increment="0.005"
+							 initial_value="0.6"
+							 label="Radius"
+							 label_width="102"
+							 layout="topleft"
+							 left="36"
+							 max_val="1"
+							 min_val="0"
+							 name="gtao_radius"
+							 show_text="false"
+							 tool_tip="How far the darkening reaches: small for fine creases, larger for room corners."
+							 top="4"
+							 width="226">
+								<slider.commit_callback
+								 function="Luminous.LogSlider"
+								 parameter="gtao_radius" />
+							</slider>
+							<text
+							 follows="left|top"
+							 height="16"
+							 layout="topleft"
+							 left="262"
+							 name="gtao_radius_value"
+							 top="4"
+							 width="44">0.55</text>
+							<slider
+							 control_name="LuminousPhotoAOStrength"
+							 decimal_digits="2"
+							 follows="left|top"
+							 height="16"
+							 increment="0.05"
+							 initial_value="1"
+							 label="Strength"
+							 label_width="102"
+							 layout="topleft"
+							 left="36"
+							 max_val="3"
+							 min_val="0"
+							 name="gtao_strength"
+							 text_width="44"
+							 tool_tip="How dark the darkening is; 0 none."
+							 top="28"
+							 width="270" />
+							<slider
+							 control_name="LuminousPhotoAOSoften"
+							 decimal_digits="2"
+							 follows="left|top"
+							 height="16"
+							 increment="0.05"
+							 initial_value="2"
+							 label="Soften"
+							 label_width="102"
+							 layout="topleft"
+							 left="36"
+							 max_val="3"
+							 min_val="0.05"
+							 name="gtao_soften"
+							 text_width="44"
+							 tool_tip="How smooth the darkening is: low crisp, high soft."
+							 top="52"
+							 width="270" />
+							<slider
+							 control_name="LuminousPhotoAOLights"
+							 decimal_digits="2"
+							 follows="left|top"
+							 height="16"
+							 increment="0.01"
+							 initial_value="0"
+							 label="On lamps"
+							 label_width="102"
+							 layout="topleft"
+							 left="36"
+							 max_val="1"
+							 min_val="0"
+							 name="gtao_lights"
+							 text_width="44"
+							 tool_tip="Darkens creases in the light of lamps and projectors too, as in a studio without sun. 0 only the light of sky and surroundings, as a camera would see it."
+							 top="76"
+							 width="270" />
+						</layout_panel>
+						<layout_panel
+						 auto_resize="false"
+						 follows="left|top|right"
+						 height="34"
+						 layout="topleft"
+						 name="light_enhance_lp"
+						 user_resize="false"
+						 width="316">
+							<text
+							 follows="left|top"
+							 font="SansSerifBold"
+							 height="16"
+							 layout="topleft"
+							 left="10"
+							 mouse_opaque="true"
+							 name="light_enhance_title"
+							 tool_tip="Where Second Life draws things wrong: reflections in shiny surfaces, and see-through hair in front of leaves."
+							 top="8"
+							 width="216">Enhancements</text>
+							<view_border
+							 bevel_style="in"
+							 follows="left|top|right"
+							 height="0"
+							 layout="topleft"
+							 left="10"
+							 name="light_enhance_line"
+							 top="28"
+							 width="296" />
+						</layout_panel>
+						<layout_panel
+						 auto_resize="false"
+						 follows="left|top|right"
+						 height="26"
+						 layout="topleft"
+						 name="ssr_lp"
+						 user_resize="false"
+						 width="316">
+							<button
+							 follows="left|top"
+							 height="18"
+							 image_overlay="Luminous_Effect_Live"
+							 label=""
+							 layout="topleft"
+							 left="20"
+							 name="ssr_mode"
+							 tab_stop="false"
+							 top="3"
+							 width="22" />
+							<text
+							 follows="left|top"
+							 height="16"
+							 layout="topleft"
+							 left="46"
+							 mouse_opaque="true"
+							 name="ssr_name"
+							 tool_tip="Cleaner reflections in shiny floors and surfaces. Only in the rendered picture. Needs Screen Space Reflections on in Graphics preferences."
+							 top="5"
+							 width="188">Enhanced reflections</text>
+						</layout_panel>
+						<layout_panel
+						 auto_resize="false"
+						 follows="left|top|right"
+						 height="26"
+						 layout="topleft"
+						 name="alpha_sort_lp"
+						 user_resize="false"
+						 width="316">
+							<button
+							 control_name="LuminousUIAlphaSortOptions"
+							 follows="left|top"
+							 height="10"
+							 image_pressed="Accordion_ArrowClosed_Press"
+							 image_pressed_selected="Accordion_ArrowOpened_Press"
+							 image_selected="Accordion_ArrowOpened_Off"
+							 image_unselected="Accordion_ArrowClosed_Off"
+							 is_toggle="true"
+							 label=""
+							 layout="topleft"
+							 left="8"
+							 name="alpha_sort_options"
+							 tool_tip="Show or hide the finer settings."
+							 top="5"
+							 width="10" />
+							<button
+							 follows="left|top"
+							 height="18"
+							 image_overlay="Luminous_Effect_Live"
+							 label=""
+							 layout="topleft"
+							 left="20"
+							 name="alpha_sort_mode"
+							 tab_stop="false"
+							 top="3"
+							 width="22" />
+							<text
+							 follows="left|top"
+							 height="16"
+							 layout="topleft"
+							 left="46"
+							 mouse_opaque="true"
+							 name="alpha_sort_name"
+							 tool_tip="See-through hair and eyelashes in front of leaves and other see-through things: the leaves show through the hair instead of the sky. Exact in the rendered picture. Off draws them as Second Life does."
+							 top="5"
+							 width="188">Alpha sorting</text>
+						</layout_panel>
+						<layout_panel
+						 auto_resize="false"
+						 follows="left|top|right"
+						 height="26"
+						 layout="topleft"
+						 name="alpha_sort_options_lp"
+						 user_resize="false"
+						 width="316">
+							<check_box
+							 control_name="LuminousPhotoAlphaSortFaintSL"
+							 follows="left|top"
+							 height="16"
+							 label="Faint layers as in Second Life"
+							 layout="topleft"
+							 left="36"
+							 name="alpha_sort_faint_sl"
+							 tool_tip="Body hair, beards, tattoos and other faint layers over each other: drawn as Second Life draws them, where the first hides those behind it, so they look as you are used to. Off, every layer counts, a little denser. Hair over leaves and fur is sorted either way."
+							 top="4"
+							 width="270" />
+						</layout_panel>
+						<layout_panel
+						 auto_resize="false"
+						 follows="left|top|right"
+						 height="34"
+						 layout="topleft"
+						 name="light_lights_lp"
+						 user_resize="false"
+						 width="316">
+							<text
+							 follows="left|top"
+							 font="SansSerifBold"
+							 height="16"
+							 layout="topleft"
+							 left="10"
+							 mouse_opaque="true"
+							 name="light_lights_title"
+							 tool_tip="Which lights are drawn."
+							 top="8"
+							 width="216">Lights</text>
+							<view_border
+							 bevel_style="in"
+							 follows="left|top|right"
+							 height="0"
+							 layout="topleft"
+							 left="10"
+							 name="light_lights_line"
+							 top="28"
+							 width="296" />
+						</layout_panel>
+						<layout_panel
+						 auto_resize="false"
+						 follows="left|top|right"
+						 height="26"
+						 layout="topleft"
+						 name="face_lights_lp"
+						 user_resize="false"
+						 width="316">
+							<check_box
+							 control_name="RenderAttachedLights"
+							 follows="left|top"
+							 height="16"
+							 label="Attached lights"
+							 layout="topleft"
+							 left="22"
+							 name="face_lights"
+							 tool_tip="Lights worn by avatars: face lights, lights in hair or jewellery. Off: only the scene's lights and the sun."
+							 top="4"
+							 width="284" />
+						</layout_panel>
+					</layout_stack>
+				</panel>
+			</scroll_container>
+			<button
+			 follows="left|bottom"
+			 height="22"
+			 label="Reset scene"
+			 layout="topleft"
+			 left="10"
+			 name="light_defaults"
+			 tool_tip="Put this tab back as Luminous ships it."
+			 top="655"
+			 width="158">
+				<button.commit_callback
+				 function="Luminous.ResetSettings"
+				 parameter="LuminousPhotoVolumetricLight,LuminousPhotoVolumetricDensity,LuminousPhotoVolumetricAnisotropy,LuminousPhotoVolumetricDistance,LuminousPhotoProjectorBeams,LuminousPhotoProjectorBeamsDensity,LuminousPhotoProjectorBeamsAnisotropy,LuminousPhotoSunShafts,LuminousPhotoSunShaftsStrength,LuminousPhotoSunShaftsLength,LuminousPhotoSunShaftsSoftness,LuminousPhotoSoftShadows,LuminousPhotoSoftShadowsRenderOnly,LuminousPhotoShadowSoftness,LuminousPhotoAO,RenderDeferredSSAO,LuminousPhotoAORadius,LuminousPhotoAOStrength,LuminousPhotoAOSoften,LuminousPhotoAOLights,LuminousPhotoVolumetricAmount,LuminousPhotoBeamsAmount,LuminousPhotoShaftsAmount,LuminousPhotoAOAmount,LuminousPhotoSSR,LuminousPhotoAlphaSort,LuminousPhotoAlphaSortFaintSL,LuminousPhotoVolumetricLightRenderOnly,LuminousPhotoProjectorBeamsRenderOnly,LuminousPhotoSunShaftsRenderOnly,LuminousPhotoAORenderOnly,LuminousPhotoContactShadows,LuminousPhotoContactShadowsLength,LuminousPhotoContactShadowsRenderOnly,LuminousPhotoContactShadowsStrength,LuminousPhotoShadowStrength,RenderShadowBlurSize,RenderAttachedLights" />
+			</button>
+			<button
+			 control_name="LuminousScenePaused"
+			 follows="left|bottom"
+			 height="22"
+			 image_overlay="Pause_Off"
+			 is_toggle="true"
+			 layout="topleft"
+			 left="172"
+			 name="pause_scene_light_defaults"
+			 tool_tip="Pause everything that moves (animations, water, clouds, particles) while you move the camera freely. Click again to go on."
+			 top="655"
+			 width="28" />
+			<button
+			 follows="right|bottom"
+			 height="22"
+			 label="Render image"
+			 layout="topleft"
+			 left="204"
+			 name="light_defaults_capture"
+			 tool_tip="Render the picture now, with the Render tab's settings."
+			 top="655"
+			 width="116">
+				<button.commit_callback
+				 function="Luminous.SaveSnapshot" />
+			</button>
+		</panel>
+		<panel
+		 follows="all"
+		 height="687"
+		 label="Tone"
+		 layout="topleft"
+		 name="luminous_look">
+			<scroll_container
+			 follows="all"
+			 height="643"
+			 layout="topleft"
+			 left="0"
+			 name="luminous_look_scroll"
+			 opaque="false"
+			 reserve_scroll_corner="false"
+			 top="0"
+			 width="330">
+				<panel
+				 background_visible="false"
+				 follows="left|top"
+				 height="456"
+				 layout="topleft"
+				 left="0"
+				 name="luminous_look_content"
+				 top="0"
+				 width="316">
+					<layout_stack
+					 animate="false"
+					 border_size="0"
+					 follows="left|top|right"
+					 height="456"
+					 layout="topleft"
+					 left="0"
+					 name="luminous_look_stack"
+					 orientation="vertical"
+					 top="0"
+					 width="316">
+						<layout_panel
+						 auto_resize="false"
+						 follows="left|top|right"
+						 height="34"
+						 layout="topleft"
+						 name="adjust_tone_lp"
+						 user_resize="false"
+						 width="316">
+							<text
+							 follows="left|top"
+							 font="SansSerifBold"
+							 height="16"
+							 layout="topleft"
+							 left="10"
+							 mouse_opaque="true"
+							 name="adjust_tone_title"
+							 tool_tip="How very bright and dark light fits into the picture."
+							 top="8"
+							 width="216">Tone mapping</text>
+							<view_border
+							 bevel_style="in"
+							 follows="left|top|right"
+							 height="0"
+							 layout="topleft"
+							 left="10"
+							 name="adjust_tone_line"
+							 top="28"
+							 width="296" />
+						</layout_panel>
+						<layout_panel
+						 auto_resize="false"
+						 follows="left|top|right"
+						 height="30"
+						 layout="topleft"
+						 name="look_tonemap_lp"
+						 user_resize="false"
+						 width="316">
+							<text
+							 follows="left|top"
+							 height="16"
+							 layout="topleft"
+							 left="22"
+							 mouse_opaque="true"
+							 name="look_tonemap_label"
+							 tool_tip="How bright light turns into colour. AgX keeps a bright sky's colour instead of white; AgX Punchy adds contrast."
+							 top="7"
+							 width="115">Tonemapper</text>
+							<combo_box
+							 control_name="LuminousPhotoTonemapper"
+							 follows="left|top"
+							 height="22"
+							 layout="topleft"
+							 left="138"
+							 name="look_tonemapper"
+							 tool_tip="How bright light turns into colour. AgX keeps a bright sky's colour instead of white; AgX Punchy adds contrast."
+							 top="4"
+							 width="168">
+								<combo_box.item
+								 label="Khronos Neutral"
+								 name="neutral"
+								 value="0" />
+								<combo_box.item
+								 label="ACES"
+								 name="aces"
+								 value="1" />
+								<combo_box.item
+								 label="AgX"
+								 name="agx"
+								 value="2" />
+								<combo_box.item
+								 label="AgX Punchy"
+								 name="agx_punchy"
+								 value="3" />
+								<combo_box.item
+								 label="Filmic (Hable)"
+								 name="filmic"
+								 value="4" />
+								<combo_box.item
+								 label="Gran Turismo"
+								 name="gran_turismo"
+								 value="5" />
+								<combo_box.item
+								 label="Tony McMapface"
+								 name="mcmapface"
+								 value="6" />
+							</combo_box>
+						</layout_panel>
+						<layout_panel
+						 auto_resize="false"
+						 follows="left|top|right"
+						 height="26"
+						 layout="topleft"
+						 name="look_tonemap_mix_row_lp"
+						 user_resize="false"
+						 width="316">
+							<slider
+							 control_name="LuminousPhotoTonemapMix"
+							 decimal_digits="2"
+							 follows="left|top"
+							 height="16"
+							 increment="0.01"
+							 initial_value="0.7"
+							 label="Strength"
+							 label_width="116"
+							 layout="topleft"
+							 left="22"
+							 max_val="1"
+							 min_val="0"
+							 name="look_tonemap_mix"
+							 text_width="44"
+							 tool_tip="How much the tonemapper is used; at 0 bright parts turn white."
+							 top="4"
+							 width="284" />
+						</layout_panel>
+						<layout_panel
+						 auto_resize="false"
+						 follows="left|top|right"
+						 height="22"
+						 layout="topleft"
+						 name="look_legacy_note_lp"
+						 user_resize="false"
+						 visible="false"
+						 width="316">
+							<text
+							 follows="left|top"
+							 height="16"
+							 layout="topleft"
+							 left="22"
+							 mouse_opaque="true"
+							 name="look_legacy_note"
+							 tool_tip="This is a legacy (Windlight) sky, so tonemapping does nothing here. Tick Auto-adjust legacy skies below to change that."
+							 top="4"
+							 width="284">Legacy sky: not tonemapped.</text>
+						</layout_panel>
+						<layout_panel
+						 auto_resize="false"
+						 follows="left|top|right"
+						 height="26"
+						 layout="topleft"
+						 name="look_legacy_sky_lp"
+						 user_resize="false"
+						 width="316">
+							<check_box
+							 control_name="RenderSkyAutoAdjustLegacy"
+							 follows="left|top"
+							 height="16"
+							 label="Auto-adjust legacy skies"
+							 layout="topleft"
+							 left="22"
+							 name="look_legacy_sky"
+							 tool_tip="Lights a legacy (Windlight) sky as a modern one, so tonemapping works. It changes the sky's light too."
+							 top="4"
+							 width="284" />
+						</layout_panel>
+						<layout_panel
+						 auto_resize="false"
+						 follows="left|top|right"
+						 height="34"
+						 layout="topleft"
+						 name="adjust_adjust_lp"
+						 user_resize="false"
+						 width="316">
+							<text
+							 follows="left|top"
+							 font="SansSerifBold"
+							 height="16"
+							 layout="topleft"
+							 left="10"
+							 mouse_opaque="true"
+							 name="adjust_adjust_title"
+							 tool_tip="Brightness and contrast, as in a photo app."
+							 top="8"
+							 width="216">Tone adjustments</text>
+							<view_border
+							 bevel_style="in"
+							 follows="left|top|right"
+							 height="0"
+							 layout="topleft"
+							 left="10"
+							 name="adjust_adjust_line"
+							 top="28"
+							 width="296" />
+						</layout_panel>
+						<layout_panel
+						 auto_resize="false"
+						 follows="left|top|right"
+						 height="152"
+						 layout="topleft"
+						 name="look_tone_lp"
+						 user_resize="false"
+						 width="316">
+							<slider
+							 control_name="LuminousPhotoExposure"
+							 decimal_digits="2"
+							 follows="left|top"
+							 height="16"
+							 increment="0.05"
+							 initial_value="0"
+							 label="Exposure"
+							 label_width="116"
+							 layout="topleft"
+							 left="22"
+							 max_val="3"
+							 min_val="-3"
+							 name="look_exposure"
+							 text_width="44"
+							 tool_tip="Brighter or darker: +1 twice as bright, -1 half."
+							 top="4"
+							 width="284" />
+							<slider
+							 control_name="LuminousPhotoContrast"
+							 decimal_digits="2"
+							 follows="left|top"
+							 height="16"
+							 increment="0.01"
+							 initial_value="1"
+							 label="Contrast"
+							 label_width="116"
+							 layout="topleft"
+							 left="22"
+							 max_val="2"
+							 min_val="0.5"
+							 name="look_contrast"
+							 text_width="44"
+							 tool_tip="Higher for more contrast, lower for a flatter picture."
+							 top="28"
+							 width="284" />
+							<slider
+							 control_name="LuminousPhotoHighlights"
+							 decimal_digits="2"
+							 follows="left|top"
+							 height="16"
+							 increment="0.01"
+							 initial_value="0"
+							 label="Highlights"
+							 label_width="116"
+							 layout="topleft"
+							 left="22"
+							 max_val="1"
+							 min_val="-1"
+							 name="look_highlights"
+							 text_width="44"
+							 tool_tip="Left darkens bright areas, such as a washed-out sky; right brightens them."
+							 top="52"
+							 width="284" />
+							<slider
+							 control_name="LuminousPhotoShadows"
+							 decimal_digits="2"
+							 follows="left|top"
+							 height="16"
+							 increment="0.01"
+							 initial_value="0"
+							 label="Shadows"
+							 label_width="116"
+							 layout="topleft"
+							 left="22"
+							 max_val="1"
+							 min_val="-1"
+							 name="look_shadows"
+							 text_width="44"
+							 tool_tip="Right brightens dark areas, such as a face in shade; left deepens them."
+							 top="76"
+							 width="284" />
+							<slider
+							 control_name="LuminousPhotoWhites"
+							 decimal_digits="2"
+							 follows="left|top"
+							 height="16"
+							 increment="0.01"
+							 initial_value="0"
+							 label="Whites"
+							 label_width="116"
+							 layout="topleft"
+							 left="22"
+							 max_val="1"
+							 min_val="-1"
+							 name="look_whites"
+							 text_width="44"
+							 tool_tip="The brightest parts only: left keeps a white dress or sky from burning out."
+							 top="100"
+							 width="284" />
+							<slider
+							 control_name="LuminousPhotoBlacks"
+							 decimal_digits="2"
+							 follows="left|top"
+							 height="16"
+							 increment="0.01"
+							 initial_value="0"
+							 label="Blacks"
+							 label_width="116"
+							 layout="topleft"
+							 left="22"
+							 max_val="1"
+							 min_val="-1"
+							 name="look_blacks"
+							 text_width="44"
+							 tool_tip="The deepest shadows only: left deeper, right lifted for a faded look."
+							 top="124"
+							 width="284" />
+						</layout_panel>
+						<layout_panel
+						 auto_resize="false"
+						 follows="left|top|right"
+						 height="34"
+						 layout="topleft"
+						 name="adjust_detail_lp"
+						 user_resize="false"
+						 width="316">
+							<text
+							 follows="left|top"
+							 font="SansSerifBold"
+							 height="16"
+							 layout="topleft"
+							 left="10"
+							 mouse_opaque="true"
+							 name="adjust_detail_title"
+							 tool_tip="How much texture and shape stand out."
+							 top="8"
+							 width="216">Detail</text>
+							<view_border
+							 bevel_style="in"
+							 follows="left|top|right"
+							 height="0"
+							 layout="topleft"
+							 left="10"
+							 name="adjust_detail_line"
+							 top="28"
+							 width="296" />
+						</layout_panel>
+						<layout_panel
+						 auto_resize="false"
+						 follows="left|top|right"
+						 height="26"
+						 layout="topleft"
+						 name="look_clarity_row_lp"
+						 user_resize="false"
+						 width="316">
+							<button
+							 follows="left|top"
+							 height="18"
+							 image_overlay="Luminous_Effect_Live"
+							 label=""
+							 layout="topleft"
+							 left="20"
+							 name="clarity_mode"
+							 tab_stop="false"
+							 top="3"
+							 width="22" />
+							<slider
+							 control_name="LuminousPhotoClarity"
+							 decimal_digits="2"
+							 follows="left|top"
+							 height="16"
+							 increment="0.01"
+							 initial_value="0"
+							 label="Clarity"
+							 label_width="92"
+							 layout="topleft"
+							 left="46"
+							 max_val="1"
+							 min_val="-1"
+							 name="look_clarity"
+							 text_width="44"
+							 tool_tip="Right brings out texture in fabric, wood and skin; left softens it for a gentle portrait."
+							 top="4"
+							 width="260" />
+						</layout_panel>
+						<layout_panel
+						 auto_resize="false"
+						 follows="left|top|right"
+						 height="26"
+						 layout="topleft"
+						 name="look_sharpen_row_lp"
+						 user_resize="false"
+						 width="316">
+							<button
+							 follows="left|top"
+							 height="18"
+							 image_overlay="Luminous_Effect_Live"
+							 label=""
+							 layout="topleft"
+							 left="20"
+							 name="sharpen_mode"
+							 tab_stop="false"
+							 top="5"
+							 width="22" />
+							<text
+							 follows="left|top"
+							 height="16"
+							 layout="topleft"
+							 left="46"
+							 mouse_opaque="true"
+							 name="sharpen_name"
+							 tool_tip="Sharpens fine detail, without halos."
+							 top="7"
+							 width="91">Sharpening</text>
+							<slider
+							 control_name="RenderCASSharpness"
+							 decimal_digits="2"
+							 follows="left|top"
+							 height="16"
+							 increment="0.01"
+							 initial_value="0.3"
+							 label=""
+							 label_width="0"
+							 layout="topleft"
+							 left="141"
+							 max_val="1"
+							 min_val="0"
+							 name="look_sharpening"
+							 text_width="44"
+							 tool_tip="How much fine detail is sharpened; 0 none."
+							 top="4"
+							 width="165" />
+						</layout_panel>
+					</layout_stack>
+				</panel>
+			</scroll_container>
+			<button
+			 follows="left|bottom"
+			 height="22"
+			 label="Reset tone"
+			 layout="topleft"
+			 left="10"
+			 name="look_reset"
+			 tool_tip="Put this tab back as Luminous ships it."
+			 top="655"
+			 width="158">
+				<button.commit_callback
+				 function="Luminous.ResetSettings"
+				 parameter="LuminousPhotoTonemapper,LuminousPhotoTonemapMix,LuminousPhotoExposure,LuminousPhotoContrast,LuminousPhotoHighlights,LuminousPhotoShadows,LuminousPhotoWhites,LuminousPhotoBlacks,LuminousPhotoClarity,LuminousPhotoClarityRenderOnly,RenderCASSharpness" />
+			</button>
+			<button
+			 control_name="LuminousScenePaused"
+			 follows="left|bottom"
+			 height="22"
+			 image_overlay="Pause_Off"
+			 is_toggle="true"
+			 layout="topleft"
+			 left="172"
+			 name="pause_scene_look_reset"
+			 tool_tip="Pause everything that moves (animations, water, clouds, particles) while you move the camera freely. Click again to go on."
+			 top="655"
+			 width="28" />
+			<button
+			 follows="right|bottom"
+			 height="22"
+			 label="Render image"
+			 layout="topleft"
+			 left="204"
+			 name="look_reset_capture"
+			 tool_tip="Render the picture now, with the Render tab's settings."
+			 top="655"
+			 width="116">
+				<button.commit_callback
+				 function="Luminous.SaveSnapshot" />
+			</button>
+		</panel>
+		<panel
+		 follows="all"
+		 height="687"
+		 label="Colour"
+		 layout="topleft"
+		 name="luminous_colour">
+			<scroll_container
+			 follows="all"
+			 height="643"
+			 layout="topleft"
+			 left="0"
+			 name="luminous_colour_scroll"
+			 opaque="false"
+			 reserve_scroll_corner="false"
+			 top="0"
+			 width="330">
+				<panel
+				 background_visible="false"
+				 follows="left|top"
+				 height="772"
+				 layout="topleft"
+				 left="0"
+				 name="luminous_colour_content"
+				 top="0"
+				 width="316">
+					<layout_stack
+					 animate="false"
+					 border_size="0"
+					 follows="left|top|right"
+					 height="772"
+					 layout="topleft"
+					 left="0"
+					 name="luminous_colour_stack"
+					 orientation="vertical"
+					 top="0"
+					 width="316">
+						<layout_panel
+						 auto_resize="false"
+						 follows="left|top|right"
+						 height="34"
+						 layout="topleft"
+						 name="colour_basic_lp"
+						 user_resize="false"
+						 width="316">
+							<text
+							 follows="left|top"
+							 font="SansSerifBold"
+							 height="16"
+							 layout="topleft"
+							 left="10"
+							 mouse_opaque="true"
+							 name="colour_basic_title"
+							 tool_tip="How colourful the picture is, its white balance and its grading."
+							 top="8"
+							 width="216">Colour balance</text>
+							<view_border
+							 bevel_style="in"
+							 follows="left|top|right"
+							 height="0"
+							 layout="topleft"
+							 left="10"
+							 name="colour_basic_line"
+							 top="28"
+							 width="296" />
+						</layout_panel>
+						<layout_panel
+						 auto_resize="false"
+						 follows="left|top|right"
+						 height="26"
+						 layout="topleft"
+						 name="colour_lp"
+						 user_resize="false"
+						 width="316">
+							<button
+							 control_name="LuminousUIColourOptions"
+							 follows="left|top"
+							 height="10"
+							 image_pressed="Accordion_ArrowClosed_Press"
+							 image_pressed_selected="Accordion_ArrowOpened_Press"
+							 image_selected="Accordion_ArrowOpened_Off"
+							 image_unselected="Accordion_ArrowClosed_Off"
+							 is_toggle="true"
+							 label=""
+							 layout="topleft"
+							 left="8"
+							 name="colour_options"
+							 tool_tip="Show or hide the finer settings."
+							 top="8"
+							 width="10" />
+							<text
+							 follows="left|top"
+							 height="16"
+							 layout="topleft"
+							 left="22"
+							 mouse_opaque="true"
+							 name="colour_label"
+							 tool_tip="Left toward grey, right more colourful."
+							 top="5"
+							 width="115">Colour</text>
+							<slider
+							 control_name="LuminousPhotoColourAmount"
+							 decimal_digits="2"
+							 follows="left|top"
+							 height="16"
+							 increment="0.01"
+							 initial_value="0"
+							 label=""
+							 label_width="0"
+							 layout="topleft"
+							 left="141"
+							 max_val="1"
+							 min_val="-1"
+							 name="colour_amount"
+							 text_width="44"
+							 tool_tip="Left toward grey, right more colourful."
+							 top="4"
+							 width="165">
+								<slider.commit_callback
+								 function="Luminous.Master"
+								 parameter="Colour" />
+							</slider>
+						</layout_panel>
+						<layout_panel
+						 auto_resize="false"
+						 follows="left|top|right"
+						 height="56"
+						 layout="topleft"
+						 name="colour_options_lp"
+						 user_resize="false"
+						 width="316">
+							<slider
+							 control_name="LuminousPhotoSaturation"
+							 decimal_digits="2"
+							 follows="left|top"
+							 height="16"
+							 increment="0.01"
+							 initial_value="1"
+							 label="Saturation"
+							 label_width="102"
+							 layout="topleft"
+							 left="36"
+							 max_val="2"
+							 min_val="0"
+							 name="look_saturation"
+							 text_width="44"
+							 tool_tip="Colour everywhere: 0 grey, 1 as is, 2 double."
+							 top="4"
+							 width="270" />
+							<slider
+							 control_name="LuminousPhotoVibrance"
+							 decimal_digits="2"
+							 follows="left|top"
+							 height="16"
+							 increment="0.01"
+							 initial_value="0"
+							 label="Vibrance"
+							 label_width="102"
+							 layout="topleft"
+							 left="36"
+							 max_val="1"
+							 min_val="-1"
+							 name="look_vibrance"
+							 text_width="44"
+							 tool_tip="Adds colour where there is little and leaves vivid colours alone."
+							 top="28"
+							 width="270" />
+						</layout_panel>
+						<layout_panel
+						 auto_resize="false"
+						 follows="left|top|right"
+						 height="26"
+						 layout="topleft"
+						 name="wb_lp"
+						 user_resize="false"
+						 width="316">
+							<button
+							 control_name="LuminousUIWhiteBalanceOptions"
+							 follows="left|top"
+							 height="10"
+							 image_pressed="Accordion_ArrowClosed_Press"
+							 image_pressed_selected="Accordion_ArrowOpened_Press"
+							 image_selected="Accordion_ArrowOpened_Off"
+							 image_unselected="Accordion_ArrowClosed_Off"
+							 is_toggle="true"
+							 label=""
+							 layout="topleft"
+							 left="8"
+							 name="wb_options"
+							 tool_tip="Show or hide the finer settings."
+							 top="8"
+							 width="10" />
+							<text
+							 follows="left|top"
+							 height="16"
+							 layout="topleft"
+							 left="22"
+							 mouse_opaque="true"
+							 name="wb_label"
+							 tool_tip="Cooler (left, blue) or warmer (right, amber) light."
+							 top="5"
+							 width="115">White balance</text>
+							<slider
+							 control_name="LuminousPhotoWarmth"
+							 decimal_digits="2"
+							 follows="left|top"
+							 height="16"
+							 increment="0.01"
+							 initial_value="0"
+							 label=""
+							 label_width="0"
+							 layout="topleft"
+							 left="141"
+							 max_val="1"
+							 min_val="-1"
+							 name="wb_amount"
+							 text_width="44"
+							 tool_tip="Cooler (left, blue) or warmer (right, amber) light."
+							 top="4"
+							 width="165" />
+						</layout_panel>
+						<layout_panel
+						 auto_resize="false"
+						 follows="left|top|right"
+						 height="32"
+						 layout="topleft"
+						 name="wb_options_lp"
+						 user_resize="false"
+						 width="316">
+							<slider
+							 control_name="LuminousPhotoTint"
+							 decimal_digits="2"
+							 follows="left|top"
+							 height="16"
+							 increment="0.01"
+							 initial_value="0"
+							 label="Tint"
+							 label_width="102"
+							 layout="topleft"
+							 left="36"
+							 max_val="1"
+							 min_val="-1"
+							 name="look_tint"
+							 text_width="44"
+							 tool_tip="Toward green (left) or magenta (right), to correct a colour cast."
+							 top="4"
+							 width="270" />
+						</layout_panel>
+						<layout_panel
+						 auto_resize="false"
+						 follows="left|top|right"
+						 height="26"
+						 layout="topleft"
+						 name="split_lp"
+						 user_resize="false"
+						 width="316">
+							<button
+							 control_name="LuminousUISplitToneOptions"
+							 follows="left|top"
+							 height="10"
+							 image_pressed="Accordion_ArrowClosed_Press"
+							 image_pressed_selected="Accordion_ArrowOpened_Press"
+							 image_selected="Accordion_ArrowOpened_Off"
+							 image_unselected="Accordion_ArrowClosed_Off"
+							 is_toggle="true"
+							 label=""
+							 layout="topleft"
+							 left="8"
+							 name="split_options"
+							 tool_tip="Show or hide the finer settings."
+							 top="8"
+							 width="10" />
+							<text
+							 follows="left|top"
+							 height="16"
+							 layout="topleft"
+							 left="22"
+							 mouse_opaque="true"
+							 name="split_label"
+							 tool_tip="Cool shadows and warm highlights (right), or the reverse (left)."
+							 top="5"
+							 width="115">Split tone</text>
+							<slider
+							 control_name="LuminousPhotoSplitTone"
+							 decimal_digits="2"
+							 follows="left|top"
+							 height="16"
+							 increment="0.01"
+							 initial_value="0"
+							 label=""
+							 label_width="0"
+							 layout="topleft"
+							 left="141"
+							 max_val="1"
+							 min_val="-1"
+							 name="split_amount"
+							 text_width="44"
+							 tool_tip="Cool shadows and warm highlights (right), or the reverse (left)."
+							 top="4"
+							 width="165">
+								<slider.commit_callback
+								 function="Luminous.Master"
+								 parameter="SplitTone" />
+							</slider>
+						</layout_panel>
+						<layout_panel
+						 auto_resize="false"
+						 follows="left|top|right"
+						 height="152"
+						 layout="topleft"
+						 name="split_options_lp"
+						 user_resize="false"
+						 width="316">
+							<slider
+							 control_name="LuminousPhotoShadowsWarmth"
+							 decimal_digits="2"
+							 follows="left|top"
+							 height="16"
+							 increment="0.01"
+							 initial_value="0"
+							 label="Shadows warmth"
+							 label_width="102"
+							 layout="topleft"
+							 left="36"
+							 max_val="1"
+							 min_val="-1"
+							 name="look_shadows_warmth"
+							 text_width="44"
+							 tool_tip="Dark parts cooler (left) or warmer (right)."
+							 top="4"
+							 width="270" />
+							<slider
+							 control_name="LuminousPhotoShadowsTint"
+							 decimal_digits="2"
+							 follows="left|top"
+							 height="16"
+							 increment="0.01"
+							 initial_value="0"
+							 label="Shadows tint"
+							 label_width="102"
+							 layout="topleft"
+							 left="36"
+							 max_val="1"
+							 min_val="-1"
+							 name="look_shadows_tint"
+							 text_width="44"
+							 tool_tip="Dark parts toward green (left) or magenta (right)."
+							 top="28"
+							 width="270" />
+							<slider
+							 control_name="LuminousPhotoMidtonesWarmth"
+							 decimal_digits="2"
+							 follows="left|top"
+							 height="16"
+							 increment="0.01"
+							 initial_value="0"
+							 label="Midtones warmth"
+							 label_width="102"
+							 layout="topleft"
+							 left="36"
+							 max_val="1"
+							 min_val="-1"
+							 name="look_midtones_warmth"
+							 text_width="44"
+							 tool_tip="Middle tones cooler (left) or warmer (right)."
+							 top="52"
+							 width="270" />
+							<slider
+							 control_name="LuminousPhotoMidtonesTint"
+							 decimal_digits="2"
+							 follows="left|top"
+							 height="16"
+							 increment="0.01"
+							 initial_value="0"
+							 label="Midtones tint"
+							 label_width="102"
+							 layout="topleft"
+							 left="36"
+							 max_val="1"
+							 min_val="-1"
+							 name="look_midtones_tint"
+							 text_width="44"
+							 tool_tip="Middle tones toward green (left) or magenta (right)."
+							 top="76"
+							 width="270" />
+							<slider
+							 control_name="LuminousPhotoHighlightsWarmth"
+							 decimal_digits="2"
+							 follows="left|top"
+							 height="16"
+							 increment="0.01"
+							 initial_value="0"
+							 label="Highlights warmth"
+							 label_width="102"
+							 layout="topleft"
+							 left="36"
+							 max_val="1"
+							 min_val="-1"
+							 name="look_highlights_warmth"
+							 text_width="44"
+							 tool_tip="Bright parts cooler (left) or warmer (right)."
+							 top="100"
+							 width="270" />
+							<slider
+							 control_name="LuminousPhotoHighlightsTint"
+							 decimal_digits="2"
+							 follows="left|top"
+							 height="16"
+							 increment="0.01"
+							 initial_value="0"
+							 label="Highlights tint"
+							 label_width="102"
+							 layout="topleft"
+							 left="36"
+							 max_val="1"
+							 min_val="-1"
+							 name="look_highlights_tint"
+							 text_width="44"
+							 tool_tip="Bright parts toward green (left) or magenta (right)."
+							 top="124"
+							 width="270" />
+						</layout_panel>
+						<layout_panel
+						 auto_resize="false"
+						 follows="left|top|right"
+						 height="34"
+						 layout="topleft"
+						 name="colour_hsl_lp"
+						 user_resize="false"
+						 width="316">
+							<text
+							 follows="left|top"
+							 font="SansSerifBold"
+							 height="16"
+							 layout="topleft"
+							 left="10"
+							 mouse_opaque="true"
+							 name="colour_hsl_title"
+							 tool_tip="Change some colours only, black and white, and colour tables."
+							 top="8"
+							 width="216">Colour styles</text>
+							<view_border
+							 bevel_style="in"
+							 follows="left|top|right"
+							 height="0"
+							 layout="topleft"
+							 left="10"
+							 name="colour_hsl_line"
+							 top="28"
+							 width="296" />
+						</layout_panel>
+						<layout_panel
+						 auto_resize="false"
+						 follows="left|top|right"
+						 height="26"
+						 layout="topleft"
+						 name="hsl_lp"
+						 user_resize="false"
+						 width="316">
+							<button
+							 control_name="LuminousUIHSLOptions"
+							 follows="left|top"
+							 height="10"
+							 image_pressed="Accordion_ArrowClosed_Press"
+							 image_pressed_selected="Accordion_ArrowOpened_Press"
+							 image_selected="Accordion_ArrowOpened_Off"
+							 image_unselected="Accordion_ArrowClosed_Off"
+							 is_toggle="true"
+							 label=""
+							 layout="topleft"
+							 left="8"
+							 name="hsl_options"
+							 tool_tip="Show or hide the finer settings."
+							 top="8"
+							 width="10" />
+							<text
+							 follows="left|top"
+							 height="16"
+							 layout="topleft"
+							 left="22"
+							 mouse_opaque="true"
+							 name="hsl_label"
+							 tool_tip="Change one range of colours: pick it under the arrow, then set its hue, saturation and lightness."
+							 top="5"
+							 width="115">Colour ranges</text>
+						</layout_panel>
+						<layout_panel
+						 auto_resize="false"
+						 follows="left|top|right"
+						 height="30"
+						 layout="topleft"
+						 name="look_hsl_lp"
+						 user_resize="false"
+						 width="316">
+							<text
+							 follows="left|top"
+							 height="16"
+							 layout="topleft"
+							 left="36"
+							 mouse_opaque="true"
+							 name="look_hsl_label"
+							 tool_tip="Which colours the sliders below change."
+							 top="7"
+							 width="99">Colour range</text>
+							<combo_box
+							 follows="left|top"
+							 height="22"
+							 layout="topleft"
+							 left="138"
+							 name="look_hsl_range"
+							 tool_tip="Which colours the sliders below change."
+							 top="4"
+							 width="146">
+								<combo_box.item
+								 label="Reds"
+								 name="hsl_reds"
+								 value="Reds" />
+								<combo_box.item
+								 label="Oranges"
+								 name="hsl_oranges"
+								 value="Oranges" />
+								<combo_box.item
+								 label="Yellows"
+								 name="hsl_yellows"
+								 value="Yellows" />
+								<combo_box.item
+								 label="Greens"
+								 name="hsl_greens"
+								 value="Greens" />
+								<combo_box.item
+								 label="Aquas"
+								 name="hsl_aquas"
+								 value="Aquas" />
+								<combo_box.item
+								 label="Blues"
+								 name="hsl_blues"
+								 value="Blues" />
+								<combo_box.item
+								 label="Purples"
+								 name="hsl_purples"
+								 value="Purples" />
+								<combo_box.item
+								 label="Magentas"
+								 name="hsl_magentas"
+								 value="Magentas" />
+								<combo_box.commit_callback
+								 function="Luminous.HSL.Range" />
+							</combo_box>
+						</layout_panel>
+						<layout_panel
+						 auto_resize="false"
+						 follows="left|top|right"
+						 height="76"
+						 layout="topleft"
+						 name="hsl_sliders_lp"
+						 user_resize="false"
+						 width="316">
+							<slider
+							 decimal_digits="2"
+							 follows="left|top"
+							 height="16"
+							 increment="0.01"
+							 initial_value="0"
+							 label="Hue"
+							 label_width="102"
+							 layout="topleft"
+							 left="36"
+							 max_val="1"
+							 min_val="-1"
+							 name="look_hsl_hue"
+							 text_width="44"
+							 tool_tip="Shifts the chosen colours toward their neighbours, such as greens toward yellow or aqua."
+							 top="4"
+							 width="270">
+								<slider.commit_callback
+								 function="Luminous.HSL.Change" />
+							</slider>
+							<slider
+							 decimal_digits="2"
+							 follows="left|top"
+							 height="16"
+							 increment="0.01"
+							 initial_value="0"
+							 label="Saturation"
+							 label_width="102"
+							 layout="topleft"
+							 left="36"
+							 max_val="1"
+							 min_val="-1"
+							 name="look_hsl_sat"
+							 text_width="44"
+							 tool_tip="More or less colour in the chosen colours; -1 grey."
+							 top="28"
+							 width="270">
+								<slider.commit_callback
+								 function="Luminous.HSL.Change" />
+							</slider>
+							<slider
+							 decimal_digits="2"
+							 follows="left|top"
+							 height="16"
+							 increment="0.01"
+							 initial_value="0"
+							 label="Lightness"
+							 label_width="102"
+							 layout="topleft"
+							 left="36"
+							 max_val="1"
+							 min_val="-1"
+							 name="look_hsl_lum"
+							 text_width="44"
+							 tool_tip="The chosen colours lighter or darker: a darker sky, lighter skin."
+							 top="52"
+							 width="270">
+								<slider.commit_callback
+								 function="Luminous.HSL.Change" />
+							</slider>
+						</layout_panel>
+						<layout_panel
+						 auto_resize="false"
+						 follows="left|top|right"
+						 height="26"
+						 layout="topleft"
+						 name="mono_lp"
+						 user_resize="false"
+						 width="316">
+							<button
+							 control_name="LuminousUIMonoOptions"
+							 follows="left|top"
+							 height="10"
+							 image_pressed="Accordion_ArrowClosed_Press"
+							 image_pressed_selected="Accordion_ArrowOpened_Press"
+							 image_selected="Accordion_ArrowOpened_Off"
+							 image_unselected="Accordion_ArrowClosed_Off"
+							 is_toggle="true"
+							 label=""
+							 layout="topleft"
+							 left="8"
+							 name="mono_options"
+							 tool_tip="Show or hide the finer settings."
+							 top="8"
+							 width="10" />
+							<text
+							 follows="left|top"
+							 height="16"
+							 layout="topleft"
+							 left="22"
+							 mouse_opaque="true"
+							 name="mono_label"
+							 tool_tip="From colour (0) to black and white (1)."
+							 top="5"
+							 width="115">Black and white</text>
+							<slider
+							 control_name="LuminousPhotoMonochrome"
+							 decimal_digits="2"
+							 follows="left|top"
+							 height="16"
+							 increment="0.01"
+							 initial_value="0"
+							 label=""
+							 label_width="0"
+							 layout="topleft"
+							 left="141"
+							 max_val="1"
+							 min_val="0"
+							 name="mono_amount"
+							 text_width="44"
+							 tool_tip="From colour (0) to black and white (1)."
+							 top="4"
+							 width="165" />
+						</layout_panel>
+						<layout_panel
+						 auto_resize="false"
+						 follows="left|top|right"
+						 height="36"
+						 layout="topleft"
+						 name="mono_options_lp"
+						 user_resize="false"
+						 width="316">
+							<text
+							 follows="left|top"
+							 height="16"
+							 layout="topleft"
+							 left="36"
+							 mouse_opaque="true"
+							 name="look_filter_label"
+							 tool_tip="As a camera filter for black and white: red darkens a blue sky, green lightens leaves."
+							 top="4"
+							 width="99">Filter</text>
+							<combo_box
+							 control_name="LuminousPhotoMonochromeFilter"
+							 follows="left|top"
+							 height="22"
+							 layout="topleft"
+							 left="138"
+							 name="look_filter"
+							 tool_tip="As a camera filter for black and white: red darkens a blue sky, green lightens leaves."
+							 top="4"
+							 width="146">
+								<combo_box.item
+								 label="None"
+								 name="none"
+								 value="0" />
+								<combo_box.item
+								 label="Red"
+								 name="red"
+								 value="1" />
+								<combo_box.item
+								 label="Orange"
+								 name="orange"
+								 value="2" />
+								<combo_box.item
+								 label="Yellow"
+								 name="yellow"
+								 value="3" />
+								<combo_box.item
+								 label="Green"
+								 name="green"
+								 value="4" />
+								<combo_box.item
+								 label="Blue"
+								 name="blue"
+								 value="5" />
+							</combo_box>
+						</layout_panel>
+						<layout_panel
+						 auto_resize="false"
+						 follows="left|top|right"
+						 height="26"
+						 layout="topleft"
+						 name="look_sepia_row_lp"
+						 user_resize="false"
+						 width="316">
+							<slider
+							 control_name="LuminousPhotoSepia"
+							 decimal_digits="2"
+							 follows="left|top"
+							 height="16"
+							 increment="0.01"
+							 initial_value="0"
+							 label="Sepia"
+							 label_width="102"
+							 layout="topleft"
+							 left="36"
+							 max_val="1"
+							 min_val="0"
+							 name="look_sepia"
+							 text_width="44"
+							 tool_tip="Warm brown tones, as an old print."
+							 top="4"
+							 width="270" />
+						</layout_panel>
+						<layout_panel
+						 auto_resize="false"
+						 follows="left|top|right"
+						 height="30"
+						 layout="topleft"
+						 name="lut_lp"
+						 user_resize="false"
+						 width="316">
+							<text
+							 follows="left|top"
+							 height="16"
+							 layout="topleft"
+							 left="22"
+							 mouse_opaque="true"
+							 name="lut_label"
+							 tool_tip="A ready-made colour look. Pick one here, or add your own .cube file with the plus."
+							 top="7"
+							 width="115">Colour table</text>
+							<combo_box
+							 control_name="LuminousPhotoLUT"
+							 follows="left|top"
+							 height="22"
+							 layout="topleft"
+							 left="141"
+							 name="look_lut"
+							 tool_tip="The colour look. None turns it off."
+							 top="4"
+							 width="139" />
+							<button
+							 follows="left|top"
+							 height="22"
+							 image_overlay="AddItem_Off"
+							 label=""
+							 layout="topleft"
+							 left="284"
+							 name="look_lut_load"
+							 tool_tip="Add your own .cube colour table, such as one exported from Lightroom, Photoshop or Resolve."
+							 top="4"
+							 width="22">
+								<button.commit_callback
+								 function="Luminous.LoadLUT" />
+							</button>
+						</layout_panel>
+						<layout_panel
+						 auto_resize="false"
+						 follows="left|top|right"
+						 height="26"
+						 layout="topleft"
+						 name="look_lut_lp"
+						 user_resize="false"
+						 width="316">
+							<text
+							 follows="left|top"
+							 height="16"
+							 layout="topleft"
+							 left="36"
+							 mouse_opaque="true"
+							 name="look_lut_label"
+							 tool_tip="How much of the colour look; 0 none."
+							 top="5"
+							 width="99">Strength</text>
+							<slider
+							 control_name="LuminousPhotoLUTStrength"
+							 decimal_digits="2"
+							 follows="left|top"
+							 height="16"
+							 increment="0.01"
+							 initial_value="1"
+							 label=""
+							 label_width="0"
+							 layout="topleft"
+							 left="141"
+							 max_val="1"
+							 min_val="0"
+							 name="look_lut_strength"
+							 text_width="44"
+							 tool_tip="How much of the colour look; 0 none."
+							 top="4"
+							 width="165" />
+						</layout_panel>
+					</layout_stack>
+				</panel>
+			</scroll_container>
+			<button
+			 follows="left|bottom"
+			 height="22"
+			 label="Reset colour"
+			 layout="topleft"
+			 left="10"
+			 name="colour_defaults"
+			 tool_tip="Put this tab back: colours untouched, no colour look."
+			 top="655"
+			 width="158">
+				<button.commit_callback
+				 function="Luminous.ResetSettings"
+				 parameter="LuminousPhotoSaturation,LuminousPhotoVibrance,LuminousPhotoWarmth,LuminousPhotoTint,LuminousPhotoShadowsWarmth,LuminousPhotoShadowsTint,LuminousPhotoMidtonesWarmth,LuminousPhotoMidtonesTint,LuminousPhotoHighlightsWarmth,LuminousPhotoHighlightsTint,LuminousPhotoMonochrome,LuminousPhotoMonochromeFilter,LuminousPhotoSepia,LuminousPhotoLUT,LuminousPhotoLUTStrength,LuminousPhotoHSLRedsHue,LuminousPhotoHSLRedsSat,LuminousPhotoHSLRedsLum,LuminousPhotoHSLOrangesHue,LuminousPhotoHSLOrangesSat,LuminousPhotoHSLOrangesLum,LuminousPhotoHSLYellowsHue,LuminousPhotoHSLYellowsSat,LuminousPhotoHSLYellowsLum,LuminousPhotoHSLGreensHue,LuminousPhotoHSLGreensSat,LuminousPhotoHSLGreensLum,LuminousPhotoHSLAquasHue,LuminousPhotoHSLAquasSat,LuminousPhotoHSLAquasLum,LuminousPhotoHSLBluesHue,LuminousPhotoHSLBluesSat,LuminousPhotoHSLBluesLum,LuminousPhotoHSLPurplesHue,LuminousPhotoHSLPurplesSat,LuminousPhotoHSLPurplesLum,LuminousPhotoHSLMagentasHue,LuminousPhotoHSLMagentasSat,LuminousPhotoHSLMagentasLum,LuminousPhotoColourAmount,LuminousPhotoSplitTone" />
+			</button>
+			<button
+			 control_name="LuminousScenePaused"
+			 follows="left|bottom"
+			 height="22"
+			 image_overlay="Pause_Off"
+			 is_toggle="true"
+			 layout="topleft"
+			 left="172"
+			 name="pause_scene_colour_defaults"
+			 tool_tip="Pause everything that moves (animations, water, clouds, particles) while you move the camera freely. Click again to go on."
+			 top="655"
+			 width="28" />
+			<button
+			 follows="right|bottom"
+			 height="22"
+			 label="Render image"
+			 layout="topleft"
+			 left="204"
+			 name="colour_defaults_capture"
+			 tool_tip="Render the picture now, with the Render tab's settings."
+			 top="655"
+			 width="116">
+				<button.commit_callback
+				 function="Luminous.SaveSnapshot" />
+			</button>
+		</panel>
+		<panel
+		 follows="all"
+		 height="687"
+		 label="Effects"
+		 layout="topleft"
+		 name="luminous_lens">
+			<scroll_container
+			 follows="all"
+			 height="643"
+			 layout="topleft"
+			 left="0"
+			 name="luminous_lens_scroll"
+			 opaque="false"
+			 reserve_scroll_corner="false"
+			 top="0"
+			 width="330">
+				<panel
+				 background_visible="false"
+				 follows="left|top"
+				 height="606"
+				 layout="topleft"
+				 left="0"
+				 name="luminous_lens_content"
+				 top="0"
+				 width="316">
+					<layout_stack
+					 animate="false"
+					 border_size="0"
+					 follows="left|top|right"
+					 height="606"
+					 layout="topleft"
+					 left="0"
+					 name="luminous_lens_stack"
+					 orientation="vertical"
+					 top="0"
+					 width="316">
+						<layout_panel
+						 auto_resize="false"
+						 follows="left|top|right"
+						 height="34"
+						 layout="topleft"
+						 name="lens_focus_lp"
+						 user_resize="false"
+						 width="316">
+							<text
+							 follows="left|top"
+							 font="SansSerifBold"
+							 height="16"
+							 layout="topleft"
+							 left="10"
+							 mouse_opaque="true"
+							 name="lens_focus_title"
+							 tool_tip="What is sharp and what is blurred, as with a real lens."
+							 top="8"
+							 width="216">Focus</text>
+							<view_border
+							 bevel_style="in"
+							 follows="left|top|right"
+							 height="0"
+							 layout="topleft"
+							 left="10"
+							 name="lens_focus_line"
+							 top="28"
+							 width="296" />
+						</layout_panel>
+						<layout_panel
+						 auto_resize="false"
+						 follows="left|top|right"
+						 height="26"
+						 layout="topleft"
+						 name="dof_lp"
+						 user_resize="false"
+						 width="316">
+							<button
+							 control_name="LuminousUIDoFOptions"
+							 follows="left|top"
+							 height="10"
+							 image_pressed="Accordion_ArrowClosed_Press"
+							 image_pressed_selected="Accordion_ArrowOpened_Press"
+							 image_selected="Accordion_ArrowOpened_Off"
+							 image_unselected="Accordion_ArrowClosed_Off"
+							 is_toggle="true"
+							 label=""
+							 layout="topleft"
+							 left="8"
+							 name="dof_options"
+							 tool_tip="Show or hide the finer settings."
+							 top="7"
+							 width="10" />
+							<button
+							 follows="left|top"
+							 height="18"
+							 image_overlay="Luminous_Effect_Live"
+							 label=""
+							 layout="topleft"
+							 left="20"
+							 name="dof_mode"
+							 tab_stop="false"
+							 top="5"
+							 width="22" />
+							<text
+							 follows="left|top"
+							 height="16"
+							 layout="topleft"
+							 left="46"
+							 mouse_opaque="true"
+							 name="dof_name"
+							 tool_tip="Blurs what is nearer or further than the focus. Enhance, under the arrow, blurs as a real lens. Alt-click to focus."
+							 top="7"
+							 width="91">Depth of field</text>
+							<slider
+							 control_name="LuminousPhotoDoFBlur"
+							 decimal_digits="2"
+							 enabled_control="RenderDepthOfField"
+							 follows="left|top"
+							 height="16"
+							 increment="0.01"
+							 initial_value="0.5"
+							 label=""
+							 label_width="0"
+							 layout="topleft"
+							 left="141"
+							 max_val="1"
+							 min_val="0"
+							 name="dof_amount"
+							 text_width="44"
+							 tool_tip="Right blurs more, left keeps more sharp."
+							 top="4"
+							 width="165">
+								<slider.commit_callback
+								 function="Luminous.Master"
+								 parameter="DoF" />
+							</slider>
+						</layout_panel>
+						<layout_panel
+						 auto_resize="false"
+						 follows="left|top|right"
+						 height="150"
+						 layout="topleft"
+						 name="dof_options_lp"
+						 user_resize="false"
+						 width="316">
+							<button
+							 follows="left|top"
+							 height="18"
+							 image_overlay="Luminous_Effect_Live"
+							 label=""
+							 layout="topleft"
+							 left="34"
+							 name="lens_blur_mode"
+							 tab_stop="false"
+							 top="3"
+							 width="22" />
+							<text
+							 follows="left|top"
+							 height="16"
+							 layout="topleft"
+							 left="60"
+							 mouse_opaque="true"
+							 name="lens_blur_name"
+							 tool_tip="Blur as a real lens gives it: lights open into discs, and the background never bleeds onto a sharp subject."
+							 top="5"
+							 width="185">Enhance</text>
+							<check_box
+							 control_name="LuminousPhotoDoFFront"
+							 follows="left|top"
+							 height="16"
+							 label="Blur the foreground"
+							 layout="topleft"
+							 left="36"
+							 name="dof_front"
+							 tool_tip="Blur the foreground too, not only the background."
+							 top="26"
+							 width="209" />
+							<slider
+							 control_name="CameraFNumber"
+							 decimal_digits="1"
+							 follows="left|top"
+							 height="16"
+							 increment="0.1"
+							 initial_value="9"
+							 label="Aperture (f-number)"
+							 label_width="102"
+							 layout="topleft"
+							 left="36"
+							 max_val="22"
+							 min_val="0.5"
+							 name="dof_fnumber"
+							 text_width="44"
+							 tool_tip="Lower blurs more. Blur is strongest with a close subject and a far background."
+							 top="50"
+							 width="270" />
+							<slider
+							 control_name="CameraMaxCoF"
+							 decimal_digits="0"
+							 follows="left|top"
+							 height="16"
+							 increment="1"
+							 initial_value="10"
+							 label="Maximum blur"
+							 label_width="102"
+							 layout="topleft"
+							 left="36"
+							 max_val="60"
+							 min_val="1"
+							 name="dof_max_blur"
+							 text_width="44"
+							 tool_tip="The most blur allowed. Raise it if a lower F-number stops making a difference."
+							 top="74"
+							 width="270" />
+							<slider
+							 control_name="LuminousPhotoDoFBlades"
+							 decimal_digits="0"
+							 follows="left|top"
+							 height="16"
+							 increment="1"
+							 initial_value="0"
+							 label="Aperture blades"
+							 label_width="102"
+							 layout="topleft"
+							 left="36"
+							 max_val="9"
+							 min_val="0"
+							 name="dof_blades"
+							 text_width="44"
+							 tool_tip="The shape of blurred lights: 0 round, 3 to 9 a shape with that many sides."
+							 top="98"
+							 width="270" />
+							<check_box
+							 control_name="FSFocusPointFollowsPointer"
+							 enabled_control="RenderDepthOfField"
+							 follows="left|top"
+							 height="16"
+							 label="Focus follows the mouse"
+							 layout="topleft"
+							 left="36"
+							 name="dof_follows_mouse"
+							 tool_tip="Focus where the mouse rests, instead of where you Alt-click."
+							 top="122"
+							 width="270" />
+						</layout_panel>
+						<layout_panel
+						 auto_resize="false"
+						 follows="left|top|right"
+						 height="34"
+						 layout="topleft"
+						 name="lens_optical_lp"
+						 user_resize="false"
+						 width="316">
+							<text
+							 follows="left|top"
+							 font="SansSerifBold"
+							 height="16"
+							 layout="topleft"
+							 left="10"
+							 mouse_opaque="true"
+							 name="lens_optical_title"
+							 tool_tip="What a real lens adds: dark corners, glow, colour fringes and more."
+							 top="8"
+							 width="216">Optical effects</text>
+							<view_border
+							 bevel_style="in"
+							 follows="left|top|right"
+							 height="0"
+							 layout="topleft"
+							 left="10"
+							 name="lens_optical_line"
+							 top="28"
+							 width="296" />
+						</layout_panel>
+						<layout_panel
+						 auto_resize="false"
+						 follows="left|top|right"
+						 height="26"
+						 layout="topleft"
+						 name="vig_lp"
+						 user_resize="false"
+						 width="316">
+							<button
+							 control_name="LuminousUIVignetteOptions"
+							 follows="left|top"
+							 height="10"
+							 image_pressed="Accordion_ArrowClosed_Press"
+							 image_pressed_selected="Accordion_ArrowOpened_Press"
+							 image_selected="Accordion_ArrowOpened_Off"
+							 image_unselected="Accordion_ArrowClosed_Off"
+							 is_toggle="true"
+							 label=""
+							 layout="topleft"
+							 left="8"
+							 name="vig_options"
+							 tool_tip="Show or hide the finer settings."
+							 top="7"
+							 width="10" />
+							<button
+							 follows="left|top"
+							 height="18"
+							 image_overlay="Luminous_Effect_Live"
+							 label=""
+							 layout="topleft"
+							 left="20"
+							 name="vignette_mode"
+							 tab_stop="false"
+							 top="5"
+							 width="22" />
+							<text
+							 follows="left|top"
+							 height="16"
+							 layout="topleft"
+							 left="46"
+							 mouse_opaque="true"
+							 name="vignette_name"
+							 tool_tip="Darker corners, as from a lens."
+							 top="7"
+							 width="91">Vignette</text>
+							<slider
+							 control_name="LuminousPhotoVignetteAmount"
+							 decimal_digits="2"
+							 enabled_control="LuminousPhotoVignette"
+							 follows="left|top"
+							 height="16"
+							 increment="0.01"
+							 initial_value="0.35"
+							 label=""
+							 label_width="0"
+							 layout="topleft"
+							 left="141"
+							 max_val="1"
+							 min_val="0"
+							 name="vig_amount"
+							 text_width="44"
+							 tool_tip="How dark the corners get."
+							 top="4"
+							 width="165" />
+						</layout_panel>
+						<layout_panel
+						 auto_resize="false"
+						 follows="left|top|right"
+						 height="80"
+						 layout="topleft"
+						 name="vig_options_lp"
+						 user_resize="false"
+						 width="316">
+							<slider
+							 control_name="LuminousPhotoVignetteSize"
+							 decimal_digits="2"
+							 follows="left|top"
+							 height="16"
+							 increment="0.01"
+							 initial_value="0.75"
+							 label="Size"
+							 label_width="102"
+							 layout="topleft"
+							 left="36"
+							 max_val="1.5"
+							 min_val="0"
+							 name="vignette_size"
+							 text_width="44"
+							 tool_tip="Low reaches toward the centre; high keeps it to the corners."
+							 top="4"
+							 width="270" />
+							<slider
+							 control_name="LuminousPhotoVignetteSoftness"
+							 decimal_digits="2"
+							 follows="left|top"
+							 height="16"
+							 increment="0.01"
+							 initial_value="0.8"
+							 label="Softness"
+							 label_width="102"
+							 layout="topleft"
+							 left="36"
+							 max_val="2"
+							 min_val="0"
+							 name="vignette_softness"
+							 text_width="44"
+							 tool_tip="0 a hard edge, higher a gentler fade."
+							 top="28"
+							 width="270" />
+							<slider
+							 control_name="LuminousPhotoVignetteRoundness"
+							 decimal_digits="2"
+							 follows="left|top"
+							 height="16"
+							 increment="0.01"
+							 initial_value="1"
+							 label="Roundness"
+							 label_width="102"
+							 layout="topleft"
+							 left="36"
+							 max_val="1"
+							 min_val="0"
+							 name="vignette_roundness"
+							 text_width="44"
+							 tool_tip="1 a circle; 0 follows the picture's shape."
+							 top="52"
+							 width="270" />
+						</layout_panel>
+						<layout_panel
+						 auto_resize="false"
+						 follows="left|top|right"
+						 height="26"
+						 layout="topleft"
+						 name="bloom_lp"
+						 user_resize="false"
+						 width="316">
+							<button
+							 control_name="LuminousUIBloomOptions"
+							 follows="left|top"
+							 height="10"
+							 image_pressed="Accordion_ArrowClosed_Press"
+							 image_pressed_selected="Accordion_ArrowOpened_Press"
+							 image_selected="Accordion_ArrowOpened_Off"
+							 image_unselected="Accordion_ArrowClosed_Off"
+							 is_toggle="true"
+							 label=""
+							 layout="topleft"
+							 left="8"
+							 name="bloom_options"
+							 tool_tip="Show or hide the finer settings."
+							 top="7"
+							 width="10" />
+							<button
+							 follows="left|top"
+							 height="18"
+							 image_overlay="Luminous_Effect_Live"
+							 label=""
+							 layout="topleft"
+							 left="20"
+							 name="bloom_mode"
+							 tab_stop="false"
+							 top="5"
+							 width="22" />
+							<text
+							 follows="left|top"
+							 height="16"
+							 layout="topleft"
+							 left="46"
+							 mouse_opaque="true"
+							 name="bloom_name"
+							 tool_tip="A soft glow round bright lights: lamps, windows, the sun on water."
+							 top="7"
+							 width="91">Bloom</text>
+							<slider
+							 control_name="LuminousPhotoBloomStrength"
+							 decimal_digits="3"
+							 enabled_control="LuminousPhotoBloom"
+							 follows="left|top"
+							 height="16"
+							 increment="0.005"
+							 initial_value="0.05"
+							 label=""
+							 label_width="0"
+							 layout="topleft"
+							 left="141"
+							 max_val="1"
+							 min_val="0"
+							 name="bloom_amount"
+							 text_width="44"
+							 tool_tip="How strong the glow is; above 0.3 a dreamy glow."
+							 top="4"
+							 width="165" />
+						</layout_panel>
+						<layout_panel
+						 auto_resize="false"
+						 follows="left|top|right"
+						 height="32"
+						 layout="topleft"
+						 name="bloom_options_lp"
+						 user_resize="false"
+						 width="316">
+							<slider
+							 control_name="LuminousPhotoBloomSize"
+							 decimal_digits="2"
+							 follows="left|top"
+							 height="16"
+							 increment="0.01"
+							 initial_value="0.6"
+							 label="Size"
+							 label_width="102"
+							 layout="topleft"
+							 left="36"
+							 max_val="0.95"
+							 min_val="0"
+							 name="bloom_size"
+							 text_width="44"
+							 tool_tip="How far the glow reaches."
+							 top="4"
+							 width="270" />
+						</layout_panel>
+						<layout_panel
+						 auto_resize="false"
+						 follows="left|top|right"
+						 height="26"
+						 layout="topleft"
+						 name="object_glow_lp"
+						 user_resize="false"
+						 width="316">
+							<button
+							 control_name="LuminousUIObjectGlowOptions"
+							 follows="left|top"
+							 height="10"
+							 image_pressed="Accordion_ArrowClosed_Press"
+							 image_pressed_selected="Accordion_ArrowOpened_Press"
+							 image_selected="Accordion_ArrowOpened_Off"
+							 image_unselected="Accordion_ArrowClosed_Off"
+							 is_toggle="true"
+							 label=""
+							 layout="topleft"
+							 left="8"
+							 name="object_glow_options"
+							 tool_tip="Show or hide the finer settings."
+							 top="7"
+							 width="10" />
+							<button
+							 follows="left|top"
+							 height="18"
+							 image_overlay="Luminous_Effect_Live"
+							 label=""
+							 layout="topleft"
+							 left="20"
+							 name="object_glow_mode"
+							 tab_stop="false"
+							 top="5"
+							 width="22" />
+							<text
+							 follows="left|top"
+							 height="16"
+							 layout="topleft"
+							 left="46"
+							 mouse_opaque="true"
+							 name="object_glow_name"
+							 tool_tip="The glow builders give lamps, neon and screens."
+							 top="7"
+							 width="91">Object glow</text>
+							<slider
+							 control_name="RenderGlowStrength"
+							 decimal_digits="3"
+							 enabled_control="RenderGlow"
+							 follows="left|top"
+							 height="16"
+							 increment="0.005"
+							 initial_value="0.325"
+							 label=""
+							 label_width="0"
+							 layout="topleft"
+							 left="141"
+							 max_val="0.5"
+							 min_val="0"
+							 name="object_glow_amount"
+							 text_width="44"
+							 tool_tip="How strong the glow round glowing objects is."
+							 top="4"
+							 width="165" />
+						</layout_panel>
+						<layout_panel
+						 auto_resize="false"
+						 follows="left|top|right"
+						 height="28"
+						 layout="topleft"
+						 name="object_glow_options_lp"
+						 user_resize="false"
+						 width="316">
+							<slider
+							 control_name="RenderGlowWidth"
+							 decimal_digits="2"
+							 follows="left|top"
+							 height="16"
+							 increment="0.05"
+							 initial_value="1.3"
+							 label="Width"
+							 label_width="102"
+							 layout="topleft"
+							 left="36"
+							 max_val="10"
+							 min_val="0"
+							 name="object_glow_width"
+							 text_width="44"
+							 tool_tip="How far the glow spreads."
+							 top="4"
+							 width="270" />
+						</layout_panel>
+						<layout_panel
+						 auto_resize="false"
+						 follows="left|top|right"
+						 height="26"
+						 layout="topleft"
+						 name="ca_lp"
+						 user_resize="false"
+						 width="316">
+							<button
+							 follows="left|top"
+							 height="18"
+							 image_overlay="Luminous_Effect_Live"
+							 label=""
+							 layout="topleft"
+							 left="20"
+							 name="ca_mode"
+							 tab_stop="false"
+							 top="5"
+							 width="22" />
+							<text
+							 follows="left|top"
+							 height="16"
+							 layout="topleft"
+							 left="46"
+							 mouse_opaque="true"
+							 name="ca_name"
+							 tool_tip="Red and blue fringes toward the picture's edges, as from a simple lens."
+							 top="7"
+							 width="91">Aberration</text>
+							<slider
+							 control_name="LuminousPhotoChromaticAberrationAmount"
+							 decimal_digits="1"
+							 enabled_control="LuminousPhotoChromaticAberration"
+							 follows="left|top"
+							 height="16"
+							 increment="0.1"
+							 initial_value="2"
+							 label=""
+							 label_width="0"
+							 layout="topleft"
+							 left="141"
+							 max_val="10"
+							 min_val="0"
+							 name="ca_amount"
+							 text_width="44"
+							 tool_tip="How far the colours split at the edges."
+							 top="4"
+							 width="165" />
+						</layout_panel>
+						<layout_panel
+						 auto_resize="false"
+						 follows="left|top|right"
+						 height="26"
+						 layout="topleft"
+						 name="halation_lp"
+						 user_resize="false"
+						 width="316">
+							<button
+							 follows="left|top"
+							 height="18"
+							 image_overlay="Luminous_Effect_Live"
+							 label=""
+							 layout="topleft"
+							 left="20"
+							 name="halation_mode"
+							 tab_stop="false"
+							 top="5"
+							 width="22" />
+							<text
+							 follows="left|top"
+							 height="16"
+							 layout="topleft"
+							 left="46"
+							 mouse_opaque="true"
+							 name="halation_name"
+							 tool_tip="A warm red-orange glow round very bright edges, as on film."
+							 top="7"
+							 width="91">Halation</text>
+							<slider
+							 control_name="LuminousPhotoHalation"
+							 decimal_digits="2"
+							 follows="left|top"
+							 height="16"
+							 increment="0.01"
+							 initial_value="0"
+							 label=""
+							 label_width="0"
+							 layout="topleft"
+							 left="141"
+							 max_val="2"
+							 min_val="0"
+							 name="luminousphotohalation_amount"
+							 text_width="44"
+							 tool_tip="A warm red-orange glow round very bright edges, as on film."
+							 top="4"
+							 width="165" />
+						</layout_panel>
+						<layout_panel
+						 auto_resize="false"
+						 follows="left|top|right"
+						 height="26"
+						 layout="topleft"
+						 name="anamorphic_lp"
+						 user_resize="false"
+						 width="316">
+							<button
+							 control_name="LuminousUIAnamorphicOptions"
+							 follows="left|top"
+							 height="10"
+							 image_pressed="Accordion_ArrowClosed_Press"
+							 image_pressed_selected="Accordion_ArrowOpened_Press"
+							 image_selected="Accordion_ArrowOpened_Off"
+							 image_unselected="Accordion_ArrowClosed_Off"
+							 is_toggle="true"
+							 label=""
+							 layout="topleft"
+							 left="8"
+							 name="anamorphic_options"
+							 tool_tip="Show or hide the finer settings."
+							 top="7"
+							 width="10" />
+							<button
+							 follows="left|top"
+							 height="18"
+							 image_overlay="Luminous_Effect_Live"
+							 label=""
+							 layout="topleft"
+							 left="20"
+							 name="anamorphic_mode"
+							 tab_stop="false"
+							 top="5"
+							 width="22" />
+							<text
+							 follows="left|top"
+							 height="16"
+							 layout="topleft"
+							 left="46"
+							 mouse_opaque="true"
+							 name="anamorphic_name"
+							 tool_tip="Streaks through bright lights, as an anamorphic lens draws them."
+							 top="7"
+							 width="91">Anamorphic</text>
+							<slider
+							 control_name="LuminousPhotoAnamorphic"
+							 decimal_digits="2"
+							 follows="left|top"
+							 height="16"
+							 increment="0.01"
+							 initial_value="0"
+							 label=""
+							 label_width="0"
+							 layout="topleft"
+							 left="141"
+							 max_val="1"
+							 min_val="0"
+							 name="luminousphotoanamorphic_amount"
+							 text_width="44"
+							 tool_tip="Streaks through bright lights, as an anamorphic lens draws them."
+							 top="4"
+							 width="165" />
+						</layout_panel>
+						<layout_panel
+						 auto_resize="false"
+						 follows="left|top|right"
+						 height="30"
+						 layout="topleft"
+						 name="anamorphic_options_lp"
+						 user_resize="false"
+						 width="316">
+							<text
+							 follows="left|top"
+							 height="16"
+							 layout="topleft"
+							 left="36"
+							 mouse_opaque="true"
+							 name="anamorphic_tint_label"
+							 tool_tip="The streaks' colour: blue as the classic anamorphic lenses. Click the swatch to choose another; how bright it is does not matter."
+							 top="7"
+							 width="100">Colour</text>
+							<color_swatch
+							 can_apply_immediately="true"
+							 control_name="LuminousPhotoAnamorphicTint"
+							 follows="left|top"
+							 height="22"
+							 label_height="0"
+							 layout="topleft"
+							 left="141"
+							 name="anamorphic_tint"
+							 tool_tip="The streaks' colour: blue as the classic anamorphic lenses. Click the swatch to choose another; how bright it is does not matter."
+							 top="4"
+							 width="44" />
+						</layout_panel>
+						<layout_panel
+						 auto_resize="false"
+						 follows="left|top|right"
+						 height="26"
+						 layout="topleft"
+						 name="lens_flare_lp"
+						 user_resize="false"
+						 width="316">
+							<button
+							 control_name="LuminousUILensFlareOptions"
+							 follows="left|top"
+							 height="10"
+							 image_pressed="Accordion_ArrowClosed_Press"
+							 image_pressed_selected="Accordion_ArrowOpened_Press"
+							 image_selected="Accordion_ArrowOpened_Off"
+							 image_unselected="Accordion_ArrowClosed_Off"
+							 is_toggle="true"
+							 label=""
+							 layout="topleft"
+							 left="8"
+							 name="lens_flare_options"
+							 tool_tip="Show or hide the finer settings."
+							 top="7"
+							 width="10" />
+							<button
+							 follows="left|top"
+							 height="18"
+							 image_overlay="Luminous_Effect_Live"
+							 label=""
+							 layout="topleft"
+							 left="20"
+							 name="lens_flare_mode"
+							 tab_stop="false"
+							 top="5"
+							 width="22" />
+							<text
+							 follows="left|top"
+							 height="16"
+							 layout="topleft"
+							 left="46"
+							 mouse_opaque="true"
+							 name="lens_flare_name"
+							 tool_tip="Flare in the lens from bright lights: ghosts, a halo, a starburst. Needs the sun or very bright lights in view."
+							 top="7"
+							 width="91">Lens flare</text>
+							<slider
+							 control_name="LuminousPhotoLensFlare"
+							 decimal_digits="2"
+							 follows="left|top"
+							 height="16"
+							 increment="0.01"
+							 initial_value="0"
+							 label=""
+							 label_width="0"
+							 layout="topleft"
+							 left="141"
+							 max_val="1"
+							 min_val="0"
+							 name="luminousphotolensflare_amount"
+							 text_width="44"
+							 tool_tip="Flare in the lens from bright lights: ghosts, a halo, a starburst. Needs the sun or very bright lights in view."
+							 top="4"
+							 width="165" />
+						</layout_panel>
+						<layout_panel
+						 auto_resize="false"
+						 follows="left|top|right"
+						 height="176"
+						 layout="topleft"
+						 name="lens_flare_options_lp"
+						 user_resize="false"
+						 width="316">
+							<slider
+							 control_name="LuminousPhotoLensFlareGhosts"
+							 decimal_digits="2"
+							 follows="left|top"
+							 height="16"
+							 increment="0.01"
+							 initial_value="0.5"
+							 label="Ghosts"
+							 label_width="102"
+							 layout="topleft"
+							 left="36"
+							 max_val="2"
+							 min_val="0"
+							 name="lens_flare_ghosts"
+							 text_width="44"
+							 tool_tip="Copies of bright lights mirrored across the picture; 0 none."
+							 top="4"
+							 width="270" />
+							<slider
+							 control_name="LuminousPhotoLensFlareHalo"
+							 decimal_digits="2"
+							 follows="left|top"
+							 height="16"
+							 increment="0.01"
+							 initial_value="0.5"
+							 label="Halo"
+							 label_width="102"
+							 layout="topleft"
+							 left="36"
+							 max_val="2"
+							 min_val="0"
+							 name="lens_flare_halo"
+							 text_width="44"
+							 tool_tip="A faint ring when a bright light is near the middle; 0 none."
+							 top="28"
+							 width="270" />
+							<slider
+							 control_name="LuminousPhotoLensFlareStarburst"
+							 decimal_digits="2"
+							 follows="left|top"
+							 height="16"
+							 increment="0.01"
+							 initial_value="0.5"
+							 label="Starburst"
+							 label_width="102"
+							 layout="topleft"
+							 left="36"
+							 max_val="2"
+							 min_val="0"
+							 name="lens_flare_starburst"
+							 text_width="44"
+							 tool_tip="Spikes from bright points; 0 none."
+							 top="52"
+							 width="270" />
+							<slider
+							 control_name="LuminousPhotoLensFlareStarBlur"
+							 decimal_digits="2"
+							 follows="left|top"
+							 height="16"
+							 increment="0.01"
+							 initial_value="0"
+							 label="Star blur"
+							 label_width="102"
+							 layout="topleft"
+							 left="36"
+							 max_val="1"
+							 min_val="0"
+							 name="lens_flare_star_blur"
+							 text_width="44"
+							 tool_tip="Softens the starburst's spikes into soft rays; 0 sharp lines."
+							 top="76"
+							 width="270" />
+							<slider
+							 control_name="LuminousPhotoLensFlareDirt"
+							 decimal_digits="2"
+							 follows="left|top"
+							 height="16"
+							 increment="0.01"
+							 initial_value="0.5"
+							 label="Lens dirt"
+							 label_width="102"
+							 layout="topleft"
+							 left="36"
+							 max_val="2"
+							 min_val="0"
+							 name="lens_flare_dirt"
+							 text_width="44"
+							 tool_tip="Specks on the lens, seen against bright light; 0 a clean lens."
+							 top="100"
+							 width="270" />
+							<slider
+							 control_name="LuminousPhotoLensFlareVariation"
+							 decimal_digits="2"
+							 follows="left|top"
+							 height="16"
+							 increment="0.01"
+							 initial_value="0"
+							 label="Variation"
+							 label_width="102"
+							 layout="topleft"
+							 left="36"
+							 max_val="1"
+							 min_val="0"
+							 name="lens_flare_variation"
+							 text_width="44"
+							 tool_tip="A different flare for each value: try a few."
+							 top="124"
+							 width="270" />
+							<slider
+							 control_name="LuminousPhotoLensFlareAmplify"
+							 decimal_digits="2"
+							 follows="left|top"
+							 height="16"
+							 increment="0.01"
+							 initial_value="0"
+							 label="Amplify"
+							 label_width="102"
+							 layout="topleft"
+							 left="36"
+							 max_val="1"
+							 min_val="0"
+							 name="lens_flare_amplify"
+							 text_width="44"
+							 tool_tip="More flare, from dimmer lights too."
+							 top="148"
+							 width="270" />
+						</layout_panel>
+						<layout_panel
+						 auto_resize="false"
+						 follows="left|top|right"
+						 height="26"
+						 layout="topleft"
+						 name="distortion_lp"
+						 user_resize="false"
+						 width="316">
+							<button
+							 follows="left|top"
+							 height="18"
+							 image_overlay="Luminous_Effect_Live"
+							 label=""
+							 layout="topleft"
+							 left="20"
+							 name="distortion_mode"
+							 tab_stop="false"
+							 top="5"
+							 width="22" />
+							<text
+							 follows="left|top"
+							 height="16"
+							 layout="topleft"
+							 left="46"
+							 mouse_opaque="true"
+							 name="distortion_name"
+							 tool_tip="Bends straight lines: right bows them out (wide lens), left pulls them in (long lens)."
+							 top="7"
+							 width="91">Lens distortion</text>
+							<slider
+							 control_name="LuminousPhotoDistortion"
+							 decimal_digits="2"
+							 follows="left|top"
+							 height="16"
+							 increment="0.01"
+							 initial_value="0"
+							 label=""
+							 label_width="0"
+							 layout="topleft"
+							 left="141"
+							 max_val="1"
+							 min_val="-1"
+							 name="luminousphotodistortion_amount"
+							 text_width="44"
+							 tool_tip="Bends straight lines: right bows them out (wide lens), left pulls them in (long lens)."
+							 top="4"
+							 width="165" />
+						</layout_panel>
+						<layout_panel
+						 auto_resize="false"
+						 follows="left|top|right"
+						 height="34"
+						 layout="topleft"
+						 name="lens_film_lp"
+						 user_resize="false"
+						 width="316">
+							<text
+							 follows="left|top"
+							 font="SansSerifBold"
+							 height="16"
+							 layout="topleft"
+							 left="10"
+							 mouse_opaque="true"
+							 name="lens_film_title"
+							 tool_tip="Film grain."
+							 top="8"
+							 width="216">Film texture</text>
+							<view_border
+							 bevel_style="in"
+							 follows="left|top|right"
+							 height="0"
+							 layout="topleft"
+							 left="10"
+							 name="lens_film_line"
+							 top="28"
+							 width="296" />
+						</layout_panel>
+						<layout_panel
+						 auto_resize="false"
+						 follows="left|top|right"
+						 height="26"
+						 layout="topleft"
+						 name="grain_lp"
+						 user_resize="false"
+						 width="316">
+							<button
+							 control_name="LuminousUIGrainOptions"
+							 follows="left|top"
+							 height="10"
+							 image_pressed="Accordion_ArrowClosed_Press"
+							 image_pressed_selected="Accordion_ArrowOpened_Press"
+							 image_selected="Accordion_ArrowOpened_Off"
+							 image_unselected="Accordion_ArrowClosed_Off"
+							 is_toggle="true"
+							 label=""
+							 layout="topleft"
+							 left="8"
+							 name="grain_options"
+							 tool_tip="Show or hide the finer settings."
+							 top="7"
+							 width="10" />
+							<button
+							 follows="left|top"
+							 height="18"
+							 image_overlay="Luminous_Effect_Live"
+							 label=""
+							 layout="topleft"
+							 left="20"
+							 name="grain_mode"
+							 tab_stop="false"
+							 top="5"
+							 width="22" />
+							<text
+							 follows="left|top"
+							 height="16"
+							 layout="topleft"
+							 left="46"
+							 mouse_opaque="true"
+							 name="grain_name"
+							 tool_tip="Film grain: 0 none, 1 heavy. Easiest to see on smooth areas such as sky."
+							 top="7"
+							 width="91">Film grain</text>
+							<slider
+							 control_name="LuminousPhotoGrain"
+							 decimal_digits="2"
+							 follows="left|top"
+							 height="16"
+							 increment="0.01"
+							 initial_value="0"
+							 label=""
+							 label_width="0"
+							 layout="topleft"
+							 left="141"
+							 max_val="1"
+							 min_val="0"
+							 name="grain_amount"
+							 text_width="44"
+							 tool_tip="Film grain: 0 none, 1 heavy. Easiest to see on smooth areas such as sky."
+							 top="4"
+							 width="165" />
+						</layout_panel>
+						<layout_panel
+						 auto_resize="false"
+						 follows="left|top|right"
+						 height="32"
+						 layout="topleft"
+						 name="grain_options_lp"
+						 user_resize="false"
+						 width="316">
+							<slider
+							 control_name="LuminousPhotoGrainSize"
+							 decimal_digits="1"
+							 follows="left|top"
+							 height="16"
+							 increment="0.1"
+							 initial_value="1.5"
+							 label="Grain size"
+							 label_width="102"
+							 layout="topleft"
+							 left="36"
+							 max_val="4"
+							 min_val="1"
+							 name="look_grain_size"
+							 text_width="44"
+							 tool_tip="Fine (1) to coarse (4) grain."
+							 top="4"
+							 width="270" />
+						</layout_panel>
+					</layout_stack>
+				</panel>
+			</scroll_container>
+			<button
+			 follows="left|bottom"
+			 height="22"
+			 label="Reset effects"
+			 layout="topleft"
+			 left="10"
+			 name="lens_defaults"
+			 tool_tip="Put this tab back as Luminous ships it."
+			 top="655"
+			 width="158">
+				<button.commit_callback
+				 function="Luminous.ResetSettings"
+				 parameter="LuminousPhotoDoF,LuminousPhotoDoFFront,CameraFNumber,CameraMaxCoF,LuminousPhotoDoFBlades,LuminousPhotoVignette,LuminousPhotoVignetteAmount,LuminousPhotoVignetteSize,LuminousPhotoVignetteSoftness,LuminousPhotoVignetteRoundness,LuminousPhotoBloom,LuminousPhotoBloomStrength,LuminousPhotoBloomSize,LuminousPhotoChromaticAberration,LuminousPhotoChromaticAberrationAmount,LuminousPhotoHalation,LuminousPhotoAnamorphic,LuminousPhotoAnamorphicTint,LuminousPhotoLensFlare,LuminousPhotoLensFlareGhosts,LuminousPhotoLensFlareHalo,LuminousPhotoLensFlareStarburst,LuminousPhotoLensFlareStarBlur,LuminousPhotoLensFlareDirt,LuminousPhotoLensFlareVariation,LuminousPhotoLensFlareAmplify,LuminousPhotoLensFlareRenderOnly,LuminousPhotoDistortion,LuminousPhotoDoFBlur,LuminousPhotoGrain,LuminousPhotoGrainSize,LuminousPhotoDoFRenderOnly,LuminousPhotoVignetteRenderOnly,LuminousPhotoBloomRenderOnly,LuminousPhotoChromaticAberrationRenderOnly,LuminousPhotoHalationRenderOnly,LuminousPhotoAnamorphicRenderOnly,LuminousPhotoDistortionRenderOnly,LuminousPhotoGrainRenderOnly,RenderGlow,RenderGlowStrength,RenderGlowWidth" />
+			</button>
+			<button
+			 control_name="LuminousScenePaused"
+			 follows="left|bottom"
+			 height="22"
+			 image_overlay="Pause_Off"
+			 is_toggle="true"
+			 layout="topleft"
+			 left="172"
+			 name="pause_scene_lens_defaults"
+			 tool_tip="Pause everything that moves (animations, water, clouds, particles) while you move the camera freely. Click again to go on."
+			 top="655"
+			 width="28" />
+			<button
+			 follows="right|bottom"
+			 height="22"
+			 label="Render image"
+			 layout="topleft"
+			 left="204"
+			 name="lens_defaults_capture"
+			 tool_tip="Render the picture now, with the Render tab's settings."
+			 top="655"
+			 width="116">
+				<button.commit_callback
+				 function="Luminous.SaveSnapshot" />
+			</button>
+		</panel>
+		<panel
+		 follows="all"
+		 height="687"
+		 label="Render"
+		 layout="topleft"
+		 name="luminous_snapshot">
+			<scroll_container
+			 follows="all"
+			 height="643"
+			 layout="topleft"
+			 left="0"
+			 name="luminous_snapshot_scroll"
+			 opaque="false"
+			 reserve_scroll_corner="false"
+			 top="0"
+			 width="330">
+				<panel
+				 background_visible="false"
+				 follows="left|top"
+				 height="494"
+				 layout="topleft"
+				 left="0"
+				 name="luminous_snapshot_content"
+				 top="0"
+				 width="316">
+					<layout_stack
+					 animate="false"
+					 border_size="0"
+					 follows="left|top|right"
+					 height="494"
+					 layout="topleft"
+					 left="0"
+					 name="luminous_snapshot_stack"
+					 orientation="vertical"
+					 top="0"
+					 width="316">
+						<layout_panel
+						 auto_resize="false"
+						 follows="left|top|right"
+						 height="34"
+						 layout="topleft"
+						 name="cap_size_lp"
+						 user_resize="false"
+						 width="316">
+							<text
+							 follows="left|top"
+							 font="SansSerifBold"
+							 height="16"
+							 layout="topleft"
+							 left="10"
+							 mouse_opaque="true"
+							 name="cap_size_title"
+							 tool_tip="How big the picture is."
+							 top="8"
+							 width="216">Image size</text>
+							<view_border
+							 bevel_style="in"
+							 follows="left|top|right"
+							 height="0"
+							 layout="topleft"
+							 left="10"
+							 name="cap_size_line"
+							 top="28"
+							 width="296" />
+						</layout_panel>
+						<layout_panel
+						 auto_resize="false"
+						 follows="left|top|right"
+						 height="30"
+						 layout="topleft"
+						 name="snapshot_size_lp"
+						 user_resize="false"
+						 width="316">
+							<text
+							 follows="left|top"
+							 height="16"
+							 layout="topleft"
+							 left="22"
+							 mouse_opaque="true"
+							 name="snapshot_size_label"
+							 tool_tip="The picture's size: the window's, or double."
+							 top="7"
+							 width="115">Resolution</text>
+							<combo_box
+							 control_name="LuminousSnapshotScale"
+							 follows="left|top"
+							 height="22"
+							 layout="topleft"
+							 left="138"
+							 name="snapshot_scale"
+							 tool_tip="The picture's size: the window's, or double."
+							 top="4"
+							 width="146">
+								<combo_box.item
+								 label="Window size"
+								 name="x1"
+								 value="1" />
+								<combo_box.item
+								 label="Double"
+								 name="x2"
+								 value="2" />
+							</combo_box>
+						</layout_panel>
+						<layout_panel
+						 auto_resize="false"
+						 follows="left|top|right"
+						 height="22"
+						 layout="topleft"
+						 name="snapshot_px_lp"
+						 user_resize="false"
+						 width="316">
+							<text
+							 follows="left|top"
+							 height="16"
+							 layout="topleft"
+							 left="138"
+							 name="snapshot_size_px"
+							 top="0"
+							 width="146">0 x 0</text>
+						</layout_panel>
+						<layout_panel
+						 auto_resize="false"
+						 follows="left|top|right"
+						 height="34"
+						 layout="topleft"
+						 name="cap_quality_lp"
+						 user_resize="false"
+						 width="316">
+							<text
+							 follows="left|top"
+							 font="SansSerifBold"
+							 height="16"
+							 layout="topleft"
+							 left="10"
+							 mouse_opaque="true"
+							 name="cap_quality_title"
+							 tool_tip="How carefully the picture is rendered. Higher takes longer and looks cleaner."
+							 top="8"
+							 width="216">Render quality</text>
+							<view_border
+							 bevel_style="in"
+							 follows="left|top|right"
+							 height="0"
+							 layout="topleft"
+							 left="10"
+							 name="cap_quality_line"
+							 top="28"
+							 width="296" />
+						</layout_panel>
+						<layout_panel
+						 auto_resize="false"
+						 follows="left|top|right"
+						 height="24"
+						 layout="topleft"
+						 name="snapshot_smooth_lp"
+						 user_resize="false"
+						 width="316">
+							<check_box
+							 control_name="LuminousHDRSnapshotSmooth"
+							 follows="left|top"
+							 height="16"
+							 label="Smooth edges"
+							 layout="topleft"
+							 left="22"
+							 name="snapshot_smooth"
+							 tool_tip="Smoother edges in EXR and TIFF when rendering a single frame."
+							 top="4"
+							 width="281" />
+						</layout_panel>
+						<layout_panel
+						 auto_resize="false"
+						 follows="left|top|right"
+						 height="28"
+						 layout="topleft"
+						 name="snapshot_frames_lp"
+						 user_resize="false"
+						 width="316">
+							<text
+							 follows="left|top"
+							 height="16"
+							 layout="topleft"
+							 left="22"
+							 mouse_opaque="true"
+							 name="snapshot_frames_label"
+							 tool_tip="Renders this many frames and blends them: smoother edges, no grain. More takes longer."
+							 top="7"
+							 width="115">Frames to average</text>
+							<spinner
+							 control_name="LuminousSnapshotFrames"
+							 decimal_digits="0"
+							 follows="left|top"
+							 height="22"
+							 increment="4"
+							 label=""
+							 label_width="0"
+							 layout="topleft"
+							 left="138"
+							 max_val="64"
+							 min_val="1"
+							 name="snapshot_frames"
+							 tool_tip="Renders this many frames and blends them: smoother edges, no grain. More takes longer."
+							 top="4"
+							 width="58" />
+						</layout_panel>
+						<layout_panel
+						 auto_resize="false"
+						 follows="left|top|right"
+						 height="24"
+						 layout="topleft"
+						 name="snapshot_margin_lp"
+						 user_resize="false"
+						 width="316">
+							<check_box
+							 control_name="LuminousSnapshotMargin"
+							 follows="left|top"
+							 height="16"
+							 label="Margin round the picture"
+							 layout="topleft"
+							 left="22"
+							 name="snapshot_margin"
+							 tool_tip="Renders a little beyond the edges so effects near them look right. Takes a little longer."
+							 top="4"
+							 width="281" />
+						</layout_panel>
+						<layout_panel
+						 auto_resize="false"
+						 follows="left|top|right"
+						 height="24"
+						 layout="topleft"
+						 name="snapshot_lens_lp"
+						 user_resize="false"
+						 width="316">
+							<check_box
+							 control_name="LuminousSnapshotSampledDoF"
+							 follows="left|top"
+							 height="16"
+							 label="Depth of field through the lens"
+							 layout="topleft"
+							 left="22"
+							 name="snapshot_sampled_dof"
+							 tool_tip="Blur from the lens itself, cleaner round hair and leaves. Needs Enhance (Depth of field) and more than one frame."
+							 top="4"
+							 width="281" />
+						</layout_panel>
+						<layout_panel
+						 auto_resize="false"
+						 follows="left|top|right"
+						 height="24"
+						 layout="topleft"
+						 name="snapshot_sun_lp"
+						 user_resize="false"
+						 width="316">
+							<check_box
+							 control_name="LuminousSnapshotSampledShadows"
+							 follows="left|top"
+							 height="16"
+							 label="Soft shadows across the sun"
+							 layout="topleft"
+							 left="22"
+							 name="snapshot_sampled_shadows"
+							 tool_tip="Soft shadows from the whole sun, cleaner through leaves and lace. Needs soft shadows and more than one frame."
+							 top="4"
+							 width="281" />
+						</layout_panel>
+						<layout_panel
+						 auto_resize="false"
+						 follows="left|top|right"
+						 height="24"
+						 layout="topleft"
+						 name="snapshot_full_lp"
+						 user_resize="false"
+						 width="316">
+							<check_box
+							 control_name="LuminousSnapshotFullTextures"
+							 follows="left|top"
+							 height="16"
+							 label="Full detail (needs a lot of free memory)"
+							 layout="topleft"
+							 left="22"
+							 name="snapshot_full_textures"
+							 tool_tip="Loads what the picture shows at full detail before the shot and waits for it (3 to 30 seconds): sharp skin and fabric, distant things keep their shape. In a busy region it can need several GB more: quit other apps first."
+							 top="4"
+							 width="281" />
+						</layout_panel>
+						<layout_panel
+						 auto_resize="false"
+						 follows="left|top|right"
+						 height="34"
+						 layout="topleft"
+						 name="cap_save_lp"
+						 user_resize="false"
+						 width="316">
+							<text
+							 follows="left|top"
+							 font="SansSerifBold"
+							 height="16"
+							 layout="topleft"
+							 left="10"
+							 mouse_opaque="true"
+							 name="cap_save_title"
+							 tool_tip="Where the picture goes, and as what kind of file."
+							 top="8"
+							 width="216">Save</text>
+							<view_border
+							 bevel_style="in"
+							 follows="left|top|right"
+							 height="0"
+							 layout="topleft"
+							 left="10"
+							 name="cap_save_line"
+							 top="28"
+							 width="296" />
+						</layout_panel>
+						<layout_panel
+						 auto_resize="false"
+						 follows="left|top|right"
+						 height="26"
+						 layout="topleft"
+						 name="snapshot_to_disk_lp"
+						 user_resize="false"
+						 width="316">
+							<check_box
+							 control_name="LuminousRenderToDisk"
+							 follows="left|top"
+							 height="16"
+							 label="Render directly to disk"
+							 layout="topleft"
+							 left="22"
+							 name="snapshot_to_disk"
+							 tool_tip="On: renders are saved in the folder below. Off: each is shown over the viewer, to download or share."
+							 top="4"
+							 width="284" />
+						</layout_panel>
+						<layout_panel
+						 auto_resize="false"
+						 follows="left|top|right"
+						 height="24"
+						 layout="topleft"
+						 name="snapshot_open_lp"
+						 user_resize="false"
+						 width="316">
+							<check_box
+							 control_name="LuminousSnapshotOpen"
+							 enabled_control="LuminousRenderToDisk"
+							 follows="left|top"
+							 height="16"
+							 label="Also open each render in Preview"
+							 layout="topleft"
+							 left="40"
+							 name="snapshot_open"
+							 tool_tip="Also opens each render in Preview."
+							 top="4"
+							 width="266" />
+						</layout_panel>
+						<layout_panel
+						 auto_resize="false"
+						 follows="left|top|right"
+						 height="30"
+						 layout="topleft"
+						 name="snapshot_folder_lp"
+						 user_resize="false"
+						 width="316">
+							<text
+							 follows="left|top"
+							 height="16"
+							 layout="topleft"
+							 left="22"
+							 mouse_opaque="true"
+							 name="snapshot_folder_label"
+							 tool_tip="The folder renders are saved in."
+							 top="7"
+							 width="115">Folder</text>
+							<text
+							 follows="left|top"
+							 height="16"
+							 layout="topleft"
+							 left="138"
+							 mouse_opaque="true"
+							 name="snapshot_folder"
+							 top="7"
+							 use_ellipses="true"
+							 width="104">-</text>
+							<button
+							 follows="left|top"
+							 height="22"
+							 label="Choose"
+							 layout="topleft"
+							 left="246"
+							 name="snapshot_folder_choose"
+							 tool_tip="Choose the folder renders are saved in."
+							 top="4"
+							 width="60" />
+						</layout_panel>
+						<layout_panel
+						 auto_resize="false"
+						 follows="left|top|right"
+						 height="30"
+						 layout="topleft"
+						 name="snapshot_format_lp"
+						 user_resize="false"
+						 width="316">
+							<text
+							 follows="left|top"
+							 height="16"
+							 layout="topleft"
+							 left="22"
+							 mouse_opaque="true"
+							 name="snapshot_format_label"
+							 tool_tip="PNG for sharing, JPEG small and quick, BMP quickest, 16-bit TIFF for heavy editing, EXR for HDR editing."
+							 top="7"
+							 width="115">File format</text>
+							<combo_box
+							 control_name="LuminousSnapshotFormat"
+							 follows="left|top"
+							 height="22"
+							 layout="topleft"
+							 left="138"
+							 name="snapshot_format"
+							 tool_tip="PNG for sharing, JPEG small and quick, BMP quickest, 16-bit TIFF for heavy editing, EXR for HDR editing."
+							 top="4"
+							 width="146">
+								<combo_box.item
+								 label="PNG"
+								 name="format_png"
+								 value="0" />
+								<combo_box.item
+								 label="JPEG"
+								 name="format_jpeg"
+								 value="3" />
+								<combo_box.item
+								 label="BMP"
+								 name="format_bmp"
+								 value="4" />
+								<combo_box.item
+								 label="16-bit TIFF"
+								 name="format_tiff"
+								 value="1" />
+								<combo_box.item
+								 label="EXR"
+								 name="format_exr"
+								 value="2" />
+							</combo_box>
+						</layout_panel>
+						<layout_panel
+						 auto_resize="false"
+						 follows="left|top|right"
+						 height="34"
+						 layout="topleft"
+						 name="cap_anim_lp"
+						 user_resize="false"
+						 width="316">
+							<text
+							 follows="left|top"
+							 font="SansSerifBold"
+							 height="16"
+							 layout="topleft"
+							 left="10"
+							 mouse_opaque="true"
+							 name="cap_anim_title"
+							 tool_tip="Slow down or freeze animations while you set up the picture."
+							 top="8"
+							 width="216">Animation</text>
+							<view_border
+							 bevel_style="in"
+							 follows="left|top|right"
+							 height="0"
+							 layout="topleft"
+							 left="10"
+							 name="cap_anim_line"
+							 top="28"
+							 width="296" />
+						</layout_panel>
+						<layout_panel
+						 auto_resize="false"
+						 follows="left|top|right"
+						 height="26"
+						 layout="topleft"
+						 name="animation_speed_lp"
+						 user_resize="false"
+						 width="316">
+							<slider
+							 control_name="LuminousAnimationSpeed"
+							 decimal_digits="2"
+							 follows="left|top"
+							 height="16"
+							 increment="0.05"
+							 initial_value="1"
+							 label="Playback speed"
+							 label_width="116"
+							 layout="topleft"
+							 left="22"
+							 max_val="2"
+							 min_val="0"
+							 name="animation_speed"
+							 text_width="44"
+							 tool_tip="How fast animations play, on your screen only: 0 holds every pose."
+							 top="4"
+							 width="284" />
+						</layout_panel>
+					</layout_stack>
+				</panel>
+			</scroll_container>
+			<button
+			 follows="left|bottom"
+			 height="22"
+			 label="Reset capture settings"
+			 layout="topleft"
+			 left="10"
+			 name="snapshot_defaults"
+			 tool_tip="Put this tab back as Luminous ships it."
+			 top="655"
+			 width="158">
+				<button.commit_callback
+				 function="Luminous.ResetSettings"
+				 parameter="LuminousSnapshotScale,LuminousHDRSnapshotSmooth,LuminousSnapshotFrames,LuminousSnapshotMargin,LuminousSnapshotSampledDoF,LuminousSnapshotSampledShadows,LuminousSnapshotFullTextures,LuminousSnapshotOpen,LuminousAnimationSpeed,LuminousSnapshotFormat,LuminousRenderToDisk" />
+			</button>
+			<button
+			 control_name="LuminousScenePaused"
+			 follows="left|bottom"
+			 height="22"
+			 image_overlay="Pause_Off"
+			 is_toggle="true"
+			 layout="topleft"
+			 left="172"
+			 name="pause_scene_snapshot_defaults"
+			 tool_tip="Pause everything that moves (animations, water, clouds, particles) while you move the camera freely. Click again to go on."
+			 top="655"
+			 width="28" />
+			<button
+			 follows="right|bottom"
+			 height="22"
+			 label="Render image"
+			 layout="topleft"
+			 left="204"
+			 name="snapshot_defaults_capture"
+			 tool_tip="Render the picture now, with the Render tab's settings."
+			 top="655"
+			 width="116">
+				<button.commit_callback
+				 function="Luminous.SaveSnapshot" />
+			</button>
+		</panel>
+		<panel
+		 follows="all"
+		 height="687"
+		 label="Save / Load"
+		 layout="topleft"
+		 name="luminous_presets"
+		 tool_tip="Styles, presets and camera positions.">
+			<scroll_container
+			 follows="all"
+			 height="643"
+			 layout="topleft"
+			 left="0"
+			 name="luminous_presets_scroll"
+			 opaque="false"
+			 reserve_scroll_corner="false"
+			 top="0"
+			 width="330">
+				<panel
+				 background_visible="false"
+				 follows="left|top"
+				 height="302"
+				 layout="topleft"
+				 left="0"
+				 name="luminous_presets_content"
+				 top="0"
+				 width="316">
+					<layout_stack
+					 animate="false"
+					 border_size="0"
+					 follows="left|top|right"
+					 height="302"
+					 layout="topleft"
+					 left="0"
+					 name="luminous_presets_stack"
+					 orientation="vertical"
+					 top="0"
+					 width="316">
+						<layout_panel
+						 auto_resize="false"
+						 follows="left|top|right"
+						 height="34"
+						 layout="topleft"
+						 name="style_title_lp"
+						 user_resize="false"
+						 width="316">
+							<text
+							 follows="left|top"
+							 font="SansSerifBold"
+							 height="16"
+							 layout="topleft"
+							 left="10"
+							 mouse_opaque="true"
+							 name="style_title"
+							 tool_tip="Looks made after photographs: light, sky, blur, colour and tone."
+							 top="8"
+							 width="216">Styles</text>
+							<view_border
+							 bevel_style="in"
+							 follows="left|top|right"
+							 height="0"
+							 layout="topleft"
+							 left="10"
+							 name="style_line"
+							 top="28"
+							 width="296" />
+						</layout_panel>
+						<layout_panel
+						 auto_resize="false"
+						 follows="left|top|right"
+						 height="50"
+						 layout="topleft"
+						 name="style_names_lp"
+						 user_resize="false"
+						 width="316">
+							<text
+							 follows="left|top"
+							 height="16"
+							 layout="topleft"
+							 left="22"
+							 name="style_names_label"
+							 top="7"
+							 width="115">Style</text>
+							<combo_box
+							 control_name="LuminousStyle"
+							 follows="left|top"
+							 height="22"
+							 layout="topleft"
+							 left="138"
+							 name="style_names"
+							 tool_tip="Applies the style: sky, water, sun and every setting on Lighting, Tone, Colour and Effects. Only you see the sky."
+							 top="4"
+							 width="161">
+								<combo_box.commit_callback
+								 function="Luminous.ApplyStyle" />
+							</combo_box>
+							<check_box
+							 control_name="LuminousStyleCamera"
+							 follows="left|top"
+							 height="16"
+							 label="Move the camera"
+							 layout="topleft"
+							 left="138"
+							 name="style_camera"
+							 tool_tip="Also moves the camera to frame you as the style wants."
+							 top="30"
+							 width="161" />
+						</layout_panel>
+						<layout_panel
+						 auto_resize="false"
+						 follows="left|top|right"
+						 height="30"
+						 layout="topleft"
+						 name="frame_lp"
+						 user_resize="false"
+						 width="316">
+							<text
+							 follows="left|top"
+							 height="16"
+							 layout="topleft"
+							 left="22"
+							 name="frame_label"
+							 tool_tip="Moves the camera to frame you, focused on your eyes. Esc gives the camera back."
+							 top="7"
+							 width="115">Frame me</text>
+							<combo_box
+							 follows="left|top"
+							 height="22"
+							 label="Choose..."
+							 layout="topleft"
+							 left="138"
+							 name="frame_combo"
+							 top="4"
+							 width="161">
+								<combo_box.item
+								 label="Face"
+								 name="frame_face"
+								 value="face" />
+								<combo_box.item
+								 label="Half"
+								 name="frame_half"
+								 value="half" />
+								<combo_box.item
+								 label="Low"
+								 name="frame_low"
+								 value="low" />
+								<combo_box.item
+								 label="Tilted"
+								 name="frame_tilted"
+								 value="tilted" />
+								<combo_box.item
+								 label="Side low"
+								 name="frame_sidelow"
+								 value="sidelow" />
+								<combo_box.item
+								 label="Behind"
+								 name="frame_behind"
+								 value="behind" />
+								<combo_box.commit_callback
+								 function="Luminous.Frame" />
+							</combo_box>
+						</layout_panel>
+						<layout_panel
+						 auto_resize="false"
+						 follows="left|top|right"
+						 height="34"
+						 layout="topleft"
+						 name="pre_title_lp"
+						 user_resize="false"
+						 width="316">
+							<text
+							 follows="left|top"
+							 font="SansSerifBold"
+							 height="16"
+							 layout="topleft"
+							 left="10"
+							 mouse_opaque="true"
+							 name="pre_title"
+							 tool_tip="Your settings, sky and sun under a name, to come back to."
+							 top="8"
+							 width="216">Presets</text>
+							<view_border
+							 bevel_style="in"
+							 follows="left|top|right"
+							 height="0"
+							 layout="topleft"
+							 left="10"
+							 name="pre_line"
+							 top="28"
+							 width="296" />
+						</layout_panel>
+						<layout_panel
+						 auto_resize="false"
+						 follows="left|top|right"
+						 height="60"
+						 layout="topleft"
+						 name="preset_names_lp"
+						 user_resize="false"
+						 width="316">
+							<text
+							 follows="left|top"
+							 height="16"
+							 layout="topleft"
+							 left="22"
+							 mouse_opaque="true"
+							 name="preset_names_label"
+							 tool_tip="Your presets: every setting on Lighting, Tone, Colour and Effects, with the sky and sun. Pick one and Load, or type a name and Save."
+							 top="7"
+							 width="115">Preset</text>
+							<combo_box
+							 allow_text_entry="true"
+							 follows="left|top"
+							 height="22"
+							 layout="topleft"
+							 left="138"
+							 max_chars="64"
+							 name="preset_names"
+							 tool_tip="Your presets: every setting on Lighting, Tone, Colour and Effects, with the sky and sun. Pick one and Load, or type a name and Save."
+							 top="4"
+							 width="161" />
+							<button
+							 follows="left|top"
+							 height="22"
+							 label="Save"
+							 layout="topleft"
+							 left="138"
+							 name="preset_save"
+							 tool_tip="Save the settings, sky and sun under the name in the box."
+							 top="32"
+							 width="54">
+								<button.commit_callback
+								 function="Luminous.Preset.Save" />
+							</button>
+							<button
+							 follows="left|top"
+							 height="22"
+							 label="Load"
+							 layout="topleft"
+							 left="194"
+							 name="preset_load"
+							 tool_tip="Load the preset named in the box."
+							 top="32"
+							 width="54">
+								<button.commit_callback
+								 function="Luminous.Preset.Load" />
+							</button>
+							<button
+							 follows="left|top"
+							 height="22"
+							 label="Delete"
+							 layout="topleft"
+							 left="250"
+							 name="preset_delete"
+							 tool_tip="Delete the preset named in the box."
+							 top="32"
+							 width="56">
+								<button.commit_callback
+								 function="Luminous.Preset.Delete" />
+							</button>
+						</layout_panel>
+						<layout_panel
+						 auto_resize="false"
+						 follows="left|top|right"
+						 height="34"
+						 layout="topleft"
+						 name="cap_shots_lp"
+						 user_resize="false"
+						 width="316">
+							<text
+							 follows="left|top"
+							 font="SansSerifBold"
+							 height="16"
+							 layout="topleft"
+							 left="10"
+							 mouse_opaque="true"
+							 name="cap_shots_title"
+							 tool_tip="Camera positions to come back to."
+							 top="8"
+							 width="216">Camera positions</text>
+							<view_border
+							 bevel_style="in"
+							 follows="left|top|right"
+							 height="0"
+							 layout="topleft"
+							 left="10"
+							 name="cap_shots_line"
+							 top="28"
+							 width="296" />
+						</layout_panel>
+						<layout_panel
+						 auto_resize="false"
+						 follows="left|top|right"
+						 height="60"
+						 layout="topleft"
+						 name="shot_presets_lp"
+						 user_resize="false"
+						 width="316">
+							<text
+							 follows="left|top"
+							 height="16"
+							 layout="topleft"
+							 left="22"
+							 mouse_opaque="true"
+							 name="shot_presets_label"
+							 tool_tip="Saved camera positions, with their lens settings. Only work near where they were saved."
+							 top="7"
+							 width="115">Position</text>
+							<combo_box
+							 allow_text_entry="true"
+							 follows="left|top"
+							 height="22"
+							 layout="topleft"
+							 left="138"
+							 max_chars="64"
+							 name="shot_presets"
+							 tool_tip="Saved camera positions, with their lens settings. Only work near where they were saved."
+							 top="4"
+							 width="161" />
+							<button
+							 follows="left|top"
+							 height="22"
+							 label="Save"
+							 layout="topleft"
+							 left="138"
+							 name="shot_save"
+							 tool_tip="Save the camera's position and lens settings under the name in the box."
+							 top="32"
+							 width="54">
+								<button.commit_callback
+								 function="Luminous.Shot.Save" />
+							</button>
+							<button
+							 follows="left|top"
+							 height="22"
+							 label="Go to"
+							 layout="topleft"
+							 left="194"
+							 name="shot_go"
+							 tool_tip="Move the camera to the position named in the box."
+							 top="32"
+							 width="54">
+								<button.commit_callback
+								 function="Luminous.Shot.Go" />
+							</button>
+							<button
+							 follows="left|top"
+							 height="22"
+							 label="Delete"
+							 layout="topleft"
+							 left="250"
+							 name="shot_delete"
+							 tool_tip="Delete the camera position named in the box."
+							 top="32"
+							 width="56">
+								<button.commit_callback
+								 function="Luminous.Shot.Delete" />
+							</button>
+						</layout_panel>
+					</layout_stack>
+				</panel>
+			</scroll_container>
+			<button
+			 control_name="LuminousScenePaused"
+			 follows="left|bottom"
+			 height="22"
+			 image_overlay="Pause_Off"
+			 is_toggle="true"
+			 layout="topleft"
+			 left="172"
+			 name="pause_scene_presets"
+			 tool_tip="Pause everything that moves (animations, water, clouds, particles) while you move the camera freely. Click again to go on."
+			 top="655"
+			 width="28" />
+			<button
+			 follows="right|bottom"
+			 height="22"
+			 label="Render image"
+			 layout="topleft"
+			 left="204"
+			 name="presets_capture"
+			 tool_tip="Render the picture now, with the Render tab's settings."
+			 top="655"
+			 width="116">
+				<button.commit_callback
+				 function="Luminous.SaveSnapshot" />
+			</button>
+		</panel>
+		<panel
+		 follows="all"
+		 height="687"
+		 label="Settings"
+		 layout="topleft"
+		 name="luminous_graphics">
+			<scroll_container
+			 follows="all"
+			 height="643"
+			 layout="topleft"
+			 left="0"
+			 name="luminous_graphics_scroll"
+			 opaque="false"
+			 reserve_scroll_corner="false"
+			 top="0"
+			 width="330">
+				<panel
+				 background_visible="false"
+				 follows="left|top"
+				 height="558"
+				 layout="topleft"
+				 left="0"
+				 name="luminous_graphics_content"
+				 top="0"
+				 width="316">
+					<layout_stack
+					 animate="false"
+					 border_size="0"
+					 follows="left|top|right"
+					 height="558"
+					 layout="topleft"
+					 left="0"
+					 name="luminous_graphics_stack"
+					 orientation="vertical"
+					 top="0"
+					 width="316">
+						<layout_panel
+						 auto_resize="false"
+						 follows="left|top|right"
+						 height="34"
+						 layout="topleft"
+						 name="q_live_lp"
+						 user_resize="false"
+						 width="316">
+							<text
+							 follows="left|top"
+							 font="SansSerifBold"
+							 height="16"
+							 layout="topleft"
+							 left="10"
+							 mouse_opaque="true"
+							 name="q_live_title"
+							 tool_tip="How the view looks while you set up the picture. Renders always get full quality."
+							 top="8"
+							 width="216">Live preview performance</text>
+							<view_border
+							 bevel_style="in"
+							 follows="left|top|right"
+							 height="0"
+							 layout="topleft"
+							 left="10"
+							 name="q_live_line"
+							 top="28"
+							 width="296" />
+						</layout_panel>
+						<layout_panel
+						 auto_resize="false"
+						 follows="left|top|right"
+						 height="30"
+						 layout="topleft"
+						 name="live_view_lp"
+						 user_resize="false"
+						 width="316">
+							<text
+							 follows="left|top"
+							 height="16"
+							 layout="topleft"
+							 left="22"
+							 mouse_opaque="true"
+							 name="live_view_label"
+							 tool_tip="Fewer pixels make the live view faster but softer. Renders always use all of them."
+							 top="7"
+							 width="115">Preview resolution</text>
+							<combo_box
+							 control_name="LuminousPhotoLiveScale"
+							 follows="left|top"
+							 height="22"
+							 layout="topleft"
+							 left="138"
+							 name="live_view_combo"
+							 tool_tip="Fewer pixels make the live view faster but softer. Renders always use all of them."
+							 top="4"
+							 width="146">
+								<combo_box.item
+								 label="Automatic"
+								 name="live_view_auto"
+								 value="0" />
+								<combo_box.item
+								 label="Full"
+								 name="live_view_full"
+								 value="1" />
+								<combo_box.item
+								 label="Three quarters"
+								 name="live_view_three_quarters"
+								 value="0.75" />
+								<combo_box.item
+								 label="Half"
+								 name="live_view_half"
+								 value="0.5" />
+							</combo_box>
+						</layout_panel>
+						<layout_panel
+						 auto_resize="false"
+						 follows="left|top|right"
+						 height="22"
+						 layout="topleft"
+						 name="live_view_size_lp"
+						 user_resize="false"
+						 width="316">
+							<text
+							 follows="left|top"
+							 height="16"
+							 layout="topleft"
+							 left="138"
+							 name="live_view_size"
+							 top="0"
+							 width="165">-</text>
+						</layout_panel>
+						<layout_panel
+						 auto_resize="false"
+						 follows="left|top|right"
+						 height="88"
+						 layout="topleft"
+						 name="low_quality_lp"
+						 user_resize="false"
+						 width="316">
+							<text
+							 follows="left|top"
+							 height="16"
+							 layout="topleft"
+							 left="22"
+							 name="low_quality_label"
+							 tool_tip="A faster live view for these effects. Renders always get full quality."
+							 top="7"
+							 width="115">Low quality live</text>
+							<check_box
+							 control_name="LuminousPhotoLowQualityLiveShadows"
+							 follows="left|top"
+							 height="16"
+							 label="Shadow maps"
+							 layout="topleft"
+							 left="138"
+							 name="low_quality_shadows"
+							 tool_tip="Smaller shadow maps in the live view: the biggest speed-up."
+							 top="6"
+							 width="165" />
+							<check_box
+							 control_name="LuminousPhotoLowQualityLiveVolumetric"
+							 follows="left|top"
+							 height="16"
+							 label="Volumetric light"
+							 layout="topleft"
+							 left="138"
+							 name="low_quality_volumetric"
+							 tool_tip="Volumetric light at half size in the live view."
+							 top="26"
+							 width="165" />
+							<check_box
+							 control_name="LuminousPhotoLowQualityLiveBeams"
+							 follows="left|top"
+							 height="16"
+							 label="Projector beams"
+							 layout="topleft"
+							 left="138"
+							 name="low_quality_beams"
+							 tool_tip="Projector beams at half size in the live view."
+							 top="46"
+							 width="165" />
+							<check_box
+							 control_name="LuminousPhotoLowQualityLiveAO"
+							 follows="left|top"
+							 height="16"
+							 label="GTAO"
+							 layout="topleft"
+							 left="138"
+							 name="low_quality_ao"
+							 tool_tip="GTAO at half size in the live view."
+							 top="66"
+							 width="165" />
+						</layout_panel>
+						<layout_panel
+						 auto_resize="false"
+						 follows="left|top|right"
+						 height="34"
+						 layout="topleft"
+						 name="q_effects_lp"
+						 user_resize="false"
+						 width="316">
+							<text
+							 follows="left|top"
+							 font="SansSerifBold"
+							 height="16"
+							 layout="topleft"
+							 left="10"
+							 mouse_opaque="true"
+							 name="q_effects_title"
+							 tool_tip="How much work some effects get. Higher is smoother and slower."
+							 top="8"
+							 width="216">Effect rendering quality</text>
+							<view_border
+							 bevel_style="in"
+							 follows="left|top|right"
+							 height="0"
+							 layout="topleft"
+							 left="10"
+							 name="q_effects_line"
+							 top="28"
+							 width="296" />
+						</layout_panel>
+						<layout_panel
+						 auto_resize="false"
+						 follows="left|top|right"
+						 height="26"
+						 layout="topleft"
+						 name="vol_samples_lp"
+						 user_resize="false"
+						 width="316">
+							<slider
+							 control_name="LuminousPhotoVolumetricSamples"
+							 decimal_digits="0"
+							 follows="left|top"
+							 height="16"
+							 increment="1"
+							 initial_value="64"
+							 label="Volumetric light"
+							 label_width="116"
+							 layout="topleft"
+							 left="22"
+							 max_val="256"
+							 min_val="16"
+							 name="volumetric_samples"
+							 text_width="44"
+							 tool_tip="More gives smoother volumetric light and beams, but is slower."
+							 top="4"
+							 width="284" />
+						</layout_panel>
+						<layout_panel
+						 auto_resize="false"
+						 follows="left|top|right"
+						 height="30"
+						 layout="topleft"
+						 name="shadow_size_lp"
+						 user_resize="false"
+						 width="316">
+							<text
+							 follows="left|top"
+							 height="16"
+							 layout="topleft"
+							 left="22"
+							 mouse_opaque="true"
+							 name="shadow_size_label"
+							 tool_tip="Shadow detail in renders: bigger is finer and uses more memory."
+							 top="7"
+							 width="115">Shadow size</text>
+							<combo_box
+							 control_name="LuminousPhotoShadowMapSize"
+							 follows="left|top"
+							 height="22"
+							 layout="topleft"
+							 left="138"
+							 name="shadow_size"
+							 tool_tip="Shadow detail in renders: bigger is finer and uses more memory."
+							 top="4"
+							 width="146">
+								<combo_box.item
+								 label="As the window"
+								 name="fs"
+								 value="0" />
+								<combo_box.item
+								 label="4096"
+								 name="s4096"
+								 value="4096" />
+								<combo_box.item
+								 label="8192"
+								 name="s8192"
+								 value="8192" />
+								<combo_box.item
+								 label="12288"
+								 name="s12288"
+								 value="12288" />
+							</combo_box>
+						</layout_panel>
+						<layout_panel
+						 auto_resize="false"
+						 follows="left|top|right"
+						 height="26"
+						 layout="topleft"
+						 name="shadow_clarity_lp"
+						 user_resize="false"
+						 width="316">
+							<slider
+							 decimal_digits="2"
+							 follows="left|top"
+							 height="16"
+							 increment="0.05"
+							 initial_value="3"
+							 label="Shadow clarity"
+							 label_width="116"
+							 layout="topleft"
+							 left="22"
+							 max_val="10"
+							 min_val="0"
+							 name="shadow_clarity"
+							 text_width="44"
+							 tool_tip="Higher: sharper shadows close by, coarser far away."
+							 top="4"
+							 width="284">
+								<slider.commit_callback
+								 function="Luminous.VectorSlider"
+								 parameter="shadow_clarity" />
+							</slider>
+						</layout_panel>
+						<layout_panel
+						 auto_resize="false"
+						 follows="left|top|right"
+						 height="26"
+						 layout="topleft"
+						 name="shadow_bias_lp"
+						 user_resize="false"
+						 width="316">
+							<slider
+							 control_name="RenderShadowBias"
+							 decimal_digits="4"
+							 follows="left|top"
+							 height="16"
+							 increment="0.0001"
+							 initial_value="-0.002"
+							 label="Shadow bias"
+							 label_width="116"
+							 layout="topleft"
+							 left="22"
+							 max_val="0.001"
+							 min_val="-0.002"
+							 name="shadow_bias"
+							 text_width="52"
+							 tool_tip="Raise it if surfaces show stripes of shadow; lower it if shadows come loose from what casts them."
+							 top="4"
+							 width="284" />
+						</layout_panel>
+					</layout_stack>
+				</panel>
+			</scroll_container>
+			<button
+			 follows="left|bottom"
+			 height="22"
+			 label="Reset settings"
+			 layout="topleft"
+			 left="10"
+			 name="graphics_reset"
+			 tool_tip="Put this tab back as Luminous ships it."
+			 top="655"
+			 width="158">
+				<button.commit_callback
+				 function="Luminous.ResetSettings"
+				 parameter="LuminousPhotoLiveScale,LuminousPhotoLowQualityLiveShadows,LuminousPhotoLowQualityLiveVolumetric,LuminousPhotoLowQualityLiveBeams,LuminousPhotoLowQualityLiveAO,LuminousPhotoVolumetricSamples,LuminousPhotoShadowMapSize,RenderShadowSplitExponent,RenderShadowBias" />
+			</button>
+			<button
+			 control_name="LuminousScenePaused"
+			 follows="left|bottom"
+			 height="22"
+			 image_overlay="Pause_Off"
+			 is_toggle="true"
+			 layout="topleft"
+			 left="172"
+			 name="pause_scene_graphics_reset"
+			 tool_tip="Pause everything that moves (animations, water, clouds, particles) while you move the camera freely. Click again to go on."
+			 top="655"
+			 width="28" />
+			<button
+			 follows="right|bottom"
+			 height="22"
+			 label="Render image"
+			 layout="topleft"
+			 left="204"
+			 name="graphics_reset_capture"
+			 tool_tip="Render the picture now, with the Render tab's settings."
+			 top="655"
+			 width="116">
+				<button.commit_callback
+				 function="Luminous.SaveSnapshot" />
+			</button>
+		</panel>
+	</tab_container>
+	</panel>
+</floater>

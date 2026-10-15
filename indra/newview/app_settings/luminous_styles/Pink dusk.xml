@@ -1,0 +1,45 @@
+<?xml version="1.0" ?>
+<llsd>
+<map>
+    <key>environment</key>
+    <string>Pink dusk</string>
+    <key>sun_offset</key>
+    <real>45.0</real>
+    <key>sun_elevation</key>
+    <real>8.0</real>
+    <key>camera</key>
+    <map>
+      <key>framing</key>
+      <string>half</string>
+    </map>
+    <key>settings</key>
+    <map>
+      <key>RenderDepthOfField</key>
+      <boolean>true</boolean>
+      <key>CameraFNumber</key>
+      <real>2.8</real>
+      <key>CameraMaxCoF</key>
+      <real>20.0</real>
+      <key>LuminousPhotoExposure</key>
+      <real>0.3</real>
+      <key>LuminousPhotoShadows</key>
+      <real>0.35</real>
+      <key>LuminousPhotoHighlightsTint</key>
+      <real>0.05</real>
+      <key>LuminousPhotoShadowsWarmth</key>
+      <real>-0.1</real>
+      <key>LuminousPhotoBloom</key>
+      <boolean>true</boolean>
+      <key>LuminousPhotoBloomStrength</key>
+      <real>0.35</real>
+      <key>LuminousPhotoVolumetricDensity</key>
+      <real>0.006</real>
+      <key>LuminousPhotoContactShadowsStrength</key>
+      <real>0.35</real>
+      <key>LuminousPhotoShadowStrength</key>
+      <real>0.85</real>
+      <key>LuminousPhotoShadowSoftness</key>
+      <real>4.0</real>
+    </map>
+  </map>
+</llsd>

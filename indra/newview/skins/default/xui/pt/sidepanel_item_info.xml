@@ -1,0 +1,113 @@
+<?xml version="1.0" encoding="utf-8" standalone="yes"?>
+<panel name="item properties" title="Perfil do item">
+	<panel.string name="loading_experience">
+		(carregando)
+	</panel.string>
+	<panel.string name="unknown">
+		(desconhecido)
+	</panel.string>
+	<panel.string name="unknown_multiple">
+		(desconhecido / múltiplos)
+	</panel.string>
+	<panel.string name="public">
+		(público)
+	</panel.string>
+	<panel.string name="you_can">
+		Você pode:
+	</panel.string>
+	<panel.string name="owner_can">
+		Proprietário pode:
+	</panel.string>
+	<panel.string name="acquiredDate">
+		[wkday,datetime,slt]. [day,datetime,slt]. [mth,datetime,slt]. [year,datetime,slt] [hour,datetime,slt]:[min,datetime,slt]:[second,datetime,slt]
+	</panel.string>
+	<panel.string name="acquiredDateAMPM">
+		[wkday,datetime,slt]. [day,datetime,slt]. [mth,datetime,slt]. [year,datetime,slt] [hour12,datetime,slt]:[min,datetime,slt]:[second,datetime,slt] [ampm,datetime,slt]
+	</panel.string>
+	<panel.string name="origin_inventory">
+		(Inventário)
+	</panel.string>
+	<panel.string name="origin_inworld">
+		(No Mundo)
+	</panel.string>
+
+	<layout_stack name="main_stack">
+		<layout_panel name="layout_item_name">
+				<line_editor name="LabelItemName" tool_tip="O nome é limitado a 63 caracteres. Nomes mais longos serão cortados. Os nomes só podem conter caracteres imprimíveis do conjunto ASCII-7 (não estendido), com exceção da barra vertical &quot;|&quot;."/>
+		</layout_panel>
+		<layout_panel name="layout_item_details">
+			<text name="LabelOwnerTitle">
+				Proprietário:
+			</text>
+			<text name="LabelCreatorTitle">
+				Criador:
+			</text>
+			<text name="LabelAcquiredTitle">
+				Adquirido:
+			</text>
+			<button label="Imagem..." name="change_thumbnail_btn"/>
+		</layout_panel>
+
+		<layout_panel name="layout_item_description">
+			<text name="LabelItemDescTitle">
+				Descrição:
+			</text>
+			<line_editor name="LabelItemDesc" tool_tip="Quando a opção &quot;Dicas ao passar o mouse em todos os objetos&quot; estiver ativa nas configurações do viewer, a descrição do objeto será mostrada para qualquer objeto sob o cursor. A descrição é limitada a 127 bytes; textos maiores serão truncados."/>
+			<text name="LabelItemExperienceTitle">
+				Experiência:
+			</text>
+		</layout_panel>
+
+		<layout_panel name="layout_item_permissions_sale">
+			<text name="perm_modify">
+				Permissões
+			</text>
+			<text name="you_perm_modify">
+				Você pode:
+			</text>
+			<check_box label="Modificar" name="CheckOwnerModify"/>
+			<check_box label="Copiar" name="CheckOwnerCopy"/>
+			<check_box label="Transferir" name="CheckOwnerTransfer"/>
+			<text name="AnyoneLabel">
+				Todos:
+			</text>
+			<check_box label="Copiar" name="CheckEveryoneCopy" tool_tip="Qualquer pessoa pode receber uma cópia do objeto. O objeto e todo o seu conteúdo precisam permitir cópia e transferência."/>
+			<text name="GroupLabel">
+				Grupo:
+			</text>
+			<check_box label="Compartilhar" name="CheckShareWithGroup" tool_tip="Permite que todos os membros do grupo definido compartilhem sua permissão de modificar este objeto. É necessário transferir a posse para o grupo para ativar restrições por função."/>
+			<text name="NextOwnerLabel">
+				Próximo proprietário:
+			</text>
+			<check_box label="Modificar" name="CheckNextOwnerModify" tool_tip="O próximo proprietário pode editar propriedades como o nome do item ou a escala deste objeto."/>
+			<check_box label="Copiar" name="CheckNextOwnerCopy" tool_tip="O próximo proprietário pode criar cópias ilimitadas deste objeto. As cópias mantêm os dados do criador e nunca podem ter mais permissões que o item copiado."/>
+			<check_box label="Transferir" name="CheckNextOwnerTransfer" tool_tip="O próximo proprietário pode doar ou revender este objeto."/>
+
+			<check_box label="À venda" name="CheckPurchase" tool_tip="Permite que as pessoas comprem este objeto, seu conteúdo ou uma cópia dele no mundo pelo preço definido."/>
+			<combo_box name="ComboBoxSaleType" tool_tip="Selecione se o comprador receberá uma cópia, uma cópia do conteúdo ou o item original.">
+				<combo_box.item label="Cópia" name="Copy"/>
+				<combo_box.item label="Conteúdo" name="Contents"/>
+				<combo_box.item label="Original" name="Original"/>
+			</combo_box>
+			<spinner label="Preço: L$" name="Edit Cost" tool_tip="Preço do objeto."/>
+		</layout_panel>
+
+		<layout_panel name="layout_debug_permissions">
+			<text name="BaseMaskDebug">
+				B:
+			</text>
+			<text name="OwnerMaskDebug">
+				O:
+			</text>
+			<text name="GroupMaskDebug">
+				G:
+			</text>
+			<text name="EveryoneMaskDebug">
+				E:
+			</text>
+			<text name="NextMaskDebug">
+				N:
+			</text>
+		</layout_panel>
+	</layout_stack>
+</panel>

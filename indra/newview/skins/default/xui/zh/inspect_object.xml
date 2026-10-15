@@ -1,0 +1,27 @@
+<?xml version="1.0" encoding="utf-8" standalone="yes"?>
+<floater name="inspect_object">
+	<string name="Creator">
+		來自 [CREATOR]
+	</string>
+	<string name="CreatorAndOwner">
+		來自 [CREATOR]
+所有者 [OWNER]
+	</string>
+	<string name="PriceFree">
+		免費！
+	</string>
+	<string name="Touch">
+		觸碰
+	</string>
+	<string name="Sit">
+		坐下
+	</string>
+	<icon name="secure_browsing" tool_tip="安全瀏覽" />
+	<button label="購買" name="buy_btn" />
+	<button label="支付" name="pay_btn" />
+	<button label="取得副本" name="take_free_copy_btn" />
+	<button label="觸碰" name="touch_btn" />
+	<button label="坐下" name="sit_btn" />
+	<button label="打開" name="open_btn" />
+	<button label="更多" name="more_info_btn" />
+</floater>

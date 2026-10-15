@@ -1,0 +1,82 @@
+<?xml version="1.0" encoding="utf-8" standalone="yes"?>
+<panel label="Convênio" name="Covenant">
+	<text name="estate_section_lbl">
+		Propriedade
+	</text>
+	<text name="estate_name_lbl">
+		Nome:
+	</text>
+	<text name="estate_name_text">
+		Mainland
+	</text>
+	<text name="estate_owner_lbl">
+		Proprietário:
+	</text>
+	<text name="estate_owner_text">
+		(nenhum)
+	</text>
+	<text name="estate_cov_lbl">
+		Convênio:
+	</text>
+	<text name="covenant_timestamp_text" width="320">
+		Última alteração em quarta-feira, 31 de dez. de 1969, 16:00:00
+	</text>
+	<text_editor bottom="-247" height="162" name="covenant_editor">
+		Não há convênio definido para esta propriedade.
+	</text_editor>
+	<button label="Redefinir" name="reset_covenant"/>
+	<text name="covenant_help_text">
+		As alterações no convênio serão aplicadas a todas as parcelas da
+propriedade.
+	</text>
+	<text bottom_delta="-36" name="covenant_instructions">
+		Arraste um notecard para este local para alterar o convênio desta propriedade.
+	</text>
+	<text bottom_delta="-36" name="region_section_lbl">
+		Região
+	</text>
+	<text name="region_name_lbl">
+		Nome:
+	</text>
+	<text name="region_name_text">
+		Erica
+	</text>
+	<text name="region_landtype_lbl">
+		Tipo:
+	</text>
+	<text name="region_landtype_text">
+		Continente / Residencial
+	</text>
+	<text name="region_maturity_lbl">
+		Classificação:
+	</text>
+	<text name="region_maturity_text">
+		Adulto
+	</text>
+	<text name="resellable_lbl">
+		Revenda:
+	</text>
+	<text name="resellable_clause">
+		O terreno nesta região não pode ser revendido.
+	</text>
+	<text name="changeable_lbl">
+		Divisão:
+	</text>
+	<text name="changeable_clause" width="366">
+		O terreno nesta região não pode ser unido/dividido.
+	</text>
+	<string name="can_resell">
+		O terreno comprado nesta região pode ser revendido.
+	</string>
+	<string name="can_not_resell">
+		O terreno comprado nesta região não pode ser revendido.
+	</string>
+	<string name="can_change">
+		O terreno comprado nesta região pode ser unido e
+dividido.
+	</string>
+	<string name="can_not_change">
+		O terreno comprado nesta região não pode ser unido
+nem dividido.
+	</string>
+</panel>

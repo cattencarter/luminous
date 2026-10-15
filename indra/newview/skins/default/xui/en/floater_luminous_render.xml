@@ -1,0 +1,221 @@
+<?xml version="1.0" encoding="utf-8" standalone="yes" ?>
+<!-- <Luminous> Luminous's render window. A render sent to one of Second
+     Life's places shows here large, with everything for sending it in one
+     place: where to, its shape and size for a texture, the fee, a caption
+     or recipient, and Send. Laid out by LuminousRenderFloater: the
+     destination's panel shows under the picture. -->
+<floater
+ can_close="true"
+ can_minimize="false"
+ can_resize="false"
+ height="660"
+ layout="topleft"
+ name="luminous_render"
+ positioning="centered"
+ save_rect="true"
+ single_instance="true"
+ title="Luminous render"
+ width="600">
+	<panel
+	 background_visible="true"
+	 bg_alpha_color="Black"
+	 follows="left|top|right"
+	 height="320"
+	 layout="topleft"
+	 left="10"
+	 mouse_opaque="false"
+	 name="picture_area"
+	 top="22"
+	 width="580" />
+	<text
+	 follows="left|top"
+	 height="16"
+	 layout="topleft"
+	 left="10"
+	 name="picture_size"
+	 top="348"
+	 width="580">Picture</text>
+	<text
+	 follows="left|top"
+	 height="16"
+	 layout="topleft"
+	 left="10"
+	 name="destination_label"
+	 top="374"
+	 width="80">Send to</text>
+	<combo_box
+	 follows="left|top"
+	 height="22"
+	 layout="topleft"
+	 left="92"
+	 name="destination"
+	 tool_tip="Where the picture goes."
+	 top="370"
+	 width="200">
+		<combo_box.item label="Inventory (a texture)" name="inventory" value="1" />
+		<combo_box.item label="Profile feed" name="profile" value="2" />
+		<combo_box.item label="Flickr" name="flickr" value="3" />
+		<combo_box.item label="Email" name="email" value="5" />
+	</combo_box>
+
+	<!-- Inventory -->
+	<panel
+	 follows="left|top"
+	 height="210"
+	 layout="topleft"
+	 left="10"
+	 name="inventory_panel"
+	 top="400"
+	 visible="false"
+	 width="580">
+		<text follows="left|top" height="16" layout="topleft" left="0" name="tex_shape_label" top="6" width="80">Shape</text>
+		<combo_box
+		 follows="left|top"
+		 height="22"
+		 layout="topleft"
+		 left="82"
+		 name="tex_shape"
+		 tool_tip="The texture's shape: like the picture, square, wide (2:1) or tall (1:2)."
+		 top="2"
+		 width="200">
+			<combo_box.item label="Like the picture" name="like_picture" value="0" />
+			<combo_box.item label="Square (1:1)" name="square" value="1" />
+			<combo_box.item label="Wide (2:1)" name="wide" value="2" />
+			<combo_box.item label="Tall (1:2)" name="tall" value="3" />
+		</combo_box>
+		<text follows="left|top" height="16" layout="topleft" left="300" name="tex_size_label" top="6" width="50">Size</text>
+		<combo_box
+		 follows="left|top"
+		 height="22"
+		 layout="topleft"
+		 left="352"
+		 name="tex_size"
+		 tool_tip="The texture's longer side; 2048 is the largest Second Life takes."
+		 top="2"
+		 width="100">
+			<combo_box.item label="2048" name="s2048" value="2048" />
+			<combo_box.item label="1024" name="s1024" value="1024" />
+			<combo_box.item label="512" name="s512" value="512" />
+		</combo_box>
+		<text follows="left|top" height="16" layout="topleft" left="0" name="shape_label" top="32" width="80">Fit</text>
+		<combo_box
+		 follows="left|top"
+		 height="22"
+		 layout="topleft"
+		 left="82"
+		 name="shape"
+		 tool_tip="How the picture fits the shape: cut to fit, whole with black bars, or stretched."
+		 top="28"
+		 width="200">
+			<combo_box.item label="Cut to fit" name="cut" value="0" />
+			<combo_box.item label="Whole picture, with bars" name="bars" value="1" />
+			<combo_box.item label="Stretch to fit" name="stretch" value="2" />
+		</combo_box>
+		<text follows="left|top" height="16" layout="topleft" left="0" name="tex_result" top="58" width="580">2048 x 1024</text>
+		<text follows="left|top" height="16" layout="topleft" left="0" name="tex_name_label" top="84" width="80">Name</text>
+		<line_editor follows="left|top" height="22" layout="topleft" left="82" max_length_bytes="63" name="tex_name" top="80" width="498" />
+		<text follows="left|top" height="16" layout="topleft" left="0" name="tex_desc_label" top="112" width="80">Description</text>
+		<line_editor follows="left|top" height="22" layout="topleft" left="82" max_length_bytes="127" name="tex_desc" top="108" width="498" />
+	</panel>
+
+	<!-- Profile feed -->
+	<panel
+	 follows="left|top"
+	 height="210"
+	 layout="topleft"
+	 left="10"
+	 name="profile_panel"
+	 top="400"
+	 visible="false"
+	 width="580">
+		<text follows="left|top" height="16" layout="topleft" left="0" name="caption_label" top="6" width="80">Caption</text>
+		<text_editor follows="left|top" height="90" layout="topleft" left="82" max_length="700" name="caption" top="4" width="498" word_wrap="true" />
+		<check_box follows="left|top" height="16" label="Include where it was taken" layout="topleft" left="82" name="profile_location" top="102" width="300" />
+	</panel>
+
+	<!-- Flickr -->
+	<panel
+	 follows="left|top"
+	 height="210"
+	 layout="topleft"
+	 left="10"
+	 name="flickr_panel"
+	 top="400"
+	 visible="false"
+	 width="580">
+		<text follows="left|top" height="16" layout="topleft" left="0" name="flickr_title_label" top="6" width="80">Title</text>
+		<line_editor follows="left|top" height="22" layout="topleft" left="82" max_length_bytes="255" name="flickr_title" top="2" width="498" />
+		<text follows="left|top" height="16" layout="topleft" left="0" name="flickr_desc_label" top="32" width="80">Description</text>
+		<text_editor follows="left|top" height="70" layout="topleft" left="82" max_length="700" name="flickr_desc" top="30" width="498" word_wrap="true" />
+		<text follows="left|top" height="16" layout="topleft" left="0" name="flickr_rating_label" top="110" width="80">Rating</text>
+		<combo_box follows="left|top" height="22" layout="topleft" left="82" name="flickr_rating" top="106" width="200">
+			<combo_box.item label="Safe" name="safe" value="1" />
+			<combo_box.item label="Moderate" name="moderate" value="2" />
+			<combo_box.item label="Restricted" name="restricted" value="3" />
+		</combo_box>
+		<check_box follows="left|top" height="16" label="Include where it was taken" layout="topleft" left="82" name="flickr_location" top="136" width="300" />
+		<button follows="left|top" height="22" label="Connect to Flickr..." layout="topleft" left="82" name="flickr_connect" tool_tip="Sign in to Flickr once: your browser opens, and you type the code it shows here." top="160" width="200" />
+	</panel>
+
+	<!-- Primfeed -->
+	<panel
+	 follows="left|top"
+	 height="210"
+	 layout="topleft"
+	 left="10"
+	 name="primfeed_panel"
+	 top="400"
+	 visible="false"
+	 width="580">
+		<text follows="left|top" height="16" layout="topleft" left="0" name="primfeed_desc_label" top="6" width="80">Description</text>
+		<text_editor follows="left|top" height="80" layout="topleft" left="82" max_length="700" name="primfeed_desc" top="4" width="498" word_wrap="true" />
+		<text follows="left|top" height="16" layout="topleft" left="0" name="primfeed_rating_label" top="94" width="80">Rating</text>
+		<combo_box follows="left|top" height="22" layout="topleft" left="82" name="primfeed_rating" top="90" width="200">
+			<combo_box.item label="General" name="general" value="1" />
+			<combo_box.item label="Moderate" name="moderate" value="2" />
+			<combo_box.item label="Adult" name="adult" value="3" />
+			<combo_box.item label="Adult+" name="adult_plus" value="4" />
+		</combo_box>
+		<check_box follows="left|top" height="16" label="Post to the public gallery" layout="topleft" left="82" name="primfeed_public" top="120" width="300" />
+		<check_box follows="left|top" height="16" label="Include where it was taken" layout="topleft" left="82" name="primfeed_location" top="140" width="300" />
+		<button follows="left|top" height="22" label="Log in to Primfeed..." layout="topleft" left="82" name="primfeed_connect" tool_tip="Sign in to Primfeed once: your browser opens, and Primfeed confirms in world." top="164" width="200" />
+	</panel>
+
+	<!-- Email -->
+	<panel
+	 follows="left|top"
+	 height="210"
+	 layout="topleft"
+	 left="10"
+	 name="email_panel"
+	 top="400"
+	 visible="false"
+	 width="580">
+		<text follows="left|top" height="16" layout="topleft" left="0" name="email_to_label" top="6" width="80">To</text>
+		<line_editor follows="left|top" height="22" layout="topleft" left="82" max_length_bytes="254" name="email_to" tool_tip="One address, or several separated by commas." top="2" width="498" />
+		<text follows="left|top" height="16" layout="topleft" left="0" name="email_from_label" top="32" width="80">Your name</text>
+		<line_editor follows="left|top" height="22" layout="topleft" left="82" max_length_bytes="100" name="email_from" top="28" width="498" />
+		<text follows="left|top" height="16" layout="topleft" left="0" name="email_subject_label" top="58" width="80">Subject</text>
+		<line_editor follows="left|top" height="22" layout="topleft" left="82" max_length_bytes="100" name="email_subject" top="54" width="498" />
+		<text follows="left|top" height="16" layout="topleft" left="0" name="email_message_label" top="84" width="80">Message</text>
+		<text_editor follows="left|top" height="80" layout="topleft" left="82" max_length="1000" name="email_message" top="82" width="498" word_wrap="true" />
+	</panel>
+
+	<text
+	 follows="left|bottom"
+	 height="16"
+	 layout="topleft"
+	 left="10"
+	 name="status"
+	 top="626"
+	 width="400" />
+	<button
+	 follows="right|bottom"
+	 height="24"
+	 label="Send"
+	 layout="topleft"
+	 left="490"
+	 name="send"
+	 top="622"
+	 width="100" />
+</floater>

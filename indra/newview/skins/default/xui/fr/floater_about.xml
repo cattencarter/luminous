@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="utf-8" standalone="yes"?>
+<floater name="floater_about" title="À propos de [APP_NAME]">
+	<tab_container name="about_tab">
+		<panel label="Informations" name="support_panel">
+			<button label="Copier" name="copy_btn"/>
+		</panel>
+		<panel label="Auteurs Linden Lab" name="credits_panel">
+			<text_editor name="contrib_names">Dummy Name replaced at run time</text_editor>
+		</panel>
+	</tab_container>
+</floater>

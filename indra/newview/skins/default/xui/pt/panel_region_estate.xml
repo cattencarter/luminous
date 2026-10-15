@@ -1,0 +1,31 @@
+<?xml version="1.0" encoding="utf-8" standalone="yes"?>
+<panel label="Propriedade" name="Estate">
+	<text name="estate_help_text">
+		As alterações afetam todas as regiões da propriedade.
+	</text>
+	<text name="estate_text">
+		Propriedade:
+	</text>
+	<text name="estate_name">
+		(desconhecida)
+	</text>
+	<text name="owner_text">
+		Proprietário da propriedade:
+	</text>
+	<text name="estate_owner">
+		(desconhecido)
+	</text>
+	
+	<radio_group name="externally_visible_radio" width="310">
+		<radio_item label="Permitir apenas residentes e grupos listados na aba &quot;Acesso&quot;" name="estate_restricted_access"/>
+		<radio_item label="Permitir acesso a todos" name="estate_public_access"/>
+	</radio_group>
+	<check_box label="Ter 18 anos ou mais" name="limit_age_verified" tool_tip="Para visitar esta propriedade, os residentes precisam ter pelo menos 18 anos. Mais informações em [SUPPORT_SITE]."/>
+	<check_box label="Ter informações de pagamento cadastradas" name="limit_payment" tool_tip="Para visitar esta propriedade, os residentes precisam ter informações de pagamento cadastradas. Mais informações em [SUPPORT_SITE]."/>
+	<check_box label="Não ser um agente com script (bot)" name="limit_bots" tool_tip="Para visitar esta propriedade, os residentes não podem ser agentes com script (bots). Mais informações em [SUPPORT_SITE]."/>
+	<check_box label="Proprietários de parcelas podem ser mais restritivos" name="parcel_access_override"/>
+	<check_box label="Permitir chat de voz" name="voice_chat_check"/>
+	<check_box label="Permitir teleporte direto" name="allow_direct_teleport"/>
+	<button label="Enviar mensagem para a propriedade" name="message_estate_btn"/>
+	<button label="Expulsar residente" name="kick_user_from_estate_btn"/>
+</panel>

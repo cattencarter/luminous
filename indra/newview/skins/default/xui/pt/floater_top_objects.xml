@@ -1,0 +1,70 @@
+<?xml version="1.0" encoding="utf-8" standalone="yes"?>
+<floater name="top_objects" title="Principais objetos" min_width="690">
+	<floater.string name="top_scripts_title">
+		Principais scripts
+	</floater.string>
+	<floater.string name="top_scripts_text">
+		[COUNT] scripts consumindo um total de [TIME] ms e [MEMORY] KB
+	</floater.string>
+	<floater.string name="scripts_score_label">
+		Tempo
+	</floater.string>
+	<floater.string name="top_colliders_title">
+		Principais colisores
+	</floater.string>
+	<floater.string name="top_colliders_text">
+		Principais [COUNT] objetos com muitas colisões potenciais
+	</floater.string>
+	<floater.string name="colliders_score_label">
+		Pontuação
+	</floater.string>
+	<floater.string name="none_descriptor">
+		Nenhum encontrado.
+	</floater.string>
+	<floater.string name="URLs">
+		URLs
+	</floater.string>
+	<floater.string name="memory">
+		Memória (KB)
+	</floater.string>
+	<text name="title_text">
+		Carregando...
+	</text>
+	<scroll_list name="objects_list">
+		<scroll_list.columns label="Pontuação" name="score" width="65"/>
+		<scroll_list.columns label="Nome" name="name"/>
+		<scroll_list.columns label="Proprietário" name="owner"/>
+		<scroll_list.columns label="Posição" name="location"/>
+		<scroll_list.columns label="Parcela" name="parcel"/>
+		<scroll_list.columns label="Data" name="time"/>
+		<scroll_list.columns label="URLs" name="URLs"/>
+		<scroll_list.columns label="Memória (KB)" name="memory"/>
+	</scroll_list>
+	<text name="id_text">
+		ID do objeto:
+	</text>
+	<line_editor name="id_editor" width="560"/>
+	<button label="Mostrar beacon" name="show_beacon_btn" width="108"/>
+	<text name="obj_name_text">
+		Nome do objeto:
+	</text>
+	<line_editor name="object_name_editor" width="560"/>
+	<button label="Filtrar" name="filter_object_btn" width="108"/>
+	<text name="owner_name_text">
+		Proprietário:
+	</text>
+	<line_editor name="owner_name_editor" width="560"/>
+	<button label="Filtrar" name="filter_owner_btn" width="108"/>
+	<text name="parcel_name_text">
+		Parcela:
+	</text>
+	<line_editor name="parcel_name_editor" width="560"/>
+	<button label="Filtrar" name="filter_parcel_btn" width="108"/>
+	<button label="Atualizar" name="refresh_btn" width="108"/>
+	<button label="Devolver selecionados" name="return_selected_btn" width="134"/>
+	<button label="Devolver todos" name="return_all_btn" left_pad="5" width="110"/>
+	<button label="Teleportar para" name="teleport_to_btn" left_pad="5" width="110"/>
+	<button label="Perfil" name="profile_btn" left_pad="5" width="80"/>
+	<button label="Info do script" name="script_info_btn" left_pad="5" width="80"/>
+	<button label="Estate: expulsar" name="estate_kick_btn" left_pad="5" width="134"/>
+</floater>

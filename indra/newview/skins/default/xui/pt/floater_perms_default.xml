@@ -1,0 +1,49 @@
+<?xml version="1.0" encoding="utf-8" standalone="yes" ?>
+<floater name="perms default" title="Permissões padrão de criação">
+	<panel name="default permissions" label="Permissões padrão">
+		<text name="label_1">
+			Próximo proprietário:
+		</text>
+		<text name="label_2">
+			Copiar
+		</text>
+		<text name="label_3">
+			Modificar
+		</text>
+		<text name="label_4">
+			Transferir
+		</text>
+		<text name="label_5">
+			Compartilhar com grupo
+		</text>
+		<text name="label_6">
+			Permitir cópia para todos
+		</text>
+		<text name="label_7" tool_tip="Definir permissões padrão para criação de objetos">
+			Objetos
+		</text>
+		<text name="label_8" tool_tip="Permissões padrão para objetos enviados">
+			Uploads
+		</text>
+		<text name="label_9" tool_tip="Permissões padrão para scripts criados">
+			Scripts
+		</text>
+		<text name="label_10" tool_tip="Definir permissões padrão para criação de notecards">
+			Notecards
+		</text>
+		<text name="label_11" tool_tip="Definir permissões padrão para criação de gestos">
+			Gestos
+		</text>
+		<text name="label_12" tool_tip="Definir permissões padrão para criação de roupas e partes do corpo">
+			Itens vestíveis
+		</text>
+		<text name="label_13" tool_tip="Definir permissões padrão para criação de configurações de ambiente">
+			Configurações
+		</text>
+		<text name="label_14" tool_tip="Definir permissões padrão para criação de materiais GLTF">
+			Materiais
+		</text>
+	</panel>
+	<button label="OK" label_selected="OK" name="ok"/>
+	<button label="Cancelar" label_selected="Cancelar" name="cancel"/>
+</floater>

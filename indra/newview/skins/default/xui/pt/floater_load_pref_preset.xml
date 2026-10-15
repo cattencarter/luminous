@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="utf-8"?>
+<floater name="load_pref_preset" title="Carregar predefinição">
+	<string name="title_graphic">
+		Carregar predefinição gráfica
+	</string>
+	<string name="title_camera">
+		Carregar predefinição de câmera
+	</string>
+	<text name="Preset">
+		Selecione uma predefinição:
+	</text>
+	<button label="OK" name="ok"/>
+	<button label="Cancelar" name="cancel"/>
+</floater>

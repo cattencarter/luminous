@@ -1,0 +1,28 @@
+<?xml version="1.0" encoding="utf-8"?>
+<panel label="Configurações de dispositivo" name="device_settings_panel">
+	<panel.string name="default_text">
+		Padrão
+	</panel.string>
+	<string name="name_no_device">
+		Nenhum dispositivo
+	</string>
+	<string name="name_default_system_device">
+		Dispositivo padrão do sistema
+	</string>
+	<string name="device_not_loaded">
+		Dispositivo não carregado
+	</string>
+	<text name="Input">
+		Entrada
+	</text>
+	<text name="Output">
+		Saída
+	</text>
+	<text name="My volume label" width="100">
+		Volume do microfone:
+	</text>
+	<slider_bar name="mic_volume_slider" tool_tip="Altere o nível do microfone com este controle deslizante"/>
+	<text name="wait_text">
+		Aguarde
+	</text>
+</panel>

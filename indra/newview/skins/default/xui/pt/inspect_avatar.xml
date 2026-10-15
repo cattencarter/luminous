@@ -1,0 +1,25 @@
+<?xml version="1.0" encoding="utf-8" standalone="yes"?>
+<!--
+  Not can_close / no title to avoid window chrome
+  Single instance - only have one at a time, recycle it each spawn
+-->
+<floater name="inspect_avatar">
+	<string name="Subtitle">
+		[AGE]
+	</string>
+	<string name="Details">
+		[SL_PROFILE]
+	</string>
+	<text name="user_subtitle" value="11 meses e 3 dias de idade"/>
+	<text name="user_details">
+		Esta é a minha descrição no Second Life e eu acho ela muito boa! Ela só ficou longa porque eu gosto de conversar bastante.
+	</text>
+	<slider name="volume_slider" tool_tip="Volume da voz"/>
+	<button label="Adicionar amigo" name="add_friend_btn"/>
+	<button label="IM" name="im_btn"/>
+	<button label="Perfil" name="view_profile_btn"/>
+	<panel name="moderator_panel">
+		<button label="Desativar voz" name="disable_voice"/>
+		<button label="Ativar voz" name="enable_voice"/>
+	</panel>
+</floater>

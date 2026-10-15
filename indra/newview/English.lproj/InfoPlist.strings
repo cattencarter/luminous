@@ -1,0 +1,10 @@
+/* Localized versions of Info.plist keys */
+
+/* <Lumen> These override Info.plist at runtime: CFBundleName here is what
+   macOS puts in the menu bar, not the one in Info.plist. The copyright line
+   keeps Firestorm's notice, as the LGPL asks. */
+
+CFBundleName = "Luminous";
+
+CFBundleShortVersionString = "Luminous version %%VERSION%%";
+CFBundleGetInfoString = "Luminous version %%VERSION%%, Copyright 2026 Catten Carter. Based on the Phoenix Firestorm Viewer's source code, Copyright 2010-2026 The Phoenix Firestorm Project, Inc.";

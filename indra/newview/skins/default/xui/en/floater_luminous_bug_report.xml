@@ -1,0 +1,210 @@
+<?xml version="1.0" encoding="utf-8" standalone="yes" ?>
+<!-- <Luminous> Report a bug: the user's report, with the viewer log (a tick,
+     ticked as it opens) and, if the user wants, a picture. Sent to
+     Needful's bug report API by LuminousBugReportFloater, only when Send is
+     clicked. -->
+<floater
+ can_close="true"
+ can_minimize="false"
+ can_resize="false"
+ height="566"
+ layout="topleft"
+ name="luminous_bug_report"
+ positioning="centered"
+ save_rect="true"
+ single_instance="true"
+ title="Report a bug"
+ width="440">
+	<text
+	 follows="left|top"
+	 height="30"
+	 layout="topleft"
+	 left="12"
+	 name="intro"
+	 top="24"
+	 width="416"
+	 wrap="true">Tell us what went wrong. The report goes to Needful, who make Luminous.</text>
+	<text
+	 follows="left|top"
+	 height="16"
+	 layout="topleft"
+	 left="12"
+	 name="summary_label"
+	 top="60"
+	 width="110">Summary</text>
+	<line_editor
+	 follows="left|top"
+	 height="22"
+	 layout="topleft"
+	 left="124"
+	 max_length_chars="150"
+	 name="summary"
+	 tool_tip="One line: what went wrong."
+	 top="56"
+	 width="304" />
+	<text
+	 follows="left|top"
+	 height="16"
+	 layout="topleft"
+	 left="12"
+	 name="category_label"
+	 top="88"
+	 width="110">Kind</text>
+	<combo_box
+	 follows="left|top"
+	 height="22"
+	 layout="topleft"
+	 left="124"
+	 name="category"
+	 top="84"
+	 width="200">
+		<combo_box.item label="Something else" name="other" value="other" />
+		<combo_box.item label="Crash" name="crash" value="crash" />
+		<combo_box.item label="Renders and snapshots" name="snapshot" value="snapshot" />
+		<combo_box.item label="Graphics" name="graphics" value="graphics" />
+		<combo_box.item label="Logging in" name="login" value="login" />
+		<combo_box.item label="Windows and buttons" name="ui" value="ui" />
+	</combo_box>
+	<text
+	 follows="left|top"
+	 height="16"
+	 layout="topleft"
+	 left="12"
+	 name="details_label"
+	 top="116"
+	 width="416">What happened</text>
+	<text_editor
+	 follows="left|top"
+	 height="100"
+	 layout="topleft"
+	 left="12"
+	 max_length="5000"
+	 name="details"
+	 tool_tip="What you did, what you saw, and what you expected instead."
+	 top="134"
+	 width="416"
+	 word_wrap="true" />
+	<text
+	 follows="left|top"
+	 height="16"
+	 layout="topleft"
+	 left="12"
+	 name="steps_label"
+	 top="242"
+	 width="416">How to make it happen again (if you know)</text>
+	<text_editor
+	 follows="left|top"
+	 height="70"
+	 layout="topleft"
+	 left="12"
+	 max_length="3000"
+	 name="steps"
+	 tool_tip="Step by step, from a fresh start if you can."
+	 top="260"
+	 width="416"
+	 word_wrap="true" />
+	<text
+	 follows="left|top"
+	 height="16"
+	 layout="topleft"
+	 left="12"
+	 name="email_label"
+	 top="342"
+	 width="110">Email (optional)</text>
+	<line_editor
+	 follows="left|top"
+	 height="22"
+	 layout="topleft"
+	 left="124"
+	 max_length_chars="254"
+	 name="email"
+	 tool_tip="Only if you would like an answer."
+	 top="338"
+	 width="304" />
+	<check_box
+	 follows="left|top"
+	 height="16"
+	 label="Include the viewer log"
+	 layout="topleft"
+	 left="12"
+	 name="include_log"
+	 tool_tip="What the viewer wrote down while it ran. Bugs are hard to find without it."
+	 top="370"
+	 width="416" />
+	<check_box
+	 follows="left|top"
+	 height="16"
+	 label="Include the log from the last session"
+	 layout="topleft"
+	 left="12"
+	 name="include_previous_log"
+	 tool_tip="The log from before this session: the one that tells what happened if the viewer crashed."
+	 top="392"
+	 width="416" />
+	<check_box
+	 follows="left|top"
+	 height="16"
+	 label="Attach a picture"
+	 layout="topleft"
+	 left="12"
+	 name="include_picture"
+	 tool_tip="A screenshot or a render that shows the problem."
+	 top="414"
+	 width="140" />
+	<text
+	 follows="left|top"
+	 height="16"
+	 layout="topleft"
+	 left="154"
+	 name="picture_name"
+	 top="414"
+	 use_ellipses="true"
+	 width="190">No picture chosen</text>
+	<button
+	 follows="left|top"
+	 height="22"
+	 label="Choose..."
+	 layout="topleft"
+	 left="348"
+	 name="choose_picture"
+	 tool_tip="Choose a PNG, JPEG, BMP or TGA picture."
+	 top="411"
+	 width="80" />
+	<text
+	 follows="left|top"
+	 height="44"
+	 layout="topleft"
+	 left="12"
+	 name="what_is_sent"
+	 text_color="LtGray_50"
+	 top="442"
+	 width="416"
+	 wrap="true">Sent with the report: your avatar name, the region and grid, the viewer's version and your Mac's details. The logs hold avatar and region names and server addresses.</text>
+	<text
+	 follows="left|top"
+	 height="34"
+	 layout="topleft"
+	 left="12"
+	 name="status"
+	 top="492"
+	 width="416"
+	 wrap="true" />
+	<button
+	 follows="left|top"
+	 height="24"
+	 label="Cancel"
+	 layout="topleft"
+	 left="244"
+	 name="cancel"
+	 top="532"
+	 width="88" />
+	<button
+	 follows="left|top"
+	 height="24"
+	 label="Send"
+	 layout="topleft"
+	 left="340"
+	 name="send"
+	 top="532"
+	 width="88" />
+</floater>

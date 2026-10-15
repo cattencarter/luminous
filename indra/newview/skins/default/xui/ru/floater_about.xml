@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="utf-8" standalone="yes"?>
+<floater name="floater_about" title="O [APP_NAME]">
+	<tab_container name="about_tab">
+		<panel label="Информация" name="support_panel">
+			<button label="Копировать в буфер" name="copy_btn"/>
+		</panel>
+		<panel label="Благодарности" name="credits_panel">
+			<text name="contrib_intro">
+				с вкладом open source от:
+			</text>
+			<text name="trans_intro">
+				и переводами от:
+			</text>
+		</panel>
+		<panel label="Лицензии" name="licenses_panel" />
+	</tab_container>
+</floater>

@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="utf-8" standalone="yes"?>
+<panel label="Segurança" name="Media Settings Security">
+	<check_box initial_value="false" label="Permitir acesso apenas aos padrões de URL especificados" name="whitelist_enable"/>
+	<text name="home_url_fails_some_items_in_whitelist">
+		Entradas incompatíveis com a página inicial estão marcadas:
+	</text>
+	<button label="Adicionar" name="whitelist_add"/>
+	<button label="Excluir" name="whitelist_del"/>
+	<text name="home_url_fails_whitelist">
+		Aviso: a página inicial definida na aba Geral não passa nesta lista branca. Ela foi desativada até que uma entrada válida seja adicionada.
+	</text>
+</panel>

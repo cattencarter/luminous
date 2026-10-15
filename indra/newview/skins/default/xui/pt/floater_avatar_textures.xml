@@ -1,0 +1,66 @@
+<?xml version="1.0" encoding="utf-8" standalone="yes"?>
+<floater name="avatar_texture_debug" title="Texturas do avatar">
+	<floater.string name="InvalidAvatar">
+		AVATAR INVÁLIDO
+	</floater.string>
+	<scroll_container name="profile_scroll">
+		<panel name="scroll_content_panel">
+			<text name="label">
+				Texturas
+assadas
+			</text>
+			<text name="composite_label">
+				Texturas
+compostas
+			</text>
+			<button label="Enviar IDs ao console" label_selected="Enviar" name="Dump"/>
+			<panel name="scroll_content_panel2">
+				<texture_picker label="Cabelo" name="hair-baked"/>
+				<texture_picker label="Cabelo" name="hair_grain"/>
+				<texture_picker label="Alpha: cabelo" name="hair_alpha"/>
+				<texture_picker label="Tatuagem do cabelo" name="hair_tattoo"/>
+				<texture_picker label="Cabeça" name="head-baked"/>
+				<texture_picker label="Maquiagem" name="head_bodypaint"/>
+				<texture_picker label="Cabeça: alpha" name="head_alpha"/>
+				<texture_picker label="Tatuagem da cabeça" name="head_tattoo"/>
+				<texture_picker label="Cabeça: tatuagem univ." name="head_universal_tattoo"/>
+				<texture_picker label="Olhos" name="eyes-baked"/>
+				<texture_picker label="Olho" name="eyes_iris"/>
+				<texture_picker label="Alpha: olhos" name="eyes_alpha"/>
+				<texture_picker label="Olhos: tatuagem univ." name="eyes_tattoo"/>
+				<texture_picker label="Parte superior" name="upper-baked"/>
+				<texture_picker label="Corpo superior" name="upper_bodypaint"/>
+				<texture_picker label="Camiseta" name="upper_undershirt"/>
+				<texture_picker label="Luvas" name="upper_gloves"/>
+				<texture_picker label="Camisa" name="upper_shirt"/>
+				<texture_picker label="Jaqueta superior" name="upper_jacket"/>
+				<texture_picker label="Alpha: superior" name="upper_alpha"/>
+				<texture_picker label="Tatuagem superior" name="upper_tattoo"/>
+				<texture_picker label="Tatuagem univ. superior" name="upper_universal_tattoo"/>
+				<texture_picker label="Parte inferior" name="lower-baked"/>
+				<texture_picker label="Corpo inferior" name="lower_bodypaint"/>
+				<texture_picker label="Cueca" name="lower_underpants"/>
+				<texture_picker label="Meias" name="lower_socks"/>
+				<texture_picker label="Sapatos" name="lower_shoes"/>
+				<texture_picker label="Calça" name="lower_pants"/>
+				<texture_picker label="Jaqueta" name="lower_jacket"/>
+				<texture_picker label="Alpha: inferior" name="lower_alpha"/>
+				<texture_picker label="Tatuagem inferior" name="lower_tattoo"/>
+				<texture_picker label="Tatuagem univ. inferior" name="lower_universal_tattoo"/>
+				<texture_picker label="Saia" name="skirt-baked"/>
+				<texture_picker label="Saia" name="skirt"/>
+				<texture_picker label="Tatuagem da saia" name="skirt_tattoo"/>
+				<texture_picker label="Braço esquerdo" name="leftarm-baked"/>
+				<texture_picker label="Tatuagem univ. braço esq." name="leftarm_tattoo"/>
+				<texture_picker label="Perna esquerda" name="leftleg-baked"/>
+				<texture_picker label="Tatuagem univ. perna esq." name="leftleg_tattoo"/>
+				<texture_picker label="AUX 1" name="aux1-baked"/>
+				<texture_picker label="Tatuagem AUX 1" name="aux1_tattoo"/>
+				<texture_picker label="AUX 2" name="aux2-baked"/>
+				<texture_picker label="Tatuagem AUX 2" name="aux2_tattoo"/>
+				<texture_picker label="AUX 3" name="aux3-baked"/>
+				<texture_picker label="Tatuagem AUX 3" name="aux3_tattoo"/>
+			</panel>
+		</panel>
+	</scroll_container>
+</floater>

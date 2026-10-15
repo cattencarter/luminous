@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="utf-8" standalone="yes"?>
+<floater name="preview lsl text" title="Script: Script de rotação">
+	<floater.string name="Title">
+		Script: [NAME]
+	</floater.string>
+	<text name="path_txt" tool_tip="Local no inventário: [PATH]">Local no inventário: [PATH]</text>
+	<text name="desc txt" width="90">
+		Descrição:
+	</text>
+    <line_editor left_delta="90" name="desc"/>
+</floater>

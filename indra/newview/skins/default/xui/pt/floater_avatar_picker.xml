@@ -1,0 +1,75 @@
+<?xml version="1.0" encoding="utf-8" standalone="yes"?>
+<floater name="avatarpicker" title="Escolher residente">
+	<floater.string name="not_found">
+		&apos;[TEXT]&apos; não encontrado
+	</floater.string>
+	<floater.string name="not_found_text">
+		Residente não encontrado.
+	</floater.string>
+	<floater.string name="no_one_near">
+		Ninguém por perto
+	</floater.string>
+	<floater.string name="no_results">
+		Sem resultados
+	</floater.string>
+	<floater.string name="searching">
+		Buscando...
+	</floater.string>
+	<string label="OK" label_selected="OK" name="Select">
+		Selecionar
+	</string>
+	<string name="Close">
+		Fechar
+	</string>
+	<tab_container name="ResidentChooserTabs">
+		<panel label="Buscar" name="SearchPanel">
+			<text name="InstructSearchResidentName">
+				Digite parte do nome de uma pessoa:
+			</text>
+			<button label="Ir" label_selected="Ir" name="Find"/>
+			<fs_scroll_list name="SearchResults">
+				<columns label="Nome" name="name"/>
+				<columns label="Nome de usuário" name="username"/>
+			</fs_scroll_list>
+		</panel>
+		<panel label="Amigos" name="FriendsPanel">
+			<text name="InstructSelectFriend">
+				Selecione uma pessoa:
+			</text>
+			<fs_scroll_list name="Friends">
+				<columns label="Nome" name="name"/>
+				<columns label="Nome de usuário" name="username"/>
+			</fs_scroll_list>
+		</panel>
+		<panel label="Perto de mim" name="NearMePanel">
+			<text name="InstructSelectResident">
+				Selecione uma pessoa próxima:
+			</text>
+			<slider label="Alcance" name="near_me_range"/>
+			<text name="meters">
+				Metros
+			</text>
+			<fs_scroll_list name="NearMe">
+				<columns label="Nome" name="name"/>
+				<columns label="Nome de usuário" name="username"/>
+			</fs_scroll_list>
+		</panel>
+		<panel label="Buscar por UUID" name="SearchPanelUUID">
+			<text name="SearchByUUIDLabel">
+				Digite a UUID de uma pessoa:
+			</text>
+			<button label="Ir" label_selected="Ir" name="FindUUID"/>
+			<fs_scroll_list name="SearchResultsUUID">
+				<columns label="Nome" name="nameUUID"/>
+				<columns label="Nome de usuário" name="usernameUUID"/>
+			</fs_scroll_list>
+		</panel>
+		<panel label="Conjuntos de contato" name="ContactSetsPanel">
+			<text name="SelectContactSetLabel">
+				Selecione um conjunto de contatos:
+			</text>
+		</panel>
+	</tab_container>
+	<button label="OK" label_selected="OK" name="ok_btn"/>
+	<button label="Cancelar" label_selected="Cancelar" name="cancel_btn"/>
+</floater>

@@ -1,0 +1,31 @@
+<?xml version="1.0" encoding="utf-8" standalone="yes"?>
+<panel label="Experiências" name="Experiences">
+	<panel.string name="trusted_estate_text">
+		Qualquer experiência pode ser uma experiência-chave.
+Experiências-chave podem ser executadas nesta propriedade.
+Se a propriedade não permitir acesso público, os residentes poderão entrar e permanecer nela desde que estejam envolvidos em alguma experiência-chave.
+	</panel.string>
+	<panel.string name="allowed_estate_text">
+		Apenas experiências com escopo de terreno podem ser permitidas.
+
+Experiências permitidas podem ser executadas nesta propriedade.
+	</panel.string>
+	<panel.string name="blocked_estate_text">
+		Apenas experiências com escopo de grid podem ser bloqueadas.
+      
+Experiências bloqueadas não podem ser executadas nesta propriedade.
+	</panel.string>
+	<panel.string name="estate_caption">
+		As alterações afetam todas as regiões da propriedade.
+	</panel.string>
+	<panel.string name="allowed_parcel_text">
+		Apenas experiências com escopo de terreno podem ser permitidas.
+      
+Experiências permitidas podem ser executadas nesta parcela, desde que não estejam bloqueadas pela propriedade.
+	</panel.string>
+	<panel.string name="blocked_parcel_text">
+		Qualquer experiência de residente pode ser bloqueada.
+      
+Experiências bloqueadas não podem ser executadas nesta parcela.
+	</panel.string>
+</panel>

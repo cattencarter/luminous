@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="utf-8" standalone="yes" ?>
+<floater name="floater_fs_wearable_favorites" title="Objets portés préférés">
+	<floater.string name="empty_list">
+		Faites glisser les objets ici pour les ajouter à la liste.
+	</floater.string>
+	<floater.string name="search_no_items">
+		Aucun élément ne correspond.
+	</floater.string>
+	<floater.string name="root_folder_label">
+		Tous les favoris
+	</floater.string>
+	<panel name="buttons_panel">
+		<button name="new_folder_btn" tool_tip="Créer un nouveau dossier de favoris"/>
+		<button name="rename_folder_btn" tool_tip="Renommer le dossier de favoris sélectionné"/>
+		<button name="delete_folder_btn" tool_tip="Supprimer le dossier de favoris sélectionné"/>
+		<filter_editor label="Filtrer les objets" name="wearable_filter_input" />
+		<menu_button name="options_btn" tool_tip="Options des objets portés préférés" />
+		<button name="remove_btn" tool_tip="Supprimer un élément de la liste des objets portés préférés" />
+	</panel>
+</floater>

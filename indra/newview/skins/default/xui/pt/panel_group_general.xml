@@ -1,0 +1,72 @@
+<?xml version="1.0" encoding="utf-8" standalone="yes"?>
+<panel label="Geral" name="general_tab">
+	<panel.string name="help_text">
+		A aba Geral contém informações gerais sobre este grupo, uma lista de membros, configurações gerais do grupo e opções de membros.
+
+Passe o mouse sobre as opções para exibir mais informações.
+	</panel.string>
+	<panel.string name="group_info_unchanged">
+		As informações gerais do grupo foram alteradas.
+	</panel.string>
+	<panel.string name="incomplete_member_data_str">
+		Carregando dados dos membros
+	</panel.string>
+	
+	<panel name="group_general_panel">
+		<text name="group_key_label" width="85">
+			UUID do grupo:
+		</text>
+		<text_editor name="group_key" label="UUID do grupo:" initial_value="(carregando...)"/>
+		<button name="copy_uri" label="Copiar URI"/>
+		<text name="prepend_founded_by" width="85">
+			Fundador:
+		</text>
+		<name_box initial_value="(carregando...)" name="founder_name"/>
+		<button name="copy_name" label="Copiar nome"/>
+		<text_editor name="charter">
+			Carta do grupo
+		</text_editor>
+		<text name="join_cost_text" width="230">
+			Gratuito
+		</text>
+		<button label="Entrar agora!" name="btn_join" />
+		<name_list name="visible_members">
+			<name_list.columns label="Membro" name="name" relwidth="0.40"/>
+			<name_list.columns label="Título" name="title" relwidth="0.25"/>
+			<name_list.columns label="Status" name="status"/>
+		</name_list>
+		
+		<layout_stack name="group_preferences_layout">
+			<layout_panel name="user_preferences_container">
+				<text name="my_group_settngs_label">
+					Configurações pessoais
+				</text>
+				<check_box label="Mostrar no meu perfil" name="list_groups_in_profile" tool_tip="Controla se este grupo será exibido no seu perfil"/>
+				<check_box label="Receber avisos do grupo" name="receive_notices" tool_tip="Define se você pode receber avisos deste grupo. Desative esta opção se estiver recebendo spam do grupo."/>
+				<check_box label="Participar do chat em grupo" name="receive_chat" tool_tip="Define se você deseja participar do chat em grupo deste grupo."/>
+				<text name="active_title_label">
+					Meu título ativo:
+				</text>
+				<combo_box name="active_title" tool_tip="Define o que será mostrado no nome exibido do seu avatar quando este grupo estiver ativo."/>
+			</layout_panel>
+			<layout_panel name="group_preferences_container">
+				<text name="group_settngs_label">
+					Configurações do grupo:
+				</text>
+				<check_box initial_value="true" label="Mostrar na busca" name="show_in_group_list" tool_tip="Mostrar este grupo nos resultados da busca"/>
+				<check_box label="Qualquer pessoa pode entrar" name="open_enrollement" tool_tip="Define se é permitido entrar no grupo sem convite."/>
+				<check_box label="Cobrar taxa de entrada" name="check_enrollment_fee" tool_tip="Define se novos membros devem pagar taxa de entrada"/>
+				<spinner label="L$" name="spin_enrollment_fee" tool_tip="Se a taxa de entrada estiver ativada, novos membros devem pagar este valor."/>
+				<combo_box name="group_mature_check" tool_tip="Define se o seu grupo contém conteúdo classificado como moderado">
+					<combo_item name="select_mature">
+						- Selecionar classificação de conteúdo -
+					</combo_item>
+					<combo_box.item label="Conteúdo moderado" name="mature"/>
+					<combo_box.item label="Conteúdo geral" name="pg"/>
+				</combo_box>
+
+			</layout_panel>
+			
+		</layout_stack>
+	</panel>
+</panel>

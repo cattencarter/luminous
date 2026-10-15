@@ -1,0 +1,100 @@
+<!doctype html>
+<!--
+  The start screen.
+
+  Deliberately local and deliberately plain: it ships with the viewer, loads
+  instantly, works offline, and says nothing that is not true. No other
+  viewer's branding or server stands in front of this viewer's users.
+-->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Luminous</title>
+<style>
+  html, body {
+    height: 100%;
+    margin: 0;
+    background: #101018;
+    color: #e8e8ef;
+    font-family: -apple-system, "Helvetica Neue", Helvetica, Arial, sans-serif;
+    -webkit-font-smoothing: antialiased;
+  }
+  .wrap {
+    height: 100%;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    text-align: center;
+    padding: 0 2rem;
+    box-sizing: border-box;
+  }
+  .mark {
+    width: 190px;
+    height: 190px;
+    margin-bottom: 1.6rem;
+    /* If the logo file is absent the page still reads correctly. */
+    background: no-repeat center / contain url("luminous_logo.png");
+  }
+  h1 {
+    margin: 0;
+    font-size: 2.5rem;
+    font-weight: 300;
+    letter-spacing: 0.16em;
+    text-transform: uppercase;
+  }
+  p.by {
+    margin: 0.5rem 0 0;
+    font-size: 1rem;
+    color: #c9b98a;
+    letter-spacing: 0.08em;
+  }
+  p.by a {
+    color: inherit;
+    text-decoration: none;
+    border-bottom: 1px solid rgba(201, 185, 138, 0.4);
+  }
+  p.sub {
+    margin: 0.6rem 0 0;
+    font-size: 0.95rem;
+    color: #9aa0b4;
+    letter-spacing: 0.03em;
+  }
+  p.note {
+    margin-top: 2.4rem;
+    font-size: 0.8rem;
+    color: #5f6478;
+    max-width: 30rem;
+    line-height: 1.5;
+  }
+</style>
+</head>
+<body>
+  <div class="wrap">
+    <div class="mark" role="img" aria-label="Luminous"></div>
+    <h1>Luminous</h1>
+    <!-- Luminous by Needful; opens in the browser -->
+    <p class="by">by <a href="https://needfulsl.com" target="_external">Needful</a></p>
+    <p class="sub">A Second Life Viewer</p>
+    <p class="note">
+      Sign in below to begin.
+    </p>
+  </div>
+  <script>
+    // A still page paints only when something on it changes, and after the
+    // window is resized the browser's first paint at the new size can be
+    // lost: the page then stays black until it is reloaded. So it paints
+    // itself again a few times after each resize -- an opacity no one can see.
+    (function () {
+      var timers = [];
+      function nudge() {
+        document.body.style.opacity = document.body.style.opacity === "0.999" ? "1" : "0.999";
+      }
+      window.addEventListener("resize", function () {
+        timers.forEach(clearTimeout);
+        timers = [50, 250, 750, 1500].map(function (ms) { return setTimeout(nudge, ms); });
+      });
+    })();
+  </script>
+</body>
+</html>

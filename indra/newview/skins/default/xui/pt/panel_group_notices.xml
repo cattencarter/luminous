@@ -1,0 +1,67 @@
+<?xml version="1.0" encoding="utf-8" standalone="yes"?>
+<panel label="Avisos" name="notices_tab">
+	<panel.string name="help_text">
+		Com avisos, você pode enviar uma mensagem e também um anexo.
+Avisos são enviados apenas para membros do grupo cuja função permite receber avisos.
+Na aba "Geral", você pode escolher se deseja receber avisos.
+	</panel.string>
+	<panel.string name="no_notices_text">
+		Não há avisos antigos.
+	</panel.string>
+	<text name="lbl2">
+		Os avisos ficam armazenados por 14 dias.
+Máximo de 200 por grupo diariamente
+	</text>
+	<scroll_list name="notice_list">
+		<scroll_list.columns label="" name="icon"/>
+		<scroll_list.columns label="Thema" name="subject"/>
+		<scroll_list.columns label="Von" name="from"/>
+		<scroll_list.columns label="Datum" name="date"/>
+	</scroll_list>
+	<button label="Novo aviso" label_selected="Novo aviso" name="create_new_notice" tool_tip="Criar novo aviso" width="120"/>
+	<button label="Atualizar" label_selected="Atualizar lista" name="refresh_notices" tool_tip="Atualizar lista de avisos"/>
+	<text name="notice_list_none_found">
+		Não encontrado.
+	</text>
+
+	<panel label="Novo aviso" name="panel_create_new_notice">
+		<text name="lbl">
+			Escrever aviso
+		</text>
+		<text name="lbl3">
+			Betreff:
+		</text>
+		<text name="lbl4">
+			Mensagem:
+		</text>
+		<text name="lbl5">
+			Anexar:
+		</text>
+		<text name="drag_and_drop_help">
+			Arraste e solte o objeto aqui para anexá-lo:
+		</text>
+		<button label="Inventário" name="open_inventory" tool_tip="Abrir inventário"/>
+		<button label="Remover" label_selected="Remover anexo" name="remove_attachment" tool_tip="Remover anexo do seu aviso"/>
+		<button label="Senden" label_selected="Senden" name="send_notice"/>
+		<group_drop_target name="drop_target" tool_tip="Arraste um objeto do seu inventário para este campo para enviá-lo com este aviso. Para anexar o objeto, você precisa ter permissão de copiar e transferir."/>
+	</panel>
+	
+	<panel label="Mostrar aviso antigo" name="panel_view_past_notice">
+		<text name="lbl6">
+			Aviso arquivado
+		</text>
+		<text name="lbl7">
+			Para enviar um novo aviso, clique em + Novo aviso
+		</text>
+		<text name="lbl8">
+			Betreff:
+		</text>
+		<text name="lbl9">
+			Mensagem:
+		</text>
+		<text name="lbl10">
+			Anexo:
+		</text>
+		<button label="Abrir anexo" label_selected="Abrir anexo" name="open_attachment"/>
+	</panel>
+</panel>

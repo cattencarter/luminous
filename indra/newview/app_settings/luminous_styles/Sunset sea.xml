@@ -1,0 +1,49 @@
+<?xml version="1.0" ?>
+<llsd>
+<map>
+    <key>environment</key>
+    <string>Sunset sea</string>
+    <key>sun_offset</key>
+    <real>140.0</real>
+    <key>sun_elevation</key>
+    <real>6.0</real>
+    <key>camera</key>
+    <map>
+      <key>framing</key>
+      <string>half</string>
+    </map>
+    <key>settings</key>
+    <map>
+      <key>RenderDepthOfField</key>
+      <boolean>true</boolean>
+      <key>CameraFNumber</key>
+      <real>5.6</real>
+      <key>CameraMaxCoF</key>
+      <real>15.0</real>
+      <key>LuminousPhotoExposure</key>
+      <real>0.55</real>
+      <key>LuminousPhotoShadows</key>
+      <real>0.6</real>
+      <key>LuminousPhotoHighlights</key>
+      <real>-0.5</real>
+      <key>LuminousPhotoVibrance</key>
+      <real>0.2</real>
+      <key>LuminousPhotoHighlightsWarmth</key>
+      <real>0.15</real>
+      <key>LuminousPhotoBloom</key>
+      <boolean>true</boolean>
+      <key>LuminousPhotoBloomStrength</key>
+      <real>0.12</real>
+      <key>LuminousPhotoLensFlare</key>
+      <real>0.15</real>
+      <key>LuminousPhotoVolumetricDensity</key>
+      <real>0.003</real>
+      <key>LuminousPhotoContactShadowsStrength</key>
+      <real>0.35</real>
+      <key>LuminousPhotoShadowStrength</key>
+      <real>0.85</real>
+      <key>LuminousPhotoShadowSoftness</key>
+      <real>4.0</real>
+    </map>
+  </map>
+</llsd>

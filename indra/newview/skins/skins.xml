@@ -1,0 +1,34 @@
+<llsd>
+  <array>
+
+    <!-- <Lumen> One skin: Luminous, in the `lumen` folder.
+
+         Firestorm's skins are not shipped (AnsaStorm, MetaHarper, StarLight,
+         StarLight CUI, Vintage and Firestorm): most are the work of
+         individual people, made for Firestorm.
+
+         `default` stays on disk because every skin layers over it, but it is
+         not offered here. -->
+
+    <map>
+      <key>name</key>
+      <string>Luminous</string>
+      <key>folder</key>
+      <string>lumen</string>
+
+      <!-- <Lumen> One theme. Firestorm's colour schemes, its High Contrast
+           among them, are credited to their individual authors and made for
+           Firestorm's skins, so none is offered under this skin's name. -->
+      <key>themes</key>
+      <array>
+        <map>
+          <key>name</key>
+          <string>Luminous</string>
+          <key>folder</key>
+          <string/>
+        </map>
+      </array>
+    </map>
+
+  </array>
+</llsd>

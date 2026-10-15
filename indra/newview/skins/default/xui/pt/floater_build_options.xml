@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="utf-8" standalone="yes"?>
+<floater name="build options floater" title="Opções da grade">
+	<spinner label="Unidades (m)" name="GridResolution"/>
+	<spinner label="Extensão da grade (m)" name="GridDrawSize"/>
+	<spinner label="Casas decimais" name="DecimalPrecision"/>
+	<spinner label="Ângulo (graus)" name="RotationStep" tool_tip="Todas as rotações pela ferramenta de rotação são múltiplos deste valor (padrão: 1.0)"/>
+	<check_box label="Alinhar a subunidades" name="GridSubUnit"/>
+	<check_box label="Ver seções transversais" name="GridCrossSection"/>
+	<text name="Snap on">
+		Encaixar em:
+	</text>
+	<radio_group name="FSSnapDomain">
+		<radio_item name="radio inside" label="Interior" tool_tip="Encaixa na face interna da grade."/>
+		<radio_item name="radio outside" label="Exterior" tool_tip="Encaixa na face externa da grade (comportamento clássico)."/>
+	</radio_group>
+	<text name="grid_opacity_label" tool_tip="Opacidade da grade">
+		Opacidade:
+	</text>
+	<slider label="Opacidade da grade" name="GridOpacity"/>
+</floater>

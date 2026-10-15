@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="utf-8" standalone="yes"?>
+<panel name="edit_physics_panel">
+	<panel label="" name="accordion_panel">
+		<accordion name="physics_accordion">
+			<accordion_tab name="physics_breasts_updown_tab" title="Seios – Quicar"/>
+			<accordion_tab name="physics_breasts_inout_tab" title="Seios – Decote"/>
+			<accordion_tab name="physics_breasts_leftright_tab" title="Seios – Balanço"/>
+			<accordion_tab name="physics_belly_tab" title="Barriga – Quicar"/>
+			<accordion_tab name="physics_butt_tab" title="Bumbum – Quicar"/>
+			<accordion_tab name="physics_butt_leftright_tab" title="Bumbum – Balanço"/>
+			<accordion_tab name="physics_advanced_tab" title="Parâmetros avançados"/>
+		</accordion>
+	</panel>
+</panel>

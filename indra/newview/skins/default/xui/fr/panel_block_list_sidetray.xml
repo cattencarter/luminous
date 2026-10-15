@@ -1,0 +1,18 @@
+<?xml version="1.0" encoding="utf-8" standalone="yes"?>
+<panel name="block_list_panel">
+	<string name="no_blocked" value="Aucun résident ni objet n'est bloqué."/>
+	<string name="no_filtered_blocked" value="Aucun résident ou objet bloqué ne correspond à votre recherche."/>
+	<string name="loading_blocked" value="Chargement des résidents et des objets bloqués..."/>
+	<string name="failed_blocked" value="La liste des blocages est actuellement indisponible."/>
+	<panel label="bottom_panel" name="blocked_buttons_panel">
+		<filter_editor label="Filtrer" name="blocked_filter_input"/>
+		<menu_button name="blocked_gear_btn" tool_tip="Actions sur la personne ou l'objet sélectionné"/>
+		<menu_button name="view_btn" tool_tip="Options de tri"/>
+		<menu_button name="plus_btn" tool_tip="Sélectionnez un résident ou un objet à ignorer"/>
+		<button name="unblock_btn" tool_tip="Cesser d'ignorer un résident ou un objet"/>
+	</panel>
+	<text name="block_limit">
+		[COUNT] entrées dans votre liste des ignorés, la limite est de [LIMIT].
+	</text>
+	<block_list name="blocked" tool_tip="Liste des résidents actuellement ignorés"/>
+</panel>

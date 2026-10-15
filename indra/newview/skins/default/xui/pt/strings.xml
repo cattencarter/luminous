@@ -1,0 +1,6738 @@
+<?xml version="1.0" encoding="utf-8" standalone="yes"?>
+<strings>
+	<string name="SECOND_LIFE_GRID">
+		Grid do Second Life:
+	</string>
+	<string name="StartupLoading">
+		Carregando [APP_NAME]...
+	</string>
+	<string name="StartupClearingCache">
+		Limpando cache...
+	</string>
+	<string name="StartupClearingTextureCache">
+		Limpando cache de texturas...
+	</string>
+	<string name="StartupInitializingTextureCache">
+		Inicializando cache de texturas...
+	</string>
+	<string name="StartupRequireDriverUpdate">
+		Falha na inicialização gráfica. Atualize seu driver de vídeo.
+	</string>
+	<string name="AboutHeader">
+		[APP_NAME] [LUMEN_VERSION] [BUILD_DATE] [BUILD_TIME] ([ADDRESS_SIZE]bit / [SIMD]) ([CHANNEL]) [BUILD_TYPE]
+[[VIEWER_RELEASE_NOTES_URL] [ReleaseNotes]]
+Paridade com o Viewer do Second Life: [VIEWER_VERSION_LL]
+	</string>
+	<string name="AboutCompiler">
+		Compilado com [COMPILER], versão [COMPILER_VERSION]
+	</string>
+	<string name="BuildConfig">
+		Configuração de build [BUILD_CONFIG]
+	</string>
+	<string name="AboutPosition">
+		Você está em [POSITION_LOCAL_0,number,1], [POSITION_LOCAL_1,number,1], [POSITION_LOCAL_2,number,1] em [REGION], localizada em &lt;nolink&gt;[HOSTNAME]&lt;/nolink&gt;
+SLURL: &lt;nolink&gt;[SLURL]&lt;/nolink&gt;
+(coordenadas globais [POSITION_0,number,1], [POSITION_1,number,1], [POSITION_2,number,1])
+[SERVER_VERSION]
+[SERVER_RELEASE_NOTES_URL]
+	</string>
+	<string name="AboutPositionRLVShowLoc">
+		Você está em [REGION]
+[SERVER_VERSION]
+[SERVER_RELEASE_NOTES_URL]
+	</string>
+	<string name="AboutSystem">
+		CPU: [CPU]
+Memória: [MEMORY_MB] MB (Usado: [USED_RAM] MB)
+Threads: [CONCURRENCY]
+Versão do SO: [OS_VERSION]
+Fabricante da placa de vídeo: [GRAPHICS_CARD_VENDOR]
+Placa de vídeo: [GRAPHICS_CARD]
+Memória da placa de vídeo: [GRAPHICS_CARD_MEMORY] MB
+Memória da placa de vídeo (Detectada): [GRAPHICS_CARD_MEMORY_DETECTED] MB
+Memória da GPU (Limite): [VRAM_BUDGET]
+	</string>
+	<string name="AboutDriver">
+		Versão do driver gráfico do Windows: [GRAPHICS_DRIVER_VERSION]
+	</string>
+	<string name="AboutOGL">
+		Versão do OpenGL: [OPENGL_VERSION]
+	</string>
+	<string name="AboutSettings">
+Modo de configurações: [MODE]
+Skin do viewer: [SKIN] ([THEME])
+Tamanho da janela: [WINDOW_WIDTH]x[WINDOW_HEIGHT] px
+Fonte usada: [FONT] ([FONT_SCREEN_DPI] dpi)
+Ajuste de tamanho da fonte: [FONT_SIZE] pt
+Escala da interface: [UI_SCALE_FACTOR]
+Distância de renderização: [DRAW_DISTANCE] m
+Largura de banda: [BANDWIDTH] kbit/s
+Fator LOD: [LOD]
+Qualidade de renderização: [RENDERQUALITY]
+	</string>
+	<string name="AboutCache">
+		Cache em disco: [DISK_CACHE_INFO]
+	</string>
+	<string name="AboutOSXHiDPI">
+		Modo de exibição HiDPI: [HIDPI]
+	</string>
+	<string name="AboutLibs">
+RestrainedLove API: [RLV_VERSION]
+Versão do libcurl: [LIBCURL_VERSION]
+Versão do decodificador J2C: [J2C_VERSION]
+Versão do driver de áudio: [AUDIO_DRIVER_VERSION]
+[LIBCEF_VERSION]
+Versão do LibVLC: [LIBVLC_VERSION]
+Versão do servidor de voz: [VOICE_VERSION]
+	</string>
+	<string name="AboutTraffic">
+		Pacotes perdidos: [PACKETS_LOST,number,0]/[PACKETS_IN,number,0] ([PACKETS_PCT,number,1]%)
+	</string>
+	<string name="AboutTime">
+		[month, datetime, slt] [day, datetime, slt] [year, datetime, slt] [hour, datetime, slt]:[min, datetime, slt]:[second,datetime,slt] SLT
+	</string>
+	<string name="LocalTime">
+		[month, datetime, local] [day, datetime, local] [year, datetime, local] [hour, datetime, local]:[min, datetime, local]:[second,datetime, local]
+	</string>
+	<string name="ErrorFetchingServerReleaseNotesURL">
+		Erro ao buscar a URL das notas de versão do servidor.
+	</string>
+	<string name="BuildConfiguration">
+		Configuração de build
+	</string>
+	<string name="ProgressRestoring">
+		Restaurando...
+	</string>
+	<string name="ProgressChangingResolution">
+		Alterando resolução...
+	</string>
+	<string name="Fullbright">
+		Fullbright (legado)
+	</string>
+	<string name="LoginInProgress">
+		Entrando no [APP_NAME]... Aguarde, pode levar alguns instantes.
+	</string>
+	<string name="LoginInProgressNoFrozen">
+		Entrando...
+	</string>
+	<string name="LoginAuthenticating">
+		Autenticando
+	</string>
+	<string name="LoginMaintenance">
+		Verificando sua conta...
+	</string>
+	<string name="LoginAttempt">
+		Tentativa anterior falhou. Tentando novamente ([NUMBER])
+	</string>
+	<string name="LoginPrecaching">
+		Carregando mundo...
+	</string>
+	<string name="LoginInitializingBrowser">
+		Inicializando navegador web integrado...
+	</string>
+	<string name="LoginInitializingMultimedia">
+		Inicializando multimídia...
+	</string>
+	<string name="LoginInitializingFonts">
+		Carregando fontes...
+	</string>
+	<string name="LoginVerifyingCache">
+		Verificando arquivos de cache (pode levar de 60 a 90 segundos)...
+	</string>
+	<string name="LoginProcessingResponse">
+		Processando resposta...
+	</string>
+	<string name="LoginInitializingWorld">
+		Inicializando mundo...
+	</string>
+	<string name="LoginDecodingImages">
+		Decodificando imagens...
+	</string>
+	<string name="LoginInitializingQuicktime">
+		Inicializando QuickTime...
+	</string>
+	<string name="LoginQuicktimeNotFound">
+		QuickTime não encontrado - não foi possível inicializar.
+	</string>
+	<string name="LoginQuicktimeOK">
+		QuickTime inicializado com sucesso.
+	</string>
+	<string name="LoginRequestSeedCapGrant">
+		Solicitando capacidades da região...
+	</string>
+	<string name="LoginRetrySeedCapGrant">
+		Solicitando capacidades da região, tentativa [NUMBER]...
+	</string>
+	<string name="LoginWaitingForRegionHandshake">
+		Aguardando handshake da região...
+	</string>
+	<string name="LoginConnectingToRegion">
+		Conectando à região...
+	</string>
+	<string name="LoginDownloadingClothing">
+		Baixando roupas...
+	</string>
+	<string name="InvalidCertificate">
+		Certificado do servidor inválido ou corrompido. Contate o administrador do grid.
+	</string>
+	<string name="CertInvalidHostname">
+		Um hostname inválido foi usado para acessar o servidor. Verifique sua SLURL ou o hostname do grid.
+	</string>
+	<string name="CertExpired">
+		O certificado do grid parece expirado. Verifique o relógio do seu sistema ou contate o administrador do grid.
+	</string>
+	<string name="CertKeyUsage">
+		O certificado retornado pelo servidor não pôde ser usado para SSL. Entre em contato com o administrador do grid.
+	</string>
+	<string name="CertBasicConstraints">
+		Havia certificados demais na cadeia de certificados do servidor. Entre em contato com o administrador do grid.
+	</string>
+	<string name="CertInvalid">
+		Não foi possível carregar o certificado. Entre em contato com o administrador do grid.
+	</string>
+	<string name="CertInvalidSignature">
+		Não foi possível verificar a assinatura do certificado retornado pelo servidor do grid. Entre em contato com o administrador do grid.
+	</string>
+	<string name="CertAllocationFailure">
+		Falha ao alocar memória do OpenSSL para o certificado.
+	</string>
+	<string name="LoginFailedNoNetwork">
+		Sem conexão com a rede. Verifique sua internet e tente novamente.
+	</string>
+	<string name="LoginFailedHeader">
+		Falha no login
+	</string>
+	<string name="Quit">
+		Sair
+	</string>
+	<string name="AgniGridLabel">
+		Second Life Main Grid (Agni)
+	</string>
+	<string name="AditiGridLabel">
+		Second Life Beta Test Grid (Aditi)
+	</string>
+	<string name="LoginFailedViewerNotPermitted">
+		O viewer que você está usando não pode mais acessar o Second Life. Acesse a página abaixo para baixar um novo viewer:
+https://secondlife.com/support/downloads/
+Para mais informações, veja o FAQ abaixo:
+http://secondlife.com/viewer-access-faq
+	</string>
+	<string name="LoginFailed">Não foi possível completar o login por problemas no sistema. Tente novamente em alguns minutos.
+Se achar que é um erro, entre em contato com o suporte do grid.
+	</string>
+	<string name="LoginIntermediateOptionalUpdateAvailable">
+		Atualização opcional do viewer disponível: [VERSION]
+	</string>
+	<string name="LoginFailedRequiredUpdate">
+		Atualização obrigatória do viewer: [VERSION]
+	</string>
+	<string name="LoginFailedAlreadyLoggedIn">
+		Você já está conectado em outra sessão.
+	</string>
+	<string name="LoginFailedAuthenticationFailed">
+		Desculpe! Não foi possível fazer seu login.
+Verifique se você digitou os dados corretos:
+    * Nome de usuário (como robertschmidt12 ou warme.sonne)
+    * Senha
+    * Token de segundo fator (se ativado)
+Além disso, verifique se o Caps Lock está desativado.
+	</string>
+	<string name="LoginFailedPasswordChanged">
+		Sua senha foi alterada por segurança.
+Acesse http://secondlife.com/password e responda à pergunta de segurança para redefinir sua senha.
+	</string>
+	<string name="LoginFailedPasswordReset">
+		Atualizamos o sistema e você precisa redefinir sua senha.
+Acesse http://secondlife.com/password e responda à pergunta de segurança.
+	</string>
+	<string name="LoginFailedEmployeesOnly">
+		O Second Life está temporariamente fechado para manutenção.
+No momento, o login está restrito apenas a funcionários.
+Veja atualizações em www.secondlife.com/status.
+	</string>
+	<string name="LoginFailedPremiumOnly">
+		O login está temporariamente restrito a contas Premium para garantir a melhor experiência inworld.
+Contas gratuitas não podem acessar o Second Life neste momento.
+	</string>
+	<string name="LoginFailedComputerProhibited">
+		Não é possível acessar o Second Life deste computador.
+Se você acredita que isso é um erro, entre em contato com
+support@secondlife.com.
+	</string>
+	<string name="PacificTime">
+		Horário do Pacífico
+	</string>
+	<string name="LoginFailedAcountSuspended">
+		Sua conta está suspensa até [TIME].
+Se achar que é um erro, entre em contato com support@secondlife.com.
+	</string>
+	<string name="LoginFailedAccountDisabled">
+		Não foi possível concluir sua solicitação neste momento.
+Entre em contato com o suporte do Second Life em http://support.secondlife.com.
+	</string>
+	<string name="LoginFailedTransformError">
+		Inconsistência de dados encontrada durante o login.
+Entre em contato com support@secondlife.com.
+	</string>
+	<string name="LoginFailedAccountMaintenance">
+Sua conta está em manutenção e ficará indisponível até 
+[TIME].
+Se achar que é um erro, entre em contato com support@secondlife.com.
+	</string>
+	<string name="LoginFailedPendingLogoutFault">
+		A solicitação de logout retornou falha do simulador.
+	</string>
+	<string name="LoginFailedPendingLogout">
+		Sua sessão está sendo encerrada. Aguarde um momento antes de entrar novamente.
+Aguarde um minuto antes de tentar fazer login novamente.
+	</string>
+	<string name="LoginFailedUnableToCreateSession">
+		Não foi possível criar uma sessão válida.
+	</string>
+	<string name="LoginFailedUnableToConnectToSimulator">
+		Não foi possível conectar a um simulador.
+	</string>
+	<string name="LoginFailedRestrictedHours">
+		Sua conta só pode acessar o Second Life
+entre [START] e [END] no Horário do Pacífico.
+Volte durante esse período.
+Se você acredita que isso é um erro, entre em contato com support@secondlife.com.
+	</string>
+	<string name="LoginFailedIncorrectParameters">
+		Parâmetros incorretos.
+Se você acredita que isso é um erro, entre em contato com support@secondlife.com.
+	</string>
+	<string name="LoginFailedFirstNameNotAlphanumeric">
+		O parâmetro de primeiro nome deve ser alfanumérico.
+Se você acredita que isso é um erro, entre em contato com support@secondlife.com.
+	</string>
+	<string name="LoginFailedLastNameNotAlphanumeric">
+		O parâmetro de sobrenome deve ser alfanumérico.
+Se você acredita que isso é um erro, entre em contato com support@secondlife.com.
+	</string>
+	<string name="LogoutFailedRegionGoingOffline">
+		A região está ficando offline.
+Tente fazer login novamente em um minuto.
+	</string>
+	<string name="LogoutFailedAgentNotInRegion">
+		Agente não está na região.
+Tente fazer login novamente em um minuto.
+	</string>
+	<string name="LogoutFailedPendingLogin">
+		A região estava processando o login de outra sessão.
+Tente fazer login novamente em um minuto.
+	</string>
+	<string name="LogoutFailedLoggingOut">
+		A região ainda estava encerrando a sessão anterior.
+Tente fazer login novamente em um minuto.
+	</string>
+	<string name="LogoutFailedStillLoggingOut">
+		A região ainda está encerrando a sessão anterior.
+Tente fazer login novamente em um minuto.
+	</string>
+	<string name="LogoutSucceeded">
+		Sessão anterior encerrada com sucesso.
+Tente fazer login novamente em um minuto.
+	</string>
+	<string name="LogoutFailedLogoutBegun">
+		A região iniciou o encerramento da sessão.
+Tente fazer login novamente em um minuto.
+	</string>
+	<string name="LoginFailedLoggingOutSession">
+		O sistema está encerrando sua última sessão.
+Tente fazer login novamente em um minuto.
+	</string>
+	<string name="LoginFailedAuthenticationMFARequired">
+		Para continuar o login, informe um novo token do seu app de autenticação multifator.
+Se você acredita que isso é um erro, entre em contato com support@secondlife.com.
+	</string>
+	<string name="AgentLostConnection">
+		Esta região pode estar com problemas. Verifique sua conexão com a internet.
+	</string>
+	<string name="SavingSettings">
+		Salvando suas configurações...
+	</string>
+	<string name="LoggingOut">
+		Saindo...
+	</string>
+	<string name="ShuttingDown">
+		Encerrando...
+	</string>
+	<string name="YouHaveBeenDisconnected">
+		Você foi desconectado da região em que estava.
+	</string>
+	<string name="SentToInvalidRegion">
+		Você foi enviado para uma região inválida.
+	</string>
+	<string name="TestingDisconnect">
+		Testando desconexão do viewer
+	</string>
+	<string name="SocialFlickrConnecting">
+		Conectando ao Flickr...
+	</string>
+	<string name="SocialFlickrPosting">
+		Publicando...
+	</string>
+	<string name="SocialFlickrDisconnecting">
+		Desconectando do Flickr...
+	</string>
+	<string name="SocialFlickrErrorConnecting">
+		Problema ao conectar ao Flickr
+	</string>
+	<string name="SocialFlickrErrorPosting">
+		Problema ao publicar no Flickr
+	</string>
+	<string name="SocialFlickrErrorDisconnecting">
+		Problema ao desconectar do Flickr
+	</string>
+	<string name="SocialPrimfeedConnecting">
+		Conectando ao Primfeed...
+	</string>
+	<string name="SocialPrimfeedNotAuthorized">
+		Não autorizado...
+	</string>
+	<string name="SocialPrimfeedPosting">
+		Publicando...
+	</string>
+	<string name="SocialPrimfeedErrorPosting">
+		Problema ao publicar no Primfeed
+	</string>
+	<string name="BlackAndWhite">
+		Preto e branco
+	</string>
+	<string name="Colors1970">
+		Cores dos anos 70
+	</string>
+	<string name="Intense">
+		Intenso
+	</string>
+	<string name="Newspaper">
+		Jornal
+	</string>
+	<string name="Spotlight">
+		Refletor
+	</string>
+	<string name="Video">
+		Vídeo
+	</string>
+	<string name="Autocontrast">
+		Autocontraste
+	</string>
+	<string name="LensFlare">
+		Reflexo de lente
+	</string>
+	<string name="Miniature">
+		Miniatura
+	</string>
+	<string name="Toycamera">
+		Câmera de brinquedo
+	</string>
+	<string name="Antique">
+		Antigo
+	</string>
+	<string name="Badtrip">
+		Viagem ruim
+	</string>
+	<string name="Blownhighlights">
+		Realces estourados
+	</string>
+	<string name="Softfocus">
+		Foco suave
+	</string>
+	<string name="Brighten">
+		Clarear
+	</string>
+	<string name="Cartoon">
+		Desenho animado
+	</string>
+	<string name="Darken">
+		Escurecer
+	</string>
+	<string name="Edges">
+		Bordas brilhantes
+	</string>
+	<string name="Focus">
+		Foco central
+	</string>
+	<string name="Heatwave">
+		Onda de calor
+	</string>
+	<string name="Julesverne">
+		Jules Verne
+	</string>
+	<string name="Lightleak">
+		Vazamento de luz
+	</string>
+	<string name="Linearize">
+		Linearizar
+	</string>
+	<string name="Negative">
+		Negativo
+	</string>
+	<string name="Overcast">
+		Nublado
+	</string>
+	<string name="Posterize">
+		Posterizar
+	</string>
+	<string name="Rotatecolors180">
+		Deslocamento de cor
+	</string>
+	<string name="Sharpen">
+		Nitidez
+	</string>
+	<string name="Thematrix">
+		Matrix
+	</string>
+	<string name="TooltipPerson">
+		Pessoa
+	</string>
+	<string name="TooltipNoName">
+		(sem nome)
+	</string>
+	<string name="TooltipOwner">
+		Proprietário:
+	</string>
+	<string name="TooltipPublic">
+		Público
+	</string>
+	<string name="TooltipIsGroup">
+		(Grupo)
+	</string>
+	<string name="TooltipForSaleL$">
+		À venda: L$[AMOUNT]
+	</string>
+	<string name="TooltipFlagGroupBuild">
+		Construção do grupo
+	</string>
+	<string name="TooltipFlagNoBuild">
+		Sem construir
+	</string>
+	<string name="TooltipFlagNoEdit">
+		Sem editar
+	</string>
+	<string name="TooltipFlagNotSafe">
+		Não seguro
+	</string>
+	<string name="TooltipFlagNoFly">
+		Sem voar
+	</string>
+	<string name="TooltipFlagGroupScripts">
+		Scripts do grupo
+	</string>
+	<string name="TooltipFlagNoScripts">
+		Sem scripts
+	</string>
+	<string name="TooltipLand">
+		Terreno:
+	</string>
+	<string name="TooltipMustSingleDrop">
+		Você só pode arrastar um único item para cá
+	</string>
+	<string name="TooltipTooManyWearables">
+		Você não pode vestir uma pasta com mais de [AMOUNT] itens. Você pode alterar esse limite em Avançado &gt; Mostrar configurações de depuração &gt; WearFolderLimit.
+	</string>
+	<string name="TooltipSLIcon">
+		Isso leva a uma página no domínio oficial SecondLife.com ou LindenLab.com.
+	</string>
+	<string name="TooltipFlagScript">
+		Script
+	</string>
+	<string name="TooltipFlagPhysics">
+		Física
+	</string>
+	<string name="TooltipFlagTouch">
+		Toque
+	</string>
+	<string name="TooltipFlagDropInventory">
+		Largar inventário
+	</string>
+	<string name="TooltipFlagPhantom">
+		Fantasma
+	</string>
+	<string name="TooltipFlagTemporary">
+		Temporário
+	</string>
+	<string name="TooltipPrimCount">
+		Prims: [COUNT]
+	</string>
+	<string name="TooltipPrimEquivalent">
+		, Impacto no terreno: [PEWEIGHT]
+	</string>
+	<string name="TooltipPrimEquivalentLoading">
+		, carregando impacto no terreno...
+	</string>
+	<string name="TooltipDistance">
+		Distância: [DISTANCE] m
+	</string>
+	<string name="TooltipPosition">
+		Posição: [POSITION]
+	</string>
+	<string name="TooltipOutboxDragToWorld">
+		Você não pode rezar itens da pasta de listagens do Marketplace
+	</string>
+	<string name="TooltipOutboxWorn">
+		Você não pode colocar itens que está vestindo na pasta de listagens do Marketplace
+	</string>
+	<string name="TooltipOutboxFolderLevels">
+		A profundidade de pastas aninhadas excede [AMOUNT]. Reduza a profundidade das pastas; empacote itens se necessário.
+	</string>
+	<string name="TooltipOutboxTooManyFolders">
+		A quantidade de subpastas excede [AMOUNT]. Reduza o número de pastas da sua listagem; empacote itens se necessário.
+	</string>
+	<string name="TooltipOutboxTooManyObjects">
+		A quantidade de itens excede [AMOUNT]. Para vender mais de [AMOUNT] itens em uma listagem, você precisa empacotar alguns deles.
+	</string>
+	<string name="TooltipOutboxTooManyStockItems">
+		A quantidade de itens de estoque excede [AMOUNT].
+	</string>
+	<string name="TooltipOutboxCannotDropOnRoot">
+		Você só pode soltar itens ou pastas nas abas &quot;TODOS&quot; ou &quot;NÃO ASSOCIADOS&quot;. Selecione uma dessas abas e mova seus itens/pastas novamente.
+	</string>
+	<string name="TooltipOutboxNoTransfer">
+		Um ou mais desses itens não podem ser vendidos ou transferidos
+	</string>
+	<string name="TooltipOutboxNotInInventory">
+		Você só pode colocar no Marketplace itens do seu inventário
+	</string>
+	<string name="TooltipOutboxLinked">
+		Você não pode colocar itens ou pastas vinculados no Marketplace
+	</string>
+	<string name="TooltipOutboxCallingCard">
+		Você não pode colocar cartões de visita no Marketplace
+	</string>
+	<string name="TooltipOutboxDragActive">
+		Você não pode mover uma listagem já listada
+	</string>
+	<string name="TooltipOutboxCannotMoveRoot">
+		A pasta raiz de listagens do Marketplace não pode ser movida.
+	</string>
+	<string name="TooltipOutboxMixedStock">
+		Todos os itens em uma pasta de estoque devem ter o mesmo tipo e a mesma permissão
+	</string>
+	<string name="TooltipOutfitNotInInventory">
+		Você só pode colocar itens ou looks do seu inventário pessoal em &quot;Looks&quot;
+	</string>
+	<string name="TooltipCantCreateOutfit">
+		Um ou mais itens não podem ser usados dentro de &quot;Looks&quot;
+	</string>
+	<string name="TooltipCantMoveOutfitIntoOutfit">
+		Não é possível mover um look para dentro de outro look
+	</string>
+	<string name="TooltipDragOntoOwnChild">
+		Você não pode mover uma pasta para uma subpasta dela mesma
+	</string>
+	<string name="TooltipDragOntoSelf">
+		Você não pode mover uma pasta para dentro dela mesma
+	</string>
+	<string name="TooltipHttpUrl">
+		Clique para ver esta página web
+	</string>
+	<string name="TooltipSLURL">
+		Clique para ver as informações deste local
+	</string>
+	<string name="TooltipAgentUrl">
+		Clique para ver o perfil deste residente
+	</string>
+	<string name="TooltipAgentInspect">
+		Saiba mais sobre este residente
+	</string>
+	<string name="TooltipAgentMute">
+		Clique para silenciar este residente
+	</string>
+	<string name="TooltipAgentUnmute">
+		Clique para reativar o som deste residente
+	</string>
+	<string name="TooltipAgentIM">
+		Clique para enviar IM a este residente.
+	</string>
+	<string name="TooltipAgentPay">
+		Clique para pagar este residente
+	</string>
+	<string name="TooltipAgentOfferTeleport">
+		Clique para oferecer teleporte a este residente.
+	</string>
+	<string name="TooltipAgentRequestFriend">
+		Clique para enviar solicitação de amizade a este residente.
+	</string>
+	<string name="TooltipGroupUrl">
+		Clique para ver a descrição deste grupo
+	</string>
+	<string name="TooltipEventUrl">
+		Clique para ver a descrição deste evento
+	</string>
+	<string name="TooltipClassifiedUrl">
+		Clique para ver este classificado
+	</string>
+	<string name="TooltipParcelUrl">
+		Clique para ver a descrição desta parcela
+	</string>
+	<string name="TooltipTeleportUrl">
+		Clique para teleportar para este local
+	</string>
+	<string name="TooltipObjectIMUrl">
+		Clique para ver a descrição deste objeto
+	</string>
+	<string name="TooltipMapUrl">
+		Clique para ver esta posição no mapa
+	</string>
+	<string name="TooltipSLAPP">
+		Clique para executar o comando secondlife://
+	</string>
+	<string name="TooltipFSHelpDebugSLUrl">
+		Clique para abrir a janela de configurações de depuração desta opção
+	</string>
+	<string name="TooltipFSUrlEntryWear">
+		Clique para vestir o conteúdo de uma pasta do inventário
+	</string>
+	<string name="CurrentURL" value=" URL atual: [CurrentURL]"/>
+	<string name="TooltipEmail">
+		Clique para redigir um e-mail
+	</string>
+	<string name="SLurlLabelTeleport">
+		Teleportar para
+	</string>
+	<string name="SLurlLabelShowOnMap">
+		Mostrar mapa de
+	</string>
+	<string name="SLappAgentMute">
+		Silenciar
+	</string>
+	<string name="SLappAgentUnmute">
+		Reativar som
+	</string>
+	<string name="SLappAgentPay">
+		Pagar
+	</string>
+	<string name="SLappAgentOfferTeleport">
+		Oferecer teleporte a 
+	</string>
+	<string name="SLappAgentRequestFriend">
+		Solicitação de amizade
+	</string>
+	<string name="SLappAgentRemoveFriend">
+		Remover amizade
+	</string>
+	<string name="BUTTON_CLOSE_DARWIN">
+		Fechar (⌘W)
+	</string>
+	<string name="BUTTON_CLOSE_WIN">
+		Fechar (Ctrl+W)
+	</string>
+	<string name="BUTTON_CLOSE_CHROME">
+		Fechar
+	</string>
+	<string name="BUTTON_RESTORE">
+		Restaurar
+	</string>
+	<string name="BUTTON_MINIMIZE">
+		Minimizar
+	</string>
+	<string name="BUTTON_TEAR_OFF">
+		Desanexar
+	</string>
+	<string name="BUTTON_DOCK">
+		Acoplar
+	</string>
+	<string name="BUTTON_HELP">
+		Mostrar ajuda
+	</string>
+	<string name="BUTTON_SNOOZE">
+		Adiar temporariamente
+	</string>
+	<string name="TooltipNotecardNotAllowedTypeDrop">
+		Itens deste tipo não podem ser anexados
+a notecards nesta região.
+	</string>
+	<string name="TooltipNotecardOwnerRestrictedDrop">
+		Só itens sem restrições de
+permissão para o próximo
+proprietário podem ser anexados a notecards.
+	</string>
+	<string name="TooltipTextureRestrictedDrop">
+		Apenas texturas com permissões
+de cópia e transferência sem restrição
+são permitidas.
+	</string>
+	<string name="Searching">
+		Buscando...
+	</string>
+	<string name="NoneFound">
+		Nenhum encontrado.
+	</string>
+	<string name="ServerUnavailable">
+		Serviço indisponível.
+	</string>
+	<string name="RetrievingData">
+		Carregando...
+	</string>
+	<string name="ReleaseNotes">
+		Notas da versão
+	</string>
+	<string name="LoadingData">
+		Carregando...
+	</string>
+	<string name="LockedFolder">
+		bloqueado
+	</string>
+	<string name="ProtectedFolder">
+		protegido
+	</string>
+	<string name="AvatarNameNobody">
+		(ninguém)
+	</string>
+	<string name="AvatarNameWaiting">
+		(Carregando...)
+	</string>
+	<string name="AvatarNameMultiple">
+		(vários)
+	</string>
+	<string name="GroupNameNone">
+		(nenhum)
+	</string>
+	<string name="AssetErrorNone">
+		Nenhum erro
+	</string>
+	<string name="AssetErrorRequestFailed">
+		Solicitação de asset: falhou
+	</string>
+	<string name="AssetErrorNonexistentFile">
+		Solicitação de asset: arquivo não existe
+	</string>
+	<string name="AssetErrorNotInDatabase">
+		Solicitação de asset: asset não encontrado no banco de dados
+	</string>
+	<string name="AssetErrorEOF">
+		Fim do arquivo
+	</string>
+	<string name="AssetErrorCannotOpenFile">
+		Não foi possível abrir o arquivo
+	</string>
+	<string name="AssetErrorFileNotFound">
+		Arquivo não encontrado
+	</string>
+	<string name="AssetErrorTCPTimeout">
+		Tempo esgotado na transferência de arquivo
+	</string>
+	<string name="AssetErrorCircuitGone">
+		Conexão perdida
+	</string>
+	<string name="AssetErrorPriceMismatch">
+		Divergência de preço entre viewer e servidor
+	</string>
+	<string name="AssetErrorUnknownStatus">
+		Estado desconhecido
+	</string>
+	<string name="AssetUploadServerUnreacheble">
+		Serviço indisponível.
+	</string>
+	<string name="AssetUploadServerDifficulties">
+		O servidor está enfrentando dificuldades inesperadas.
+	</string>
+	<string name="AssetUploadServerUnavaliable">
+		Serviço indisponível ou tempo esgotado no upload.
+	</string>
+	<string name="AssetUploadRequestInvalid">
+Erro na solicitação de upload. Acesse
+https://support.secondlife.com/ para obter ajuda com este problema.
+	</string>
+	<string name="SettingValidationError">
+		Falha na validação ao importar a configuração [NAME]
+	</string>
+	<string name="SettingImportFileError">
+		Não foi possível abrir [FILE]
+	</string>
+	<string name="SettingParseFileError">
+		Não foi possível abrir [FILE]
+	</string>
+	<string name="SettingTranslateError">
+		Não foi possível migrar o Windlight antigo [NAME]
+	</string>
+	<string name="texture">
+		textura
+	</string>
+	<string name="sound">
+		som
+	</string>
+	<string name="calling card">
+		cartão de visita
+	</string>
+	<string name="landmark">
+		Landmark
+	</string>
+	<string name="legacy script">
+		script legado
+	</string>
+	<string name="clothing">
+		roupa
+	</string>
+	<string name="object">
+		objeto
+	</string>
+	<string name="note card">
+		notecard
+	</string>
+	<string name="folder">
+		pasta
+	</string>
+	<string name="root">
+		raiz
+	</string>
+	<string name="lsl2 script">
+		script LSL2
+	</string>
+	<string name="lsl bytecode">
+		bytecode LSL
+	</string>
+	<string name="tga texture">
+		textura tga
+	</string>
+	<string name="body part">
+		parte do corpo
+	</string>
+	<string name="snapshot">
+		instantâneo
+	</string>
+	<string name="lost and found">
+		Achados e perdidos
+	</string>
+	<string name="targa image">
+		imagem targa
+	</string>
+	<string name="trash">
+		Lixo
+	</string>
+	<string name="jpeg image">
+		imagem jpeg
+	</string>
+	<string name="animation">
+		animação
+	</string>
+	<string name="gesture">
+		gesto
+	</string>
+	<string name="simstate">
+		estado da sim
+	</string>
+	<string name="favorite">
+		favorito
+	</string>
+	<string name="symbolic folder link">
+		link de pasta
+	</string>
+	<string name="settings blob">
+		Configurações
+	</string>
+	<string name="render material">
+		material
+	</string>
+	<string name="mesh">
+		malha
+	</string>
+	<string name="AvatarEditingAppearance">
+		(Editando aparência)
+	</string>
+	<string name="AvatarAway">
+		Ausente
+	</string>
+	<string name="AvatarDoNotDisturb">
+		Ocupado
+	</string>
+	<string name="AvatarMuted">
+		Bloqueado
+	</string>
+	<string name="AvatarAutoResponse">
+		Resposta automática
+	</string>
+	<string name="AvatarTyping">
+		Digitando
+	</string>
+	<string name="anim_express_afraid">
+		Assustado
+	</string>
+	<string name="anim_express_anger">
+		Irritado
+	</string>
+	<string name="anim_away">
+		Ausente
+	</string>
+	<string name="anim_backflip">
+		Mortal para trás
+	</string>
+	<string name="anim_express_laugh">
+		Gargalhada
+	</string>
+	<string name="anim_express_toothsmile">
+		Grande sorriso
+	</string>
+	<string name="anim_blowkiss">
+		Beijo no ar
+	</string>
+	<string name="anim_express_bored">
+		Entediado
+	</string>
+	<string name="anim_bow">
+		Reverência
+	</string>
+	<string name="anim_clap">
+		Palmas
+	</string>
+	<string name="anim_courtbow">
+		Reverência de corte
+	</string>
+	<string name="anim_express_cry">
+		Chorar
+	</string>
+	<string name="anim_dance1">
+		Dança 1
+	</string>
+	<string name="anim_dance2">
+		Dança 2
+	</string>
+	<string name="anim_dance3">
+		Dança 3
+	</string>
+	<string name="anim_dance4">
+		Dança 4
+	</string>
+	<string name="anim_dance5">
+		Dança 5
+	</string>
+	<string name="anim_dance6">
+		Dança 6
+	</string>
+	<string name="anim_dance7">
+		Dança 7
+	</string>
+	<string name="anim_dance8">
+		Dança 8
+	</string>
+	<string name="anim_express_disdain">
+		Desdém
+	</string>
+	<string name="anim_drink">
+		Beber
+	</string>
+	<string name="anim_express_embarrased">
+		Envergonhado
+	</string>
+	<string name="anim_angry_fingerwag">
+		Dedo ameaçador
+	</string>
+	<string name="anim_fist_pump">
+		Punho erguido
+	</string>
+	<string name="anim_yoga_float">
+		Yoga flutuante
+	</string>
+	<string name="anim_express_frown">
+		Franzir a testa
+	</string>
+	<string name="anim_impatient">
+		Impaciente
+	</string>
+	<string name="anim_jumpforjoy">
+		Pular de alegria
+	</string>
+	<string name="anim_kissmybutt">
+		Beija minha bunda
+	</string>
+	<string name="anim_express_kiss">
+		Beijo
+	</string>
+	<string name="anim_laugh_short">
+		Rir
+	</string>
+	<string name="anim_musclebeach">
+		Flexionar músculos
+	</string>
+	<string name="anim_no_unhappy">
+		Não (descontente)
+	</string>
+	<string name="anim_no_head">
+		Não (cabeça)
+	</string>
+	<string name="anim_nyanya">
+		Provocação
+	</string>
+	<string name="anim_punch_onetwo">
+		Soco um-dois
+	</string>
+	<string name="anim_express_open_mouth">
+		Boca aberta
+	</string>
+	<string name="anim_peace">
+		Paz
+	</string>
+	<string name="anim_point_you">
+		Apontar
+	</string>
+	<string name="anim_point_me">
+		Apontar para si
+	</string>
+	<string name="anim_punch_l">
+		Soco esquerdo
+	</string>
+	<string name="anim_punch_r">
+		Soco direito
+	</string>
+	<string name="anim_rps_countdown">
+		PPT contagem
+	</string>
+	<string name="anim_rps_paper">
+		PPT papel
+	</string>
+	<string name="anim_rps_rock">
+		PPT pedra
+	</string>
+	<string name="anim_rps_scissors">
+		PPT tesoura
+	</string>
+	<string name="anim_express_repulsed">
+		Repulsa
+	</string>
+	<string name="anim_kick_roundhouse_r">
+		Chute giratório
+	</string>
+	<string name="anim_express_sad">
+		Triste
+	</string>
+	<string name="anim_salute">
+		Saudação
+	</string>
+	<string name="anim_shout">
+		Gritar
+	</string>
+	<string name="anim_express_shrug">
+		Encolher os ombros
+	</string>
+	<string name="anim_express_smile">
+		Sorrir
+	</string>
+	<string name="anim_smoke_idle">
+		Fumar: na mão
+	</string>
+	<string name="anim_smoke_inhale">
+		Fumar
+	</string>
+	<string name="anim_smoke_throw_down">
+		Fumar: jogar o cigarro
+	</string>
+	<string name="anim_express_surprise">
+		Surpreso
+	</string>
+	<string name="anim_sword_strike_r">
+		Estocada
+	</string>
+	<string name="anim_angry_tantrum">
+		Pirraça
+	</string>
+	<string name="anim_express_tongue_out">
+		Colocar a língua para fora
+	</string>
+	<string name="anim_hello">
+		Acenar
+	</string>
+	<string name="anim_whisper">
+		Sussurrar
+	</string>
+	<string name="anim_whistle">
+		Assobiar
+	</string>
+	<string name="anim_express_wink">
+		Piscar
+	</string>
+	<string name="anim_wink_hollywood">
+		Piscada (Hollywood)
+	</string>
+	<string name="anim_express_worry">
+		Preocupado/a
+	</string>
+	<string name="anim_yes_happy">
+		Sim (feliz)
+	</string>
+	<string name="anim_yes_head">
+		Sim
+	</string>
+	<string name="multiple_textures">
+		Múltiplo
+	</string>
+	<string name="use_texture">
+		Usar textura
+	</string>
+	<string name="manip_hint1">
+		Passe o cursor do mouse sobre a régua
+	</string>
+	<string name="manip_hint2">
+		sobre a régua para encaixar
+	</string>
+	<string name="texture_loading">
+		Carregando...
+	</string>
+	<string name="worldmap_offline">
+		Offline
+	</string>
+	<string name="worldmap_item_tooltip_format">
+		[PRICE] L$ por [AREA] m² ([SQMPRICE] L$/m²)
+	</string>
+	<string name="worldmap_results_none_found">
+		Nenhum encontrado.
+	</string>
+	<string name="worldmap_agent_position">
+		Você está aqui
+	</string>
+	<string name="minimap_distance">
+		(Distancia: [DISTANCE] m)
+	</string>
+	<string name="minimap_no_focus">
+		Não foi possível focar a câmera neste residente, pois ele está fora da distância de renderização.
+	</string>
+	<string name="Premature end of file">
+		Arquivo incompleto
+	</string>
+	<string name="ST_NO_JOINT">
+		RAIZ ou JUNÇÃO não encontrada.
+	</string>
+	<string name="no_name_object">
+		(sem nome)
+	</string>
+	<string name="NearbyChatTitle">
+		Chat próximo
+	</string>
+	<string name="NearbyChatLabel">
+		(Chat próximo)
+	</string>
+	<string name="whisper">
+		sussurra:
+	</string>
+	<string name="shout">
+		grita:
+	</string>
+	<string name="ringing">
+		Conectando ao voice chat inworld...
+	</string>
+	<string name="connected">
+		Conectado
+	</string>
+	<string name="unavailable">
+		O local atual não oferece suporte à comunicação por voz
+	</string>
+	<string name="hang_up">
+		Desconectado do voice chat inworld
+	</string>
+	<string name="reconnect_nearby">
+		Conectando você novamente ao chat próximo
+	</string>
+	<string name="ScriptQuestionCautionChatGranted">
+		"[OBJECTNAME]", um objeto de "[OWNERNAME]", em [REGIONNAME] [REGIONPOS], recebeu permissão para: [PERMISSIONS].
+	</string>
+	<string name="ScriptQuestionCautionChatDenied">
+		"[OBJECTNAME]", um objeto de "[OWNERNAME]", em [REGIONNAME] [REGIONPOS], teve permissão negada para: [PERMISSIONS].
+	</string>
+	<string name="AdditionalPermissionsRequestHeader">
+		Se você permitir acesso à sua conta, também estará permitindo que o objeto:
+	</string>
+	<string name="ScriptTakeMoney">
+		Cobrar Lindens (L$) de você
+	</string>
+	<string name="ActOnControlInputs">
+		Agir conforme seus controles
+	</string>
+	<string name="RemapControlInputs">
+		Remapear seus controles
+	</string>
+	<string name="AnimateYourAvatar">Animar seu avatar</string>
+	<string name="AttachToYourAvatar">
+		Anexar ao seu avatar
+	</string>
+	<string name="ReleaseOwnership">
+		Ceder propriedade e tornar público
+	</string>
+	<string name="LinkAndDelink">
+		Vincular e desvincular objetos
+	</string>
+	<string name="AddAndRemoveJoints">
+		Adicionar e remover vínculos com outros objetos
+	</string>
+	<string name="ChangePermissions">
+		Alterar suas permissões
+	</string>
+	<string name="TrackYourCamera">
+		Rastrear sua câmera
+	</string>
+	<string name="ControlYourCamera">
+		Controle sua câmera
+	</string>
+	<string name="TeleportYourAgent">
+		Teleportar-se
+	</string>
+	<string name="ManageEstateSilently">
+		Gerenciar seus estates silenciosamente
+	</string>
+	<string name="ChangeYourDefaultAnimations">
+		Alterar suas animações padrão
+	</string>
+	<string name="ForceSitAvatar">
+		Forçar seu avatar a sentar
+	</string>
+	<string name="ChangeEnvSettings">
+		Alterar as configurações do ambiente
+	</string>
+	<string name="SnapshotSavedToDisk">Captura salva: [FILENAME]</string>
+	<string name="NotConnected">
+		Não conectado
+	</string>
+	<string name="AgentNameSubst">
+		(Você)
+	</string>
+	<string name="SilentlyManageEstateAccess">
+		Gerenciar listas de acesso ao estate silenciosamente
+	</string>
+	<string name="OverrideYourAnimations">
+		Sobrescrever suas animações padrão
+	</string>
+	<string name="ScriptReturnObjects">
+		Devolver objetos em seu nome
+	</string>
+	<string name="UnknownScriptPermission">
+		(desconhecido)!
+	</string>
+	<string name="SIM_ACCESS_MATURE">
+		Moderado
+	</string>
+	<string name="SIM_ACCESS_DOWN">
+		Offline
+	</string>
+	<string name="SIM_ACCESS_MIN">
+		Desconhecido
+	</string>
+	<string name="land_type_unknown">
+		(desconhecido)
+	</string>
+	<string name="Estate / Full Region">
+		Imóvel/Região Completa
+	</string>
+	<string name="Estate / Homestead">
+		Estado / Residencial
+	</string>
+	<string name="Mainland / Homestead">
+		Continente / Residencial
+	</string>
+	<string name="Mainland / Full Region">
+		Continente/Região Completa
+	</string>
+	<string name="Linden Homes / Full Region">
+		Casas Linden / Região Completa
+	</string>
+	<string name="all_files">
+		Todos os arquivos
+	</string>
+	<string name="sound_files">
+		Sons
+	</string>
+	<string name="animation_files">
+		Animações
+	</string>
+	<string name="image_files">
+		Imagens
+	</string>
+	<string name="save_file_verb">
+		Salvar
+	</string>
+	<string name="load_file_verb">
+		Carregar
+	</string>
+	<string name="targa_image_files">
+		Imagens Targa
+	</string>
+	<string name="bitmap_image_files">
+		Imagens de mapa de bits
+	</string>
+	<string name="png_image_files">
+		Imagens PNG
+	</string>
+	<string name="save_texture_image_files">
+		Imagens Targa o PNG
+	</string>
+	<string name="avi_movie_file">
+		Arquivo de filme AVI
+	</string>
+	<string name="xaf_animation_file">
+		Arquivo de anim. XAF
+	</string>
+	<string name="xml_file">
+		Arquivo XML
+	</string>
+	<string name="raw_file">
+		Arquivo RAW
+	</string>
+	<string name="compressed_image_files">
+		Imagens comprimidas
+	</string>
+	<string name="load_files">
+		Carregar arquivos
+	</string>
+	<string name="choose_the_directory">
+		Escolha o diretório
+	</string>
+	<string name="script_files">
+		Meus Scripts
+	</string>
+	<string name="dictionary_files">
+		Dicionários
+	</string>
+	<string name="backup_files">
+		Backups de objetos
+	</string>
+	<string name="collada_files">
+		Modelos COLLADA
+	</string>
+	<string name="model_files">Modelos mesh</string>
+	<string name="csv_files">Valores separados por vírgula</string>
+	<string name="recompile_script_verb">Recompilar</string>
+	<string name="jpeg_image_files">Imagens JPEG</string>
+	<string name="executable_files">
+		Arquivos de programas executáveis
+	</string>
+	<string name="Validator_InvalidNumericString">
+		String numérica inválida: "[STR]"
+	</string>
+	<string name="Validator_ShouldNotBeMinus">
+		Caractere inicial inválido: '[CH]' (não deve ser um sinal de menos)
+	</string>
+	<string name="Validator_ShouldNotBeMinusOrZero">
+		Caractere inicial inválido: '[CH]' (não deve ser um sinal de menos ou zero)
+	</string>
+	<string name="Validator_ShouldBeDigit">
+		Caractere inválido [NR]: '[CH]' (deve ser apenas um dígito)
+	</string>
+	<string name="Validator_ShouldBeDigitOrDot">
+		Caractere inválido [NR]: '[CH]' (deve ser apenas um dígito ou ponto decimal)
+	</string>
+	<string name="Validator_ShouldBeDigitOrAlpha">
+		Caractere inválido [NR]: '[CH]' (deve ser apenas um dígito ou caractere alfanumérico ASCII)
+	</string>
+	<string name="Validator_ShouldBeDigitOrAlphaOrSpace">
+		Caractere inválido [NR]: '[CH]' (deve ser apenas um dígito, caractere alfanumérico ASCII ou espaço)
+	</string>
+	<string name="Validator_ShouldBeDigitOrAlphaOrPunct">
+		Caractere inválido [NR]: '[CH]' (deve ser apenas um dígito, caractere alfanumérico ASCII ou pontuação)
+	</string>
+	<string name="Validator_ShouldBeDigitOrAlphaOrPunctNotSpace">
+		Caractere inválido [NR]: '[CH]' (deve ser apenas um dígito, caractere alfanumérico ASCII ou pontuação, sem espaço)
+	</string>
+	<string name="Validator_ShouldBeDigitNotSpace">
+		Caractere inválido [NR]: '[CH]' (deve ser apenas um dígito, sem espaço)
+	</string>
+	<string name="Validator_ShouldBeASCII">
+		Caractere inválido [NR]: '[CH]' (deve ser apenas um caractere ASCII)
+	</string>
+	<string name="Validator_ShouldBeNewLineOrASCII">
+		Caractere inválido [NR]: '[CH]' (deve ser apenas um caractere ASCII ou nova linha)
+	</string>
+	<string name="LSLTipSleepTime">
+		Pausa o script por [SLEEP_TIME] segundos.
+	</string>
+	<string name="shape">
+		Forma
+	</string>
+	<string name="skin">
+		Pele
+	</string>
+	<string name="hair">
+		Cabelo
+	</string>
+	<string name="eyes">
+		Olhos
+	</string>
+	<string name="shirt">
+		Camisa
+	</string>
+	<string name="pants">
+		Calça
+	</string>
+	<string name="shoes">
+		Sapatos
+	</string>
+	<string name="socks">
+		Meias
+	</string>
+	<string name="jacket">
+		Jaqueta
+	</string>
+	<string name="gloves">
+		Luvas
+	</string>
+	<string name="undershirt">
+		Camiseta
+	</string>
+	<string name="underpants">
+		Roupa íntima
+	</string>
+	<string name="skirt">
+		Saia
+	</string>
+	<string name="tattoo">
+		Tatuagem
+	</string>
+	<string name="universal">
+		Universal
+	</string>
+	<string name="physics">
+		Física
+	</string>
+	<string name="invalid">
+		inválido
+	</string>
+	<string name="none">
+		nenhum
+	</string>
+	<string name="sky">Céu</string>
+	<string name="water">Água</string>
+	<string name="day">Ciclo do dia</string>
+	<string name="shirt_not_worn">
+		Camisa não vestida
+	</string>
+	<string name="pants_not_worn">
+		Calças não vestidas
+	</string>
+	<string name="shoes_not_worn">
+		Sapatos não equipados
+	</string>
+	<string name="socks_not_worn">
+		Meias não vestidas
+	</string>
+	<string name="jacket_not_worn">
+		Jaqueta não vestida
+	</string>
+	<string name="gloves_not_worn">
+		Luvas não vestidas
+	</string>
+	<string name="undershirt_not_worn">
+		Camiseta de baixo não vestida
+	</string>
+	<string name="underpants_not_worn">
+		Roupa íntima não vestida
+	</string>
+	<string name="skirt_not_worn">
+		Saia não vestida
+	</string>
+	<string name="alpha_not_worn">
+		Alpha não vestido
+	</string>
+	<string name="tattoo_not_worn">
+		Tatuagem não vestida
+	</string>
+	<string name="universal_not_worn">
+		Universal não vestido
+	</string>
+	<string name="physics_not_worn">
+		Física não vestida
+	</string>
+	<string name="invalid_not_worn">
+		inválido
+	</string>
+	<string name="create_new_shape">
+		Criar nova forma
+	</string>
+	<string name="create_new_skin">
+		Criar nova pele
+	</string>
+	<string name="create_new_hair">
+		Criar novo cabelo
+	</string>
+	<string name="create_new_eyes">
+		Criar novos olhos
+	</string>
+	<string name="create_new_shirt">
+		Criar nova camisa
+	</string>
+	<string name="create_new_pants">
+		Criar nova calça
+	</string>
+	<string name="create_new_shoes">
+		Criar novos sapatos
+	</string>
+	<string name="create_new_socks">
+		Criar novas meias
+	</string>
+	<string name="create_new_jacket">
+		Criar nova jaqueta
+	</string>
+	<string name="create_new_gloves">
+		Criar novas luvas
+	</string>
+	<string name="create_new_undershirt">
+		Criar nova camiseta
+	</string>
+	<string name="create_new_underpants">
+		Criar nova cueca
+	</string>
+	<string name="create_new_skirt">
+		Criar nova saia
+	</string>
+	<string name="create_new_alpha">
+		Criar novo alpha
+	</string>
+	<string name="create_new_tattoo">
+		Criar nova tatuagem
+	</string>
+	<string name="create_new_universal">
+		Criar novo universal
+	</string>
+	<string name="create_new_physics">
+		Criar nova física
+	</string>
+	<string name="create_new_invalid">
+		inválido
+	</string>
+	<string name="NewWearable">
+		Novo [WEARABLE_ITEM]
+	</string>
+	<string name="next">
+		Próximo
+	</string>
+	<string name="GroupNotifyGroupNotice">
+		Aviso de grupo
+	</string>
+	<string name="GroupNotifyGroupNotices">
+		Avisos de grupo
+	</string>
+	<string name="GroupNotifySentBy">
+		Enviado por
+	</string>
+	<string name="GroupNotifyAttached">
+		Anexo:
+	</string>
+	<string name="GroupNotifyViewPastNotices">
+		Veja avisos anteriores ou desative o recebimento dessas mensagens aqui.
+	</string>
+	<string name="GroupNotifyOpenAttachment">
+		Abrir anexo
+	</string>
+	<string name="GroupNotifySaveAttachment">
+		Salvar anexo
+	</string>
+	<string name="GroupNotifySender">
+		Enviado por [SENDER], [GROUPNAME]
+	</string>
+	<string name="TeleportOffer">
+		Oferta de teleporte
+	</string>
+	<string name="StartUpNotifications">
+		Novas notificações chegaram enquanto você estava ausente.
+	</string>
+	<string name="OverflowInfoChannelString">
+		Você tem mais %d notificações
+	</string>
+	<string name="BodyPartsRightArm">
+		Braço direito
+	</string>
+	<string name="BodyPartsHead">
+		Cabeça
+	</string>
+	<string name="BodyPartsLeftArm">
+		Braço esquerdo
+	</string>
+	<string name="BodyPartsLeftLeg">
+		Perna esquerda
+	</string>
+	<string name="BodyPartsTorso">
+		Tronco
+	</string>
+	<string name="BodyPartsRightLeg">
+		Perna direita
+	</string>
+	<string name="BodyPartsEnhancedSkeleton">
+		Esqueleto aprimorado
+	</string>
+	<string name="GraphicsQualityLow">
+		Baixo
+	</string>
+	<string name="GraphicsQualityMid">
+		Médio
+	</string>
+	<string name="GraphicsQualityHigh">
+		Alto
+	</string>
+	<string name="LeaveMouselook">
+		Pressione ESC para sair do Mouselook
+	</string>
+	<string name="InventoryNoMatchingItems">
+		Não encontrou o que procura? Tente [secondlife:///app/search/all/[SEARCH_TERM] Buscar].
+	</string>
+	<string name="InventoryNoMatchingRecentItems">
+		Não encontrou o que procura? [secondlife:///app/inventory/filters Mostrar filtros].
+	</string>
+	<string name="InventoryNoMatchingFavorites">
+		Você não marcou nenhum item como favorito.
+	</string>
+	<string name="FSInventoryCustomTabDefaultName">
+		Personalizado
+	</string>
+	<string name="FSInventoryCustomTabShowHidden">
+		Mostrar abas ocultas
+	</string>
+	<string name="PlacesNoMatchingItems">
+		Não encontrou o que procura? Tente [secondlife:///app/search/places/[SEARCH_TERM] Buscar].
+	</string>
+	<string name="FavoritesNoMatchingItems">
+		Arraste um Landmark aqui para adicioná-lo aos seus favoritos.
+	</string>
+	<string name="MarketplaceNoListing">
+		Você ainda não tem listagens.
+	</string>
+	<string name="MarketplaceNoMatchingItems">
+		Nenhum item encontrado. Verifique a ortografia da busca e tente novamente.
+	</string>
+	<string name="InventorySingleFolderEmpty">
+		A pasta está vazia.
+	</string>
+	<string name="InventorySingleFolderNoMatches">
+		Nenhuma correspondência.
+	</string>
+	<string name="InventoryNoTexture">
+		Você não tem uma cópia desta textura no seu inventário.
+	</string>
+	<string name="InventoryNoMaterial">
+		Você não tem uma cópia deste item no seu inventário.
+	</string>
+	<string name="InventoryInboxNoItems">
+		Suas compras do Marketplace vão aparecer aqui. Depois você pode arrastá-las para o inventário para usar.
+	</string>
+	<string name="InventoryPlayAnimationTooltip">
+		Abra a janela com opções de reprodução.
+	</string>
+	<string name="InventoryPlayGestureTooltip">
+		Execute o gesto selecionado no mundo.
+	</string>
+	<string name="InventoryPlaySoundTooltip">
+		Abra a janela com opções de reprodução.
+	</string>
+	<string name="InventoryOutboxNotMerchantTitle">
+		Qualquer pessoa pode vender itens no Marketplace.
+	</string>
+	<string name="InventoryOutboxNotMerchant">
+		Se quiser se tornar um comerciante, você precisará [[MARKETPLACE_CREATE_STORE_URL] criar uma loja no Marketplace].
+	</string>
+	<string name="InventoryOutboxNoItemsTitle">
+		Sua caixa de saída está vazia.
+	</string>
+	<string name="InventoryOutboxNoItems">
+		Arraste pastas para esta área e clique em "Enviar ao Marketplace" para colocá-las à venda no [[MARKETPLACE_DASHBOARD_URL] Marketplace].
+	</string>
+	<string name="InventoryOutboxInitializingTitle">
+		Inicializando o Marketplace.
+	</string>
+	<string name="InventoryOutboxInitializing">
+		Estamos acessando sua conta na [[MARKETPLACE_CREATE_STORE_URL] loja do Marketplace].
+	</string>
+	<string name="InventoryOutboxErrorTitle">
+		Erro do Marketplace.
+	</string>
+	<string name="InventoryOutboxError">
+		A [[MARKETPLACE_CREATE_STORE_URL] loja do Marketplace] está retornando erros.
+	</string>
+	<string name="InventoryMarketplaceError">
+		Ocorreu um erro ao abrir listagens do Marketplace.
+		Se você continuar recebendo esta mensagem, entre em contato com o suporte do Second Life para obter assistência em http://support.secondlife.com
+	</string>
+	<string name="InventoryMarketplaceConnectionError">
+		Falha ao conectar às listagens do Marketplace.
+Se você continuar recebendo esta mensagem, entre em contato com o suporte do Second Life para obter assistência em http://support.secondlife.com
+	</string>
+	<string name="InventoryMarketplaceConnectionErrorReason">
+		Falha ao conectar às listagens do Marketplace. Motivo: [REASON]
+Se você continuar recebendo esta mensagem, entre em contato com o suporte do Second Life para obter assistência em http://support.secondlife.com
+	</string>
+	<string name="InventoryMarketplaceListingsNoItemsTitle">
+		Sua pasta de listagens do Marketplace está vazia.
+	</string>
+	<string name="InventoryMarketplaceListingsNoItems">
+		Arraste pastas para esta área para listá-las à venda no [[MARKETPLACE_DASHBOARD_URL] Marketplace].
+	</string>
+	<string name="InventoryItemsCount">
+		([ITEMS]/[CATEGORIES] itens)
+	</string>
+	<string name="Marketplace Validation Warning Stock">
+		a pasta de estoque deve estar contida em uma pasta de versão
+	</string>
+	<string name="Marketplace Validation Error Mixed Stock">
+		: Erro: todos os itens em uma pasta de estoque devem ser sem cópia e do mesmo tipo
+	</string>
+	<string name="Marketplace Validation Error Subfolder In Stock">
+		: Erro: a pasta de estoque não pode conter subpastas
+	</string>
+	<string name="Marketplace Validation Warning Empty">
+		: Aviso: a pasta não contém nenhum item
+	</string>
+	<string name="Marketplace Validation Warning Create Stock">
+		: Aviso: criando pasta de estoque
+	</string>
+	<string name="Marketplace Validation Warning Create Version">
+		: Aviso: criando pasta de versão
+	</string>
+	<string name="Marketplace Validation Warning Move">
+		: Aviso: movendo itens
+	</string>
+	<string name="Marketplace Validation Warning Delete">
+		: Aviso: o conteúdo da pasta foi transferido para a pasta de estoque, removendo a pasta vazia
+	</string>
+	<string name="Marketplace Validation Error Stock Item">
+		: Erro: itens sem cópia devem estar contidos em uma pasta de estoque
+	</string>
+	<string name="Marketplace Validation Warning Unwrapped Item">
+		: Aviso: os itens devem estar contidos em uma pasta de versão
+	</string>
+	<string name="Marketplace Validation Error">
+		Erro:
+	</string>
+	<string name="Marketplace Validation Warning">
+		: Aviso: 
+	</string>
+	<string name="Marketplace Validation Error Empty Version">
+		: Aviso: a pasta de versão deve conter pelo menos 1 item
+	</string>
+	<string name="Marketplace Validation Error Empty Stock">
+		: Aviso: a pasta de estoque deve conter pelo menos 1 item
+	</string>
+	<string name="Marketplace Validation No Error">
+		Nenhum erro ou aviso ocorreu
+	</string>
+	<string name="Marketplace Error None">
+		Sem erros
+	</string>
+	<string name="Marketplace Error Prefix">
+		Error:
+	</string>
+	<string name="Marketplace Error Not Merchant">
+		Antes de enviar itens para o Marketplace, você precisará se configurar como comerciante (gratuitamente).
+	</string>
+	<string name="Marketplace Error Not Accepted">
+		Não é possível mover o item para essa pasta.
+	</string>
+	<string name="Marketplace Error Unsellable Item">
+		Este item não pode ser vendido no Marketplace.
+	</string>
+	<string name="MarketplaceNoID">
+		sem ID de Marketplace
+	</string>
+	<string name="MarketplaceLive">
+		listado
+	</string>
+	<string name="MarketplaceActive">
+		ativo
+	</string>
+	<string name="MarketplaceMax">
+		máx.
+	</string>
+	<string name="MarketplaceStock">
+		estoque
+	</string>
+	<string name="MarketplaceNoStock">
+		fora de estoque
+	</string>
+	<string name="MarketplaceUpdating">
+		atualizando...
+	</string>
+	<string name="UploadFeeInfo">
+		A taxa é baseada no seu nível de assinatura. Níveis mais altos são cobrados taxas mais baixas. [https://secondlife.com/my/account/membership.php? Saiba mais]
+	</string>
+	<string name="Open landmarks">
+		Abrir landmarks
+	</string>
+	<string name="Unconstrained">
+		Irrestrito
+	</string>
+	<string name="active" value=" (ativo)"/>
+	<string name="no_transfer" value=" (não transferível)"/>
+	<string name="no_modify" value=" (não modificável)"/>
+	<string name="no_copy" value=" (não copiável)"/>
+	<string name="worn" value=" (vestido)"/>
+	<string name="broken_link" value=" (link_quebrado)"/>
+	<string name="no_transfer_lbl">
+		 não transferível
+	</string>
+	<string name="no_modify_lbl">
+		 não modificável
+	</string>
+	<string name="no_copy_lbl">
+		 não copiável
+	</string>
+	<string name="LoadingContents">
+		Carregando conteúdo...
+	</string>
+	<string name="NoContents">
+		Sem conteúdo
+	</string>
+	<string name="WornOnAttachmentPoint" value=" (vestido em [ATTACHMENT_POINT])"/>
+	<string name="AttachmentErrorMessage">
+		 ([ATTACHMENT_ERROR])
+	</string>
+	<string name="ActiveGesture" value="[GESLABEL] (ativo)"/>
+	<string name="PermYes">
+		Sim
+	</string>
+	<string name="PermNo">
+		Não
+	</string>
+	<string name="Chat Message" value=" Chat:"/>
+	<string name="Sound" value=" Som:"/>
+	<string name="Wait" value=" --- Aguardar:"/>
+	<string name="AnimFlagStop" value=" Parar animação:"/>
+	<string name="AnimFlagStart" value=" Iniciar animação:"/>
+	<string name="Wave" value=" Acenar"/>
+	<string name="GestureActionNone" value="Nenhum"/>
+	<string name="HelloAvatar" value=" Olá, avatar!"/>
+	<string name="ViewAllGestures" value=" Ver todos &gt;&gt;"/>
+	<string name="GetMoreGestures" value=" Mais gestos &gt;&gt;"/>
+	<string name="Animations" value=" Animações,"/>
+	<string name="Calling Cards" value=" Cartões de visita,"/>
+	<string name="Clothing" value=" Roupas,"/>
+	<string name="Gestures" value=" Gestos,"/>
+	<string name="Landmarks" value=" Landmarks,"/>
+	<string name="Materials" value=" Materiais,"/>
+	<string name="Notecards" value=" Notecards,"/>
+	<string name="Objects" value=" Objetos,"/>
+	<string name="Scripts" value=" Scripts,"/>
+	<string name="Sounds" value=" Sons,"/>
+	<string name="Textures" value=" Texturas,"/>
+	<string name="Settings" value=" Configurações,"/>
+	<string name="Snapshots" value=" Fotos,"/>
+	<string name="Folders" value=" Pastas,"/>
+	<string name="No Filters" value="Nenhum"/>
+	<string name="Since Logoff" value=" - Desde o logout"/>
+	<string name="Modifiable" value="Modificável"/>
+	<string name="Copyable" value="Copiável"/>
+	<string name="Transferable" value="Transferível"/>
+	<string name="PermissionsFilter" value=" - Apenas [PERMISSIONS]"/>
+	<string name="InvFolder My Inventory">
+		Inventário
+	</string>
+	<string name="InvFolder Library">
+		Biblioteca
+	</string>
+	<string name="InvFolder Textures">
+		Texturas
+	</string>
+	<string name="InvFolder Sounds">
+		Sons
+	</string>
+	<string name="InvFolder Calling Cards">
+		Cartões de visita
+	</string>
+	<string name="InvFolder Landmarks">
+		Landmarks
+	</string>
+	<string name="InvFolder Scripts">
+		Meus Scripts
+	</string>
+	<string name="InvFolder Clothing">
+		Roupas
+	</string>
+	<string name="InvFolder Objects">
+		Objetos
+	</string>
+	<string name="InvFolder Notecards">
+		Notas
+	</string>
+	<string name="InvFolder New Folder">
+		Nova pasta
+	</string>
+	<string name="InvFolder Inventory">
+		Inventário
+	</string>
+	<string name="InvFolder Uncompressed Images">
+		Imagens não compactadas
+	</string>
+	<string name="InvFolder Body Parts">
+		Partes do corpo
+	</string>
+	<string name="InvFolder Trash">
+		Lixeira
+	</string>
+	<string name="InvFolder Photo Album">
+		Álbum de fotos
+	</string>
+	<string name="InvFolder Lost And Found">
+		Achados e perdidos
+	</string>
+	<string name="InvFolder Uncompressed Sounds">
+		Sons não compactados
+	</string>
+	<string name="InvFolder Animations">
+		Animações
+	</string>
+	<string name="InvFolder Gestures">
+		Gestos
+	</string>
+	<string name="InvFolder Favorite">
+		Favoritos
+	</string>
+	<string name="InvFolder favorite">
+		Favoritos
+	</string>
+	<string name="InvFolder Favorites">
+		Meus favoritos
+	</string>
+	<string name="InvFolder favorites">
+		Meus favoritos
+	</string>
+	<string name="InvFolder Current Outfit">
+		Roupa atual
+	</string>
+	<string name="InvFolder Initial Outfits">
+		Roupas iniciais
+	</string>
+	<string name="InvFolder My Outfits">
+		Meus Visuais
+	</string>
+	<string name="InvFolder Accessories">
+		Acessórios
+	</string>
+	<string name="InvFolder Meshes">
+		Malhas
+	</string>
+	<string name="InvFolder Received Items">
+		Itens recebidos
+	</string>
+	<string name="InvFolder Merchant Outbox">
+		Caixa de saída do comerciante
+	</string>
+	<string name="InvFolder Settings">
+		Configurações
+	</string>
+	<string name="InvFolder Material">
+		Materiais
+	</string>
+	<string name="InvFolder Materials">
+		Materiais
+	</string>
+	<string name="InvFolder Friends">
+		Amigos
+	</string>
+	<string name="InvFolder All">
+		Todos
+	</string>
+	<string name="InvFolder My Suitcase">
+		Minha mala
+	</string>
+	<string name="no_attachments">
+		Nenhum anexo em uso
+	</string>
+	<string name="Attachments remain">
+		Anexos ([COUNT] restantes)
+	</string>
+	<string name="Buy">
+		Comprar
+	</string>
+	<string name="BuyforL$">
+		Comprar por L$
+	</string>
+	<string name="Stone">
+		Pedra
+	</string>
+	<string name="Glass">
+		Vidro
+	</string>
+	<string name="Wood">
+		Madeira
+	</string>
+	<string name="Flesh">
+		Carne
+	</string>
+	<string name="Plastic">
+		Plástico
+	</string>
+	<string name="Rubber">
+		Borracha
+	</string>
+	<string name="Light">
+		Luz
+	</string>
+	<string name="Chest">
+		Tórax
+	</string>
+	<string name="Skull">
+		Crânio
+	</string>
+	<string name="Left Shoulder">
+		Ombro esquerdo
+	</string>
+	<string name="Right Shoulder">
+		Ombro direito
+	</string>
+	<string name="Left Hand">
+		Mão esquerda
+	</string>
+	<string name="Right Hand">
+		Mão direita
+	</string>
+	<string name="Left Foot">
+		Pé esquerdo
+	</string>
+	<string name="Right Foot">
+		Pé direito
+	</string>
+	<string name="Spine">
+		Coluna
+	</string>
+	<string name="Pelvis">
+		Pelvis
+	</string>
+	<string name="Mouth">
+		Boca
+	</string>
+	<string name="Chin">
+		Queixo
+	</string>
+	<string name="Left Ear">
+		Orelha esquerda
+	</string>
+	<string name="Right Ear">
+		Orelha direita
+	</string>
+	<string name="Left Eyeball">
+		Olho esquerdo
+	</string>
+	<string name="Right Eyeball">
+		Olho direito
+	</string>
+	<string name="Nose">
+		Nariz
+	</string>
+	<string name="R Upper Arm">
+		Braço direito
+	</string>
+	<string name="R Forearm">
+		Antebraço direito
+	</string>
+	<string name="L Upper Arm">
+		Braço esquerdo
+	</string>
+	<string name="L Forearm">
+		Antebraço esquerdo
+	</string>
+	<string name="Right Hip">
+		Quadril direito
+	</string>
+	<string name="R Upper Leg">
+		Coxa direita
+	</string>
+	<string name="R Lower Leg">
+		Panturrilha direita
+	</string>
+	<string name="Left Hip">
+		Quadril esquerdo
+	</string>
+	<string name="L Upper Leg">
+		Coxa esquerda
+	</string>
+	<string name="L Lower Leg">
+		Panturrilha esquerda
+	</string>
+	<string name="Stomach">
+		Abdomen
+	</string>
+	<string name="Left Pec">
+		Peito esquerdo
+	</string>
+	<string name="Right Pec">
+		Peito direito
+	</string>
+	<string name="Neck">
+		Pescoço
+	</string>
+	<string name="Avatar Center">
+		Centro do avatar
+	</string>
+	<string name="Left Ring Finger">
+		Dedo anelar esquerdo
+	</string>
+	<string name="Right Ring Finger">
+		Dedo anelar direito
+	</string>
+	<string name="Tail Base">
+		Base da cauda
+	</string>
+	<string name="Tail Tip">
+		Ponta da cauda
+	</string>
+	<string name="Left Wing">
+		Asa esquerda
+	</string>
+	<string name="Right Wing">
+		Asa direita
+	</string>
+	<string name="Jaw">
+		Mandíbula
+	</string>
+	<string name="Alt Left Ear">Orelha esquerda alt.</string>
+	<string name="Alt Right Ear">Orelha direita alt.</string>
+	<string name="Alt Left Eye">Olho esquerdo alt.</string>
+	<string name="Alt Right Eye">Olho direito alt.</string>
+	<string name="Tongue">
+		Língua
+	</string>
+	<string name="Groin">
+		Ingle
+	</string>
+	<string name="Left Hind Foot">
+		Pé traseiro esquerdo
+	</string>
+	<string name="Right Hind Foot">
+		Pé traseiro direito
+	</string>
+	<string name="Invalid Attachment">
+		Ponto de anexo inválido
+	</string>
+	<string name="ATTACHMENT_MISSING_ITEM">
+		Erro: item ausente
+	</string>
+	<string name="ATTACHMENT_MISSING_BASE_ITEM">
+		Erro: item base ausente
+	</string>
+	<string name="ATTACHMENT_NOT_ATTACHED">
+		Erro: o objeto está no traje atual, mas não está anexado
+	</string>
+	<string name="YearsOld">
+		[AGEYEARS] de idade
+	</string>
+	<string name="MonthsOld">
+		[AGEMONTHS] de idade
+	</string>
+	<string name="WeeksOld">
+		[AGEWEEKS] de idade
+	</string>
+	<string name="DaysOld">
+		[AGEDAYS] de idade
+	</string>
+	<string name="TodayOld">
+		Membro desde hoje
+	</string>
+	<string name="av_render_everyone_now">
+		Todos podem ver você agora.
+	</string>
+	<string name="av_render_not_everyone">
+		Você pode não estar sendo renderizado por todos ao seu redor.
+	</string>
+	<string name="av_render_over_half">
+		Você pode não estar sendo renderizado por mais da metade das pessoas ao seu redor.
+	</string>
+	<string name="av_render_most_of">
+		Você pode não estar sendo renderizado pela maioria das pessoas ao seu redor.
+	</string>
+	<string name="av_render_anyone">
+		Você pode não estar sendo renderizado para ninguém ao seu redor.
+	</string>
+	<string name="hud_description_total">
+		Seu HUD
+	</string>
+	<string name="hud_name_with_joint">
+		[OBJ_NAME] (usado em [JNT_NAME])
+	</string>
+	<string name="hud_render_memory_warning">
+		[HUD_DETAILS] usa muita memória de textura
+	</string>
+	<string name="hud_render_cost_warning">
+		[HUD_DETAILS] contém muitos objetos e texturas pesados
+	</string>
+	<string name="hud_render_heavy_textures_warning">
+		[HUD_DETAILS] contém muitas texturas grandes
+	</string>
+	<string name="hud_render_cramped_warning">
+		[HUD_DETAILS] contém muitos objetos
+	</string>
+	<string name="hud_render_textures_warning">
+		[HUD_DETAILS] contém muitas texturas
+	</string>
+	<string name="AgeYearsA">
+	[COUNT] ano
+	</string>
+	<string name="AgeYearsB">
+	[COUNT] anos
+	</string>
+	<string name="AgeYearsC">
+	[COUNT] anos
+	</string>
+	<string name="AgeMonthsA">
+	[COUNT] mês
+	</string>
+	<string name="AgeMonthsB">
+	[COUNT] meses
+	</string>
+	<string name="AgeMonthsC">
+	[COUNT] meses
+	</string>
+	<string name="AgeWeeksA">
+	[COUNT] semana
+	</string>
+	<string name="AgeWeeksB">
+	[COUNT] semanas
+	</string>
+	<string name="AgeWeeksC">
+	[COUNT] semanas
+	</string>
+	<string name="AgeDaysA">
+	[COUNT] dia
+	</string>
+	<string name="AgeDaysB">[COUNT] dias</string>
+	<string name="AgeDaysC">[COUNT] dias</string>
+	<string name="GroupMembersA">
+		[COUNT] membro
+	</string>
+	<string name="GroupMembersB">
+		[COUNT] membros
+	</string>
+	<string name="GroupMembersC">
+		[COUNT] membros
+	</string>
+	<string name="AcctTypeResident">
+		Residente
+	</string>
+	<string name="AcctTypeTrial">
+		Teste
+	</string>
+	<string name="AcctTypeCharterMember">
+		Membro fundador
+	</string>
+	<string name="AcctTypeEmployee">
+		Funcionário da Linden Lab
+	</string>
+	<string name="PaymentInfoUsed">
+		Usou uma forma de pagamento
+	</string>
+	<string name="PaymentInfoOnFile">
+		Informações de pagamento cadastradas
+	</string>
+	<string name="NoPaymentInfoOnFile">
+		Sem informações de pagamento cadastradas
+	</string>
+	<string name="AgeVerified">
+		Idade verificada
+	</string>
+	<string name="NotAgeVerified">
+		Não verificado por idade
+	</string>
+	<string name="Center 2">
+		Centro 2
+	</string>
+	<string name="Top Right">
+		Superior direita
+	</string>
+	<string name="Top">
+		Superior
+	</string>
+	<string name="Top Left">
+		Superior esquerda
+	</string>
+	<string name="Center">
+		Centro
+	</string>
+	<string name="Bottom Left">
+		Inferior esquerda
+	</string>
+	<string name="Bottom">
+		Inferior
+	</string>
+	<string name="Bottom Right">
+		Inferior direita
+	</string>
+	<string name="CompileQueueDownloadedCompiling">
+		Baixado, compilando
+	</string>
+	<string name="CompileQueueServiceUnavailable">
+		Serviço de compilação de scripts não disponível
+	</string>
+	<string name="CompileQueueScriptNotFound">
+		Script não foi encontrado no servidor.
+	</string>
+	<string name="CompileQueueProblemDownloading">
+		Problema ao baixar
+	</string>
+	<string name="CompileQueueInsufficientPermDownload">
+		Permissões insuficientes para baixar um script.
+	</string>
+	<string name="CompileQueueInsufficientPermFor">
+		Permissões insuficientes para
+	</string>
+	<string name="CompileQueueUnknownFailure">
+		Falha desconhecida no download
+	</string>
+	<string name="CompileNoExperiencePerm">
+		Ignorando o script [SCRIPT] com a experiência [EXPERIENCE].
+	</string>
+	<string name="CompileQueueTitle">
+		Progresso da recompilação
+	</string>
+	<string name="CompileQueueStart">
+		recompilar
+	</string>
+	<string name="CompileQueuePreprocessing">
+		Pré-processamento: [SCRIPT]
+	</string>
+	<string name="CompileQueuePreprocessingComplete">
+		Pré-processamento do script [SCRIPT] concluído
+	</string>
+	<string name="ResetQueueTitle">
+		Redefinir progresso
+	</string>
+	<string name="ResetQueueStart">
+		reiniciar
+	</string>
+	<string name="RunQueueTitle">
+		Progresso de execução
+	</string>
+	<string name="RunQueueStart">
+		definir em execução
+	</string>
+	<string name="NotRunQueueTitle">
+		Progresso de parada
+	</string>
+	<string name="NotRunQueueStart">
+		parar execução
+	</string>
+	<string name="DeleteQueueTitle">
+		Excluir progresso
+	</string>
+	<string name="DeleteQueueStart">
+		Excluindo
+	</string>
+	<string name="Compiling">
+		Compilando [NAME]
+	</string>
+	<string name="CompileSuccessful">
+		Compilação concluída com sucesso!
+	</string>
+	<string name="CompileSuccessfulSaving">
+		Compilação concluída com sucesso, salvando...
+	</string>
+	<string name="SaveComplete">
+		Salvo.
+	</string>
+	<string name="UploadFailed">
+		Falha ao enviar o arquivo: [REASON]
+	</string>
+	<string name="ObjectOutOfRange">
+		Script (objeto fora do alcance)
+	</string>
+	<string name="ScriptWasDeleted">
+		Script (removido do inventário)
+	</string>
+	<string name="GodToolsObjectOwnedBy">
+		O objeto [OBJECT] pertence a [OWNER]
+	</string>
+	<string name="GroupsNone">
+		nenhum
+	</string>
+	<string name="Group" value=" (grupo)"/>
+	<string name="Unknown">
+		(Desconhecido)
+	</string>
+	<string name="SummaryForTheWeek" value="Resumo desta semana, começando em "/>
+	<string name="NextStipendDay" value="O próximo pagamento será em "/>
+	<string name="GroupPlanningDate">
+		[day,datetime,utc].[mthnum,datetime,utc].[year,datetime,utc]
+	</string>
+	<string name="GroupIndividualShare" value="                      Grupo       Participação individual"/>
+	<string name="GroupColumn" value="                      Grupo"/>
+	<string name="Balance">
+		Saldo
+	</string>
+	<string name="Credits">
+		Créditos
+	</string>
+	<string name="Debits">
+		Débitos
+	</string>
+	<string name="Total">
+		Total
+	</string>
+	<string name="NoGroupDataFound">
+		Nenhum dado do grupo foi encontrado
+	</string>
+	<string name="AlreadyInGroup">
+		Você já é membro deste grupo.
+	</string>
+	<string name="IMParentEstate">
+		estate principal
+	</string>
+	<string name="IMMainland">
+		continente
+	</string>
+	<string name="IMTeen">
+		adolescente
+	</string>
+	<string name="Anyone">qualquer um</string>
+	<string name="RegionInfoError">
+		erro
+	</string>
+	<string name="RegionInfoAllEstatesOwnedBy">
+		todos os estates de [OWNER]
+	</string>
+	<string name="RegionInfoAllEstatesYouOwn">
+		todos os estates que você possui
+	</string>
+	<string name="RegionInfoAllEstatesYouManage">
+		todos os estates que você administra para [OWNER]
+	</string>
+	<string name="RegionInfoAllowedResidents">
+		Sempre permitido: ([ALLOWEDAGENTS], máx. [MAXACCESS])
+	</string>
+	<string name="RegionInfoAllowedGroups">
+		Grupos sempre permitidos: ([ALLOWEDGROUPS], máx [MAXACCESS])
+	</string>
+	<string name="RegionInfoEstateManagers">
+		Administradores de estate: ([ESTATEMANAGERS], máx. [MAXMANAGERS])
+	</string>
+	<string name="RegionInfoBannedResidents">
+		Sempre banidos: ([BANNEDAGENTS], máx. [MAXBANNED])
+	</string>
+	<string name="RegionInfoListTypeAllowedAgents">
+		residentes sempre permitidos
+	</string>
+	<string name="RegionInfoListTypeBannedAgents">
+		residente sempre banido
+	</string>
+	<string name="RegionInfoAllEstates">
+		todos os estates
+	</string>
+	<string name="RegionInfoManagedEstates">
+		estates administrados
+	</string>
+	<string name="RegionInfoThisEstate">
+		este estate
+	</string>
+	<string name="AndNMore">
+		e mais [EXTRA_COUNT]
+	</string>
+	<string name="ScriptLimitsParcelScriptMemory">
+		Memória de script da parcela
+	</string>
+	<string name="ScriptLimitsParcelsOwned">
+		Parcelas listadas: [PARCELS]
+	</string>
+	<string name="ScriptLimitsMemoryUsed">
+		Memória usada: [COUNT] kb de [MAX] kb; [AVAILABLE] KB disponíveis
+	</string>
+	<string name="ScriptLimitsMemoryUsedSimple">
+		Memória usada: [COUNT] KB
+	</string>
+	<string name="ScriptLimitsParcelScriptURLs">
+		URLs de script da parcela
+	</string>
+	<string name="ScriptLimitsURLsUsed">
+		URLs usados: [COUNT] de [MAX]; [AVAILABLE] disponível
+	</string>
+	<string name="ScriptLimitsURLsUsedSimple">
+		URLs usadas: [COUNT]
+	</string>
+	<string name="ScriptLimitsRequestError">
+		Erro ao obter as informações
+	</string>
+	<string name="ScriptLimitsRequestNoParcelSelected">
+		Nenhum pacote selecionado
+	</string>
+	<string name="ScriptLimitsRequestWrongRegion">
+		Erro: informações de script disponíveis apenas para sua região atual
+	</string>
+	<string name="ScriptLimitsRequestWaiting">
+		Obtendo as informações...
+	</string>
+	<string name="ScriptLimitsRequestDontOwnParcel">
+		Você não tem permissão para inspecionar este lote.
+	</string>
+	<string name="SITTING_ON">
+		Sentado em
+	</string>
+	<string name="ATTACH_CHEST">Peito</string>
+	<string name="ATTACH_HEAD">
+		Crânio
+	</string>
+	<string name="ATTACH_LSHOULDER">
+		Ombro esquerdo
+	</string>
+	<string name="ATTACH_RSHOULDER">
+		Ombro direito
+	</string>
+	<string name="ATTACH_LHAND">
+		Mão esquerda
+	</string>
+	<string name="ATTACH_RHAND">
+		Mão direita
+	</string>
+	<string name="ATTACH_LFOOT">
+		Pé esquerdo
+	</string>
+	<string name="ATTACH_RFOOT">
+		Pé direito
+	</string>
+	<string name="ATTACH_BACK">
+		Coluna
+	</string>
+	<string name="ATTACH_PELVIS">Pelve</string>
+	<string name="ATTACH_MOUTH">Boca</string>
+	<string name="ATTACH_CHIN">Queixo</string>
+	<string name="ATTACH_LEAR">Orelha esquerda</string>
+	<string name="ATTACH_REAR">Orelha direita</string>
+	<string name="ATTACH_LEYE">Olho esquerdo</string>
+	<string name="ATTACH_REYE">Olho direito</string>
+	<string name="ATTACH_NOSE">Nariz</string>
+	<string name="ATTACH_RUARM">Braço superior direito</string>
+	<string name="ATTACH_RLARM">Antebraço direito</string>
+	<string name="ATTACH_LUARM">Braço superior esquerdo</string>
+	<string name="ATTACH_LLARM">Antebraço esquerdo</string>
+	<string name="ATTACH_RHIP">
+		Quadril direito
+	</string>
+	<string name="ATTACH_RULEG">
+		Coxa direita
+	</string>
+	<string name="ATTACH_RLLEG">
+		Perna inferior direita
+	</string>
+	<string name="ATTACH_LHIP">
+		Quadril esquerdo
+	</string>
+	<string name="ATTACH_LULEG">
+		Coxa esquerda
+	</string>
+	<string name="ATTACH_LLLEG">
+		Perna inferior esquerda
+	</string>
+	<string name="ATTACH_BELLY">
+		Abdômen
+	</string>
+	<string name="ATTACH_LEFT_PEC">
+		Peitoral esquerdo
+	</string>
+	<string name="ATTACH_RIGHT_PEC">
+		Peitoral direito
+	</string>
+	<string name="ATTACH_HUD_CENTER_2">
+		HUD centro 2
+	</string>
+	<string name="ATTACH_HUD_TOP_RIGHT">
+		HUD superior direito
+	</string>
+	<string name="ATTACH_HUD_TOP_CENTER">
+		HUD superior centro
+	</string>
+	<string name="ATTACH_HUD_TOP_LEFT">
+		HUD superior esquerdo
+	</string>
+	<string name="ATTACH_HUD_CENTER_1">
+		HUD centro 1
+	</string>
+	<string name="ATTACH_HUD_BOTTOM_LEFT">
+		HUD inferior esquerdo
+	</string>
+	<string name="ATTACH_HUD_BOTTOM">
+		HUD inferior
+	</string>
+	<string name="ATTACH_HUD_BOTTOM_RIGHT">
+		HUD inferior direito
+	</string>
+	<string name="ATTACH_NECK">
+		Pescoço
+	</string>
+	<string name="ATTACH_AVATAR_CENTER">
+		Centro do avatar
+	</string>
+	<string name="ATTACH_LHAND_RING1">
+		Dedo anelar esquerdo
+	</string>
+	<string name="ATTACH_RHAND_RING1">
+		Dedo anelar direito
+	</string>
+	<string name="ATTACH_TAIL_BASE">
+		Base da cauda
+	</string>
+	<string name="ATTACH_TAIL_TIP">
+		Ponta da cauda
+	</string>
+	<string name="ATTACH_LWING">
+		Asa esquerda
+	</string>
+	<string name="ATTACH_RWING">
+		Asa direita
+	</string>
+	<string name="ATTACH_FACE_JAW">
+		Mandíbula
+	</string>
+	<string name="ATTACH_FACE_LEAR">
+		Orelha esquerda alt.
+	</string>
+	<string name="ATTACH_FACE_REAR">
+		Orelha direita alt.
+	</string>
+	<string name="ATTACH_FACE_LEYE">
+		Olho esquerdo alt.
+	</string>
+	<string name="ATTACH_FACE_REYE">
+		Olho direito alt.
+	</string>
+	<string name="ATTACH_FACE_TONGUE">
+		Língua
+	</string>
+	<string name="ATTACH_GROIN">
+		Virilha
+	</string>
+	<string name="ATTACH_HIND_LFOOT">
+		Pé traseiro esquerdo
+	</string>
+	<string name="ATTACH_HIND_RFOOT">
+		Pé traseiro direito
+	</string>
+	<string name="CursorPos">
+		Linha [LINE], coluna [COLUMN]
+	</string>
+	<string name="PanelDirCountFound">
+		[COUNT] encontrado(s)
+	</string>
+	<string name="PanelDirTimeStr">
+		[hour12,datetime,slt]:[min,datetime,slt] [ampm,datetime,slt]
+	</string>
+	<string name="PanelContentsTooltip">
+		Conteúdo do objeto
+	</string>
+	<string name="PanelContentsNewScript">
+		Novo script
+	</string>
+	<string name="DoNotDisturbModeResponseDefault">
+		Este residente ativou o modo Não Perturbe e verá sua mensagem mais tarde.
+	</string>
+	<string name="AutoResponseModeDefault">
+		Este residente ativou o modo "Resposta automática" no viewer [APP_NAME]. Isso significa que ele não quer ser incomodado. Ele verá sua mensagem mais tarde.
+	</string>
+	<string name="AutoResponseModeNonFriendsDefault">
+		Este residente ativou o modo "Resposta automática" no viewer [APP_NAME]. Isso significa que ele não quer ser incomodado. Ele verá sua mensagem mais tarde.
+	</string>
+	<string name="RejectTeleportOffersResponseDefault">
+		Este residente ativou o modo "Recusar ofertas e solicitações de teleporte" no viewer [APP_NAME]. Isso significa que ele não quer ser incomodado com ofertas ou solicitações de teleporte. Você ainda pode enviar mensagem.
+	</string>
+	<string name="RejectFriendshipRequestsResponseDefault">
+		Este residente ativou o modo "Recusar todos os pedidos de amizade" no viewer [APP_NAME]. Isso significa que ele não quer ser incomodado com pedidos de amizade. Você ainda pode enviar mensagem.
+	</string>
+	<string name="MutedAvatarsResponseDefault">
+		Este residente bloqueou o recebimento das suas mensagens.
+	</string>
+	<string name="AwayAvatarResponseDefault">
+		Este residente está ausente no momento e verá sua mensagem mais tarde.
+	</string>
+	<string name="MuteByName">
+		(Por nome)
+	</string>
+	<string name="MuteAgent">
+		(Residente)
+	</string>
+	<string name="MuteObject">
+		(Objeto)
+	</string>
+	<string name="MuteGroup">
+		(Grupo)
+	</string>
+	<string name="MuteExternal">
+		(Externo)
+	</string>
+	<string name="RegionNoCovenant">
+		Não há convênio fornecido para este estate.
+	</string>
+	<string name="RegionNoCovenantOtherOwner">
+		Não há convênio fornecido para este estate. A terra neste estate está sendo vendida pelo proprietário do estate. Entre em contato com o proprietário do estate para detalhes de venda.
+	</string>
+	<string name="covenant_last_modified" value="Última modificação: "/>
+	<string name="none_text" value=" (nenhum) "/>
+	<string name="never_text" value=" (nunca) "/>
+	<string name="GroupOwned">
+		Em posse de grupo
+	</string>
+	<string name="Public">
+		Público
+	</string>
+	<string name="LocalSettings">
+		Configurações locais
+	</string>
+	<string name="RegionSettings">
+		Configurações da região
+	</string>
+	<string name="NoEnvironmentSettings">
+		Esta região não suporta configurações de ambiente.
+	</string>
+	<string name="EnvironmentSun">
+		Sol
+	</string>
+	<string name="EnvironmentMoon">
+		Luna
+	</string>
+	<string name="EnvironmentBloom">
+		Bloom
+	</string>
+	<string name="EnvironmentCloudNoise">
+		Ruído de nuvens
+	</string>
+	<string name="EnvironmentNormalMap">
+		Mapa normal
+	</string>
+	<string name="EnvironmentTransparent">
+		Transparente
+	</string>
+	<string name="ClassifiedClicksTxt">
+		Clics: [TELEPORT] teleportes, [MAP] mapa, [PROFILE] perfil
+	</string>
+	<string name="ClassifiedUpdateAfterPublish">
+		(será atualizado após a publicação)
+	</string>
+	<string name="NoPicksClassifiedsText">
+		Você não criou destaques nem classificados. Clique no botão Novo para criar um.
+	</string>
+	<string name="NoPicksText">Você não criou nenhum destaque. Clique no botão Novo para criar um destaque.</string>
+	<string name="NoClassifiedsText">Você não criou nenhum classificado. Clique no botão '+' para criar um.</string>
+	<string name="NoAvatarPicksClassifiedsText">
+		O residente não tem classificados nem destaques
+	</string>
+	<string name="NoAvatarPicksText">O residente não tem destaques</string>
+	<string name="NoAvatarClassifiedsText">O residente não tem classificados</string>
+	<string name="PicksClassifiedsLoadingText">
+		Carregando...
+	</string>
+	<string name="MultiPreviewTitle">
+		Pré-visualização
+	</string>
+	<string name="MultiPropertiesTitle">
+		Propriedades
+	</string>
+	<string name="InvOfferAnObjectNamed">
+		Um objeto chamado
+	</string>
+	<string name="InvOfferOwnedByGroup">
+		de propriedade do grupo
+	</string>
+	<string name="InvOfferOwnedByUnknownGroup">
+		de propriedade de um grupo desconhecido
+	</string>
+	<string name="InvOfferOwnedBy">
+		de propriedade de
+	</string>
+	<string name="InvOfferOwnedByUnknownUser">
+		de propriedade de um residente desconhecido
+	</string>
+	<string name="InvOfferGaveYou">
+		deu a você
+	</string>
+	<string name="InvOfferYouDecline">
+		Você recusa
+	</string>
+	<string name="InvOfferDecline">
+		Você recusa [DESC] de [NAME].
+	</string>
+	<string name="InvOfferFrom">
+		de
+	</string>
+	<string name="InvOfferAutoAcceptObject">
+		Um objeto chamado [OBJECT_NAME] deu a você este(s) [OBJECT_TYPE]: [DESC]</string>
+	<string name="InvOfferAutoAcceptUser">
+		[USER_NAME] deu a você este(s) [OBJECT_TYPE]: [DESC]
+	</string>
+	<string name="GroupMoneyTotal">
+		Total
+	</string>
+	<string name="GroupMoneyBought">
+		comprou
+	</string>
+	<string name="GroupMoneyPaidYou">
+		pagou a você
+	</string>
+	<string name="GroupMoneyPaidInto">
+		pagou para
+	</string>
+	<string name="GroupMoneyBoughtPassTo">
+		comprou passe para
+	</string>
+	<string name="GroupMoneyPaidFeeForEvent">
+		pagou taxa por evento
+	</string>
+	<string name="GroupMoneyPaidPrizeForEvent">
+		pagou prêmio por evento
+	</string>
+	<string name="GroupMoneyBalance">
+		Saldo
+	</string>
+	<string name="GroupMoneyCredits">
+		Créditos
+	</string>
+	<string name="GroupMoneyDebits">
+		Débitos
+	</string>
+	<string name="GroupMoneyStartDate">
+		Transações desde [weekday,datetime,utc], [day,datetime,utc]. [mth,datetime,utc]. [year,datetime,utc]
+	</string>
+	<string name="AcquiredItems">
+		Itens adquiridos
+	</string>
+	<string name="Cancel">
+		Cancelar
+	</string>
+	<string name="UploadingCosts">
+		Enviar [NAME] custa L$ [AMOUNT]
+	</string>
+	<string name="UnknownFileExtension">
+		Extensão de arquivo desconhecida .%s
+Formatos válidos: .wav, .tga, .bmp, .jpg, .jpeg ou .anim
+	</string>
+	<string name="MuteObject2">
+		Bloquear
+	</string>
+	<string name="MuteAvatar">
+		Bloquear
+	</string>
+	<string name="UnmuteObject">
+		Desbloquear
+	</string>
+	<string name="UnmuteAvatar">
+		Desbloquear
+	</string>
+	<string name="AddLandmarkNavBarMenu">
+		Adicionar aos landmarks...
+	</string>
+	<string name="EditLandmarkNavBarMenu">
+		Editar landmark...
+	</string>
+	<string name="FileSaved">
+		Arquivo salvo
+	</string>
+	<string name="Receiving">
+		Recebendo
+	</string>
+	<string name="Direction_Forward">
+		Frente
+	</string>
+	<string name="Direction_Left">
+		Esquerda
+	</string>
+	<string name="Direction_Right">
+		Direita
+	</string>
+	<string name="Direction_Back">
+		Trás
+	</string>
+	<string name="Direction_North">
+		Norte
+	</string>
+	<string name="Direction_South">
+		Sul
+	</string>
+	<string name="Direction_West">
+		Oeste
+	</string>
+	<string name="Direction_East">
+		Este
+	</string>
+	<string name="Direction_Up">
+		Cima
+	</string>
+	<string name="Direction_Down">
+		Baixo
+	</string>
+	<string name="Any Category">Qualquer categoria</string>
+	<string name="Shopping">
+		Shopping
+	</string>
+	<string name="Land Rental">
+		Aluguel de terreno
+	</string>
+	<string name="Property Rental">
+		Aluguel de propriedade
+	</string>
+	<string name="Special Attraction">
+		Atração especial
+	</string>
+	<string name="New Products">
+		Produtos novos
+	</string>
+	<string name="Employment">
+		Emprego
+	</string>
+	<string name="Wanted">
+		Procura-se
+	</string>
+	<string name="Service">
+		Serviços
+	</string>
+	<string name="Personal">
+		Pessoal
+	</string>
+	<string name="None">
+		nenhum
+	</string>
+	<string name="Linden Location">
+		Local Linden
+	</string>
+	<string name="Adult">
+		Adult
+	</string>
+	<string name="Arts and Culture">Artes e cultura</string>
+	<string name="Business">
+		Negócios
+	</string>
+	<string name="Educational">
+		Educacional
+	</string>
+	<string name="Gaming">
+		Jogos
+	</string>
+	<string name="Hangout">
+		Ponto de encontro
+	</string>
+	<string name="Newcomer Friendly">
+		Acolhedor para novatos
+	</string>
+	<string name="Parks and Nature">
+		Parques e natureza
+	</string>
+	<string name="Residential">
+		Residencial
+	</string>
+	<string name="Stage">
+		Artes cênicas
+	</string>
+	<string name="Other">
+		Outro
+	</string>
+	<string name="Rental">
+		Aluguel de terreno
+	</string>
+	<string name="Any">Qualquer</string>
+	<string name="You">
+		(Você)
+	</string>
+	<string name="Multiple Media">
+		Vários meios
+	</string>
+	<string name="Play Media">
+		Reproduzir/Pausar mídia
+	</string>
+	<string name="StreamtitleNowPlaying">
+		Reproduzindo: [TITLE]
+	</string>
+	<string name="NvidiaDriverPage">
+		http://www.nvidia.com/Download/index.aspx?lang=pt
+	</string>
+	<string name="MBCmdLineError">
+		Ocorreu um erro ao analisar a linha de comando.
+Consulte: http://wiki.secondlife.com/wiki/Client_parameters
+Erro:
+	</string>
+	<string name="MBCmdLineUsg">
+		Uso da linha de comando do [APP_NAME]:
+	</string>
+	<string name="MBUnableToAccessFile">
+		[APP_NAME] não consegue acessar o arquivo necessário.
+O motivo normalmente é que você está executando várias instâncias ao mesmo tempo ou que seu sistema acredita que um arquivo está aberto.
+Se esta mensagem aparecer novamente, reinicie seu computador e tente outra vez.
+Se o erro continuar, desinstale e reinstale o [APP_NAME].
+	</string>
+	<string name="MBFatalError">
+		Erro irrecuperável
+	</string>
+	<string name="MBApplicationError">
+		Erro do aplicativo — não entre em pânico
+	</string>
+	<string name="MBApplicationErrorDetails">Lamentamos, mas o [APP_NAME] travou e será encerrado. Se este erro ocorrer repetidamente, entre em contato com nossa equipe de suporte e informe a mensagem abaixo:
+[ERROR_DETAILS]
+	</string>
+	<string name="MBRequiresAltiVec">
+		O [APP_NAME] requer um processador com AltiVec (G4 ou posterior).
+	</string>
+	<string name="MBAlreadyRunning">
+		[APP_NAME] já está em execução.
+	</string>
+	<string name="MBFrozenCrashed">
+		Na execução anterior, o [APP_NAME] parece ter travado ou encerrado inesperadamente.
+Deseja enviar um relatório de falha?
+	</string>
+	<string name="MBAlert">
+		Alerta
+	</string>
+	<string name="MBNoDirectX">
+		O [APP_NAME] não consegue detectar DirectX 9.0b ou superior.
+O [APP_NAME] usa DirectX para detectar hardware e/ou drivers desatualizados que podem causar problemas de estabilidade, desempenho ruim e falhas. Embora você possa executar o [APP_NAME] sem ele, recomendamos fortemente usar o DirectX 9.0b.
+Deseja continuar?
+	</string>
+	<string name="MBWarning">
+		Aviso
+	</string>
+	<string name="MBNoAutoUpdate">
+		A atualização automática ainda não está implementada para Linux.
+Baixe a versão mais recente em www.secondlife.com.
+	</string>
+	<string name="MBRegClassFailed">
+		Falha em RegisterClass
+	</string>
+	<string name="MBError">
+		Erro
+	</string>
+	<string name="MBFullScreenErr">
+		Não é possível executar em tela cheia em [WIDTH] x [HEIGHT].
+Executando em uma janela.
+	</string>
+	<string name="MBDestroyWinFailed">
+		Erro ao encerrar ao destruir a janela (DestroyWindow() failed)
+	</string>
+	<string name="MBShutdownErr">
+		Erro ao encerrar
+	</string>
+	<string name="MBDevContextErr">
+		Não foi possível criar contexto para dispositivo GL
+	</string>
+	<string name="MBPixelFmtErr">
+		Formato de pixel compatível não encontrado
+	</string>
+	<string name="MBPixelFmtDescErr">
+		Descrição do formato de pixel indisponível
+	</string>
+	<string name="MBPixelFmtSetErr">
+		Não foi possível definir o formato de pixel.
+	</string>
+	<string name="MBGLContextErr">
+		Não foi possível criar contexto para dispositivo GL
+	</string>
+	<string name="MBGLContextActErr">
+		Não foi possível ativar contexto para dispositivo GL
+	</string>
+	<string name="MBVideoDrvErr">
+		[APP_NAME] não pode ser executado porque os drivers da sua placa de vídeo estão instalados incorretamente, desatualizados, ou porque o hardware não é compatível. Verifique se você instalou os drivers mais recentes da placa de vídeo. Se já estiverem instalados, reinstale-os.
+Se esta mensagem continuar aparecendo, entre em contato com [SUPPORT_SITE].
+	</string>
+	<string name="MBOutOfMemoryTitle">Memória insuficiente</string>
+	<string name="MBOutOfMemoryErr">
+		A solicitação de memória feita por [APP_NAME] falhou. O aplicativo não pode continuar e será encerrado.
+Se houver pouca memória disponível no seu computador, feche outros aplicativos que usam muita memória antes de executar [APP_NAME], aumente o arquivo de paginação ou reduza configurações gráficas como distância de visão.
+	</string>
+	<string name="MBMissingFile">
+		[APP_NAME] não conseguiu encontrar ou acessar alguns arquivos necessários e precisa ser encerrado.
+Reinstale o Viewer de [DOWNLOAD_URL] e entre em contato com [SUPPORT_SITE] se o problema continuar após a reinstalação.
+	</string>
+	<string name="5 O'Clock Shadow">
+		Barba por fazer
+	</string>
+	<string name="All White">
+		Totalmente branco
+	</string>
+	<string name="Anime Eyes">
+		Olhos anime
+	</string>
+	<string name="Arced">
+		Arqueado
+	</string>
+	<string name="Arm Length">
+		Comprimento do braço
+	</string>
+	<string name="Attached">
+		Aderido
+	</string>
+	<string name="Attached Earlobes">
+		Lóbulos aderidos
+	</string>
+	<string name="Back Fringe">
+		Franja traseira
+	</string>
+	<string name="Baggy">
+		Olheiras
+	</string>
+	<string name="Bangs">
+		Franja
+	</string>
+	<string name="Beady Eyes">
+		Olhos pequenos
+	</string>
+	<string name="Belly Size">
+		Tamanho da barriga
+	</string>
+	<string name="Big">
+		Grande
+	</string>
+	<string name="Big Butt">
+		Bunda grande
+	</string>
+	<string name="Big Hair Back">
+		Volume: traseiro
+	</string>
+	<string name="Big Hair Front">
+		Volume: frontal
+	</string>
+	<string name="Big Hair Top">
+		Volume: topo
+	</string>
+	<string name="Big Head">
+		Grande
+	</string>
+	<string name="Big Pectorals">
+		Peitorais grandes
+	</string>
+	<string name="Big Spikes">
+		Espinhos grandes
+	</string>
+	<string name="Black">
+		Preto
+	</string>
+	<string name="Blonde">
+		Loiro
+	</string>
+	<string name="Blonde Hair">
+		Cabelo loiro
+	</string>
+	<string name="Blush">
+		Blush
+	</string>
+	<string name="Blush Color">
+		Cor do blush
+	</string>
+	<string name="Blush Opacity">
+		Opacidade do blush
+	</string>
+	<string name="Body Definition">
+		Definição corporal
+	</string>
+	<string name="Body Fat">
+		Gordura corporal
+	</string>
+	<string name="Body Freckles">
+		Sardas corporais
+	</string>
+	<string name="Body Thick">
+		Corpo Gordo
+	</string>
+	<string name="Body Thickness">
+		Espessura corporal
+	</string>
+	<string name="Body Thin">
+		Corpo magro
+	</string>
+	<string name="Bow Legged">
+		Pernas arqueadas
+	</string>
+	<string name="Breast Buoyancy">
+		Busto: firmeza
+	</string>
+	<string name="Breast Cleavage">
+		Seios: decote
+	</string>
+	<string name="Breast Size">
+		Tamanho dos seios
+	</string>
+	<string name="Bridge Width">
+		Ponte: largura
+	</string>
+	<string name="Broad">
+		Largo
+	</string>
+	<string name="Brow Size">
+		Tamanho das sobrancelhas
+	</string>
+	<string name="Bug Eyes">
+		Olhos esbugalhados
+	</string>
+	<string name="Bugged Eyes">
+		Olhos esbugalhados
+	</string>
+	<string name="Bulbous">
+		Bulbosa
+	</string>
+	<string name="Bulbous Nose">
+		Nariz bulbosa
+	</string>
+	<string name="Breast Physics Mass">
+		Massa dos seios
+	</string>
+	<string name="Breast Physics Smoothing">
+		Suavização dos seios
+	</string>
+	<string name="Breast Physics Gravity">
+		Gravidade dos seios
+	</string>
+	<string name="Breast Physics Drag">
+		Arrasto dos seios
+	</string>
+	<string name="Breast Physics InOut Max Effect">
+		Efeito máx.
+	</string>
+	<string name="Breast Physics InOut Spring">
+		Mola
+	</string>
+	<string name="Breast Physics InOut Gain">
+		Ganho
+	</string>
+	<string name="Breast Physics InOut Damping">
+		Amortecimento
+	</string>
+	<string name="Breast Physics UpDown Max Effect">
+		Efeito máx.
+	</string>
+	<string name="Breast Physics UpDown Spring">
+		Mola
+	</string>
+	<string name="Breast Physics UpDown Gain">
+		Ganho
+	</string>
+	<string name="Breast Physics UpDown Damping">
+		Amortecimento
+	</string>
+	<string name="Breast Physics LeftRight Max Effect">
+		Efeito máx.
+	</string>
+	<string name="Breast Physics LeftRight Spring">
+		Mola
+	</string>
+	<string name="Breast Physics LeftRight Gain">
+		Ganho
+	</string>
+	<string name="Breast Physics LeftRight Damping">
+		Amortecimento
+	</string>
+	<string name="Belly Physics Mass">
+		Massa da barriga
+	</string>
+	<string name="Belly Physics Smoothing">
+		Suavização da barriga
+	</string>
+	<string name="Belly Physics Gravity">
+		Gravidade da barriga
+	</string>
+	<string name="Belly Physics Drag">
+		Arrasto da barriga
+	</string>
+	<string name="Belly Physics UpDown Max Effect">
+		Efeito máx.
+	</string>
+	<string name="Belly Physics UpDown Spring">
+		Mola
+	</string>
+	<string name="Belly Physics UpDown Gain">
+		Ganho
+	</string>
+	<string name="Belly Physics UpDown Damping">
+		Amortecimento
+	</string>
+	<string name="Butt Physics Mass">
+		Massa do bumbum
+	</string>
+	<string name="Butt Physics Smoothing">
+		Suavização do bumbum
+	</string>
+	<string name="Butt Physics Gravity">
+		Gravidade do bumbum
+	</string>
+	<string name="Butt Physics Drag">
+		Arrasto do bumbum
+	</string>
+	<string name="Butt Physics UpDown Max Effect">
+		Efeito máx.
+	</string>
+	<string name="Butt Physics UpDown Spring">
+		Mola
+	</string>
+	<string name="Butt Physics UpDown Gain">
+		Ganho
+	</string>
+	<string name="Butt Physics UpDown Damping">
+		Amortecimento
+	</string>
+	<string name="Butt Physics LeftRight Max Effect">
+		Efeito máx.
+	</string>
+	<string name="Butt Physics LeftRight Spring">
+		Mola
+	</string>
+	<string name="Butt Physics LeftRight Gain">
+		Ganho
+	</string>
+	<string name="Butt Physics LeftRight Damping">
+		Amortecimento
+	</string>
+	<string name="Bushy Eyebrows">
+		Sobrancelhas espessas
+	</string>
+	<string name="Bushy Hair">
+		Cabelo volumoso
+	</string>
+	<string name="Butt Size">
+		Bumbum, tamanho
+	</string>
+	<string name="Butt Gravity">
+		Gravidade do bumbum
+	</string>
+	<string name="bustle skirt">
+		Saia com cauda
+	</string>
+	<string name="no bustle">
+		Sem cauda
+	</string>
+	<string name="more bustle">
+		Com cauda
+	</string>
+	<string name="Cheek Bones">
+		Pómulos
+	</string>
+	<string name="Chest Size">
+		Tamanho do peito
+	</string>
+	<string name="Chin Angle">
+		Queixo: ângulo
+	</string>
+	<string name="Chin Cleft">
+		Queixo: contorno
+	</string>
+	<string name="Chin Curtains">
+		Barba de marinheiro
+	</string>
+	<string name="Chin Depth">
+		Profundidade do queixo
+	</string>
+	<string name="Chin Heavy">
+		Queixo pronunciado
+	</string>
+	<string name="Chin In">
+		Queixo retraído
+	</string>
+	<string name="Chin Out">
+		Queixo prominente
+	</string>
+	<string name="Chin-Neck">
+		Papada
+	</string>
+	<string name="Clear">
+		Transparente
+	</string>
+	<string name="Cleft">
+		Fenda
+	</string>
+	<string name="Close Set Eyes">
+		Olhos próximos
+	</string>
+	<string name="Closed">
+		Fechado
+	</string>
+	<string name="Closed Back">
+		Fechado atrás
+	</string>
+	<string name="Closed Front">
+		Fechado na frente
+	</string>
+	<string name="Closed Left">
+		Fechado à esquerda
+	</string>
+	<string name="Closed Right">
+		Fechado à direita
+	</string>
+	<string name="Coin Purse">
+		Pouco volumoso
+	</string>
+	<string name="Collar Back">
+		Gola atrás
+	</string>
+	<string name="Collar Front">
+		Gola na frente
+	</string>
+	<string name="Corner Down">
+		Para baixo
+	</string>
+	<string name="Corner Up">
+		Para cima
+	</string>
+	<string name="Creased">
+		Com vincos
+	</string>
+	<string name="Crooked Nose">
+		Nariz torcida
+	</string>
+	<string name="Cuff Flare">
+		Aberto na barra
+	</string>
+	<string name="Dark">
+		Escuro
+	</string>
+	<string name="Dark Green">
+		Verde escuro
+	</string>
+	<string name="Darker">
+		Mais escuros
+	</string>
+	<string name="Deep">
+		Profundo
+	</string>
+	<string name="Default Heels">
+		Saltos padrão
+	</string>
+	<string name="Dense">
+		Denso
+	</string>
+	<string name="Double Chin">
+		Papada pronunciada
+	</string>
+	<string name="Downturned">
+		Pouco
+	</string>
+	<string name="Duffle Bag">
+		Muito volumoso
+	</string>
+	<string name="Ear Angle">
+		Ângulo das orelhas
+	</string>
+	<string name="Ear Size">
+		Tamanho das orelhas
+	</string>
+	<string name="Ear Tips">
+		Pontas das orelhas
+	</string>
+	<string name="Egg Head">
+		Cabeça oval
+	</string>
+	<string name="Eye Bags">
+		Olheiras
+	</string>
+	<string name="Eye Color">
+		Cor dos olhos
+	</string>
+	<string name="Eye Depth">
+		Profundidade dos olhos
+	</string>
+	<string name="Eye Lightness">
+		Luminosidade dos olhos
+	</string>
+	<string name="Eye Opening">
+		Abertura dos olhos
+	</string>
+	<string name="Eye Pop">
+		Olho saltado
+	</string>
+	<string name="Eye Size">
+		Tamanho dos olhos
+	</string>
+	<string name="Eye Spacing">
+		Espaçamento dos olhos
+	</string>
+	<string name="Eyebrow Arc">
+		Arco da sobrancelha
+	</string>
+	<string name="Eyebrow Density">
+		Densidade da sobrancelha
+	</string>
+	<string name="Eyebrow Height">
+		Altura da sobrancelha
+	</string>
+	<string name="Eyebrow Points">
+		Pontas da sobrancelha
+	</string>
+	<string name="Eyebrow Size">
+		Tamanho da sobrancelha
+	</string>
+	<string name="Eyelash Length">
+		Comprimento dos cílios
+	</string>
+	<string name="Eyeliner">
+		Delineador
+	</string>
+	<string name="Eyeliner Color">
+		Cor do delineador
+	</string>
+	<string name="Eyes Bugged">
+		Olhos esbugalhados
+	</string>
+	<string name="Face Shear">
+		Face raspada
+	</string>
+	<string name="Facial Definition">
+		Definição facial
+	</string>
+	<string name="Far Set Eyes">
+		Distância entre os olhos
+	</string>
+	<string name="Fat Lips">
+		Lábios carnudos
+	</string>
+	<string name="Female">
+		Feminino
+	</string>
+	<string name="Fingerless">
+		Dedos
+	</string>
+	<string name="Fingers">
+		Dedos
+	</string>
+	<string name="Flared Cuffs">
+		Punhos largos
+	</string>
+	<string name="Flat">
+		Chato
+	</string>
+	<string name="Flat Butt">
+		Traseiro chato
+	</string>
+	<string name="Flat Head">
+		Cabeça chata
+	</string>
+	<string name="Flat Toe">
+		Dedos dos pés chatos
+	</string>
+	<string name="Foot Size">
+		Tamanho dos pés
+	</string>
+	<string name="Forehead Angle">
+		Ângulo da testa
+	</string>
+	<string name="Forehead Heavy">
+		Testa pronunciada
+	</string>
+	<string name="Freckles">
+		Sardas
+	</string>
+	<string name="Front Fringe">
+		Franja
+	</string>
+	<string name="Full Back">
+		Trás cheia
+	</string>
+	<string name="Full Eyeliner">
+		Delineador completo
+	</string>
+	<string name="Full Front">
+		Frente cheia
+	</string>
+	<string name="Full Hair Sides">
+		Cabelos laterais cheios
+	</string>
+	<string name="Full Sides">
+		Lados cheios
+	</string>
+	<string name="Glossy">
+		Brilhante
+	</string>
+	<string name="Glove Fingers">
+		Dedos da luva
+	</string>
+	<string name="Glove Length">
+		Comprimento das luvas
+	</string>
+	<string name="Hair">
+		Cabelo
+	</string>
+	<string name="Hair Back">
+		Cabelo: Trás
+	</string>
+	<string name="Hair Front">
+		Cabelo: Frente
+	</string>
+	<string name="Hair Sides">
+		Cabelos: Lateral
+	</string>
+	<string name="Hair Sweep">
+		Cabelo penteado
+	</string>
+	<string name="Hair Thickess">
+		Espessura do cabelo
+	</string>
+	<string name="Hair Thickness">
+		Espessura do cabelo
+	</string>
+	<string name="Hair Tilt">
+		Divisão do cabelo
+	</string>
+	<string name="Hair Tilted Left">
+		Divisão do cabelo à esquerda
+	</string>
+	<string name="Hair Tilted Right">
+		Divisão do cabelo direita
+	</string>
+	<string name="Hair Volume">
+		Cabelo: Volume
+	</string>
+	<string name="Hand Size">
+		Tamanho das mãos
+	</string>
+	<string name="Handlebars">
+		Bigode
+	</string>
+	<string name="Head Length">
+		Comprimento da cabeça
+	</string>
+	<string name="Head Shape">
+		Formato da cabeça
+	</string>
+	<string name="Head Size">
+		Tamanho da cabeça
+	</string>
+	<string name="Head Stretch">
+		Extensão da cabeça
+	</string>
+	<string name="Heel Height">
+		Altura do salto
+	</string>
+	<string name="Heel Shape">
+		Formato do salto
+	</string>
+	<string name="Height">
+		Altura
+	</string>
+	<string name="High">
+		Alto
+	</string>
+	<string name="High Heels">
+		Salto alto
+	</string>
+	<string name="High Jaw">
+		Maxilar alto
+	</string>
+	<string name="High Platforms">
+		Plataformas altas
+	</string>
+	<string name="High and Tight">
+		Alto e justo
+	</string>
+	<string name="Higher">
+		Mais alto
+	</string>
+	<string name="Hip Length">
+		Comprimento do quadril
+	</string>
+	<string name="Hip Width">
+		Largura do quadril
+	</string>
+	<string name="Hover">
+		Pairar
+	</string>
+	<string name="In">
+		Dentro
+	</string>
+	<string name="In Shdw Color">
+		Cor da sombra interna
+	</string>
+	<string name="In Shdw Opacity">
+		Opacidade da sombra interna
+	</string>
+	<string name="Inner Eye Corner">
+		Canto interno dos olhos
+	</string>
+	<string name="Inner Eye Shadow">
+		Sombra interna dos olhos
+	</string>
+	<string name="Inner Shadow">
+		Sombra interna
+	</string>
+	<string name="Jacket Length">
+		Comprimento da blusa
+	</string>
+	<string name="Jacket Wrinkles">
+		Dobras da jaqueta
+	</string>
+	<string name="Jaw Angle">
+		Ângulo da mandíbula
+	</string>
+	<string name="Jaw Jut">
+		Posição do maxilar
+	</string>
+	<string name="Jaw Shape">
+		Formato do maxilar
+	</string>
+	<string name="Join">
+		Juntar
+	</string>
+	<string name="Jowls">
+		Papo
+	</string>
+	<string name="Knee Angle">
+		Ângulo do joelho
+	</string>
+	<string name="Knock Kneed">
+		Joelhos para dentro
+	</string>
+	<string name="Large">
+		Grande
+	</string>
+	<string name="Large Hands">
+		Mãos grandes
+	</string>
+	<string name="Left Part">
+		Parte esquerda
+	</string>
+	<string name="Leg Length">
+		Comprimento da perna
+	</string>
+	<string name="Leg Muscles">
+		Musculatura da perna
+	</string>
+	<string name="Less">
+		Menos
+	</string>
+	<string name="Less Body Fat">
+		Menos gordura
+	</string>
+	<string name="Less Curtains">
+		Menos barba
+	</string>
+	<string name="Less Freckles">
+		Menos sardas
+	</string>
+	<string name="Less Full">
+		Menos
+	</string>
+	<string name="Less Gravity">
+		Menos gravidade
+	</string>
+	<string name="Less Love">
+		Menos excesso
+	</string>
+	<string name="Less Muscles">
+		Menos músculos
+	</string>
+	<string name="Less Muscular">
+		Menos musculoso
+	</string>
+	<string name="Less Rosy">
+		Menos rosado
+	</string>
+	<string name="Less Round">
+		Menos arredondado
+	</string>
+	<string name="Less Saddle">
+		Menos ancas
+	</string>
+	<string name="Less Square">
+		Menos quadrado
+	</string>
+	<string name="Less Volume">
+		Menos volume
+	</string>
+	<string name="Less soul">
+		Menos alma
+	</string>
+	<string name="Lighter">
+		Mais claro
+	</string>
+	<string name="Lip Cleft">
+		Fenda dos lábios
+	</string>
+	<string name="Lip Cleft Depth">
+		Profundidade da fenda dos lábios
+	</string>
+	<string name="Lip Fullness">
+		Volume dos lábios
+	</string>
+	<string name="Lip Pinkness">
+		Rosado dos lábios
+	</string>
+	<string name="Lip Ratio">
+		Proporção dos lábios
+	</string>
+	<string name="Lip Thickness">
+		Espessura dos lábios
+	</string>
+	<string name="Lip Width">
+		Largura dos lábios
+	</string>
+	<string name="Lipgloss">
+		Brilho dos lábios
+	</string>
+	<string name="Lipstick">
+		Batom
+	</string>
+	<string name="Lipstick Color">
+		Cor do batom
+	</string>
+	<string name="Long">
+		Longo
+	</string>
+	<string name="Long Head">
+		Cabeça alongada
+	</string>
+	<string name="Long Hips">
+		Quadril longo
+	</string>
+	<string name="Long Legs">
+		Pernas longas
+	</string>
+	<string name="Long Neck">
+		Pescoço longo
+	</string>
+	<string name="Long Pigtails">
+		Chiquinhas longas
+	</string>
+	<string name="Long Ponytail">
+		Rabo de cavalo longo
+	</string>
+	<string name="Long Torso">
+		Torso longo
+	</string>
+	<string name="Long arms">
+		Braços longos
+	</string>
+	<string name="Loose Pants">
+		Calças folgadas
+	</string>
+	<string name="Loose Shirt">
+		Camisa folgada
+	</string>
+	<string name="Loose Sleeves">
+		Mangas folgadas
+	</string>
+	<string name="Love Handles">
+		Pneu
+	</string>
+	<string name="Low">
+		Baixo
+	</string>
+	<string name="Low Heels">
+		Salto baixo
+	</string>
+	<string name="Low Jaw">
+		Maxilar baixo
+	</string>
+	<string name="Low Platforms">
+		Plataformas baixas
+	</string>
+	<string name="Low and Loose">
+		Baixo e solto
+	</string>
+	<string name="Lower">
+		Mais baixo
+	</string>
+	<string name="Lower Bridge">
+		Mais baixa
+	</string>
+	<string name="Lower Cheeks">
+		Bochechas abaixadas
+	</string>
+	<string name="Male">
+		Masculino
+	</string>
+	<string name="Middle Part">
+		Parte do meio
+	</string>
+	<string name="More">
+		Mais
+	</string>
+	<string name="More Blush">
+		Mais blush
+	</string>
+	<string name="More Body Fat">
+		Mais gordura
+	</string>
+	<string name="More Curtains">
+		Mais barba
+	</string>
+	<string name="More Eyeshadow">
+		Mais sombra dos olhos
+	</string>
+	<string name="More Freckles">
+		Mais sardas
+	</string>
+	<string name="More Full">
+		Mais volume
+	</string>
+	<string name="More Gravity">
+		Mais gravidade
+	</string>
+	<string name="More Lipstick">
+		Mais batom
+	</string>
+	<string name="More Love">
+		Mais cintura
+	</string>
+	<string name="More Lower Lip">
+		Mais lábio inferior
+	</string>
+	<string name="More Muscles">
+		Mais músculos
+	</string>
+	<string name="More Muscular">
+		Mais musculoso
+	</string>
+	<string name="More Rosy">
+		Mais rosado
+	</string>
+	<string name="More Round">
+		Mais arredondado
+	</string>
+	<string name="More Saddle">
+		Mais ancas
+	</string>
+	<string name="More Sloped">
+		Mais inclinado
+	</string>
+	<string name="More Square">
+		Mais quadrado
+	</string>
+	<string name="More Upper Lip">
+		Mais lábios superiores
+	</string>
+	<string name="More Vertical">
+		Mais vertical
+	</string>
+	<string name="More Volume">
+		Mais volume
+	</string>
+	<string name="More soul">
+		Mais alma
+	</string>
+	<string name="Moustache">
+		Bigode
+	</string>
+	<string name="Mouth Corner">
+		Canto da boca
+	</string>
+	<string name="Mouth Position">
+		Posição da boca
+	</string>
+	<string name="Mowhawk">
+		Moicano
+	</string>
+	<string name="Muscular">
+		Muscular
+	</string>
+	<string name="Mutton Chops">
+		Costeletas
+	</string>
+	<string name="Nail Polish">
+		Esmate das unhas
+	</string>
+	<string name="Nail Polish Color">
+		Cor do esmalte das unhas
+	</string>
+	<string name="Narrow">
+		Estreito
+	</string>
+	<string name="Narrow Back">
+		Costas estreitas
+	</string>
+	<string name="Narrow Front">
+		Frente estreita
+	</string>
+	<string name="Narrow Lips">
+		Lábios estreitos
+	</string>
+	<string name="Natural">
+		Natural
+	</string>
+	<string name="Neck Length">
+		Comprimento do pescoço
+	</string>
+	<string name="Neck Thickness">
+		Espessura do pescoço
+	</string>
+	<string name="No Blush">
+		Sem blush
+	</string>
+	<string name="No Eyeliner">
+		Sem delineador
+	</string>
+	<string name="No Eyeshadow">
+		Sem sombra
+	</string>
+	<string name="No Lipgloss">
+		Sem brilho
+	</string>
+	<string name="No Lipstick">
+		Sem batom
+	</string>
+	<string name="No Part">
+		Sem parte
+	</string>
+	<string name="No Polish">
+		Sem esmalte
+	</string>
+	<string name="No Red">
+		Sem vermelho
+	</string>
+	<string name="No Spikes">
+		Sem pontas
+	</string>
+	<string name="No White">
+		Sem branco
+	</string>
+	<string name="No Wrinkles">
+		Sem dobras
+	</string>
+	<string name="Normal Lower">
+		Normal inferior
+	</string>
+	<string name="Normal Upper">
+		Normal superior
+	</string>
+	<string name="Nose Left">
+		Nariz para esquerda
+	</string>
+	<string name="Nose Right">
+		Nariz para direita
+	</string>
+	<string name="Nose Size">
+		Tamanho do nariz
+	</string>
+	<string name="Nose Thickness">
+		Espessura do nariz
+	</string>
+	<string name="Nose Tip Angle">
+		Ângulo da ponta do nariz
+	</string>
+	<string name="Nose Tip Shape">
+		Formato da ponta do nariz
+	</string>
+	<string name="Nose Width">
+		Largura do nariz
+	</string>
+	<string name="Nostril Division">
+		Divisão das narinas
+	</string>
+	<string name="Nostril Width">
+		Largura das narinas
+	</string>
+	<string name="Opaque">
+		Opaco
+	</string>
+	<string name="Open">
+		Abrir
+	</string>
+	<string name="Open Back">
+		Aberto atrás
+	</string>
+	<string name="Open Front">
+		Aberto na frente
+	</string>
+	<string name="Open Left">
+		Aberto esquerdo
+	</string>
+	<string name="Open Right">
+		Aberto direito
+	</string>
+	<string name="Orange">
+		Laranja
+	</string>
+	<string name="Out">
+		Fora
+	</string>
+	<string name="Out Shdw Color">
+		Cor da sombra externa
+	</string>
+	<string name="Out Shdw Opacity">
+		Opacidade da sombra externa
+	</string>
+	<string name="Outer Eye Corner">
+		Canto externo do olho
+	</string>
+	<string name="Outer Eye Shadow">
+		Sombra externa do olho
+	</string>
+	<string name="Outer Shadow">
+		Sombra externa
+	</string>
+	<string name="Overbite">
+		Má oclusão
+	</string>
+	<string name="Package">
+		Púbis
+	</string>
+	<string name="Painted Nails">
+		Unhas pintadas
+	</string>
+	<string name="Pale">
+		Pálido
+	</string>
+	<string name="Pants Crotch">
+		Cavalo da calça
+	</string>
+	<string name="Pants Fit">
+		Caimento das calças
+	</string>
+	<string name="Pants Length">
+		Comprimento das calças
+	</string>
+	<string name="Pants Waist">
+		Cintura da calça
+	</string>
+	<string name="Pants Wrinkles">
+		Dobras das calças
+	</string>
+	<string name="Part">
+		Parte
+	</string>
+	<string name="Part Bangs">
+		Divisão da franja
+	</string>
+	<string name="Pectorals">
+		Peitorais
+	</string>
+	<string name="Pigment">
+		Pigmento
+	</string>
+	<string name="Pigtails">
+		Chiquinhas
+	</string>
+	<string name="Pink">
+		Rosa
+	</string>
+	<string name="Pinker">
+		Mais rosado
+	</string>
+	<string name="Platform Height">
+		Altura da plataforma
+	</string>
+	<string name="Platform Width">
+		Largura da plataforma
+	</string>
+	<string name="Pointy">
+		Pontudo
+	</string>
+	<string name="Pointy Heels">
+		Salto agulha
+	</string>
+	<string name="Ponytail">
+		Rabo de cavalo
+	</string>
+	<string name="Poofy Skirt">
+		Saia bufante
+	</string>
+	<string name="Pop Left Eye">
+		Olho saltado esquerdo
+	</string>
+	<string name="Pop Right Eye">
+		Olho saltado direito
+	</string>
+	<string name="Puffy">
+		Inchado
+	</string>
+	<string name="Puffy Eyelids">
+		Pálpebras inchadas
+	</string>
+	<string name="Rainbow Color">
+		Cor do arco íris
+	</string>
+	<string name="Red Hair">
+		Cabelo ruivo
+	</string>
+	<string name="Regular">
+		Regular
+	</string>
+	<string name="Right Part">
+		Parte direita
+	</string>
+	<string name="Rosy Complexion">
+		Rosado da face
+	</string>
+	<string name="Round">
+		Arredondado
+	</string>
+	<string name="Ruddiness">
+		Rubor
+	</string>
+	<string name="Ruddy">
+		Corado
+	</string>
+	<string name="Rumpled Hair">
+		Cabelo desalinhado
+	</string>
+	<string name="Saddle Bags">
+		Culote
+	</string>
+	<string name="Scrawny Leg">
+		Pernas magricelas
+	</string>
+	<string name="Separate">
+		Separar
+	</string>
+	<string name="Shallow">
+		Raso
+	</string>
+	<string name="Shear Back">
+		Trás rente
+	</string>
+	<string name="Shear Face">
+		Face raspada
+	</string>
+	<string name="Shear Front">
+		Frente rente
+	</string>
+	<string name="Shear Left Up">
+		Esquerda rente para cima
+	</string>
+	<string name="Shear Right Up">
+		Trás rente para cima
+	</string>
+	<string name="Sheared Back">
+		Rente atrás
+	</string>
+	<string name="Sheared Front">
+		Rente frente
+	</string>
+	<string name="Shift Left">
+		Deslocar p/ esquerda
+	</string>
+	<string name="Shift Mouth">
+		Deslocar boca
+	</string>
+	<string name="Shift Right">
+		Deslocar p/ direita
+	</string>
+	<string name="Shirt Bottom">
+		Barra da camisa
+	</string>
+	<string name="Shirt Fit">
+		Ajuste da camisa
+	</string>
+	<string name="Shirt Wrinkles">
+		+/- amassada
+	</string>
+	<string name="Shoe Height">
+		Altura do sapato
+	</string>
+	<string name="Short">
+		Curto
+	</string>
+	<string name="Short Arms">
+		Braços curtos
+	</string>
+	<string name="Short Legs">
+		Pernas curtas
+	</string>
+	<string name="Short Neck">
+		Pescoço curto
+	</string>
+	<string name="Short Pigtails">
+		Chiquinhas curtas
+	</string>
+	<string name="Short Ponytail">
+		Rabo de cavalo curto
+	</string>
+	<string name="Short Sideburns">
+		Costeletas curtas
+	</string>
+	<string name="Short Torso">
+		Tronco curto
+	</string>
+	<string name="Short hips">
+		Quadril curto
+	</string>
+	<string name="Shoulders">
+		Ombros
+	</string>
+	<string name="Side Fringe">
+		pontas laterais
+	</string>
+	<string name="Sideburns">
+		Costeletas
+	</string>
+	<string name="Sides Hair">
+		Cabelo lateral
+	</string>
+	<string name="Sides Hair Down">
+		Cabelo lateral long
+	</string>
+	<string name="Sides Hair Up">
+		Cabelo lateral superior
+	</string>
+	<string name="Skinny Neck">
+		Pescoço fino
+	</string>
+	<string name="Skirt Fit">
+		Ajuste de saia
+	</string>
+	<string name="Skirt Length">
+		Comprimento da saia
+	</string>
+	<string name="Slanted Forehead">
+		Testa inclinada
+	</string>
+	<string name="Sleeve Length">
+		Comprimento da manga
+	</string>
+	<string name="Sleeve Looseness">
+		Folga da manga
+	</string>
+	<string name="Slit Back">
+		Abertura : Atrás
+	</string>
+	<string name="Slit Front">
+		Abertura: Frente
+	</string>
+	<string name="Slit Left">
+		Abertura: Esquerda
+	</string>
+	<string name="Slit Right">
+		Abertura: Direita
+	</string>
+	<string name="Small">
+		Pequeno
+	</string>
+	<string name="Small Hands">
+		Mãos pequenas
+	</string>
+	<string name="Small Head">
+		Cabeça pequena
+	</string>
+	<string name="Smooth">
+		Suavizar
+	</string>
+	<string name="Smooth Hair">
+		Suavizar cabelo
+	</string>
+	<string name="Socks Length">
+		Comprimento das meias
+	</string>
+	<string name="Soulpatch">
+		Cavanhaque
+	</string>
+	<string name="Sparse">
+		Disperso
+	</string>
+	<string name="Spiked Hair">
+		Cabelo espetado
+	</string>
+	<string name="Square">
+		Quadrado
+	</string>
+	<string name="Square Toe">
+		Dedo quadrado
+	</string>
+	<string name="Squash Head">
+		Cabeça de Pera
+	</string>
+	<string name="Stretch Head">
+		Cabeça  esticada
+	</string>
+	<string name="Sunken">
+		Afundar
+	</string>
+	<string name="Sunken Chest">
+		Peito afundado
+	</string>
+	<string name="Sunken Eyes">
+		Olhos afundados
+	</string>
+	<string name="Sweep Back">
+		Pentear para trás
+	</string>
+	<string name="Sweep Forward">
+		Pentear para frente
+	</string>
+	<string name="Tall">
+		Alto
+	</string>
+	<string name="Taper Back">
+		Afinar atrás
+	</string>
+	<string name="Taper Front">
+		Afinar a frente
+	</string>
+	<string name="Thick Heels">
+		Salto grosso
+	</string>
+	<string name="Thick Neck">
+		Pescoço grosso
+	</string>
+	<string name="Thick Toe">
+		Dedo grosso
+	</string>
+	<string name="Thin">
+		Fino
+	</string>
+	<string name="Thin Eyebrows">
+		Sobrancelhas finas
+	</string>
+	<string name="Thin Lips">
+		Lábios finos
+	</string>
+	<string name="Thin Nose">
+		Nariz fino
+	</string>
+	<string name="Tight Chin">
+		Queixo apertado
+	</string>
+	<string name="Tight Cuffs">
+		Punho justo
+	</string>
+	<string name="Tight Pants">
+		Calça justa
+	</string>
+	<string name="Tight Shirt">
+		Camisa justa
+	</string>
+	<string name="Tight Skirt">
+		Saia justa
+	</string>
+	<string name="Tight Sleeves">
+		Mangas justas
+	</string>
+	<string name="Toe Shape">
+		Formato dos dedos
+	</string>
+	<string name="Toe Thickness">
+		Espessura dos dos dedos
+	</string>
+	<string name="Torso Length">
+		Comprimento do tronco
+	</string>
+	<string name="Torso Muscles">
+		Músculos do tronco
+	</string>
+	<string name="Torso Scrawny">
+		Tronco magricela
+	</string>
+	<string name="Unattached">
+		Desanexado
+	</string>
+	<string name="Uncreased">
+		Pálpebra firme
+	</string>
+	<string name="Underbite">
+		Prognatismo inferior
+	</string>
+	<string name="Unnatural">
+		Não natural
+	</string>
+	<string name="Upper Bridge">
+		Parte alta do nariz
+	</string>
+	<string name="Upper Cheeks">
+		Bochechas altas
+	</string>
+	<string name="Upper Chin Cleft">
+		fenda do queixo alta
+	</string>
+	<string name="Upper Eyelid Fold">
+		Curvatura dos cílios supériores
+	</string>
+	<string name="Upturned">
+		Voltado para cima
+	</string>
+	<string name="Very Red">
+		Bem vermelho
+	</string>
+	<string name="Waist Height">
+		Altura da cintura
+	</string>
+	<string name="Well-Fed">
+		Corpulento
+	</string>
+	<string name="White Hair">
+		Grisalho
+	</string>
+	<string name="Wide">
+		Amplo
+	</string>
+	<string name="Wide Back">
+		Costas largas
+	</string>
+	<string name="Wide Front">
+		Testa larga
+	</string>
+	<string name="Wide Lips">
+		Lábios amplos
+	</string>
+	<string name="Wild">
+		Selvagem
+	</string>
+	<string name="Wrinkles">
+		Rugas
+	</string>
+	<string name="LocationCtrlAddLandmarkTooltip">
+		Adicionar às minhas Landmarks
+	</string>
+	<string name="LocationCtrlEditLandmarkTooltip">
+		Editar minhas Landmarks
+	</string>
+	<string name="LocationCtrlInfoBtnTooltip">
+		Ver mais informações sobre a localização atual
+	</string>
+	<string name="LocationCtrlComboBtnTooltip">
+		Histórico de localizações
+	</string>
+	<string name="LocationCtrlForSaleTooltip">
+		Comprar este terreno
+	</string>
+	<string name="LocationCtrlVoiceTooltip">
+		Voz não disponível aqui
+	</string>
+	<string name="LocationCtrlFlyTooltip">
+		Voar não é permitido
+	</string>
+	<string name="LocationCtrlPushTooltip">
+		Empurrar não é permitido
+	</string>
+	<string name="LocationCtrlBuildTooltip">
+		Construir/soltar objetos não é permitido
+	</string>
+	<string name="LocationCtrlScriptsTooltip">
+		Scripts não são permitidos
+	</string>
+	<string name="LocationCtrlDamageTooltip">
+		Saúde
+	</string>
+	<string name="LocationCtrlAdultIconTooltip">
+		Região Adulta
+	</string>
+	<string name="LocationCtrlModerateIconTooltip">
+		Região Moderada
+	</string>
+	<string name="LocationCtrlGeneralIconTooltip">
+		Região em geral
+	</string>
+	<string name="LocationCtrlSeeAVsTooltip">
+		Os avatares neste lote não podem ser vistos ou ouvidos por avatares fora dele
+	</string>
+	<string name="LocationCtrlPathfindingDirtyTooltip">
+		Os objetos que se movem podem não se comportar corretamente nesta região até que ela seja recarregada.
+	</string>
+	<string name="LocationCtrlPathfindingDisabledTooltip">
+		O pathfinding dinâmico não está habilitado nesta região.
+	</string>
+	<string name="UpdaterWindowTitle">
+		[APP_NAME] Atualização
+	</string>
+	<string name="UpdaterNowUpdating">
+		Atualizando agora o [APP_NAME]...
+	</string>
+	<string name="UpdaterNowInstalling">
+		Instalando [APP_NAME]...
+	</string>
+	<string name="UpdaterUpdatingDescriptive">
+		Seu visualizador [APP_NAME] está sendo atualizado para a versão mais recente. Isso pode levar algum tempo, então por favor seja paciente.
+	</string>
+	<string name="UpdaterProgressBarTextWithEllipses">
+		Fazendo o download da atualização...
+	</string>
+	<string name="UpdaterProgressBarText">
+		Fazendo o download da atualização
+	</string>
+	<string name="UpdaterFailDownloadTitle">
+		Falha no download da atualização
+	</string>
+	<string name="UpdaterFailUpdateDescriptive">
+		Um erro ocorreu ao atualizar [APP_NAME]. Por favor, faça o download da versão mais recente em www.secondlife.com.
+	</string>
+	<string name="UpdaterFailInstallTitle">
+		Falha ao instalar a atualização
+	</string>
+	<string name="UpdaterFailStartTitle">
+		Falha ao iniciar o visualizador
+	</string>
+	<string name="ItemsComingInTooFastFrom">
+		[APP_NAME]: Entrada de itens rápida demais de [FROM_NAME], visualização automática suspensa por [TIME] segundos
+	</string>
+	<string name="ItemsComingInTooFast">
+		[APP_NAME]: Entrada de itens rápida demais, visualização automática suspensa por [TIME] segundos
+	</string>
+	<string name="IM_logging_string">
+		-- Log de mensagem instantânea habilitado --
+	</string>
+	<string name="IM_typing_start_string">
+		[NAME] está digitando...
+	</string>
+	<string name="Unnamed">
+		(Anônimo)
+	</string>
+	<string name="IM_moderated_chat_label">
+		(Moderado: Voz desativado por padrão)
+	</string>
+	<string name="IM_unavailable_text_label">
+		Bate-papo de texto não está disponível para esta chamada.
+	</string>
+	<string name="IM_muted_text_label">
+		Seu bate- papo de texto foi desabilitado por um Moderador do Grupo.
+	</string>
+	<string name="IM_default_text_label">
+		Clique aqui para menagem instantânea.
+	</string>
+	<string name="IM_to_label">
+		Para
+	</string>
+	<string name="IM_moderator_label">
+		(Moderador)
+	</string>
+	<string name="Saved_message">
+		(Salvo em [LONG_TIMESTAMP])
+	</string>
+	<string name="IM_unblock_only_groups_friends">
+		Para visualizar esta mensagem, você deve desmarcar &quot;Apenas amigos e grupos podem me ligar ou enviar MIs&quot; em Preferências/Privacidade.
+	</string>
+	<string name="OnlineStatus">
+		Conectado
+	</string>
+	<string name="OfflineStatus">
+		Desconectado
+	</string>
+	<string name="not_online_msg">
+		O usuário não está online. As mensagens serão armazenadas e enviadas mais tarde.
+	</string>
+	<string name="not_online_inventory">
+		O usuário não está online. O inventário foi salvo.
+	</string>
+	<string name="IM_announce_incoming">
+		Mensagem recebida de [NAME]
+	</string>
+	<string name="IM_autoresponse_sent">
+		Resposta automática enviada: [MESSAGE]
+	</string>
+	<string name="IM_autoresponse_item_sent">
+		Item de resposta automática enviado: [ITEM_NAME]
+	</string>
+	<string name="answered_call">
+		Ligação atendida
+	</string>
+	<string name="you_started_call">
+		Você iniciou uma ligação de voz
+	</string>
+	<string name="you_joined_call">
+		Você entrou na ligação
+	</string>
+	<string name="you_auto_rejected_call-im">
+		Você recusou automaticamente a chamada de voz enquanto &quot;Ocupado&quot; estava ativado.
+	</string>
+	<string name="name_started_call">
+		[NAME] iniciou uma ligação de voz
+	</string>
+	<string name="ringing-im">
+		Entrando em ligação de voz...
+	</string>
+	<string name="connected-im">
+		Conectado. Para sair, clique em Desligar
+	</string>
+	<string name="hang_up-im">
+		Saiu da ligação de voz
+	</string>
+	<string name="answering-im">
+		Conectando...
+	</string>
+	<string name="conference-title">
+		Bate-papo com várias pessoas
+	</string>
+	<string name="conference-title-incoming">
+		Conversa com [AGENT_NAME]
+	</string>
+	<string name="inventory_item_offered-im">
+		Oferta de item de inventário &quot;[ITEM_NAME]&quot;
+	</string>
+	<string name="inventory_folder_offered-im">
+		Pasta do inventário &quot;[ITEM_NAME]&quot; oferecida
+	</string>
+	<string name="inventory_item_offered_rlv">
+    Item de inventário oferecido a [NAME]
+	</string>
+	<string name="bot_warning">
+		Você está conversando com um bot, [NAME]. Não compartilhe informações pessoais.
+Saiba mais em https://second.life/scripted-agents.
+	</string>
+	<string name="share_alert">
+		Arraste itens do inventário para cá
+	</string>
+	<string name="flickr_post_success">
+		Você publicou no Flickr.
+	</string>
+	<string name="no_session_message">
+		(Sessão de MI inexistente)
+	</string>
+	<string name="only_user_message">
+		Você é o único usuário desta sessão.
+	</string>
+	<string name="offline_message">
+		[NAME] está offline.
+	</string>
+	<string name="invite_message">
+		Clique no botão [BUTTON NAME] para aceitar/ conectar a este bate-papo em voz.
+	</string>
+	<string name="muted_message">
+		Você bloqueou este residente.  Se quiser retirar o bloqueio, basta enviar uma mensagem.
+	</string>
+	<string name="generic">
+		Erro de solicitação, tente novamente mais tarde.
+	</string>
+	<string name="generic_request_error">
+		Erro na requisição, por favor, tente novamente.
+	</string>
+	<string name="insufficient_perms_error">
+		Você não tem permissões suficientes.
+	</string>
+	<string name="session_does_not_exist_error">
+		A sessão deixou de existir
+	</string>
+	<string name="no_ability_error">
+		Você não possui esta habilidade.
+	</string>
+	<string name="no_ability">
+		Você não possui esta habilidade.
+	</string>
+	<string name="not_a_mod_error">
+		Você não é um moderador de sessão.
+	</string>
+	<string name="muted">
+		Bate-papo de texto desativado por um moderador.
+	</string>
+	<string name="muted_error">
+		Um moderador do grupo desabilitou seu bate-papo em texto.
+	</string>
+	<string name="add_session_event">
+		Não foi possível adicionar usuários na sessão de bate-papo com [RECIPIENT].
+	</string>
+	<string name="message">
+		A mensagem enviada para [RECIPIENT] ainda está sendo processada.
+Se a mensagem não aparecer nos próximos minutos, ela pode ter sido descartada pelo servidor.
+	</string>
+	<string name="message_session_event">
+		A mensagem enviada para [RECIPIENT] ainda está sendo processada.
+Se a mensagem não aparecer nos próximos minutos, ela pode ter sido descartada pelo servidor.
+	</string>
+	<string name="mute">
+		Erro durante a moderação.
+	</string>
+	<string name="removed">
+		Você foi tirado do grupo.
+	</string>
+	<string name="removed_from_group">
+		Você foi removido do grupo.
+	</string>
+	<string name="close_on_no_ability">
+		Você não possui mais a habilidade de estar na sessão de bate-papo.
+	</string>
+	<string name="unread_chat_single">
+		[SOURCES] disse alguma coisa
+	</string>
+	<string name="unread_chat_multiple">
+		[SOURCES] disseram alguma coisa
+	</string>
+	<string name="teleport_preamble_compact_chat">
+		Você está agora em:
+	</string>
+	<string name="session_initialization_timed_out_error">
+		A inicialização da sessão expirou
+	</string>
+	<string name="Home position set.">
+		Posição inicial definida.
+	</string>
+	<string name="paid_you_ldollars">
+		[NAME] lhe pagou L$ [AMOUNT] [REASON].
+	</string>
+	<string name="paid_you_ldollars_gift">
+		[NAME] lhe pagou L$ [AMOUNT]: [REASON]
+	</string>
+	<string name="paid_you_ldollars_no_reason">
+		[NAME] lhe pagou L$ [AMOUNT]
+	</string>
+	<string name="you_paid_ldollars">
+		Você pagou L$[AMOUNT] por [REASON] a [NAME].
+	</string>
+	<string name="you_paid_ldollars_gift">
+		Você pagou L$[AMOUNT] a [NAME]: [REASON]
+	</string>
+	<string name="you_paid_ldollars_no_info">
+		Você acaba de pagar L$[AMOUNT].
+	</string>
+	<string name="you_paid_ldollars_no_reason">
+		Você pagou L$[AMOUNT] a [NAME].
+	</string>
+	<string name="you_paid_ldollars_no_name">
+		Você pagou L$[AMOUNT] por [REASON].
+	</string>
+	<string name="you_paid_failure_ldollars">
+		Você não pagou L$[AMOUNT] a [NAME] referentes a [REASON].
+	</string>
+	<string name="you_paid_failure_ldollars_gift">
+		Você não pagou L$[AMOUNT] a [NAME]: [REASON]
+	</string>
+	<string name="you_paid_failure_ldollars_no_info">
+		Você não pagou L$[AMOUNT].
+	</string>
+	<string name="you_paid_failure_ldollars_no_reason">
+		Você não pagou L$[AMOUNT] a [NAME].
+	</string>
+	<string name="you_paid_failure_ldollars_no_name">
+		Você não pagou L$[AMOUNT] referentes a [REASON].
+	</string>
+	<string name="for item">
+		por [ITEM]
+	</string>
+	<string name="for a parcel of land">
+		por uma parcela
+	</string>
+	<string name="for a land access pass">
+		por um passe de acesso
+	</string>
+	<string name="for deeding land">
+		para doar um terreno
+	</string>
+	<string name="to create a group">
+		para criar um grupo
+	</string>
+	<string name="to join a group">
+		para entrar em um grupo
+	</string>
+	<string name="to upload">
+		para carregar
+	</string>
+	<string name="to publish a classified ad">
+		para publicar um anúncio
+	</string>
+	<string name="uploading_costs">
+		O upload custa L$ [AMOUNT]
+	</string>
+	<string name="this_costs">
+		Isso custa L$ [AMOUNT]
+	</string>
+	<string name="buying_selected_land">
+		Comprando terreno selecionado L$ [AMOUNT]
+	</string>
+	<string name="this_object_costs">
+		Esse objeto custa L$ [AMOUNT]
+	</string>
+	<string name="giving">
+		Dando L$ [AMOUNT]
+	</string>
+	<string name="group_role_everyone">
+		Todos
+	</string>
+	<string name="group_role_officers">
+		Oficiais
+	</string>
+	<string name="group_role_owners">
+		Proprietários
+	</string>
+	<string name="group_member_status_online">
+		Conectado
+	</string>
+	<string name="uploading_abuse_report">
+		Enviando...
+Denúncia de abuso
+	</string>
+	<string name="New Shape">
+		Nova forma
+	</string>
+	<string name="New Skin">
+		Nova pele
+	</string>
+	<string name="New Hair">
+		Novo cabelo
+	</string>
+	<string name="New Eyes">
+		Novos olhos
+	</string>
+	<string name="New Shirt">
+		Nova camisa
+	</string>
+	<string name="New Pants">
+		Novas calças
+	</string>
+	<string name="New Shoes">
+		Novos sapatos
+	</string>
+	<string name="New Socks">
+		Novas meias
+	</string>
+	<string name="New Jacket">
+		Nova blusa
+	</string>
+	<string name="New Gloves">
+		Novas luvas
+	</string>
+	<string name="New Undershirt">
+		Nova camiseta
+	</string>
+	<string name="New Underpants">
+		Novas roupa de baixo
+	</string>
+	<string name="New Skirt">
+		Nova saia
+	</string>
+	<string name="New Alpha">
+		Novo alpha
+	</string>
+	<string name="New Tattoo">
+		Nova tatuagem
+	</string>
+	<string name="New Universal">
+		Novo universal
+	</string>
+	<string name="New Physics">
+		Novo físico
+	</string>
+	<string name="Invalid Wearable">
+		Item inválido
+	</string>
+	<string name="New Gesture">
+		Novo gesto
+	</string>
+	<string name="New Material">
+		Novo material
+	</string>
+	<string name="New Script">
+		Novo script
+	</string>
+	<string name="New Note">
+		Nova nota
+	</string>
+	<string name="New Folder">
+		Nova pasta
+	</string>
+	<string name="Contents">
+		Conteúdo
+	</string>
+	<string name="Gesture">
+		Gesto
+	</string>
+	<string name="Male Gestures">
+		Gestos masculinos
+	</string>
+	<string name="Female Gestures">
+		Gestos femininos
+	</string>
+	<string name="Other Gestures">
+		Outros gestos
+	</string>
+	<string name="Speech Gestures">
+		Gestos de fala
+	</string>
+	<string name="Common Gestures">
+		Gestos comuns
+	</string>
+	<string name="Male - Excuse me">
+		Masculino - Com licença
+	</string>
+	<string name="Male - Get lost">
+		Masculino - Cai fora
+	</string>
+	<string name="Male - Blow kiss">
+		Masculino - Beijo no ar
+	</string>
+	<string name="Male - Boo">
+		Masculino - Vaias
+	</string>
+	<string name="Male - Bored">
+		Masculino - Entediado
+	</string>
+	<string name="Male - Hey">
+		Masculino - Ei
+	</string>
+	<string name="Male - Laugh">
+		Masculino - Rindo
+	</string>
+	<string name="Male - Repulsed">
+		Masculino - Repugnado
+	</string>
+	<string name="Male - Shrug">
+		Masculino - Dar de ombros
+	</string>
+	<string name="Male - Stick tougue out">
+		Masculino - Língua para fora
+	</string>
+	<string name="Male - Wow">
+		Masculino - Uau
+	</string>
+	<string name="Female - Chuckle">
+		Feminino - Risadinha
+	</string>
+	<string name="Female - Cry">
+		Feminino - Chorando
+	</string>
+	<string name="Female - Embarrassed">
+		Feminino - Envergonhada
+	</string>
+	<string name="Female - Excuse me">
+		Feminino - Com licença
+	</string>
+	<string name="Female - Get lost">
+		Feminino - Cai fora
+	</string>
+	<string name="Female - Blow kiss">
+		Feminino - Beijo no ar
+	</string>
+	<string name="Female - Boo">
+		Feminino - Vaias
+	</string>
+	<string name="Female - Bored">
+		Feminino - Entediada
+	</string>
+	<string name="Female - Hey">
+		Feminino - Ei
+	</string>
+	<string name="Female - Hey baby">
+		Feminino - Oi, querido(a)
+	</string>
+	<string name="Female - Laugh">
+		Feminino - Rindo
+	</string>
+	<string name="Female - Looking good">
+		Feminino - Está bonito(a)
+	</string>
+	<string name="Female - Over here">
+		Feminino - Aqui
+	</string>
+	<string name="Female - Please">
+		Feminino - Por favor
+	</string>
+	<string name="Female - Repulsed">
+		Feminino - Repugnada
+	</string>
+	<string name="Female - Shrug">
+		Feminino - Dar de ombros
+	</string>
+	<string name="Female - Stick tougue out">
+		Feminino - Língua para fora
+	</string>
+	<string name="Female - Wow">
+		Feminino - Uau
+	</string>
+	<string name="New Day">
+		Novo ciclo de dias
+	</string>
+	<string name="New Water">
+		Nova água
+	</string>
+	<string name="New Sky">
+		Novo céu
+	</string>
+	<string name="New Settings">
+		Novas configurações
+	</string>
+	<string name="AvatarBirthDateFormatFull">
+	[mthnum,datetime,utc]/[day,datetime,utc]/[year,datetime,utc]
+	</string>
+	<string name="AvatarBirthDateFormatShort">
+	[mthnum,datetime,utc]/[day,datetime,utc]
+	</string>
+	<string name="AvatarBirthDateFormat_legacy">
+		[mthnum,datetime,slt]/[day,datetime,slt]/[year,datetime,slt]
+	</string>
+	<string name="DefaultMimeType">
+		nenhum/nenhum
+	</string>
+	<string name="texture_load_area_error">
+		Imagens com mais de [PIXELS] pixels não podem ser carregadas.
+	</string>
+	<string name="texture_load_dimensions_error">
+		A imagem excede o limite [WIDTH]*[HEIGHT]
+	</string>
+	<string name="texture_load_format_error">
+		Formato de imagem incorreto.
+	</string>
+	<string name="texture_load_empty_file">
+		O arquivo está vazio.
+	</string>
+	<string name="outfit_photo_load_dimensions_error">
+		O tamanho máx. do look é [WIDTH]*[HEIGHT]. Redimensione ou use outra imagem
+	</string>
+	<string name="outfit_photo_select_dimensions_error">
+		O tamanho máx. do look é [WIDTH]*[HEIGHT]. Selecione outra textura
+	</string>
+	<string name="outfit_photo_verify_dimensions_error">
+		Não foi possível confirmar as dimensões da foto. Aguarde até que o tamanho da foto seja exibido no seletor
+	</string>
+	<string name="server_is_down">
+		Apesar dos nossos melhores esforços, ocorreu um erro inesperado.
+Verifique https://secondlife-status.statuspage.io, para descobrir se há algum problema com o serviço.
+Se o erro persistir, verifique as configurações de rede e firewall.
+	</string>
+	<string name="dateTimeWeekdaysNames">
+		Domingo:Segunda-feira:Terça-feira:Quarta-feira:Quinta-feira:Sexta-feira:Sábado
+	</string>
+	<string name="dateTimeWeekdaysShortNames">
+		Dom:Seg:Ter:Qua:Qui:Sex:Sáb
+	</string>
+	<string name="dateTimeMonthNames">
+		Janeiro:Fevereiro:Março:Abril:Maio:Junho:Julho:Agosto:Setembro:Outubro:Novembro:Dezembro
+	</string>
+	<string name="dateTimeMonthShortNames">
+		Jan:Fev:Mar:Abr:Mai:Jun:Jul:Ago:Set:Out:Nov:Dez
+	</string>
+	<string name="LocalEstimateUSD">
+		US$ [AMOUNT]
+	</string>
+	<string name="Group Ban">
+		Banimento de grupo
+	</string>
+	<string name="Membership">
+		Associação
+	</string>
+	<string name="Roles">
+		Funções
+	</string>
+	<string name="Group Identity">
+		Identidade do grupo
+	</string>
+	<string name="Parcel Management">
+		Gerenciamento de parcela
+	</string>
+	<string name="Parcel Identity">
+		Identidade da parcela
+	</string>
+	<string name="Parcel Settings">
+		Configurações da parcela
+	</string>
+	<string name="Parcel Powers">
+		Permissões da parcela
+	</string>
+	<string name="Parcel Access">
+		Acesso à parcela
+	</string>
+	<string name="Parcel Content">
+		Conteúdo da parcela
+	</string>
+	<string name="Object Management">
+		Gerenciamento de objetos
+	</string>
+	<string name="Accounting">
+		Contabilidade
+	</string>
+	<string name="Notices">
+		Avisos
+	</string>
+	<string name="Chat" value=" Chat:">
+		Bate-papo
+	</string>
+	<string name="BaseMembership">
+		Básica
+	</string>
+	<string name="InternalMembership">
+		Interno
+	</string>
+	<string name="MembershipUpgradeText">
+		Alterar associação...
+	</string>
+	<string name="MembershipPremiumText">
+		Minha assinatura premium
+	</string>
+	<string name="DeleteItems">
+		Deseja excluir [COUNT_SELECTION] objetos selecionados ([COUNT_TOTAL] no total)?
+	</string>
+	<string name="DeleteItem">
+		Excluir item selecionado? [COUNT_TOTAL]
+	</string>
+	<string name="EmptyOutfitText">
+		Este look não possui nenhuma peça
+	</string>
+	<string name="ExternalEditorNotSet">
+		Selecione um editor usando a variável de ambiente LL_SCRIPT_EDITOR ou a configuração ExternalEditor.
+Veja https://wiki.secondlife.com/wiki/LSL_Alternate_Editors
+	</string>
+	<string name="ExternalEditorNotFound">
+		Não foi possível encontrar o editor externo especificado.
+Coloque o caminho do editor entre aspas
+(por exemplo, &quot;/caminho/para/editor&quot; &quot;%s&quot;).
+	</string>
+	<string name="ExternalEditorCommandParseError">
+		Erro ao analisar o comando do editor externo.
+	</string>
+	<string name="ExternalEditorFailedToRun">
+		O editor externo não pôde ser executado.
+	</string>
+	<string name="TranslationFailed">
+		Falha na tradução: [REASON]
+	</string>
+	<string name="TranslationResponseParseError">
+		Erro ao analisar a resposta da tradução.
+	</string>
+	<string name="Space">
+		Espacio
+	</string>
+	<string name="Shift">
+		Mudança
+	</string>
+	<string name="Left">
+		Esquerda
+	</string>
+	<string name="Right">
+		Direita
+	</string>
+	<string name="Up">
+		Cima
+	</string>
+	<string name="Down">
+		Baixo
+	</string>
+	<string name="Home">
+		Início
+	</string>
+	<string name="End">
+		Fim
+	</string>
+	<string name="PgUp">
+		imagine
+	</string>
+	<string name="PgDn">
+		Imagem desativada
+	</string>
+	<string name="Add">
+		Adicionar
+	</string>
+	<string name="Subtract">
+		Subtrair
+	</string>
+	<string name="Multiply">
+		Multiplicar
+	</string>
+	<string name="Divide">
+		Dividir
+	</string>
+	<string name="PAD_DIVIDE">
+		PAD_Divide
+	</string>
+	<string name="PAD_RIGHT">
+		PAD_Direita
+	</string>
+	<string name="PAD_UP">
+		PAD_Up
+	</string>
+	<string name="PAD_END">
+		PAD_End
+	</string>
+	<string name="PAD_PGUP">
+		PAD_Imagem ativada
+	</string>
+	<string name="PAD_PGDN">
+		PAD_imagem
+	</string>
+	<string name="PAD_CENTER">
+		PAD_Middle
+	</string>
+	<string name="PAD_INS">
+		PAD_Inserir
+	</string>
+	<string name="PAD_DEL">
+		PAD_Del
+	</string>
+	<string name="PAD_BUTTON0">
+		PAD_Botão 0
+	</string>
+	<string name="PAD_BUTTON1">
+		PAD_Botão 1
+	</string>
+	<string name="PAD_BUTTON2">
+		PAD_Botão 2
+	</string>
+	<string name="PAD_BUTTON3">
+		PAD_Botão 3
+	</string>
+	<string name="PAD_BUTTON4">
+		PAD_Botão 4
+	</string>
+	<string name="PAD_BUTTON5">
+		PAD_Botão 5
+	</string>
+	<string name="PAD_BUTTON6">
+		PAD_Botão 6
+	</string>
+	<string name="PAD_BUTTON7">
+		PAD_Botão 7
+	</string>
+	<string name="PAD_BUTTON8">
+		PAD_Botão 8
+	</string>
+	<string name="PAD_BUTTON9">
+		PAD_Botão 9
+	</string>
+	<string name="PAD_BUTTON10">
+		PAD_Botão 10
+	</string>
+	<string name="PAD_BUTTON11">
+		PAD_Botão 11
+	</string>
+	<string name="PAD_BUTTON12">
+		PAD_Botão 12
+	</string>
+	<string name="PAD_BUTTON13">
+		PAD_Botão 13
+	</string>
+	<string name="PAD_BUTTON14">
+		PAD_Botão 14
+	</string>
+	<string name="PAD_BUTTON15">
+		PAD_Botão 15
+	</string>
+	<string name="LMB">LMB</string>
+	<string name="MMB">MMB</string>
+	<string name="RMB">RMB</string>
+	<string name="MB4">MB4</string>
+	<string name="MB5">MB5</string>
+	<string name="Double LMB">
+		LMT duplo
+	</string>
+	<string name="BeaconParticle">
+		Aparecem faróis de partículas (azul)
+	</string>
+	<string name="BeaconPhysical">
+		Beacons para objetos físicos em estilos (verde)
+	</string>
+	<string name="BeaconScripted">
+		Beacons para objetos de script são exibidos (vermelho)
+	</string>
+	<string name="BeaconScriptedTouch">
+		Beacons para objetos de script com função de toque (vermelho)
+	</string>
+	<string name="BeaconSound">
+		Aparecem faróis sonoros (amarelo)
+	</string>
+	<string name="BeaconRegionCorners">
+		Ver cantos da região (amarelo)
+	</string>
+	<string name="BeaconMedia">
+		Aparecem sinalizadores de mídia (branco)
+	</string>
+	<string name="BeaconSun">
+		Ver farol de direção do sol (laranja)
+	</string>
+	<string name="BeaconMoon">
+		Ver farol de direção da lua (roxo)
+	</string>
+	<string name="ParticleHiding">
+		Partículas estão escondidas
+	</string>
+	<string name="Command_360_Capture_Label">Captura 360°</string>
+	<string name="Command_AboutLand_Label">
+		Informações sobre o terreno
+	</string>
+	<string name="Command_Appearance_Label">
+		Aparência
+	</string>
+	<string name="Command_Avatar_Label">
+		Pacote de boas-vindas para avatares
+	</string>
+	<string name="Command_Build_Label">
+		Construir
+	</string>
+	<string name="Command_Chat_Label">Conversas</string>
+	<string name="Command_Conversations_Label">
+		Conversas
+	</string>
+	<string name="Command_Compass_Label">
+		bússola
+	</string>
+	<string name="Command_Destinations_Label">
+		Destinos
+	</string>
+	<string name="Command_Environments_Label">
+		Ambientes
+	</string>
+	<string name="Command_Gestures_Label">
+		Gestos
+	</string>
+	<string name="Command_Grid_Status_Label">
+		Status da grade
+	</string>
+	<string name="Command_HowTo_Label">
+		Informações
+	</string>
+	<string name="Command_Inventory_Label">
+		Inventário
+	</string>
+	<string name="Command_Map_Label">
+		Mapa
+	</string>
+	<string name="Command_Marketplace_Label">
+		Mercado
+	</string>
+	<string name="Command_MarketplaceListings_Label">
+		Mercado
+	</string>
+	<string name="Command_MiniMap_Label">
+		Minimapa
+	</string>
+	<string name="Command_Move_Label">
+		Andar/Correr/Voar
+	</string>
+	<string name="Command_People_Label">
+		Pessoas
+	</string>
+	<string name="Command_Performance_Label">
+		Velocidade gráfica
+	</string>
+	<string name="Command_Picks_Label">
+		Escolher
+	</string>
+	<string name="Command_Places_Label">
+		Lugares
+	</string>
+	<string name="Command_Preferences_Label">
+		Configurações
+	</string>
+	<string name="Command_Profile_Label">
+		perfil
+	</string>
+	<string name="Command_Report_Abuse_Label">
+		Denunciar abuso
+	</string>
+	<string name="Command_Search_Label">
+		Procurar
+	</string>
+	<string name="Command_Snapshot_Label">Captura</string>
+	<string name="Command_Speak_Label">
+		Falar
+	</string>
+	<string name="Command_View_Label">
+		Controles da câmera
+	</string>
+	<string name="Command_Voice_Label">
+		Vozes próximas
+	</string>
+	<string name="Command_Quickprefs_Label">
+		Configurações rápidas
+	</string>
+	<string name="Command_AO_Label">
+		Substituidores de animação
+	</string>
+	<string name="Command_Webbrowser_Label">
+		Navegador da Web
+	</string>
+	<string name="Command_Default_Chat_Bar_Label">
+		Barra de bate-papo
+	</string>
+	<string name="Command_Areasearch_Label">
+		Pesquisa na área
+	</string>
+	<string name="Command_Settings_Debug_Label">
+		Configurações de depuração
+	</string>
+	<string name="Command_Statistics_Label">
+		estatísticas
+	</string>
+	<string name="Command_Region_Label">
+		Região/propriedade
+	</string>
+	<string name="Command_Fly_Label">
+		Voar
+	</string>
+	<string name="Command_Groundsit_Label">
+		Sente-se no chão
+	</string>
+	<string name="Command_Sound_Explorer_Label">
+		Explorador de Som
+	</string>
+	<string name="Command_Asset_Blacklist_Label">
+		Lista negra de ativos
+	</string>
+	<string name="Command_Phototools_Label">
+		Ferramentas de fotos
+	</string>
+	<string name="Command_Phototools_View_Label">
+		Ferramentas de câmera
+	</string>
+	<string name="Command_Contact_Sets_Label">
+		Conjuntos de contato
+	</string>
+	<string name="Command_Mouselook_Label">
+		Modo mouselook
+	</string>
+	<string name="Command_Landmark_Here_Label">
+		Criar Landmark
+	</string>
+	<string name="Command_Teleport_History_Label">
+		Lista de teletransporte
+	</string>
+	<string name="Command_Pose_Stand_Label">
+		Postura de suporte
+	</string>
+	<string name="Command_Snapshot_To_Disk_Label">
+		Foto no disco
+	</string>
+	<string name="Command_Radar_Label">
+		Radar
+	</string>
+	<string name="Command_Conversation_Log_Label">
+		Registro de conversa
+	</string>
+	<string name="Command_Move_Lock_Label">
+		Movelock
+	</string>
+	<string name="Command_Blocklist_Label">
+		Lista de bloqueio
+	</string>
+	<string name="Command_ResyncAnimations_Label">
+		Sincronizar animações
+	</string>
+	<string name="Command_RegionTracker_Label">
+		Rastreador de região
+	</string>
+	<string name="Command_Group_Titles_Label">
+		Título do grupo
+	</string>
+	<string name="Command_Wearable_Favorites_Label">
+		Favoritos de roupas
+	</string>
+	<string name="Command_RFO_Label">
+		Mostrar apenas amigos
+	</string>
+	<string name="Command_DAO_Label">
+		Animesh não aparece
+	</string>
+	<string name="Command_Beacons_Label">
+		Sinais de localização
+	</string>
+	<string name="Command_Poser_Label">
+		Poser
+	</string>
+	<string name="Command_Poser_Tooltip">
+		Posicione de acordo com seu avatar e anime
+	</string>
+	<string name="Command_Primfeed_Tooltip">
+		Postar no Primfeed
+	</string>
+	<string name="Command_Omnifilter_Label">
+		Omnifilter
+	</string>
+	<string name="Command_AvatarAlign_Label">
+		Alinhamento de avatar
+	</string>
+	<string name="Command_FaceNearest_Label">
+		Olhar para avatar próximo
+	</string>
+	<string name="Command_360_Capture_Tooltip">
+		360° Tire uma foto equirretangular
+	</string>
+	<string name="Command_AboutLand_Tooltip">
+		Informações sobre o país que você está visitando
+	</string>
+	<string name="Command_Appearance_Tooltip">
+		Alterar avatar
+	</string>
+	<string name="Command_Avatar_Tooltip">
+		Seleção ou avatar completo
+	</string>
+	<string name="Command_Build_Tooltip">
+		Construa objetos e remodele terrenos (Ctrl+4)
+	</string>
+	<string name="Command_Chat_Tooltip">
+		Converse com pessoas próximas (Ctrl+T)
+	</string>
+	<string name="Command_Conversations_Tooltip">
+		Converse com todos (Ctrl+T)
+	</string>
+	<string name="Command_Compass_Tooltip">
+		bússola
+	</string>
+	<string name="Command_Destinations_Tooltip">
+		Alvos de interesse
+	</string>
+	<string name="Command_Environments_Tooltip">
+		Ambientes
+	</string>
+	<string name="Command_Flickr_Tooltip">
+		Carregar no Flickr
+	</string>
+	<string name="Command_Gestures_Tooltip">
+		Gestos para seu avatar (Ctrl+G)
+	</string>
+	<string name="Command_Grid_Status_Tooltip">
+		Ver o status atual da grade
+	</string>
+	<string name="Command_HowTo_Tooltip">
+		Como executo tarefas comuns?
+	</string>
+	<string name="Command_Inventory_Tooltip">
+		Mostrar propriedade e uso (Ctrl+I)
+	</string>
+	<string name="Command_Map_Tooltip">
+		Mapa Mundial (Ctrl+M)
+	</string>
+	<string name="Command_Marketplace_Tooltip">
+		Ir de compras
+	</string>
+	<string name="Command_MarketplaceListings_Tooltip">
+		Venda sua criação
+	</string>
+	<string name="Command_MiniMap_Tooltip">
+		Mostrar pessoas próximas (Ctrl+Shift+M)
+	</string>
+	<string name="Command_Move_Tooltip">
+		Mova seu avatar
+	</string>
+	<string name="Command_People_Tooltip">
+		Amigos, grupo e pessoas próximas
+	</string>
+	<string name="Command_Performance_Tooltip">
+		Melhore a velocidade gráfica
+	</string>
+	<string name="Command_Picks_Tooltip">
+		Locais para mostrar como favoritos no seu perfil
+	</string>
+	<string name="Command_Places_Tooltip">
+		Lugares que você salvou (Alt+H)
+	</string>
+	<string name="Command_Preferences_Tooltip">
+		Configurações (Ctrl+P)
+	</string>
+	<string name="Command_Profile_Tooltip">
+		Edite ou visualize seu perfil
+	</string>
+	<string name="Command_Report_Abuse_Tooltip">
+		Denunciar abuso
+	</string>
+	<string name="Command_Search_Tooltip">
+		Encontre lugares, eventos, pessoas (Ctrl+F)
+	</string>
+	<string name="Command_Snapshot_Tooltip">
+		Tirar uma foto (Ctrl+Shift+S)
+	</string>
+	<string name="Command_Speak_Tooltip">
+		Fale com pessoas próximas usando seu microfone
+	</string>
+	<string name="Command_View_Tooltip">
+		Alterar o ângulo da câmera
+	</string>
+	<string name="Command_Voice_Tooltip">
+		Controle de volume para chamadas e pessoas perto de você no SL
+	</string>
+	<string name="Command_Quickprefs_Tooltip">
+		Configurações rápidas para alterar configurações com frequência
+	</string>
+	<string name="Command_AO_Tooltip">
+		Substituir animações
+	</string>
+	<string name="Command_Webbrowser_Tooltip">
+		Abra o navegador interno (Ctrl+Shift+Z)
+	</string>
+	<string name="Command_Default_Chat_Bar_Tooltip">
+		Mostra ou oculta a barra de chat padrão
+	</string>
+	<string name="Command_Areasearch_Tooltip">
+		Pesquisa de objetos na área circundante
+	</string>
+	<string name="Command_Settings_Debug_Tooltip">
+		Alterar as configurações do visualizador (Ctrl+Alt+Shift+S)
+	</string>
+	<string name="Command_Statistics_Tooltip">
+		Mostrar estatísticas do visualizador (Ctrl+Shift+1)
+	</string>
+	<string name="Command_Region_Tooltip">
+		Abre o gerenciamento de propriedade regional (Alt+R)
+	</string>
+	<string name="Command_Groundsit_Tooltip">
+		Ativar/desativar sentar forçado no chão (Ctrl+Alt+S)
+	</string>
+	<string name="Command_Sound_Explorer_Tooltip">
+		Abre o Explorador de Som
+	</string>
+	<string name="Command_Asset_Blacklist_Tooltip">
+		Abra a lista negra de ativos com visão geral de todos os objetos bloqueados
+	</string>
+	<string name="Command_Phototools_Tooltip">Ferramentas avançadas de fotografia (Alt+P)</string>
+	<string name="Command_Phototools_View_Tooltip">
+		Ferramentas avançadas de câmera (Ctrl+Shift+C)
+	</string>
+	<string name="Command_Contact_Sets_Tooltip">
+		Sobre os conjuntos de contatos (Ctrl+Alt+Shift+C)
+	</string>
+	<string name="Command_Mouselook_Tooltip">
+		Ative o modo de visualização do mouse (M)
+	</string>
+	<string name="Command_Landmark_Here_Tooltip">
+		Cria um ponto de referência na posição atual
+	</string>
+	<string name="Command_Teleport_History_Tooltip">
+		Abre uma lista de teletransporte (Alt+H)
+	</string>
+	<string name="Command_Pose_Stand_Tooltip">
+		Comece uma pose para o avatar ajustar os anexos
+	</string>
+	<string name="Command_Snapshot_To_Disk_Tooltip">
+		Tira uma foto e salva no disco rígido
+	</string>
+	<string name="Command_Radar_Tooltip">
+		Abra ou radar para avatares próximos
+	</string>
+	<string name="Command_Conversation_Log_Tooltip">
+		Abre o registro de conversas com histórico de bate-papo
+	</string>
+	<string name="Command_Move_Lock_Tooltip">
+		Para funcionar movelock na ponte e mantém ou avatar na posição atual (Ctrl+Alt+P)
+	</string>
+	<string name="Command_Blocklist_Tooltip">
+		Abre uma lista de quarteirões/lista de moradores ignorados &amp; Objetos
+	</string>
+	<string name="Command_ResyncAnimations_Tooltip">
+		Sincroniza novas animações do avatar
+	</string>
+	<string name="Command_RegionTracker_Tooltip">
+		Rastreia o status de várias regiões
+	</string>
+	<string name="Command_AvatarAlign_Tooltip">
+		Alinhe o avatar com a directe da bússola mais próxima ou com o avatar mais próximo
+	</string>
+	<string name="Command_FaceNearest_Tooltip">
+		Gire para o avatar na distância mais próxima dentro de 20m
+	</string>
+	<string name="Command_Group_Titles_Tooltip">
+		Alterar o título do grupo atual
+	</string>
+	<string name="Command_Wearable_Favorites_Tooltip">
+		Lista aberta de roupas favoritas
+	</string>
+	<string name="Command_RFO_Tooltip">
+		Mostrar apenas amigos no visualizador. Após a desativação, é necessário teletransportar para exibir outros avatares novos.
+	</string>
+	<string name="Command_DAO_Tooltip">
+		Não exibir Objetos Animesh - Não exibir Objetos Animesh temporariamente. Após a desativação, é necessário teletransportar-se para exibir novos objetos correspondentes.
+	</string>
+	<string name="Command_Beacons_Tooltip">
+		Mostrar sinais de localização
+	</string>
+	<string name="Command_Omnifilter_Tooltip">
+		Editar regra do Omni-Filter
+	</string>
+	<string name="Toolbar_Bottom_Tooltip">
+		atualmente na barra de ferramentas inferior
+	</string>
+	<string name="Toolbar_Left_Tooltip">
+		atualmente na barra de ferramentas esquerda
+	</string>
+	<string name="Toolbar_Right_Tooltip">
+		atualmente na barra de ferramentas direita
+	</string>
+	<string name="Command_Fly_Tooltip">
+		Ativar/desativar modo de voo (Pos1)
+	</string>
+	<string name="Command_Stop_Animations_Label">
+		Para animações de avatar
+	</string>
+	<string name="Command_Stop_Animations_Tooltip">
+		Para animações de avatar
+	</string>
+	<string name="Retain%">
+		% retido
+	</string>
+	<string name="Detail">
+		Detalhe
+	</string>
+	<string name="Better Detail">
+		Mais detalhado
+	</string>
+	<string name="Surface">
+		superfície
+	</string>
+	<string name="Solid">
+		Sólido
+	</string>
+	<string name="Wrap">
+		Enrolar
+	</string>
+	<string name="Preview">
+		visualização
+	</string>
+	<string name="Normal">
+		Normal
+	</string>
+	<string name="Pathfinding_Object_Attr_None">
+		Não
+	</string>
+	<string name="Pathfinding_Object_Attr_Permanent">
+		Afeta Navmesh
+	</string>
+	<string name="Pathfinding_Object_Attr_Character">
+		Personagem
+	</string>
+	<string name="Pathfinding_Object_Attr_MultiSelect">
+		(vários)
+	</string>
+	<string name="snapshot_quality_very_low">
+		Muito baixa
+	</string>
+	<string name="snapshot_quality_low">
+		Baixa
+	</string>
+	<string name="snapshot_quality_medium">
+		Média
+	</string>
+	<string name="snapshot_quality_high">
+		Alta
+	</string>
+	<string name="snapshot_quality_very_high">
+		Muito alta
+	</string>
+	<string name="IMPrefix">
+		MI:
+	</string>
+	<string name="SanityCheckEquals">
+		A configuração &quot;[CONTROL_NAME]&quot; deve ter o valor [VALUE_1].
+	</string>
+	<string name="SanityCheckNotEquals">
+		A configuração &quot;[CONTROL_NAME]&quot; não deve ter o valor [VALUE_1].
+	</string>
+	<string name="SanityCheckLessThan">
+		A configuração &quot;[CONTROL_NAME]&quot; deve ter um valor menor que [VALUE_1].
+	</string>
+	<string name="SanityCheckGreaterThan">
+		A configuração &quot;[CONTROL_NAME]&quot; deve ter um valor maior que [VALUE_1].
+	</string>
+	<string name="SanityCheckLessThanEquals">
+		A configuração &quot;[CONTROL_NAME]&quot; deve ter um valor menor ou igual a [VALUE_1].
+	</string>
+	<string name="SanityCheckGreaterThanEquals">
+		A configuração &quot;[CONTROL_NAME]&quot; deve ter um valor maior ou igual a [VALUE_1].
+	</string>
+	<string name="SanityCheckBetween">
+		A configuração &quot;[CONTROL_NAME]&quot; deve ter um valor entre [VALUE_1] e [VALUE_2].
+	</string>
+	<string name="SanityCheckNotBetween">
+		A configuração &quot;[CONTROL_NAME]&quot; não deve ter um valor entre [VALUE_1] e [VALUE_2].
+	</string>
+	<string name="MediaFilterActionAllow">
+		permitir
+	</string>
+	<string name="MediaFilterActionDeny">
+		negar
+	</string>
+	<string name="MediaFilterConditionAlways">
+		Sempre
+	</string>
+	<string name="MediaFilterConditionAlwaysLower">
+		sempre
+	</string>
+	<string name="MediaFilterConditionNever">
+		Nunca
+	</string>
+	<string name="MediaFilterConditionNeverLower">
+		nunca
+	</string>
+	<string name="MediaFilterMediaContentBlocked">
+		A mídia do domínio [DOMAIN] foi bloqueada.
+	</string>
+	<string name="MediaFilterMediaContentDomainAlwaysAllowed">
+		A mídia do domínio [DOMAIN] é sempre reproduzida.
+	</string>
+	<string name="MediaFilterMediaContentDomainAlwaysBlocked">
+		A mídia do domínio [DOMAIN] nunca será reproduzida.
+	</string>
+	<string name="MediaFilterMediaContentUrlAlwaysAllowed">
+		A mídia da URL [MEDIAURL] é sempre reproduzida.
+	</string>
+	<string name="MediaFilterMediaContentUrlAlwaysBlocked">
+		A mídia do URL [MEDIAURL] nunca será reproduzida.
+	</string>
+	<string name="MediaFilterAudioContentBlocked">
+		A música do domínio [DOMAIN] foi bloqueada.
+	</string>
+	<string name="MediaFilterAudioContentDomainAlwaysAllowed">
+		Música do domínio [DOMAIN] é sempre tocada.
+	</string>
+	<string name="MediaFilterAudioContentDomainAlwaysBlocked">
+		Músicas do domínio [DOMAIN] nunca serão reproduzidas.
+	</string>
+	<string name="MediaFilterAudioContentUrlAlwaysAllowed">
+		A música do URL [MEDIAURL] é sempre reproduzida.
+	</string>
+	<string name="MediaFilterAudioContentUrlAlwaysBlocked">
+		A música do URL [MEDIAURL] nunca será reproduzida.
+	</string>
+	<string name="MediaFilterBlacklist">lista negra</string>
+	<string name="MediaFilterWhitelist">lista branca</string>
+	<string name="UnknownRegion">
+		(região desconhecida)
+	</string>
+	<string name="UnknownPosition">
+		(posição desconhecida)
+	</string>
+	<string name="Collision_Bump">
+		[NAME] empurrou você.
+	</string>
+	<string name="Collision_PushObject">
+		[NAME] atingiu você com um script.
+	</string>
+	<string name="Collision_ObjectCollide">
+		[NAME] bateu em você com um objeto.
+	</string>
+	<string name="Collision_ScriptedObject">
+		[NAME] atingiu você com um objeto de script.
+	</string>
+	<string name="Collision_PhysicalObject">
+		[NAME] bateu em você com um objeto físico.
+	</string>
+	<string name="Collision_UnknownType">
+		[NAME] causou uma colisão de tipo desconhecido.
+	</string>
+	<string name="MovelockEnabled">
+		Avatar &gt; Mover &gt; Movelock está ativo.
+	</string>
+	<string name="BusyResponse">
+		Mensagem de ocupado
+	</string>
+	<string name="TeleportMaturityExceeded">
+		O morador não pode visitar esta região.
+	</string>
+	<string name="UserDictionary">
+		[Usuário]
+	</string>
+	<string name="RLVaPendingRestart">
+		(reinicialização pendente)
+	</string>
+	<string name="RLVaToggleMessageLogin">
+		O suporte do RestrainedLove foi [STATE] (não é necessário reiniciar).
+	</string>
+	<string name="RLVaToggleMessageRestart">
+		O suporte RestrainedLove é [STATE] após uma reinicialização.
+	</string>
+	<string name="RLVaToggleEnabled">
+		ativado
+	</string>
+	<string name="RLVaToggleDisabled">
+		desativado
+	</string>
+	<string name="RLVaStatusDisabled">
+		(desativado)
+	</string>
+	<string name="experience_tools_experience">
+		Experiência
+	</string>
+	<string name="ExperienceNameNull">
+		(sem experiência)
+	</string>
+	<string name="ExperienceNameUntitled">
+		(experiência sem nome)
+	</string>
+	<string name="Land-Scope">
+		Circunferência terrestre
+	</string>
+	<string name="Grid-Scope">
+		Extensão da grade
+	</string>
+	<string name="Allowed_Experiences_Tab">
+		Permitido
+	</string>
+	<string name="Blocked_Experiences_Tab">
+		Bloqueado
+	</string>
+	<string name="Contrib_Experiences_Tab">
+		Contribuinte
+	</string>
+	<string name="Admin_Experiences_Tab">
+		Administrador
+	</string>
+	<string name="Recent_Experiences_Tab">
+		Atual
+	</string>
+	<string name="Owned_Experiences_Tab">
+		Ter
+	</string>
+	<string name="ExperiencesCounter">
+		([EXPERIENCES], máx. [MAXEXPERIENCES])
+	</string>
+	<string name="ExperiencePermission1">
+		Assuma seus controles
+	</string>
+	<string name="ExperiencePermission3">
+		Acione animações faça seu avatar
+	</string>
+	<string name="ExperiencePermission4">
+		anexo ao seu avatar
+	</string>
+	<string name="ExperiencePermission9">
+		Siga sua câmera
+	</string>
+	<string name="ExperiencePermission10">
+		Controle sua câmera
+	</string>
+	<string name="ExperiencePermission11">
+		Eles se teletransportam
+	</string>
+	<string name="ExperiencePermission12">
+		aceitar automaticamente permissões de experiência
+	</string>
+	<string name="ExperiencePermission16">
+		forçando seu avatar e se sentando
+	</string>
+	<string name="ExperiencePermission17">
+		Alterando as configurações do seu ambiente
+	</string>
+	<string name="ExperiencePermissionShortUnknown">
+		executar operação desconhecida: [Permission]
+	</string>
+	<string name="ExperiencePermissionShort1">
+		Assuma os controles
+	</string>
+	<string name="ExperiencePermissionShort3">
+		Acionar animações
+	</string>
+	<string name="ExperiencePermissionShort4">
+		Anexar
+	</string>
+	<string name="ExperiencePermissionShort9">
+		Rastrear câmera
+	</string>
+	<string name="ExperiencePermissionShort10">
+		Câmera de controle
+	</string>
+	<string name="ExperiencePermissionShort11">
+		Teleporte
+	</string>
+	<string name="ExperiencePermissionShort12">
+		Autorização
+	</string>
+	<string name="ExperiencePermissionShort16">
+		Sentar
+	</string>
+	<string name="ExperiencePermissionShort17">
+		Ambiente
+	</string>
+	<string name="Material Texture Name Header">
+		Texturas existentes no material:
+	</string>
+	<string name="material_selection_title">
+		Seleção de materiais
+	</string>
+	<string name="material_selection_text">
+		Selecione o material:
+	</string>
+	<string name="material_batch_import_text">
+		--- Carregar tudo ---
+	</string>
+	<string name="logging_calls_disabled_log_empty">
+		As conversas não estão sendo registradas. Para iniciar um registro, selecione “Salvar: somente registro” ou “Salvar: registro e transcrições” em “Configurações” &gt; “Chat”.
+	</string>
+	<string name="logging_calls_disabled_log_not_empty">
+		As conversas não serão mais registradas. Para continuar mantendo um registro, selecione “Salvar: somente registro” ou “Salvar: registro e transcrições” em “Configurações” &gt; “Chat”.
+	</string>
+	<string name="logging_calls_enabled_log_empty">
+		Nenhuma conversa registrada disponível. Uma entrada de registro aparece aqui quando você entra em contato com uma pessoa ou é contatado por uma pessoa.
+	</string>
+	<string name="loading_chat_logs">
+		Carregar...
+	</string>
+	<string name="na">
+		Não aplicável
+	</string>
+	<string name="preset_combo_label">
+		-Lista vazia-
+	</string>
+	<string name="Default">
+		padrão
+	</string>
+	<string name="none_paren_cap">
+		(Não)
+	</string>
+	<string name="no_limit">
+		Sem limite
+	</string>
+	<string name="Mav_Details_MAV_FOUND_DEGENERATE_TRIANGLES">
+		A forma física contém triângulos muito pequenos. Tente simplificar o modelo físico.
+	</string>
+	<string name="Mav_Details_MAV_CONFIRMATION_DATA_MISMATCH">
+		O formulário físico contém dados de confirmação inválidos. Tente corrigir o modelo físico.
+	</string>
+	<string name="Mav_Details_MAV_BLOCK_MISSING">
+		Dados ausentes. Certifique-se de que o mais alto nível de detalhe seja válido. Defina o modelo físico se não estiver definido.
+	</string>
+	<string name="Mav_Details_MAV_UNKNOWN_VERSION">
+		A forma física não possui uma versão correta. Defina a versão correta para o modelo físico.
+	</string>
+	<string name="couldnt_resolve_host">
+		O DNS não conseguiu resolver o nome do host ([HOSTNAME]) Verifique 
+Por favor, pergunte se você pode acessar o site www.secondlife.com. Se você 
+Consigo acessar o site, mas ainda recebo esta mensagem de erro 
+visite a área de suporte e relate o problema.
+	</string>
+	<string name="ssl_peer_certificate">
+		O servidor de login não pôde verificar-se via SSL. 
+Se você ainda receber esta mensagem de erro, visite 
+Por favor, visite a seção de suporte do site Secondlife.com 
+e relatar o problema.
+	</string>
+	<string name="ssl_connect_error">
+		A causa aqui geralmente é um horário definido incorretamente no seu computador. 
+Certifique-se de que a data e a hora no Painel de Controle estejam corretas 
+estão definidos. Verifique também se suas configurações de rede e firewall 
+estão corretos. Se você continuar recebendo esta mensagem de erro, visite 
+Seção de suporte do site Secondlife.com e relate o problema. 
+[https://community.secondlife.com/knowledgebase/english/error-messages-r520/#Section__3 Knowledge-Base]
+	</string>
+	<string name="LoadCameraPositionNoneSaved">
+		Nenhuma visualização da câmera foi salva ainda.
+	</string>
+	<string name="LoadCameraPositionOutsideDrawDistance">
+		A visualização da câmera não pode ser restaurada porque a posição da câmera está fora da distância de visão.
+	</string>
+	<string name="DrawDistanceSteppingGestureObsolete">
+		Devido a alterações no código, não é mais necessário utilizar este gesto. O passo progressivo da distância de desenho foi ativado.
+	</string>
+	<string name="FSCameraPositionCopied">
+		A posição da câmera [POS] foi copiada para a área de transferência.
+	</string>
+	<string name="FSCmdLineDrawDistanceSet">
+		A distância de desenho foi definida como [DISTANCE]m.
+	</string>
+	<string name="FSCmdLineRollDiceTotal">
+		Resultado para [DICE]d[FACES][MODIFIER]: [RESULT].
+	</string>
+	<string name="FSCmdLineRollDiceLimits">
+		Valores positivos para cubos (máx. 100) e lados (máx. 1000) devem ser especificados.
+	</string>
+	<string name="FSCmdLineRollDiceModifiersInvalid">
+		Se um modificador for usado, um valor de tipo válido deverá ser especificado para o modificador. O valor deve estar no intervalo -1000 a 1000. Os tipos válidos são: "+" (bônus), "-" (penalidades), "&gt;", "&lt;" (sucessos), "r&lt;", "r" (reroll), "!p&gt;", "!&gt;", "!p&lt;", "!p" (penetrações), "!&lt;" e "!" (Explosões). Apenas um tipo de modificador pode ser usado por jogada. Exemplos: "[COMMAND] 1 20 + 5", "[COMMAND] 5 40 &gt; 15", "[COMMAND] 10 25 ! 25", "[COMMAND] 15" 25 !&lt; 10”.
+	</string>
+	<string name="FSCmdLineRollDiceExploded">
+		Explode
+	</string>
+	<string name="FSCmdLineRollDicePenetrated">
+		Penetrado
+	</string>
+	<string name="FSCmdLineRollDiceSuccess">
+		Sucesso
+	</string>
+	<string name="FSCmdLineRollDiceReroll">
+		Jogue os dados novamente
+	</string>
+	<string name="FSCmdLineRollDiceFreezeGuard">
+		Esta operação não pode ser concluída porque o visualizador terminaria em um loop infinito. Por favor, altere os critérios.
+	</string>
+	<string name="FSCmdLineCalcRandError">
+		'[RAND]' não é uma expressão válida para RAND(min,max). MAX deve ser maior que MIN e ambos os valores devem estar no intervalo de -10000 a 10000.
+	</string>
+	<string name="FSCmdLineRSP">Máximo ancho de banda establecido en: [VALUE] KBPS.</string>
+	<string name="FSCmdLineTpOffered">
+		Oferta de teletransporte enviada para [NAME].
+	</string>
+	<string name="FSWithHavok">
+		com suporte Havok
+	</string>
+	<string name="FSWithOpensim">
+		com suporte OpenSimulator
+	</string>
+	<string name="not_found">
+		&quot;[TEXT]&quot; não encontrado.
+	</string>
+	<string name="no_results">
+		Nenhum resultado
+	</string>
+	<string name="searching">
+		Buscando...
+	</string>
+	<string name="all_categories">
+		Todas as categorias
+	</string>
+	<string name="search_banned">
+		Alguns termos da consulta de pesquisa foram excluídos da pesquisa devido a restrições definidas nos Padrões da Comunidade.
+	</string>
+	<string name="search_short">
+		Os termos de pesquisa inseridos eram muito curtos, portanto nenhuma pesquisa foi realizada.
+	</string>
+	<string name="search_disabled">
+		A pesquisa clássica foi desativada nesta região.
+	</string>
+	<string name="render_quality_low">
+		Baixa
+	</string>
+	<string name="render_quality_mediumlow">
+		Média-baixa
+	</string>
+	<string name="render_quality_medium">
+		Média
+	</string>
+	<string name="render_quality_mediumhigh">
+		Média-alta
+	</string>
+	<string name="render_quality_high">
+		Alta
+	</string>
+	<string name="render_quality_highultra">
+		Alta-ultra
+	</string>
+	<string name="render_quality_unknown">
+		Desconhecido; Verifique a configuração de depuração RenderQualityPerformance!
+	</string>
+	<string name="fsbridge_cant_create_disabled">
+		[APP_NAME] não pode criar a ponte LSL se “Habilitar ponte de cliente LSL” estiver desabilitado nas configurações.
+	</string>
+	<string name="fsbridge_no_library">
+		[APP_NAME] não pôde criar a ponte LSL. Ative a biblioteca e faça login novamente.
+	</string>
+	<string name="fsbridge_already_creating">
+		A ponte LSL já foi criada. Aguarde alguns minutos antes de tentar novamente.
+	</string>
+	<string name="fsbridge_creating">
+		A ponte LSL é criada. Isso pode demorar um pouco. Por favor, aguarde...
+	</string>
+	<string name="fsbridge_failure_creation_create_script">
+		Ponte LSL não criada. O script de ponte não pôde ser criado.
+	</string>
+	<string name="fsbridge_failure_creation_bad_name">
+		Ponte LSL não criada. O nome da ponte está incorreto. Use a opção de menu “Avatar” &gt; “Saúde do Avatar” &gt; “Recriar ponte LSL” para recriar a ponte.
+	</string>
+	<string name="fsbridge_failure_creation_null">
+		Ponte LSL não criada. A ponte não pôde ser encontrada no inventário. Use a opção de menu “Avatar” &gt; “Saúde do Avatar” &gt; “Recriar ponte LSL” para recriar a ponte.
+	</string>
+	<string name="fsbridge_failure_attach_wrong_object">
+		Não foi possível anexar a ponte LSL. A versão da ponte está incorreta. Use a opção de menu “Avatar” &gt; “Saúde do Avatar” &gt; “Recriar ponte LSL” para recriar a ponte.
+	</string>
+	<string name="fsbridge_failure_attach_wrong_location">
+		Não foi possível anexar a ponte LSL. A ponte não foi encontrada no local correto do inventário. Use a opção de menu “Avatar” &gt; “Saúde do Avatar” &gt; “Recriar ponte LSL” para recriar a ponte.
+	</string>
+	<string name="fsbridge_failure_attach_point_in_use">
+		Não foi possível anexar a ponte LSL. O ponto de anexo já estava ocupado por outro objeto. Use a opção de menu “Avatar” &gt; “Saúde do Avatar” &gt; “Recriar ponte LSL” para recriar a ponte.
+	</string>
+	<string name="fsbridge_failure_not_found">
+		O objeto da ponte LSL não pôde ser encontrado. Você não pode continuar com a criação.
+	</string>
+	<string name="fsbridge_warning_unexpected_items">
+		A ponte LSL contém objetos inesperados.
+	</string>
+	<string name="fsbridge_warning_not_finished">
+		Caso a LSL não esteja totalmente escrita, ela precisa ser criada utilizando a opção de menu “Avatar” &gt; “Saúde do Avatar” &gt; “Recriar ponte LSL” para uso.
+	</string>
+	<string name="fsbridge_detached">
+		Ponte LSL removida.
+	</string>
+	<string name="fsbridge_created">
+		Ponte LSL criada.
+	</string>
+	<string name="fsbridge_script_info">
+		Informações do script: "[OBJECT_NAME]": [[OBJECT_RUNNING_SCRIPT_COUNT]/[OBJECT_TOTAL_SCRIPT_COUNT]] scripts ativos, [OBJECT_SCRIPT_MEMORY] limite de KB de memória permitida, [OBJECT_SCRIPT_TIME] ms de tempo de CPU necessário.[PATHFINDING_TEXT]
+	</string>
+	<string name="fsbridge_script_info_pf">
+		Tempo médio de CPU utilizado para navegação pathfinding: [OBJECT_CHARACTER_TIME] ms.
+	</string>
+	<string name="fsbridge_script_info_ext">
+ID do objeto: [INSPECTING_KEY]
+Descrição: [OBJECT_DESC]
+Prim raiz: [OBJECT_ROOT]
+Contagem de prims: [OBJECT_PRIM_COUNT]
+Impacto no terreno: [OBJECT_PRIM_EQUIVALENCE]
+Objetos no inventário: [OBJECT_TOTAL_INVENTORY_COUNT]
+Velocidade: [OBJECT_VELOCITY]
+Posição: [OBJECT_POS]
+Rotação: [OBJECT_ROT]
+Velocidade angular: [OBJECT_OMEGA] (rad/s)
+Criador: [OBJECT_CREATOR]
+Proprietário: [OBJECT_OWNER]
+Proprietário anterior: [OBJECT_LAST_OWNER_ID]
+Rezzado por: [OBJECT_REZZER_KEY]
+Grupo: [OBJECT_GROUP]
+Data de criação: [OBJECT_CREATION_TIME]
+Hora do rez: [OBJECT_REZ_TIME]
+Tipo pathfinding: [OBJECT_PATHFINDING_TYPE]
+Anexado em: [OBJECT_ATTACHED_POINT]
+Anexado temporariamente: [OBJECT_TEMP_ATTACHED]
+Sua posição atual: [AVATAR_POS]
+	</string>
+	<string name="fsbridge_error_scriptinfonotfound">
+		Informações do script: Objeto a ser verificado como inválido ou fora do intervalo.
+	</string>
+	<string name="fsbridge_error_scriptinfomalformed">
+		Informações do script: Resposta errada recebida da ponte LSL. Por favor, tente novamente.
+	</string>
+	<string name="fsbridge_error_injection">
+		NOTA: Para obter nossos scripts para acrescentar à ponte [APP_NAME]-LSL! Caso não tenha um caso, você pode usar a ponte LSL para abrir o menu “Avatar” &gt; “Saúde do avatar” &gt; “Recriar ponte LSL”.
+	</string>
+	<string name="fsbridge_error_wrongvm">
+		NOTA: O script de ponte [APP_NAME] LSL usa uma máquina virtual antiga LSO (limite de memória de 16 KB) em vez de Mono (limite de memória de 64 KB), o que é altamente provável de colisões de pilha de pilha e erros devido à falta de memória disponível! Recrie uma ponte LSL usando a opção de menu “Avatar” &gt; “Saúde do avatar” &gt; “Recriar ponte LSL”. Esta mensagem agora é nova, você pode acessar uma ponte em uma região diferente.
+	</string>
+	<string name="FSAOEnabled">
+		[APP_NAME] Substituição de animação habilitada.
+	</string>
+	<string name="FSAODisabled">
+		[APP_NAME] Substituição de animação desabilitada.
+	</string>
+	<string name="FSAOPausedScript">
+		Pausado por anexo com script.
+	</string>
+	<string name="FSAOResumedScript">
+		Retomado por anexo com script.
+	</string>
+	<string name="FSAOStandsPausedScript">
+		Animações de stand pausadas por anexo com script.
+	</string>
+	<string name="FSAOStandsResumedScript">
+		Animações de stand retomadas por anexo com script.
+	</string>
+	<string name="QP Draw Distance">
+		Draw Distance
+	</string>
+	<string name="QP Max Particles">
+		Máx. partículas
+	</string>
+	<string name="QP Avatar Physics LOD">
+		LOD de física do avatar
+	</string>
+	<string name="QP LOD Factor">
+		Fator LOD
+	</string>
+	<string name="QP Max Avatars">
+		Máximo de avatares
+	</string>
+	<string name="QP Tags Offset">
+		Distância de altitude diurna
+	</string>
+	<string name="QP Name Tags">
+		Nomes de avatares
+	</string>
+	<string name="QP LookAt Target">
+		Foco da câmera
+	</string>
+	<string name="QP Color Under Cursor">
+		Cor sob o cursor
+	</string>
+	<string name="PS_T_Pose">
+		T-Pose
+	</string>
+	<string name="PS_Arms_Down_Legs_together">
+		Braços para baixo, pernas juntas
+	</string>
+	<string name="PS_Arms_down_sitting">
+		Braços para baixo, sentado
+	</string>
+	<string name="PS_Arms_downward_Legs_together">
+		Braços para baixo, pernas juntas
+	</string>
+	<string name="PS_Arms_downward_Legs_apart">
+		Braços para baixo, pernas afastadas
+	</string>
+	<string name="PS_Arms_forward_Legs_apart">
+		Braços para frente, pernas afastadas
+	</string>
+	<string name="PS_Arms_forward_Legs_together">
+		Braços para frente, pernas juntas
+	</string>
+	<string name="PS_Arms_straight_Legs_apart">
+		Braços esticados, pernas afastadas
+	</string>
+	<string name="PS_Arms_straight_sitting">
+		Braços esticados, sentado
+	</string>
+	<string name="PS_Arms_upward_Legs_apart">
+		Braços para cima, pernas afastadas
+	</string>
+	<string name="PS_Arms_upward_Legs_together">
+		Braços para cima, pernas juntas
+	</string>
+	<string name="QP_WL_Region_Default">
+		Ambiente compartilhado
+	</string>
+	<string name="QP_WL_Day_Cycle_Based">
+		Baseado no ciclo diário
+	</string>
+	<string name="QP_WL_None">
+		Nenhum
+	</string>
+	<string name="GroupChatMuteNotice">
+		Ignore o bate-papo em grupo de [NAME].
+	</string>
+	<string name="IgnoredAdHocSession">
+		Um convite para uma conferência feito por [AVATAR_NAME] foi automaticamente ignorado devido à configuração atual.
+	</string>
+	<string name="camera_no_focus">
+		A câmera não consegue focar em [AVATARNAME] porque ele está fora da distância de visão.
+	</string>
+	<string name="entering_draw_distance">
+		vem em distância de desenho ([DISTANCE] m).
+	</string>
+	<string name="leaving_draw_distance">
+		saiu da distância de empate.
+	</string>
+	<string name="entering_chat_range">
+		está dentro do alcance do chat ([DISTANCE] m).
+	</string>
+	<string name="leaving_chat_range">
+		saiu do intervalo de bate-papo.
+	</string>
+	<string name="entering_region">
+		entrou na região.
+	</string>
+	<string name="entering_region_distance">
+		entrou na região ([DISTANCE] m).
+	</string>
+	<string name="leaving_region">
+		deixou a região.
+	</string>
+	<string name="avatar_age_alert">
+		acionou o alarme de idade. Idade: [AGE] dia(s)
+	</string>
+	<string name="avatar_age_not_available">n.d.</string>
+	<string name="TotalScriptCountChangeIncrease">
+		A contagem de scripts na região aumentou de [OLD_VALUE] para [NEW_VALUE] ([DIFFERENCE]).
+	</string>
+	<string name="TotalScriptCountChangeDecrease">
+		A contagem de scripts na região diminuiu de [OLD_VALUE] para [NEW_VALUE] ([DIFFERENCE]).
+	</string>
+	<string name="preproc_toggle_warning">
+		A troca do pré-processador só terá efeito completo depois que o editor for fechado e reaberto.
+	</string>
+	<string name="fs_preprocessor_starting">
+		[APP_NAME] pré-processador inicia...
+	</string>
+	<string name="fs_preprocessor_not_supported">
+		Aviso: o pré-processador não é compatível com esta compilação. ([WHERE])
+	</string>
+	<string name="fs_preprocessor_disabled_by_script_marker">
+		Pré-processador [APP_NAME] desabilitado pela diretiva na linha [LINENUMBER].
+	</string>
+	<string name="fs_preprocessor_settings_list_prefix">
+		Configurações:
+	</string>
+	<string name="fs_preprocessor_exception">
+		[ERR_NAME] ([LINENUMBER]): exceção capturada: [ERR_DESC]
+	</string>
+	<string name="fs_preprocessor_error">
+		[ERR_NAME] ([LINENUMBER]): ocorreu uma exceção inesperada.
+	</string>
+	<string name="fs_preprocessor_lsl2_directive_override">
+		A diretiva de compilação LSL2 detectada substitui o padrão.
+	</string>
+	<string name="fs_preprocessor_mono_directive_override">
+		A diretiva de compilação Mono detectada substitui o padrão.
+	</string>
+	<string name="fs_preprocessor_optimizer_start">
+		Remoção de funções definidas pelo usuário e variáveis ​​globais não referenciadas.
+	</string>
+	<string name="fs_preprocessor_optimizer_regex_err">
+		Expressão regular inválida: “[WHAT]”; A otimização LSL foi ignorada.
+	</string>
+	<string name="fs_preprocessor_optimizer_exception">
+		Ocorreu exceção: “[WHAT]”; A otimização LSL foi ignorada.
+	</string>
+	<string name="fs_preprocessor_optimizer_unexpected_exception">
+		Exceção inesperada no otimizador LSL; não aplicada.
+	</string>
+	<string name="fs_preprocessor_compress_start">
+		Compacte o texto do script removendo espaços desnecessários.
+	</string>
+	<string name="fs_preprocessor_compress_regex_err">
+		Expressão regular inválida: “[WHAT]”; A compactação LSL foi ignorada.
+	</string>
+	<string name="fs_preprocessor_compress_exception">
+		Ocorreu exceção: “[WHAT]”; A compactação LSL foi ignorada.
+	</string>
+	<string name="fs_preprocessor_compress_unexpected_exception">
+		Exceção inesperada no compactador LSL; não aplicada.
+	</string>
+	<string name="fs_preprocessor_lazylist_start">
+		Aplicar conversão de lista lenta.
+	</string>
+	<string name="fs_preprocessor_lazylist_regex_err">
+		Expressão regular inválida: “[WHAT]”; Conversão de lista lenta ignorada.
+	</string>
+	<string name="fs_preprocessor_lazylist_exception">
+		Ocorreu exceção: “[WHAT]”; Conversão de lista lenta ignorada.
+	</string>
+	<string name="fs_preprocessor_lazylist_unexpected_exception">
+		Exceção inesperada no conversor de lista lenta; não aplicado.
+	</string>
+	<string name="fs_preprocessor_switchstatement_start">
+		Aplique a conversão do comando switch.
+	</string>
+	<string name="fs_preprocessor_switchstatement_regex_err">
+		Expressão regular inválida: “[WHAT]”; A conversão do comando switch foi ignorada.
+	</string>
+	<string name="fs_preprocessor_switchstatement_exception">
+		Ocorreu exceção: “[WHAT]”; A conversão do comando switch foi ignorada.
+	</string>
+	<string name="fs_preprocessor_switchstatement_unexpected_exception">
+		Exceção inesperada no conversor de comando switch; não aplicado.
+	</string>
+	<string name="fs_preprocessor_cache_miss">
+		Arquivo incluído em cache: &quot;[FILENAME]&quot;
+	</string>
+	<string name="fs_preprocessor_cache_invalidated">
+		O arquivo montado “[FILENAME]” foi alterado - atualize o cache.
+	</string>
+	<string name="fs_preprocessor_cache_completed">
+		Cache de &quot;[FILENAME]&quot; concluído.
+	</string>
+	<string name="fs_preprocessor_cache_unsafe">
+		Erro: O script “[FILENAME]” não pode ser copiado com segurança para o sistema de arquivos. A montagem falhará.
+	</string>
+	<string name="fs_preprocessor_caching_err">
+		Erro ao armazenar em cache o arquivo montado “[FILENAME]”.
+	</string>
+	<string name="fs_preprocessor_truncated">
+		Atenção: A saída do pré-processador foi reduzida devido ao comprimento excessivo do texto. O script provavelmente não funcionará.
+	</string>
+	<string name="skin_defaults_starlight_location">
+		A posição atual na barra de menu está desativada por padrão nos temas Starlight.
+	</string>
+	<string name="skin_defaults_starlight_navbar">
+		A barra de navegação está ativada por padrão nos temas Starlight.
+	</string>
+	<string name="animation_explorer_seconds_ago">
+		Há [SECONDS] segundos
+	</string>
+	<string name="animation_explorer_still_playing">
+		Ainda em reprodução
+	</string>
+	<string name="animation_explorer_unknown_priority">
+		desconhecido
+	</string>
+	<string name="FriendOnlineNotification">
+		está on-line.
+	</string>
+	<string name="FriendOfflineNotification">
+		está off-line.
+	</string>
+	<string name="Inbox_Folderview_New">
+		Novo
+	</string>
+	<string name="Mouselook_Unknown_Avatar">
+		avatar desconhecido
+	</string>
+	<string name="groupcountstring">
+		Você pertence a [COUNT] grupo(s) ([REMAINING] restantes).
+	</string>
+	<string name="groupcountunlimitedstring">
+		Você pertence a [COUNT] grupo(s).
+	</string>
+	<string name="SLGridStatusInvalidMsg">
+		Erro de status do grid SL: formato de mensagem inválido. Tente novamente mais tarde.
+	</string>
+	<string name="SLGridStatusTimedOut">
+		Erro de status do grid SL: solicitação expirou.
+	</string>
+	<string name="SLGridStatusOtherError">
+		Erro de status do grid SL: [STATUS] ( https://pt.wikipedia.org/wiki/Anexo:Lista_de_c%C3%B3digos_HTTP ).
+	</string>
+	<string name="DoubleClickTeleportEnabled">
+		Teletransporte com duplo clique: ativado.
+	</string>
+	<string name="DoubleClickTeleportDisabled">
+		Teletransporte com duplo clique: desativado.
+	</string>
+	<string name="AlwaysRunEnabled">
+		Sempre correr: ativado.
+	</string>
+	<string name="AlwaysRunDisabled">
+		Sempre correr: desativado.
+	</string>
+	<string name="FSRegionRestartInLocalChat">
+		Atenção: esta região está prestes a reiniciar. Você será desconectado se permanecer aqui.
+	</string>
+	<string name="Mute_Add">
+		“[NAME]” foi adicionado à lista de bloqueios.
+	</string>
+	<string name="Mute_Remove">
+		“[NAME]” foi removido da lista de bloqueios.
+	</string>
+	<string name="Reqsysinfo_Chat_NoReason">
+		Estou solicitando informações sobre seu sistema.
+	</string>
+	<string name="Reqsysinfo_Chat_Reason">
+		Estou solicitando informações sobre o seu sistema ao seguinte: [REASON]
+	</string>
+	<string name="Reqsysinfo_Chat_Information_sent">
+		Informações enviadas: [DATA]
+	</string>
+	<string name="Reqsysinfo_Chat_Request_Denied">
+		Solicitação rejeitada.
+	</string>
+	<string name="Reqsysinfo_Reason">
+		Motivo informado: [REASON]
+	</string>
+	<string name="All Items">
+		Todos os objetos
+	</string>
+	<string name="Recent Items">
+		Objetos atuais
+	</string>
+	<string name="Worn Items">
+		Itens equipados
+	</string>
+	<string name="Favorites">
+		Favoritos
+	</string>
+	<string name="InvOfferGroupNoticeName">
+		Um membro do grupo chamado [NAME]
+	</string>
+	<string name="CallingCardOnlineLabelSuffix">
+		(on-line)
+	</string>
+	<string name="GroupNoticesPanelDateString">[day,datetime,local].[mthnum,datetime,local].[year,datetime,local] [hour,datetime,local]:[min,datetime,local]:[second,datetime,local]</string>
+	<string name="GroupNoticesPanelDateStringAMPM">[year,datetime,local]/[mthnum,datetime,local]/[day,datetime,local] [hour12,datetime,local]:[min,datetime,local]:[second,datetime,local] [timezone,datetime,local]</string>
+	<string name="GroupNoticesToastDateString">[wkday,datetime,slt], [mth,datetime,slt] [day,datetime,slt] [year,datetime,slt] [hour,datetime,slt]:[min,datetime,slt]:[second,datetime,slt] [timezone,datetime,slt]</string>
+	<string name="GroupNoticesToastDateStringAMPM">[wkday,datetime,slt], [mth,datetime,slt] [day,datetime,slt] [year,datetime,slt] [hour12,datetime,slt]:[min,datetime,slt]:[second,datetime,slt] [ampm,datetime,slt] [timezone,datetime,slt]</string>
+	<string name="NotificationItemDateString">[mth,datetime,utc]/[day,datetime,utc]/[year,datetime,utc] [hour,datetime,utc]:[min,datetime,utc] [timezone,datetime,utc]</string>
+	<string name="NotificationItemDateStringAMPM">[mth,datetime,utc]/[day,datetime,utc]/[year,datetime,utc] [hour12,datetime,utc]:[min,datetime,utc] [ampm,datetime,utc] [timezone,datetime,utc]</string>
+	<string name="Pie_av_render_normally">Normalmente</string>
+	<string name="Pie_av_render_never">
+		Nunca
+	</string>
+	<string name="Pie_av_render_fully">
+		Completo
+	</string>
+	<string name="Nametag_Complexity_Label">
+		Complexidade: [COMPLEXITY]
+	</string>
+	<string name="Nametag_Texture_Area_Label">
+		Superfície de textura: [TEXTURE_AREA] m²
+	</string>
+	<string name="font_unknown">
+		Fonte desconhecida
+	</string>
+	<string name="mode_unknown">
+		Modo desconhecido
+	</string>
+	<string name="Asset_Uploading">Enviando...
+[ASSET_NAME]
+	</string>
+	<string name="Yes">
+		Sim
+	</string>
+	<string name="No">
+		Não
+	</string>
+	<string name="FSUrlEntryWearLabel">
+		Arrastar pastas do inventário
+	</string>
+	<string name="TexturePickerOutfitHeader">
+		Foto do visual
+	</string>
+	<string name="unknown_script">
+		(Script desconhecido)
+	</string>
+	<string name="FSAreaSearch_Cost_Label">L$[COST]</string>
+	<string name="ImportingWindlightBulk">
+		Importar Windlight...
+	</string>
+	<string name="FSObjectInventoryNoElements">
+		Nenhum elemento
+	</string>
+	<string name="FSObjectInventoryOneElement">
+		1 elemento
+	</string>
+	<string name="FSObjectInventoryElements">
+		[NUM_ELEMENTS] elementos
+	</string>
+	<string name="OpenSimInventoryValidationErrorGenericHelp">
+		a equipe de suporte da sua operadora de rede
+	</string>
+	<string name="Unlimited">
+		Ilimitado
+	</string>
+	<string name="ListEmpty">
+		A lista está vazia
+	</string>
+	<string name="NoValidUUIDs">
+		Nenhum UUID válido encontrado no arquivo importado.
+	</string>
+	<string name="ImportListTooLarge">
+		Entradas demais. O arquivo CSV tem [COUNT] entradas, mas apenas [MAX] slots estão disponíveis.
+	</string>
+	<string name="ImportSuccessful">
+		[COUNT] entradas processadas com sucesso.
+	</string>
+	<string name="Flood">
+		Preencher
+	</string>
+	<string name="Surface Only">
+		Somente superfície
+	</string>
+	<string name="Raycast">
+		Raycast
+	</string>
+	<string name="Very High">
+		Muito alto
+	</string>
+	<string name="Maximum">
+		máximo
+	</string>
+	<string name="OmnifilterReplacement">
+		Filtro Omni substituído por: [REPLACEMENT]
+	</string>
+	<string name="OmnifilterDefaultName">
+		Padrão
+	</string>
+	<string name="OmnifilterExportDescription">
+		Conjunto de Regras do Omnifilter: [REPLACEMENT]
+	</string>
+	<string name="FSAvatarAlignToggleMini">
+	Pequeno
+	</string>
+	<string name="FSAvatarAlignToggleFull">
+		Completo
+	</string>
+</strings>

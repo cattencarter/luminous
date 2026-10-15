@@ -1,0 +1,26 @@
+<?xml version="1.0" encoding="utf-8" standalone="yes"?>
+<floater name="floater_voice_controls" title="ボイスコントロール">
+	<string name="title_nearby">
+		ボイス設定
+	</string>
+	<string name="title_group">
+		グループ「[GROUP]」からのコール
+	</string>
+	<string name="title_adhoc">
+		会話のコール
+	</string>
+	<string name="title_peer_2_peer">
+		[NAME]からのコール
+	</string>
+	<string name="no_one_near">
+		近くにボイスを有効にしている人はいません。
+	</string>
+	<layout_stack name="my_call_stack">
+		<layout_panel name="my_panel">
+			<text name="user_text" value="自分のアバター："/>
+		</layout_panel>
+		<layout_panel name="leave_call_btn_panel">
+			<button tool_tip="コールから離れます。" name="leave_call_btn"/>
+		</layout_panel>
+	</layout_stack>
+</floater>

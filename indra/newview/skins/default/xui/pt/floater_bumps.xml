@@ -1,0 +1,24 @@
+<?xml version="1.0" encoding="utf-8" standalone="yes"?>
+<floater name="floater_bumps" title="Colisões, empurrões e golpes">
+	<floater.string name="none_detected">
+		Nenhuma detectada
+	</floater.string>
+	<floater.string name="bump">
+		[TIME]  [NAME] esbarrou em você
+	</floater.string>
+	<floater.string name="llpushobject">
+		[TIME]  [NAME] empurrou você com um script
+	</floater.string>
+	<floater.string name="selected_object_collide">
+		[TIME]  [NAME] atingiu você com um objeto
+	</floater.string>
+	<floater.string name="scripted_object_collide">
+		[TIME]  [NAME] atingiu você com um objeto com script
+	</floater.string>
+	<floater.string name="physical_object_collide">
+		[TIME]  [NAME] atingiu você com um objeto físico
+	</floater.string>
+	<floater.string name="timeStr">
+		[[hour,datetime,slt]:[min,datetime,slt]:[second,datetime,slt]]
+	</floater.string>
+</floater>

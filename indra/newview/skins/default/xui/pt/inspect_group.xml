@@ -1,0 +1,32 @@
+<?xml version="1.0" encoding="utf-8" standalone="yes"?>
+<!--
+  Not can_close / no title to avoid window chrome
+  Single instance - only have one at a time, recycle it each spawn
+-->
+<floater name="inspect_group">
+	<string name="PrivateGroup">
+		Grupo privado
+	</string>
+	<string name="FreeToJoin">
+		Entrada gratuita
+	</string>
+	<string name="CostToJoin">
+		Entrada: L$[AMOUNT]
+	</string>
+	<string name="YouAreMember">
+		Você é membro
+	</string>
+	<text name="group_subtitle">
+		123 membros
+	</text>
+	<text name="group_details">
+		Um grupo de pessoas encarregado de criar uma sala com um alce.
+Temam o alce! Temam! E também o mangusto!
+	</text>
+	<text name="group_cost">
+		Entrada: L$123
+	</text>
+	<button label="Entrar" name="join_btn"/>
+	<button label="Sair" name="leave_btn"/>
+	<button label="Ver perfil" name="view_profile_btn"/>
+</floater>

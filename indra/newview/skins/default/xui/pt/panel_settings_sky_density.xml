@@ -1,0 +1,27 @@
+<?xml version="1.0" encoding="utf-8" standalone="yes"?>
+<panel label="Densidade" name="panel_settings_sky_density">
+	<layout_stack name="main_ls">
+		<layout_panel name="lp_1">
+			<slider label="Termo exponencial Rayleigh:" name="rayleigh_exponential"/>
+			<slider label="Escala exponencial Rayleigh:" name="rayleigh_exponential_scale"/>
+			<slider label="Termo linear Rayleigh:" name="rayleigh_linear"/>
+			<slider label="Termo constante Rayleigh:" name="rayleigh_constant"/>
+			<slider label="Altitude máxima Rayleigh:" name="rayleigh_max_altitude"/>
+		</layout_panel>
+		<layout_panel name="lp_2">
+			<slider label="Termo exponencial Mie:" name="mie_exponential"/>
+			<slider label="Escala exponencial Mie:" name="mie_exponential_scale"/>
+			<slider label="Termo linear Mie:" name="mie_linear"/>
+			<slider label="Termo constante Mie:" name="mie_constant"/>
+			<slider label="Fator de anisotropia Mie:" name="mie_aniso_factor"/>
+			<slider label="Altitude máxima Mie:" name="mie_max_altitude"/>
+		</layout_panel>
+		<layout_panel name="lp_3">
+			<slider label="Termo exponencial de absorção:" name="absorption_exponential"/>
+			<slider label="Escala exponencial de absorção:" name="absorption_exponential_scale"/>
+			<slider label="Termo linear de absorção:" name="absorption_linear"/>
+			<slider label="Termo constante de absorção:" name="absorption_constant"/>
+			<slider label="Altitude máxima de absorção:" name="absorption_max_altitude"/>
+		</layout_panel>
+	</layout_stack>
+</panel>

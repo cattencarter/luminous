@@ -1,0 +1,120 @@
+<?xml version="1.0" encoding="utf-8" standalone="yes"?>
+<floater name="Joystick" title="Configuração do joystick">
+	<string name="JoystickDisabled">
+		Nenhum
+	</string>
+	<text name="joystick_lbl">
+		Joystick:
+	</text>
+	<spinner label="Eixo X" name="JoystickAxis1"/>
+	<spinner label="Eixo Y" name="JoystickAxis2"/>
+	<spinner label="Eixo Z" name="JoystickAxis0"/>
+	<spinner label="Inclinação" name="JoystickAxis4"/>
+	<spinner label="Guinada" name="JoystickAxis5"/>
+	<spinner label="Rolagem" name="JoystickAxis3"/>
+	<spinner label="Zoom" name="JoystickAxis6"/>
+	<check_box label="Zoom direto" name="ZoomDirect"/>
+	<check_box label="Cursor 3D" left="300" name="Cursor3D"/>
+	<check_box label="Nivelamento automático" left="390" name="AutoLeveling"/>
+	<text name="Control Modes:">
+		Modos de controle:
+	</text>
+	<check_box label="Avatar" name="JoystickAvatarEnabled"/>
+	<check_box label="Construir" name="JoystickBuildEnabled"/>
+	<check_box label="Flycam" name="JoystickFlycamEnabled"/>
+	<text name="joystick_monitor_label">
+		Monitor do joystick
+	</text>
+	<icon name="button_light_0" tool_tip="Botão 0 do joystick"/>
+	<icon name="button_light_1" tool_tip="Botão 1 do joystick"/>
+	<icon name="button_light_2" tool_tip="Botão 2 do joystick"/>
+	<icon name="button_light_3" tool_tip="Botão 3 do joystick"/>
+	<icon name="button_light_4" tool_tip="Botão 4 do joystick"/>
+	<icon name="button_light_5" tool_tip="Botão 5 do joystick"/>
+	<icon name="button_light_6" tool_tip="Botão 6 do joystick"/>
+	<icon name="button_light_7" tool_tip="Botão 7 do joystick"/>
+	<icon name="button_light_8" tool_tip="Botão 8 do joystick"/>
+	<icon name="button_light_9" tool_tip="Botão 9 do joystick"/>
+	<icon name="button_light_10" tool_tip="Botão 10 do joystick"/>
+	<icon name="button_light_11" tool_tip="Botão 11 do joystick"/>
+	<icon name="button_light_12" tool_tip="Botão 12 do joystick"/>
+	<icon name="button_light_13" tool_tip="Botão 13 do joystick"/>
+	<icon name="button_light_14" tool_tip="Botão 14 do joystick"/>
+	<icon name="button_light_15" tool_tip="Botão 15 do joystick"/>
+	<scroll_container name="joystick_monitor_axes_scroller">
+		<container_view name="joystick_monitor_axes_container">
+			<stat_view name="axis_view_0">
+				<stat_bar label="Eixo 0" name="axis0"/>
+			</stat_view>
+			<stat_view name="axis_view_1">
+				<stat_bar label="Eixo 1" name="axis1"/>
+			</stat_view>
+			<stat_view name="axis_view_2">
+				<stat_bar label="Eixo 2" name="axis2"/>
+			</stat_view>
+			<stat_view name="axis_view_3">
+				<stat_bar label="Eixo 3" name="axis3"/>
+			</stat_view>
+			<stat_view name="axis_view_4">
+				<stat_bar label="Eixo 4" name="axis4"/>
+			</stat_view>
+			<stat_view name="axis_view_5">
+				<stat_bar label="Eixo 5" name="axis5"/>
+			</stat_view>
+			<stat_view name="axis_view_6">
+				<stat_bar label="Eixo 6" name="axis6"/>
+			</stat_view>
+			<stat_view name="axis_view_7">
+				<stat_bar label="Eixo 7" name="axis7"/>
+			</stat_view>
+		</container_view>
+	</scroll_container>
+	<text name="XScale">
+		Escala X
+	</text>
+	<text name="YScale">
+		Escala Y
+	</text>
+	<text name="ZScale">
+		Escala Z
+	</text>
+	<text name="PitchScale">
+		Escala de inclinação
+	</text>
+	<text name="YawScale">
+		Escala de guinada
+	</text>
+	<text name="RollScale">
+		Escala de rolagem
+	</text>
+	<text name="XDeadZone">
+		Zona morta X
+	</text>
+	<text name="YDeadZone">
+		Zona morta Y
+	</text>
+	<text name="ZDeadZone">
+		Zona morta Z
+	</text>
+	<text name="PitchDeadZone">
+		Zona morta de inclinação
+	</text>
+	<text name="YawDeadZone">
+		Zona morta de guinada
+	</text>
+	<text name="RollDeadZone">
+		Zona morta de rolagem
+	</text>
+	<text name="Feathering">
+		Suavização
+	</text>
+	<text name="ZoomScale2">
+		Escala de zoom
+	</text>
+	<text name="ZoomDeadZone">
+		Zona morta de zoom
+	</text>
+	<button label="Padrões SpaceNavigator" name="SpaceNavigatorDefaults"/>
+	<button label="OK" label_selected="OK" name="ok_btn"/>
+	<button label="Cancelar" label_selected="Cancelar" name="cancel_btn"/>
+</floater>

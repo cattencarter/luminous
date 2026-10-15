@@ -1,0 +1,49 @@
+<?xml version="1.0" ?>
+<llsd>
+<map>
+    <key>environment</key>
+    <string>Golden hour</string>
+    <key>sun_offset</key>
+    <real>85.0</real>
+    <key>sun_elevation</key>
+    <real>25.0</real>
+    <key>camera</key>
+    <map>
+      <key>framing</key>
+      <string>half</string>
+    </map>
+    <key>settings</key>
+    <map>
+      <key>RenderDepthOfField</key>
+      <boolean>true</boolean>
+      <key>CameraFNumber</key>
+      <real>4.0</real>
+      <key>CameraMaxCoF</key>
+      <real>15.0</real>
+      <key>LuminousPhotoMonochrome</key>
+      <real>0.9</real>
+      <key>LuminousPhotoMonochromeFilter</key>
+      <integer>1</integer>
+      <key>LuminousPhotoContrast</key>
+      <real>1.45</real>
+      <key>LuminousPhotoClarity</key>
+      <real>0.6</real>
+      <key>LuminousPhotoBlacks</key>
+      <real>-0.3</real>
+      <key>LuminousPhotoExposure</key>
+      <real>-0.4</real>
+      <key>LuminousPhotoVignette</key>
+      <boolean>true</boolean>
+      <key>LuminousPhotoVignetteAmount</key>
+      <real>0.5</real>
+      <key>LuminousPhotoGrain</key>
+      <real>0.35</real>
+      <key>LuminousPhotoShadowSoftness</key>
+      <real>1.2</real>
+      <key>LuminousPhotoWhites</key>
+      <real>-0.25</real>
+      <key>LuminousPhotoContactShadowsStrength</key>
+      <real>0.5</real>
+    </map>
+  </map>
+</llsd>

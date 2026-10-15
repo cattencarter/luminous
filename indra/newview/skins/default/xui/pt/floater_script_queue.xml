@@ -1,0 +1,40 @@
+<?xml version="1.0" encoding="utf-8" standalone="yes"?>
+<floater name="queue" title="Progresso de redefinição">
+	<floater.string name="Starting">
+		Iniciando [START] de [COUNT] item(ns).
+	</floater.string>
+	<floater.string name="Done">
+		Concluído.
+	</floater.string>
+	<floater.string name="Resetting">
+		Redefinindo
+	</floater.string>
+	<floater.string name="Running">
+		Em execução
+	</floater.string>
+	<floater.string name="NotRunning">
+		Não está em execução
+	</floater.string>
+	<floater.string name="Timeout">
+		Tempo esgotado: [OBJECT_NAME]
+	</floater.string>
+	<floater.string name="LoadingObjInv">
+		Carregando inventário de: [OBJECT_NAME]
+	</floater.string>
+	<floater.string name="Deleting">
+		Excluindo
+	</floater.string>
+	<floater.string name="SkippingPermissions">
+		Ignorado: [OBJECT_NAME] (Permissões)
+	</floater.string>
+	<floater.string name="Compiling">
+		Compilando "[OBJECT_NAME]"...
+	</floater.string>
+	<floater.string name="CompileSuccess">
+		Compilação de "[OBJECT_NAME]" concluída com sucesso
+	</floater.string>
+	<floater.string name="CompileFailure">
+		Compilação de "[OBJECT_NAME]" falhou:
+	</floater.string>
+	<button label="Fechar" label_selected="Fechar" left="215" name="close" width="72"/>
+</floater>

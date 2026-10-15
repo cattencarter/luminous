@@ -1,0 +1,30 @@
+<?xml version="1.0" encoding="utf-8" standalone="yes"?>
+<panel label="Convidar membro" name="invite_panel">
+	<panel.string name="confirm_invite_owner_str">
+		Tem certeza de que deseja convidar novo(s) proprietário(s)? Isso não pode ser desfeito!
+	</panel.string>
+	<panel.string name="loading">
+		(carregando...)
+	</panel.string>
+	<panel.string name="already_in_group">
+		Alguns dos residentes selecionados já são membros do grupo e, por isso, não receberam convite.
+	</panel.string>
+	<panel.string name="invite_selection_too_large">
+		Convites de grupo não enviados: residentes demais selecionados. Convites de grupo são limitados a 100 residentes por solicitação.
+	</panel.string>
+	<text name="help_text">
+		Você pode convidar vários residentes para seu grupo. Para isso, clique em "Abrir lista de residentes".
+	</text>
+	<button label="Abrir lista de residentes" name="add_button" tool_tip=""/>
+	<name_list name="invitee_list" tool_tip="Para selecionar vários, mantenha Ctrl pressionado e clique nos nomes."/>
+	<button label="Remover seleção da lista" name="remove_button" tool_tip="Remover da lista de convite os residentes selecionados acima."/>
+	<text name="role_text">
+		Selecione uma função:
+	</text>
+	<combo_box name="role_name" tool_tip="Escolha na lista uma função que você possa atribuir aos membros."/>
+	<button label="Enviar convites" name="invite_button"/>
+	<button label="Cancelar" name="cancel_button"/>
+	<string name="GroupInvitation">
+		Convite de grupo
+	</string>
+</panel>

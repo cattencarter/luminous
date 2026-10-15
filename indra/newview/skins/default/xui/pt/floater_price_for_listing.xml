@@ -1,0 +1,18 @@
+<?xml version="1.0" encoding="utf-8" standalone="yes"?>
+<floater name="price_for_listing" title="Publicar anúncio classificado">
+	<text name="explanation_text">
+		Seu anúncio classificado ficará ativo por uma semana a partir do dia da publicação.
+
+A posição do anúncio na lista depende do valor que você escolher pagar.
+
+Os anúncios com maior pagamento aparecem no topo da lista e mais acima nos resultados de busca.
+	</text>
+	<text name="price_text">
+		Preço do anúncio:
+	</text>
+	<text name="price_symbol">
+		L$
+	</text>
+	<button label="OK" name="set_price_btn"/>
+	<button label="Cancelar" name="cancel_btn"/>
+</floater>

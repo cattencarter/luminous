@@ -1,0 +1,21 @@
+<?xml version="1.0" encoding="utf-8" standalone="yes"?>
+<panel label="クラッシュ報告" name="crash_reports">
+	<check_box label="送信前に必ず確認する" name="checkSendCrashReportsAlwaysAsk"/>
+	<check_box label="settings.xmlファイルを含める" name="checkSendSettings"/>
+	<text name="textSendSettings">
+		（ユーザ名が含まれます）
+	</text>
+	<check_box label="ユーザ名を含める" name="checkSendName"/>
+	<text name="textSendName">
+		（必要に応じて折り返し確認したいことがある時に使用されます。）
+	</text>
+	<text name="textRestartRequired">
+		どのような設定変更も有効にするには再起動が必要です。
+	</text>
+	<text name="textInformation">
+		上記での欄チェックされていない限り、クラッシュ報告にはクラッシュに関連する情報のみが含まれています。ログは送信されませんので、内容をご確認の上、追加情報が含まれていると思われる場合は別途メールでご連絡ください。
+	</text>
+	<text name="textInformation4">
+		個人情報取扱方針：[URL]
+	</text>
+</panel>

@@ -1,0 +1,86 @@
+<?xml version="1.0" encoding="utf-8" standalone="yes"?>
+<floater name="floater_report_abuse" title="Denunciar abuso">
+	<floater.string name="Screenshot">
+		Captura de tela
+	</floater.string>
+	<floater.string name="chat_report_format">
+Hora: [MSG_TIME]
+Texto: [MSG_DESCRIPTION]
+	</floater.string>
+	<button name="refresh_screenshot" tool_tip="Atualizar captura de tela"/>
+	<check_box bottom_delta="-20" label="Usar esta captura de tela" name="screen_check"/>
+	<text name="reporter_title">
+		Denunciante:
+	</text>
+	<text name="reporter_field">
+		Loremipsum Dolorsitamut Longnamez
+	</text>
+	<text name="sim_title">
+		Região:
+	</text>
+	<text name="sim_field">
+		Nome da região
+	</text>
+	<text name="pos_title">
+		Posição:
+	</text>
+	<text name="pos_field">
+		{128.1, 128.1, 15.4}
+	</text>
+	<text bottom_delta="-38" height="32" name="select_object_label">
+		Clique no botão e depois no objeto
+abusivo:
+	</text>
+	<button label="" label_selected="" name="pick_btn" tool_tip="Seletor de objeto — identifique um objeto como assunto desta denúncia"/>
+	<text name="object_name_label">
+		Objeto:
+	</text>
+	<text name="object_name">
+		Consetetur Sadipscing
+	</text>
+	<text name="owner_name_label">
+		Proprietário:
+	</text>
+	<text name="owner_name">
+		Hendrerit Vulputate Kamawashi Longname
+	</text>
+	<combo_box name="category_combo" tool_tip="Categoria — selecione a categoria que melhor descreve esta denúncia">
+		<combo_box.item label="Selecionar categoria" name="Select_category"/>
+		<combo_box.item label="Idade &gt; Age play" name="Age__Age_play"/>
+		<combo_box.item label="Agressão &gt; Atirar, empurrar ou esbarrar em outro residente em área segura" name="Assault__Safe_area"/>
+		<combo_box.item label="Divulgação &gt; Informações do mundo real" name="Disclosure__Real_world_information"/>
+		<combo_box.item label="Perturbação da paz &gt; Uso excessivo de objetos com script" name="Disturbing_the_peace__Excessive_scripted_objects"/>
+		<combo_box.item label="Perturbação da paz &gt; Lixo de objetos" name="Disturbing_the_peace__Object_littering"/>
+		<combo_box.item label="Perturbação da paz &gt; Spam repetitivo" name="Disturbing_the_peace__Repetitive_spam"/>
+		<combo_box.item label="Fraude &gt; L$ ou US$" name="Fraud__US$"/>
+		<combo_box.item label="Assédio &gt; Comportamento direcionado para perturbar" name="Harassment__Solicting_inciting_others_to_violate_ToS"/>
+		<combo_box.item label="Indecência &gt; Conteúdo ou conduta amplamente ofensiva" name="Indecency__Broadly_offensive_content_or_conduct"/>
+		<combo_box.item label="Indecência &gt; Nome de avatar inadequado" name="Indecency__Inappropriate_avatar_name"/>
+		<combo_box.item label="Indecência &gt; Conteúdo ou conduta inadequada para a classificação da região" name="Indecency__Mature_content_in_PG_region"/>
+		<combo_box.item label="Intolerância" name="Intolerance"/>
+		<combo_box.item label="Terreno &gt; Invasão &gt; Objetos ou texturas" name="Land__Encroachment__Objects_textures"/>
+		<combo_box.item label="Violação da política de jogos de habilidade" name="Wagering_gambling"/>
+	</combo_box>
+	<text name="abuser_name_title">
+		Nome do abusador:
+	</text>
+	<button label="Escolher" label_selected="" name="select_abuser" tool_tip="Selecionar o nome do abusador em uma lista"/>
+	<text name="abuser_name_title2">
+		Local do abuso:
+	</text>
+	<text name="sum_title">
+		Resumo:
+	</text>
+	<text name="dscr_title">
+		Detalhes:
+	</text>
+	<text name="bug_aviso">
+		Seja o mais específico possível
+	</text>
+	<text_editor bottom_delta="-136" height="70" name="details_edit"/>
+	<text bottom_delta="-20" name="incomplete_title">
+		* Denúncias incompletas não serão investigadas
+	</text>
+	<button label="Denunciar abuso" label_selected="Denunciar abuso" name="send_btn"/>
+	<button label="Cancelar" label_selected="Cancelar" name="cancel_btn"/>
+</floater>

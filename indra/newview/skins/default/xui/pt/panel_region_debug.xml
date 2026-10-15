@@ -1,0 +1,39 @@
+<?xml version="1.0" encoding="utf-8" standalone="yes"?>
+<panel label="Depuração" name="Debug">
+	<text name="region_text_lbl">
+		Região:
+	</text>
+	<text name="region_text">
+		desconhecido
+	</text>
+	<check_box label="Desativar scripts" name="disable_scripts_check" tool_tip="Desativar todos os scripts nesta região"/>
+	<check_box label="Desativar colisões" name="disable_collisions_check" tool_tip="Desativar colisões que não envolvem avatares nesta região"/>
+	<check_box label="Desativar física" name="disable_physics_check" tool_tip="Desativar toda a física nesta região"/>
+	<button label="Aplicar" name="apply_btn"/>
+	<text name="objret_text_lbl" width="110">
+		Devolver objetos
+	</text>
+	<text name="resident_text_lbl">
+		Residente:
+	</text>
+	<line_editor name="target_avatar_name">
+		(nenhum)
+	</line_editor>
+	<button label="Escolher" name="choose_avatar_btn"/>
+	<text name="options_text_lbl">
+		Opções:
+	</text>
+	<check_box label="Com scripts" name="return_scripts" tool_tip="Devolver apenas objetos que possuem scripts"/>
+	<check_box label="Em terreno de outra pessoa" name="return_other_land" tool_tip="Devolver apenas objetos que estão em terreno que não pertence ao residente selecionado"/>
+	<check_box label="Em todas as regiões desta região estate" name="return_estate_wide" tool_tip="Devolver objetos em todas as regiões que compõem esta região estate"/>
+	<button label="Devolver" name="return_btn" width="90"/>
+	<button label="Principais colisores..." name="top_colliders_btn" tool_tip="Lista de objetos com mais colisões potenciais"/>
+	<button label="Reiniciar região" name="restart_btn" tool_tip="Iniciar contagem regressiva com o número de segundos selecionado e reiniciar a região"/>
+	<button label="Principais scripts..." name="top_scripts_btn" tool_tip="Lista de objetos que mais tempo gastam executando scripts"/>
+	<text name="label_restart_delay" width="60">
+		Segundos:
+	</text>
+	<spinner name="restart_delay" left_delta="65"/>
+	<button label="Cancelar reinício" name="cancel_restart_btn" tool_tip="Cancelar o reinício da região"/>
+	<button label="Console de dep. da região" name="region_debug_console_btn" tool_tip="Abrir o console de depuração da região"/>
+</panel>

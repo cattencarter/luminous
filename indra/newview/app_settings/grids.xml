@@ -1,0 +1,77 @@
+<llsd>
+    <map>
+        <!-- <Lumen> Agni and Aditi, and nothing else.
+
+             This build sets OPENSIM=OFF, so no OpenSim grid is listed: none
+             could be logged into. Firestorm's download of its OpenSim grid
+             list into grids.remote.xml is inside #ifdef OPENSIM, so
+             GridListDownloadURL fetches nothing.
+
+             Neither grid names a loginpage: the viewer shows its own local
+             start page. -->
+        <key>util.aditi.lindenlab.com</key>
+        <map>
+        <key>LastModified</key>
+            <date>2018-09-26T20:15:00Z</date>
+        <key>app_slurl_base</key>
+            <string>secondlife:///app</string>
+        <key>gridname</key>
+            <string>Second Life Beta</string>
+        <key>gridnick</key>
+            <string>aditi</string>
+        <key>helperuri</key>
+            <string>https://secondlife.aditi.lindenlab.com/helpers/</string>
+        <key>login_identifier_types</key>
+            <array>
+                <string>agent</string>
+            </array>
+        <key>loginpage</key>
+            <undef />
+        <key>loginuri</key>
+            <array>
+                <string>https://login.aditi.lindenlab.com/cgi-bin/login.cgi</string>
+            </array>
+            <key>name</key>
+            <string>util.aditi.lindenlab.com</string>
+            <key>slurl_base</key>
+            <string>secondlife://util.aditi.lindenlab.com/secondlife/</string>
+            <key>system_grid</key>
+            <integer>1</integer>
+            <key>web_profile_url</key>
+            <string>https://my.aditi.lindenlab.com/</string>
+        </map>
+        <key>util.agni.lindenlab.com</key>
+        <map>
+            <key>LastModified</key>
+            <date>2018-06-22T22:15:00Z</date>
+            <key>app_slurl_base</key>
+            <string>secondlife:///app</string>
+            <key>favorite</key>
+            <integer>1</integer>
+            <key>gridname</key>
+            <string>Second Life</string>
+            <key>gridnick</key>
+            <string>agni</string>
+        <key>helperuri</key>
+        <string>https://secondlife.com/helpers/</string>
+        <key>login_identifier_types</key>
+        <array>
+            <string>agent</string>
+        </array>
+        <key>loginpage</key>
+        <undef />
+        <key>loginuri</key>
+        <array>
+            <string>https://login.agni.lindenlab.com/cgi-bin/login.cgi</string>
+        </array>
+        <key>name</key>
+        <string>util.agni.lindenlab.com</string>
+        <key>slurl_base</key>
+        <string>http://maps.secondlife.com/secondlife/</string>
+        <key>system_grid</key>
+        <integer>1</integer>
+        <key>web_profile_url</key>
+        <string>https://my.secondlife.com/</string>
+        </map>
+    </map>
+</llsd>

@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="utf-8" standalone="yes"?>
+<floater name="floater_about" title="[APP_NAME] haqqında">
+	<tab_container name="about_tab">
+		<panel label="Məlumat" name="support_panel">
+			<button label="Buferə köçürt" name="copy_btn"/>
+		</panel>
+		<panel label="Təşəkkürlər" name="credits_panel">
+			<text name="contrib_intro">
+				open source töhfəsi ilə:
+			</text>
+			<text name="trans_intro">
+				və tərcümələri ilə:
+			</text>
+		</panel>
+		<panel label="Lisenziyalar" name="licenses_panel" />
+	</tab_container>
+</floater>

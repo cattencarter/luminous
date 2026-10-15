@@ -1,0 +1,71 @@
+<?xml version="1.0" encoding="utf-8" standalone="yes" ?>
+<!-- <Luminous> The render, over the viewer. Drawn by LuminousPictureView:
+     while rendering, the world frozen with how far it is, and Stop; when
+     done, the picture (scroll to zoom, drag to move, double-click for 100%)
+     with Share and Close at the bottom right. -->
+<floater
+ background_visible="false"
+ can_close="false"
+ can_drag_on_left="false"
+ can_minimize="false"
+ can_resize="false"
+ can_tear_off="false"
+ header_height="0"
+ height="400"
+ layout="topleft"
+ name="luminous_picture"
+ single_instance="true"
+ title=""
+ width="600">
+	<panel
+	 background_opaque="true"
+	 background_visible="true"
+	 bg_alpha_color="DkGray"
+	 bg_opaque_color="DkGray"
+	 follows="right|bottom"
+	 height="157"
+	 layout="topleft"
+	 left="404"
+	 name="share_panel"
+	 top="193"
+	 visible="false"
+	 width="180">
+		<button follows="left|top" height="22" label="Download..." layout="topleft" left="4" name="share_download" tool_tip="Saves the picture where you choose." top="4" width="172" />
+		<button follows="left|top" height="22" label="Open in Preview" layout="topleft" left="4" name="share_preview" tool_tip="Opens the picture in its default app (Preview)." top="29" width="172" />
+		<button follows="left|top" height="22" label="Inventory (a texture)..." layout="topleft" left="4" name="share_inventory" top="54" width="172" />
+		<button follows="left|top" height="22" label="Profile feed..." layout="topleft" left="4" name="share_profile" top="79" width="172" />
+		<button follows="left|top" height="22" label="Flickr..." layout="topleft" left="4" name="share_flickr" top="104" width="172" />
+		<button follows="left|top" height="22" label="Email..." layout="topleft" left="4" name="share_email" top="129" width="172" />
+	</panel>
+	<button
+	 follows="right|bottom"
+	 height="26"
+	 label="Share"
+	 layout="topleft"
+	 left="404"
+	 name="share"
+	 tool_tip="Download the picture, open it in Preview, or send it to your inventory, profile, Flickr or email."
+	 top="356"
+	 width="88" />
+	<button
+	 follows="right|bottom"
+	 height="26"
+	 label="Close"
+	 layout="topleft"
+	 left="496"
+	 name="close"
+	 tool_tip="Closes the picture (Esc). Unless it was downloaded or sent on, it is gone."
+	 top="356"
+	 width="88" />
+	<button
+	 follows="right|bottom"
+	 height="26"
+	 label="Stop"
+	 layout="topleft"
+	 left="496"
+	 name="stop"
+	 tool_tip="Stops the render (Esc). Nothing is saved."
+	 top="356"
+	 visible="false"
+	 width="88" />
+</floater>
