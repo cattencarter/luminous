@@ -1,0 +1,104 @@
+<?xml version="1.0" encoding="utf-8" standalone="yes" ?>
+<!-- <Luminous> Optimise my settings: measures what each live effect costs
+     where the user stands and proposes what to keep for renders, or a lower
+     preview resolution, to reach LuminousOptimiseTargetFPS. Nothing changes
+     until Apply. LuminousOptimiseFloater. -->
+<floater
+ can_close="true"
+ can_minimize="false"
+ can_resize="false"
+ height="432"
+ layout="topleft"
+ name="luminous_optimise"
+ positioning="centered"
+ save_rect="true"
+ single_instance="true"
+ title="Optimise my settings"
+ width="420">
+	<text
+	 follows="left|top"
+	 height="44"
+	 layout="topleft"
+	 left="12"
+	 name="intro"
+	 top="24"
+	 width="396"
+	 wrap="true">Luminous measures what each live effect costs where you are, and suggests what to change.</text>
+	<text
+	 follows="left|top"
+	 height="30"
+	 layout="topleft"
+	 left="12"
+	 name="still"
+	 text_color="LtGray"
+	 top_pad="4"
+	 width="396"
+	 wrap="true">Keep the camera still while it measures, about half a minute. Renders are not affected: they always get full quality.</text>
+	<button
+	 follows="left|top"
+	 height="23"
+	 label="Measure"
+	 layout="topleft"
+	 left="12"
+	 name="measure_btn"
+	 top_pad="8"
+	 width="120" />
+	<text
+	 follows="left|top"
+	 height="30"
+	 layout="topleft"
+	 left="12"
+	 name="status"
+	 top_pad="8"
+	 width="396"
+	 wrap="true" />
+	<text_editor
+	 bg_readonly_color="Transparent"
+	 enabled="false"
+	 follows="left|top"
+	 height="190"
+	 layout="topleft"
+	 left="8"
+	 max_length="8192"
+	 name="results"
+	 top_pad="2"
+	 width="404"
+	 word_wrap="true" />
+	<check_box
+	 control_name="LuminousOptimiseOffer"
+	 follows="left|top"
+	 height="16"
+	 label="Offer this when the live view is slow"
+	 layout="topleft"
+	 left="12"
+	 name="offer_check"
+	 top_pad="8"
+	 width="300" />
+	<button
+	 follows="left|top"
+	 height="23"
+	 label="Apply"
+	 layout="topleft"
+	 left="12"
+	 name="apply_btn"
+	 top_pad="12"
+	 width="100" />
+	<button
+	 follows="left|top"
+	 height="23"
+	 label="Put back"
+	 layout="topleft"
+	 left_pad="8"
+	 name="put_back_btn"
+	 top_delta="0"
+	 width="100" />
+	<button
+	 follows="left|top"
+	 height="23"
+	 label="Close"
+	 layout="topleft"
+	 left="308"
+	 name="close_btn"
+	 top_delta="0"
+	 width="100" />
+</floater>

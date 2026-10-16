@@ -124,6 +124,7 @@
 #include "luminousphotomode.h" // <Luminous/>
 #include "luminoushdrsnapshot.h" // <Luminous/>
 #include "luminousbenchmark.h" // <Luminous/>
+#include "luminousoptimise.h" // <Luminous/>
 
 // Third party library includes
 #include <boost/algorithm/string.hpp>
@@ -1362,6 +1363,7 @@ void settings_setup_listeners()
     LuminousPhotoMode::initSceneTools();
     LuminousHDRSnapshot::init();
     LuminousBenchmark::init();
+    LuminousOptimise::init(); // <Luminous/> the Mac's settings and the Optimise window
     setting_setup_signal_listener(gSavedSettings, "LuminousPhotoSunShafts", handleReleaseGLBufferChanged);
     setting_setup_signal_listener(gSavedSettings, "LuminousPhotoSunShafts", handleSetShaderChanged);
     // </Luminous>

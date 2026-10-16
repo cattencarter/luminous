@@ -408,7 +408,7 @@ are allowed.
 
 	<string name="ReleaseNotes">Release Notes</string>
 	<!-- Always mark translate="false" for strings that are nothing but URLs, as they don't need translation. -->
-	<string name="RELEASE_NOTES_BASE_URL" translate="false">https://needfulsl.com/luminous/download.php#</string>
+	<string name="RELEASE_NOTES_BASE_URL" translate="false">https://needfulsl.com/luminous/releases.php#v</string>
 
 	<!-- Indicates something is being loaded. Maybe should be merged with RetrievingData -->
 	<string name="LoadingData">Loading...</string>

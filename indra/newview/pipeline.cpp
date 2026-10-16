@@ -8940,6 +8940,17 @@ void LLPipeline::renderDoF(LLRenderTarget* src, LLRenderTarget* dst, bool lumino
                 lens_share = LuminousPhotoMode::lensShare(aperture);
                 lens_fill = LuminousPhotoMode::lensFill();
             }
+            // Kept for renders: the focus above is followed in the live view
+            // too, so a render is focused as the live view is; the blur is
+            // left out of it.
+            if (!LuminousPhotoMode::depthOfFieldNow())
+            {
+                if (!luminous_hdr)
+                {
+                    copyRenderTarget(src, dst);
+                }
+                return;
+            }
             // </Luminous>
             // <Luminous> Photo mode's gather reads the CoF pass's output
             // with mip levels: drawn straight into that target, no copy.

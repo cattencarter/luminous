@@ -97,8 +97,7 @@ namespace
     // Each effect's button: off, live, or only in the rendered picture. An
     // effect is switched by a setting of its own -- on or off, or an amount
     // whose 0 is off -- and kept for the picture by its
-    // LuminousPhoto*RenderOnly where it can be; Firestorm's depth of field
-    // cannot, and has two states. A click goes off, live, render only, off.
+    // LuminousPhoto*RenderOnly. A click goes off, live, render only, off.
     // Turning an amount on brings back the amount it had, or a start that
     // shows; turning it off keeps the amount for next time.
     enum class EffectState { Off, Live, Render };
@@ -128,7 +127,7 @@ namespace
         // off or only in the render: live, worn alpha is sorted only by
         // distance, which can show the scalp through hair at a parting
         { "alpha_sort_mode",   "LuminousPhotoAlphaSort",           nullptr, nullptr, 0.f, nullptr, true },
-        { "dof_mode",          "RenderDepthOfField",               nullptr, nullptr, 0.f, nullptr },
+        { "dof_mode",          "RenderDepthOfField",               nullptr, nullptr, 0.f, "LuminousPhotoDepthOfFieldRenderOnly" },
         { "lens_blur_mode",    "LuminousPhotoDoF",                 nullptr, nullptr, 0.f, "LuminousPhotoDoFRenderOnly" },
         // Firestorm's glow and sharpening: drawn after the frame is toned, so
         // never kept for renders.
@@ -2445,6 +2444,15 @@ bool LuminousPictureView::postBuild()
     setCanDrag(false);
     getChild<LLButton>("close")->setCommitCallback([this](LLUICtrl*, const LLSD&) { requestClose(); });
     getChild<LLButton>("stop")->setCommitCallback([this](LLUICtrl*, const LLSD&) { requestStop(); });
+    // a preview's Render: the full picture of the same moment, the preview's
+    // hold handed on to it
+    getChild<LLButton>("render_full")->setCommitCallback([this](LLUICtrl*, const LLSD&)
+    {
+        if (mState == State::Done && mPreview)
+        {
+            LuminousHDRSnapshot::renderImage();
+        }
+    });
     getChild<LLButton>("share")->setCommitCallback([this](LLUICtrl*, const LLSD&)
     {
         LLView* menu = getChild<LLView>("share_panel");
@@ -2490,6 +2498,7 @@ void LuminousPictureView::beginRender()
     view->mPath.clear();
     view->mTemporary = false;
     view->mKept = false;
+    view->mPreview = false;
     view->mStopAsked = false;
     view->mState = State::Rendering;
     view->mProgress = -1.f;
@@ -2530,7 +2539,8 @@ void LuminousPictureView::showResult(const LLPointer<LLImageRaw>& picture, const
     view->mPath = path;
     view->mTemporary = temporary;
     view->mLightOnly = light_only;
-    view->mKept = !temporary;
+    view->mPreview = LuminousHDRSnapshot::previewing();
+    view->mKept = !temporary || view->mPreview; // a preview closes without asking: it is not to keep
     view->mPicture = picture;
     view->setPicture(picture);
     releaseStill();
@@ -2714,6 +2724,7 @@ void LuminousPictureView::placeOnPicture()
     close->setOrigin(on.mRight - 16 - close->getRect().getWidth(), on.mBottom + 16);
     getChild<LLView>("stop")->setOrigin(close->getRect().mLeft, close->getRect().mBottom); // in Close's place
     share->setOrigin(close->getRect().mLeft - 4 - share->getRect().getWidth(), on.mBottom + 16);
+    getChild<LLView>("render_full")->setOrigin(share->getRect().mLeft, share->getRect().mBottom); // a preview's, in Share's place
     menu->setOrigin(close->getRect().mRight - menu->getRect().getWidth(), share->getRect().mTop + 4);
 }
 
@@ -2761,7 +2772,8 @@ LLRect LuminousPictureView::onPicture() const
 void LuminousPictureView::showButtons()
 {
     const bool done = mState == State::Done;
-    getChild<LLView>("share")->setVisible(done);
+    getChild<LLView>("share")->setVisible(done && !mPreview);
+    getChild<LLView>("render_full")->setVisible(done && mPreview);
     getChild<LLView>("close")->setVisible(done);
     getChild<LLView>("stop")->setVisible(mState == State::Rendering);
     getChild<LLUICtrl>("stop")->setEnabled(!mStopAsked);
@@ -2879,6 +2891,8 @@ void LuminousPictureView::onClose(bool app_quitting)
     mTemporary = false;
     mPicture = nullptr;
     mState = State::Idle;
+    mPreview = false;
+    LuminousHDRSnapshot::endPreview(); // a preview closed without Render: the animations go on
     LLFloater::onClose(app_quitting);
 }
 

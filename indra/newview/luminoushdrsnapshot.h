@@ -79,6 +79,16 @@ namespace LuminousHDRSnapshot
     /// The Render image button: renders and saves in the chosen format, and
     /// shows the picture in the render window, ready for the chosen place.
     void renderImage();
+    /// The Preview button: four frames at the window's size, without the
+    /// margin, Full detail's wait or the lens and the sun sampled across the
+    /// frames -- every effect at full quality, in about a second -- shown
+    /// over the viewer and not kept. Every animation stays held while it
+    /// shows, so its Render button renders the same moment.
+    void renderPreview();
+    /// While a preview renders: takeAndSave and photo mode's sampling ask.
+    bool previewing();
+    /// The preview's overlay closed without Render: the animations go on.
+    void endPreview();
     /// The shape a render from Render image will have: width over height.
     F32 pictureAspect();
 

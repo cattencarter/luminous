@@ -16,6 +16,23 @@
   <string name="ServerComboTooltip">
     An existing grid or a grid URI
   </string>
+  <!-- <Luminous> The start page's own colour behind it, from the top: the
+       viewer draws web pages at most 2048 pixels wide, so in a wider
+       window the page is centred with this round it, under the login menu
+       too. -->
+  <panel
+    background_opaque="true"
+    background_visible="true"
+    bg_opaque_color="0.063 0.063 0.094 1"
+    follows="all"
+    height="616"
+    layout="topleft"
+    left="0"
+    mouse_opaque="false"
+    name="login_html_backing"
+    top="0"
+    width="1024" />
+  <!-- </Luminous> -->
   <web_browser
     tab_stop="false"
     trusted_content="true"

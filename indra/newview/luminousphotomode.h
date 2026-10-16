@@ -149,6 +149,11 @@ namespace LuminousPhotoMode
     /// (it falls back to Firestorm's if its shader did not build).
     bool depthOfField();
     bool drawsDepthOfField();
+    /// Whether depth of field (RenderDepthOfField) is drawn in this frame:
+    /// false in the live view while it is kept for renders
+    /// (LuminousPhotoDepthOfFieldRenderOnly). LLPipeline::renderDoF still
+    /// follows the focus then, so a render is focused as the live view is.
+    bool depthOfFieldNow();
 
     /// The target Firestorm's circle-of-confusion pass draws into for the
     /// blur below, at the frame's size, with mip levels its flush makes.

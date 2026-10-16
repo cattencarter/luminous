@@ -106,6 +106,7 @@ set(viewer_SOURCE_FILES
     luminousenvironmentlistener.cpp
     luminousbenchmark.cpp
     luminousbugreport.cpp
+    luminousoptimise.cpp
     luminousfloater.cpp
     luminoushdrsnapshot.cpp
     luminousphotomode.cpp
@@ -979,6 +980,7 @@ set(viewer_HEADER_FILES
     lumenfolders.h
     luminousbenchmark.h
     luminousbugreport.h
+    luminousoptimise.h
     luminousfloater.h
     luminoushdrsnapshot.h
     luminousphotomode.h

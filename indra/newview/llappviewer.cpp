@@ -28,6 +28,7 @@
 
 #include "llappviewer.h"
 #include "luminousbenchmark.h" // <Luminous/>
+#include "luminousoptimise.h" // <Luminous/>
 
 // Viewer includes
 #include "llversioninfo.h"
@@ -1313,6 +1314,7 @@ bool LLAppViewer::init()
     }
 
     LuminousPhotoMode::warnIfLowMemory(); // <Luminous/> once, on a Mac with less than 16 GB
+    LuminousOptimise::setUpForThisMac(); // <Luminous/> at the very first start: settings for this Mac
 
     // Obsolete? mExpectedGLVersion is always zero
 #if LL_WINDOWS
@@ -1864,7 +1866,7 @@ bool LLAppViewer::doFrame()
                 // <FS:Ansariel> FIRE-32722: Make sure to idle if actually minimized
                 //S32 milliseconds_to_sleep = llclamp((S32)s_background_yield_time, 0, 1000);
                 S32 milliseconds_to_sleep = llclamp((S32)s_background_yield_time, (gViewerWindow && gViewerWindow->getWindow()->getMinimized()) ? 1 : 0, 1000);
-                if (LuminousBenchmark::running()) // <Luminous/> measures the viewer, not the yield
+                if (LuminousBenchmark::running() || LuminousOptimise::running()) // <Luminous/> measures the viewer, not the yield
                 {
                     milliseconds_to_sleep = 0;
                 }
@@ -1939,7 +1941,7 @@ bool LLAppViewer::doFrame()
             // <FS:Ansariel> FIRE-22297: FPS limiter not working properly on Mac/Linux
             static LLCachedControl<U32> max_fps(gSavedSettings, "FramePerSecondLimit");
             static LLCachedControl<bool> fsLimitFramerate(gSavedSettings, "FSLimitFramerate");
-            if (fsLimitFramerate && !LuminousBenchmark::running() && !LLFilePicker::panelShowing() /* <Luminous/> */ && LLStartUp::getStartupState() == STATE_STARTED && !gTeleportDisplay && !logoutRequestSent() && max_fps > F_APPROXIMATELY_ZERO)
+            if (fsLimitFramerate && !LuminousBenchmark::running() && !LuminousOptimise::running() && !LLFilePicker::panelShowing() /* <Luminous/> */ && LLStartUp::getStartupState() == STATE_STARTED && !gTeleportDisplay && !logoutRequestSent() && max_fps > F_APPROXIMATELY_ZERO)
             {
                 // Sleep a while to limit frame rate.
                 LLPerfStats::RecordSceneTime T ( LLPerfStats::StatType_t::RENDER_FPSLIMIT );

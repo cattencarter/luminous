@@ -260,6 +260,7 @@ private:
     bool mTemporary = false;
     bool mKept = false;        // downloaded or sent on
     bool mLightOnly = false;
+    bool mPreview = false;     // a preview: Render instead of Share, and closed without asking
     bool mStopAsked = false;
 
     U32 mTexture = 0;

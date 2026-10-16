@@ -492,6 +492,11 @@ namespace LuminousHDRSnapshot
         // Set while a render from the Render image button runs: its frames
         // report how far it is to the overlay, which draws it at once.
         bool sProgress = false;
+        // A preview renders (renderPreview), and its moment held after it
+        // while its overlay shows: the playback speed to give back.
+        bool sPreview = false;
+        bool sPreviewHold = false;
+        F32 sPreviewHeldFactor = 1.f;
 
         // How a render is shown: only saved (asked for with a path: LEAP,
         // Phototools' buttons); saved to disk with the overlay's progress
@@ -515,7 +520,7 @@ namespace LuminousHDRSnapshot
             LLNotificationsUtil::add("SystemMessageTip", LLSD().with("MESSAGE", message));
         }
 
-        void saveTo(EFormat format, const std::string& path, EShow show)
+        bool saveTo(EFormat format, const std::string& path, EShow show)
         {
             std::string error;
             LLPointer<LLImageRaw> shown;
@@ -550,14 +555,14 @@ namespace LuminousHDRSnapshot
                 {
                     report("Could not save the snapshot: " + error);
                 }
-                return;
+                return false;
             }
             if (show == TEMPORARY)
             {
                 // Shown over the viewer, to download or send on; the file is
                 // removed when the overlay closes.
                 LuminousPictureView::showResult(shown, path, true, format == EXR);
-                return;
+                return true;
             }
             if (show == TO_DISK)
             {
@@ -570,6 +575,7 @@ namespace LuminousHDRSnapshot
             {
                 gViewerWindow->getWindow()->openFile(path);
             }
+            return true;
         }
 
         bool sWaiting = false;
@@ -651,20 +657,43 @@ namespace LuminousHDRSnapshot
             }
             // The moment of the click is the one rendered, as a camera's: every
             // animation held from now until the render is done, so the still
-            // shown meanwhile and the picture show the same pose.
-            const F32 time_factor = LLMotionController::getCurrentTimeFactor();
+            // shown meanwhile and the picture show the same pose. A render
+            // from a preview's overlay takes over the preview's hold: the
+            // same moment, and the playback speed it found.
+            const bool preview = sPreview;
+            const F32 time_factor = sPreviewHold ? sPreviewHeldFactor : LLMotionController::getCurrentTimeFactor();
+            sPreviewHold = false;
             setAnimationTime(0.f);
             LuminousPictureView::beginRender(); // the world frozen, how far it is
-            whenSharp([format, path, show, time_factor]()
+            whenSharp([format, path, show, time_factor, preview]()
             {
                 struct LetGo
                 {
                     F32 factor;
-                    ~LetGo() { setAnimationTime(factor); }
-                } let_go{ time_factor };
-                saveTo(format, path, show);
+                    bool keep;
+                    ~LetGo() { if (!keep) setAnimationTime(factor); }
+                } let_go{ time_factor, false };
+                struct EndPreview
+                {
+                    bool on;
+                    ~EndPreview() { if (on) sPreview = false; }
+                } end_preview{ preview };
+                if (saveTo(format, path, show) && preview)
+                {
+                    // held while the preview shows, for its Render
+                    let_go.keep = true;
+                    sPreviewHold = true;
+                    sPreviewHeldFactor = time_factor;
+                }
             }, true,
-            [time_factor]() { setAnimationTime(time_factor); }); // stopped before it rendered
+            [time_factor, preview]() // stopped before it rendered
+            {
+                setAnimationTime(time_factor);
+                if (preview)
+                {
+                    sPreview = false;
+                }
+            });
         }
 
         void whenSharp(std::function<void()> act, bool overlay, std::function<void()> on_stop)
@@ -677,7 +706,8 @@ namespace LuminousHDRSnapshot
                 return;
             }
             sWaiting = true;
-            sFullTextures = full;
+            const bool use_full = full && !sPreview; // a preview takes the textures as they are
+            sFullTextures = use_full;
             // Every avatar's gaze held from now to the end: Second Life's own
             // glances aside and blinks would otherwise be in one picture in a
             // few.
@@ -688,7 +718,7 @@ namespace LuminousHDRSnapshot
             const F32 volume_lod = LLVOVolume::sLODFactor;
             const F32 volume_distance = LLVOVolume::sDistanceFactor;
             const F32 avatar_lod = LLVOAvatar::sLODFactor;
-            if (full)
+            if (use_full)
             {
                 LLVOVolume::sLODFactor = MAX_LOD_FACTOR;
                 LLVOVolume::sDistanceFactor = 1.f - LLVOVolume::sLODFactor * 0.1f;
@@ -696,15 +726,15 @@ namespace LuminousHDRSnapshot
             }
             if (!overlay) // the overlay says how far it is instead
             {
-                report(full ? "Taking the snapshot: loading everything in full detail first. This takes several seconds, and the viewer pauses while it renders."
+                report(use_full ? "Taking the snapshot: loading everything in full detail first. This takes several seconds, and the viewer pauses while it renders."
                             : (frames() > 1 ? "Taking the snapshot. This takes a few seconds, and the viewer pauses while it renders."
                                             : "Taking the snapshot..."));
             }
-            else if (full)
+            else if (use_full)
             {
                 LuminousPictureView::setProgress(-1.f, "Loading everything in full detail...", false);
             }
-            const bool wait_for_textures = full;
+            const bool wait_for_textures = use_full;
             const U64 start_mb = footprintMB();
             LLTimer started;
             LLTimer quiet;
@@ -764,7 +794,7 @@ namespace LuminousHDRSnapshot
                 }
                 if (overlay)
                 {
-                    LuminousPictureView::setProgress(0.f, "Rendering...", true);
+                    LuminousPictureView::setProgress(0.f, sPreview ? "Rendering a preview..." : "Rendering...", true);
                 }
                 try
                 {
@@ -791,7 +821,7 @@ namespace LuminousHDRSnapshot
                 }
                 sFullTextures = false;
                 sWaiting = false;
-                LLEyeMotion::sHoldGaze = false;
+                LLEyeMotion::sHoldGaze = sPreviewHold; // a preview's moment held, gaze too
                 return true;
             });
         }
@@ -979,10 +1009,11 @@ namespace LuminousHDRSnapshot
     {
         // The window's size, in pixels, or twice it.
         static LLCachedControl<U32> scale_setting(gSavedSettings, "LuminousSnapshotScale", 1);
-        const U32 asked_scale = llclamp((U32)scale_setting(), 1U, 2U); // what fits may be less (below)
+        const U32 asked_scale = sPreview ? 1U : llclamp((U32)scale_setting(), 1U, 2U); // what fits may be less (below)
         static LLCachedControl<bool> smooth(gSavedSettings, "LuminousHDRSnapshotSmooth", true);
         static LLCachedControl<U32> frames_setting(gSavedSettings, "LuminousSnapshotFrames", 16);
-        const S32 frames = (S32)llclamp((U32)frames_setting(), 1U, 256U);
+        // A preview takes four: enough for smooth edges and hair.
+        const S32 frames = sPreview ? 4 : (S32)llclamp((U32)frames_setting(), 1U, 256U);
 
         static LLCachedControl<bool> hdr(gSavedSettings, "RenderHDREnabled", true);
         if (!hdr && !eightBit(format)) // the eight-bit picture is the finished one, HDR or not
@@ -1002,7 +1033,7 @@ namespace LuminousHDRSnapshot
             U32 margin_x, margin_y;   // the frame round it
             U32 render_w, render_h;
         };
-        const bool margin_wanted = margin_setting() && LuminousPhotoMode::isOn();
+        const bool margin_wanted = margin_setting() && LuminousPhotoMode::isOn() && !sPreview;
         auto sizes_for = [&](F32 scale, bool margin)
         {
             Sizes z;
@@ -1701,17 +1732,46 @@ namespace LuminousHDRSnapshot
                 }
                 renderImage();
             });
+        LLUICtrl::CommitCallbackRegistry::defaultRegistrar().add("Luminous.PreviewImage",
+            [](LLUICtrl*, const LLSD&) { renderPreview(); });
     }
 
     F32 pictureAspect()
     {
         // as takeAndSave sizes the picture: the window's, or twice it
         static LLCachedControl<U32> scale_setting(gSavedSettings, "LuminousSnapshotScale", 1);
-        const U32 scale = llclamp((U32)scale_setting(), 1U, 2U);
+        const U32 scale = sPreview ? 1U : llclamp((U32)scale_setting(), 1U, 2U);
         const U32 most = (U32)gGLManager.mGLMaxTextureSize;
         const U32 w = llclamp((U32)gViewerWindow->getWindowWidthRaw() * scale, 16U, most);
         const U32 h = llclamp((U32)gViewerWindow->getWindowHeightRaw() * scale, 16U, most);
         return (F32)w / (F32)llmax(h, 1U);
+    }
+
+    bool previewing()
+    {
+        return sPreview;
+    }
+
+    void renderPreview()
+    {
+        if (sWaiting)
+        {
+            report("A snapshot is already being taken.");
+            return;
+        }
+        sPreview = true;
+        // JPEG: quick to write, and only shown, never kept
+        saveWhenSharp(JPEG8, gDirUtilp->getExpandedFilename(LL_PATH_TEMP, defaultName(JPEG8)), TEMPORARY);
+    }
+
+    void endPreview()
+    {
+        if (sPreviewHold)
+        {
+            sPreviewHold = false;
+            setAnimationTime(sPreviewHeldFactor);
+            LLEyeMotion::sHoldGaze = false;
+        }
     }
 
     void renderImage()

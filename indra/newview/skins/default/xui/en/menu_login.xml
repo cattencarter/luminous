@@ -1,5 +1,7 @@
 <?xml version="1.0" encoding="utf-8" standalone="yes"?>
+<!-- <Luminous> in the start page's colour, as the page round it -->
 <menu_bar
+ bg_color="0.063 0.063 0.094 1"
  follows="left|top"
  height="18"
  layout="topleft"

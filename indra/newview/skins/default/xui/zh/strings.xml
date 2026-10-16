@@ -827,9 +827,7 @@ support@secondlife.com.
 	<string name="ReleaseNotes">
 		發行說明
 	</string>
-	<string name="RELEASE_NOTES_BASE_URL" translate="false">
-		https://needfulsl.com/luminous/download.php#
-	</string>
+	<string name="RELEASE_NOTES_BASE_URL" translate="false">https://needfulsl.com/luminous/releases.php#v</string>
 	<string name="LoadingData">
 		載入中...
 	</string>

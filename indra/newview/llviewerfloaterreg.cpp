@@ -238,6 +238,7 @@
 #include "quickprefs.h"
 #include "luminousfloater.h" // <Luminous/>
 #include "luminousbugreport.h" // <Luminous/>
+#include "luminousoptimise.h" // <Luminous/>
 #include "vjfloaterlocalmesh.h" // local mesh
 #include "fsfloaterwhitelisthelper.h" // fs whitelist helper
 #include "omnifilter.h"               // Omnifilter support
@@ -676,6 +677,7 @@ void LLViewerFloaterReg::registerFloaters()
     LLFloaterReg::add("luminous", "floater_luminous.xml", (LLFloaterBuildFunc)&LLFloaterReg::build<LuminousFloater>); // <Luminous/> Luminous's own window
     LLFloaterReg::add("luminous_render", "floater_luminous_render.xml", (LLFloaterBuildFunc)&LLFloaterReg::build<LuminousRenderFloater>); // <Luminous/> its render window
     LLFloaterReg::add("luminous_bug_report", "floater_luminous_bug_report.xml", (LLFloaterBuildFunc)&LLFloaterReg::build<LuminousBugReportFloater>); // <Luminous/> Report a Bug
+    LLFloaterReg::add("luminous_optimise", "floater_luminous_optimise.xml", (LLFloaterBuildFunc)&LLFloaterReg::build<LuminousOptimiseFloater>); // <Luminous/> Optimise my settings
     LLFloaterReg::add("luminous_picture", "floater_luminous_picture.xml", (LLFloaterBuildFunc)&LLFloaterReg::build<LuminousPictureView>); // <Luminous/> a render at full size
     LLFloaterReg::add("quickprefs", "floater_quickprefs.xml", (LLFloaterBuildFunc)&LLFloaterReg::build<FloaterQuickPrefs>);
     LLFloaterReg::add("region_tracker", "floater_region_tracker.xml", (LLFloaterBuildFunc)&LLFloaterReg::build<ALFloaterRegionTracker>);

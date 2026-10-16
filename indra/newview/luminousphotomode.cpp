@@ -64,6 +64,7 @@
 #include "llviewerinventory.h"
 #include "llcallbacklist.h"
 #include "lumenfolders.h"
+#include "luminoushdrsnapshot.h"
 #include "llinventoryfunctions.h"
 #include "llinventorysettings.h"
 
@@ -796,7 +797,7 @@ namespace LuminousPhotoMode
         // kept, off or render only: live they look rougher than in the
         // picture. Alpha sorting too: only a render's frames sort it pixel
         // by pixel.
-        enum class Kept { VolumetricLight, ProjectorBeams, SoftShadows, AmbientOcclusion, Reflections, DepthOfField, Bloom,
+        enum class Kept { VolumetricLight, ProjectorBeams, SoftShadows, AmbientOcclusion, Reflections, DepthOfField, Enhance, Bloom,
                           SunShafts, Vignette, ChromaticAberration, Clarity, Halation, Anamorphic, Distortion, Grain,
                           LensFlare, ContactShadows, AlphaSort };
 
@@ -805,7 +806,8 @@ namespace LuminousPhotoMode
             static LLCachedControl<bool> volumetric(gSavedSettings, "LuminousPhotoVolumetricLightRenderOnly", false);
             static LLCachedControl<bool> beams(gSavedSettings, "LuminousPhotoProjectorBeamsRenderOnly", false);
             static LLCachedControl<bool> ao(gSavedSettings, "LuminousPhotoAORenderOnly", false);
-            static LLCachedControl<bool> dof(gSavedSettings, "LuminousPhotoDoFRenderOnly", true);
+            static LLCachedControl<bool> dof(gSavedSettings, "LuminousPhotoDepthOfFieldRenderOnly", false);
+            static LLCachedControl<bool> enhance(gSavedSettings, "LuminousPhotoDoFRenderOnly", true);
             static LLCachedControl<bool> bloom(gSavedSettings, "LuminousPhotoBloomRenderOnly", true);
             static LLCachedControl<bool> shafts(gSavedSettings, "LuminousPhotoSunShaftsRenderOnly", false);
             static LLCachedControl<bool> vignette(gSavedSettings, "LuminousPhotoVignetteRenderOnly", false);
@@ -826,6 +828,7 @@ namespace LuminousPhotoMode
                 case Kept::AmbientOcclusion:    return ao;
                 case Kept::Reflections:         return true;
                 case Kept::DepthOfField:        return dof;
+                case Kept::Enhance:             return enhance;
                 case Kept::Bloom:               return bloom;
                 case Kept::SunShafts:           return shafts;
                 case Kept::Vignette:            return vignette;
@@ -2125,7 +2128,7 @@ namespace LuminousPhotoMode
         bool lensSampled()
         {
             static LLCachedControl<bool> sampled(gSavedSettings, "LuminousSnapshotSampledDoF", true);
-            return sampled && sampling() && LLPipeline::sRenderDeferred && gPipeline.RenderDepthOfField
+            return sampled && sampling() && !LuminousHDRSnapshot::previewing() && LLPipeline::sRenderDeferred && gPipeline.RenderDepthOfField
                 && depthOfField() && gLuminousDepthOfFieldProgram.isComplete()
                 && sLensFocus > 0.f && sLensAperture > 0.f;
         }
@@ -2133,7 +2136,7 @@ namespace LuminousPhotoMode
         bool shadowsSampled()
         {
             static LLCachedControl<bool> sampled(gSavedSettings, "LuminousSnapshotSampledShadows", true);
-            return sampled && sampling() && softShadowsNow();
+            return sampled && sampling() && !LuminousHDRSnapshot::previewing() && softShadowsNow();
         }
 
         // What of each frame's own blur or softening to keep: about the
@@ -2974,7 +2977,7 @@ namespace LuminousPhotoMode
             "LuminousPhotoHSLPurplesLum", "LuminousPhotoHSLMagentasHue", "LuminousPhotoHSLMagentasSat",
             "LuminousPhotoHSLMagentasLum", "LuminousPhotoColourAmount", "LuminousPhotoSplitTone",
             // Lens
-            "RenderDepthOfField", "FSFocusPointFollowsPointer",
+            "RenderDepthOfField", "LuminousPhotoDepthOfFieldRenderOnly", "FSFocusPointFollowsPointer",
             "LuminousPhotoDoF", "LuminousPhotoDoFFront", "CameraFNumber", "CameraMaxCoF", "LuminousPhotoDoFBlades",
             "LuminousPhotoVignette", "LuminousPhotoVignetteAmount", "LuminousPhotoVignetteSize",
             "LuminousPhotoVignetteSoftness", "LuminousPhotoVignetteRoundness", "LuminousPhotoBloom",
@@ -4259,6 +4262,11 @@ namespace LuminousPhotoMode
         shader.uniform1f(s_scale, liveRenderScale());
     }
 
+    bool depthOfFieldNow()
+    {
+        return drawnNow(Kept::DepthOfField);
+    }
+
     bool depthOfField()
     {
         static LLCachedControl<bool> dof(gSavedSettings, "LuminousPhotoDoF", true);
@@ -4267,9 +4275,9 @@ namespace LuminousPhotoMode
 
     bool drawsDepthOfField()
     {
-        if (!depthOfField() || !drawnNow(Kept::DepthOfField))
+        if (!depthOfField() || !drawnNow(Kept::Enhance) || !drawnNow(Kept::DepthOfField))
         {
-            return false; // Firestorm's blur, if its depth of field is on
+            return false; // Firestorm's blur, if its depth of field is on and drawn now
         }
         static const char* last = nullptr;
         bool built = gLuminousDepthOfFieldProgram.isComplete();

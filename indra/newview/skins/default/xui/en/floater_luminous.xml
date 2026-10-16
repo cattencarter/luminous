@@ -1291,7 +1291,7 @@
 			 name="light_defaults"
 			 tool_tip="Put this tab back as Luminous ships it."
 			 top="655"
-			 width="158">
+			 width="118">
 				<button.commit_callback
 				 function="Luminous.ResetSettings"
 				 parameter="LuminousPhotoVolumetricLight,LuminousPhotoVolumetricDensity,LuminousPhotoVolumetricAnisotropy,LuminousPhotoVolumetricDistance,LuminousPhotoProjectorBeams,LuminousPhotoProjectorBeamsDensity,LuminousPhotoProjectorBeamsAnisotropy,LuminousPhotoSunShafts,LuminousPhotoSunShaftsStrength,LuminousPhotoSunShaftsLength,LuminousPhotoSunShaftsSoftness,LuminousPhotoSoftShadows,LuminousPhotoSoftShadowsRenderOnly,LuminousPhotoShadowSoftness,LuminousPhotoAO,RenderDeferredSSAO,LuminousPhotoAORadius,LuminousPhotoAOStrength,LuminousPhotoAOSoften,LuminousPhotoAOLights,LuminousPhotoVolumetricAmount,LuminousPhotoBeamsAmount,LuminousPhotoShaftsAmount,LuminousPhotoAOAmount,LuminousPhotoSSR,LuminousPhotoAlphaSort,LuminousPhotoAlphaSortFaintSL,LuminousPhotoVolumetricLightRenderOnly,LuminousPhotoProjectorBeamsRenderOnly,LuminousPhotoSunShaftsRenderOnly,LuminousPhotoAORenderOnly,LuminousPhotoContactShadows,LuminousPhotoContactShadowsLength,LuminousPhotoContactShadowsRenderOnly,LuminousPhotoContactShadowsStrength,LuminousPhotoShadowStrength,RenderShadowBlurSize,RenderAttachedLights" />
@@ -1303,7 +1303,7 @@
 			 image_overlay="Pause_Off"
 			 is_toggle="true"
 			 layout="topleft"
-			 left="172"
+			 left="132"
 			 name="pause_scene_light_defaults"
 			 tool_tip="Pause everything that moves (animations, water, clouds, particles) while you move the camera freely. Click again to go on."
 			 top="655"
@@ -1311,13 +1311,26 @@
 			<button
 			 follows="right|bottom"
 			 height="22"
-			 label="Render image"
+			 label="Preview"
 			 layout="topleft"
-			 left="204"
+			 left="164"
+			 name="light_defaults_preview"
+			 tool_tip="A quick picture with every effect at full quality: four frames at the window's size, without the margin or Full detail's wait. Render then makes the full picture of the same moment."
+			 top="655"
+			 width="74">
+				<button.commit_callback
+				 function="Luminous.PreviewImage" />
+			</button>
+			<button
+			 follows="right|bottom"
+			 height="22"
+			 label="Render"
+			 layout="topleft"
+			 left="242"
 			 name="light_defaults_capture"
 			 tool_tip="Render the picture now, with the Render tab's settings."
 			 top="655"
-			 width="116">
+			 width="78">
 				<button.commit_callback
 				 function="Luminous.SaveSnapshot" />
 			</button>
@@ -1785,7 +1798,7 @@
 			 name="look_reset"
 			 tool_tip="Put this tab back as Luminous ships it."
 			 top="655"
-			 width="158">
+			 width="118">
 				<button.commit_callback
 				 function="Luminous.ResetSettings"
 				 parameter="LuminousPhotoTonemapper,LuminousPhotoTonemapMix,LuminousPhotoExposure,LuminousPhotoContrast,LuminousPhotoHighlights,LuminousPhotoShadows,LuminousPhotoWhites,LuminousPhotoBlacks,LuminousPhotoClarity,LuminousPhotoClarityRenderOnly,RenderCASSharpness" />
@@ -1797,7 +1810,7 @@
 			 image_overlay="Pause_Off"
 			 is_toggle="true"
 			 layout="topleft"
-			 left="172"
+			 left="132"
 			 name="pause_scene_look_reset"
 			 tool_tip="Pause everything that moves (animations, water, clouds, particles) while you move the camera freely. Click again to go on."
 			 top="655"
@@ -1805,13 +1818,26 @@
 			<button
 			 follows="right|bottom"
 			 height="22"
-			 label="Render image"
+			 label="Preview"
 			 layout="topleft"
-			 left="204"
+			 left="164"
+			 name="look_reset_preview"
+			 tool_tip="A quick picture with every effect at full quality: four frames at the window's size, without the margin or Full detail's wait. Render then makes the full picture of the same moment."
+			 top="655"
+			 width="74">
+				<button.commit_callback
+				 function="Luminous.PreviewImage" />
+			</button>
+			<button
+			 follows="right|bottom"
+			 height="22"
+			 label="Render"
+			 layout="topleft"
+			 left="242"
 			 name="look_reset_capture"
 			 tool_tip="Render the picture now, with the Render tab's settings."
 			 top="655"
-			 width="116">
+			 width="78">
 				<button.commit_callback
 				 function="Luminous.SaveSnapshot" />
 			</button>
@@ -2659,7 +2685,7 @@
 			 name="colour_defaults"
 			 tool_tip="Put this tab back: colours untouched, no colour look."
 			 top="655"
-			 width="158">
+			 width="118">
 				<button.commit_callback
 				 function="Luminous.ResetSettings"
 				 parameter="LuminousPhotoSaturation,LuminousPhotoVibrance,LuminousPhotoWarmth,LuminousPhotoTint,LuminousPhotoShadowsWarmth,LuminousPhotoShadowsTint,LuminousPhotoMidtonesWarmth,LuminousPhotoMidtonesTint,LuminousPhotoHighlightsWarmth,LuminousPhotoHighlightsTint,LuminousPhotoMonochrome,LuminousPhotoMonochromeFilter,LuminousPhotoSepia,LuminousPhotoLUT,LuminousPhotoLUTStrength,LuminousPhotoHSLRedsHue,LuminousPhotoHSLRedsSat,LuminousPhotoHSLRedsLum,LuminousPhotoHSLOrangesHue,LuminousPhotoHSLOrangesSat,LuminousPhotoHSLOrangesLum,LuminousPhotoHSLYellowsHue,LuminousPhotoHSLYellowsSat,LuminousPhotoHSLYellowsLum,LuminousPhotoHSLGreensHue,LuminousPhotoHSLGreensSat,LuminousPhotoHSLGreensLum,LuminousPhotoHSLAquasHue,LuminousPhotoHSLAquasSat,LuminousPhotoHSLAquasLum,LuminousPhotoHSLBluesHue,LuminousPhotoHSLBluesSat,LuminousPhotoHSLBluesLum,LuminousPhotoHSLPurplesHue,LuminousPhotoHSLPurplesSat,LuminousPhotoHSLPurplesLum,LuminousPhotoHSLMagentasHue,LuminousPhotoHSLMagentasSat,LuminousPhotoHSLMagentasLum,LuminousPhotoColourAmount,LuminousPhotoSplitTone" />
@@ -2671,7 +2697,7 @@
 			 image_overlay="Pause_Off"
 			 is_toggle="true"
 			 layout="topleft"
-			 left="172"
+			 left="132"
 			 name="pause_scene_colour_defaults"
 			 tool_tip="Pause everything that moves (animations, water, clouds, particles) while you move the camera freely. Click again to go on."
 			 top="655"
@@ -2679,13 +2705,26 @@
 			<button
 			 follows="right|bottom"
 			 height="22"
-			 label="Render image"
+			 label="Preview"
 			 layout="topleft"
-			 left="204"
+			 left="164"
+			 name="colour_defaults_preview"
+			 tool_tip="A quick picture with every effect at full quality: four frames at the window's size, without the margin or Full detail's wait. Render then makes the full picture of the same moment."
+			 top="655"
+			 width="74">
+				<button.commit_callback
+				 function="Luminous.PreviewImage" />
+			</button>
+			<button
+			 follows="right|bottom"
+			 height="22"
+			 label="Render"
+			 layout="topleft"
+			 left="242"
 			 name="colour_defaults_capture"
 			 tool_tip="Render the picture now, with the Render tab's settings."
 			 top="655"
-			 width="116">
+			 width="78">
 				<button.commit_callback
 				 function="Luminous.SaveSnapshot" />
 			</button>
@@ -3843,10 +3882,10 @@
 			 name="lens_defaults"
 			 tool_tip="Put this tab back as Luminous ships it."
 			 top="655"
-			 width="158">
+			 width="118">
 				<button.commit_callback
 				 function="Luminous.ResetSettings"
-				 parameter="LuminousPhotoDoF,LuminousPhotoDoFFront,CameraFNumber,CameraMaxCoF,LuminousPhotoDoFBlades,LuminousPhotoVignette,LuminousPhotoVignetteAmount,LuminousPhotoVignetteSize,LuminousPhotoVignetteSoftness,LuminousPhotoVignetteRoundness,LuminousPhotoBloom,LuminousPhotoBloomStrength,LuminousPhotoBloomSize,LuminousPhotoChromaticAberration,LuminousPhotoChromaticAberrationAmount,LuminousPhotoHalation,LuminousPhotoAnamorphic,LuminousPhotoAnamorphicTint,LuminousPhotoLensFlare,LuminousPhotoLensFlareGhosts,LuminousPhotoLensFlareHalo,LuminousPhotoLensFlareStarburst,LuminousPhotoLensFlareStarBlur,LuminousPhotoLensFlareDirt,LuminousPhotoLensFlareVariation,LuminousPhotoLensFlareAmplify,LuminousPhotoLensFlareRenderOnly,LuminousPhotoDistortion,LuminousPhotoDoFBlur,LuminousPhotoGrain,LuminousPhotoGrainSize,LuminousPhotoDoFRenderOnly,LuminousPhotoVignetteRenderOnly,LuminousPhotoBloomRenderOnly,LuminousPhotoChromaticAberrationRenderOnly,LuminousPhotoHalationRenderOnly,LuminousPhotoAnamorphicRenderOnly,LuminousPhotoDistortionRenderOnly,LuminousPhotoGrainRenderOnly,RenderGlow,RenderGlowStrength,RenderGlowWidth" />
+				 parameter="LuminousPhotoDoF,LuminousPhotoDoFFront,CameraFNumber,CameraMaxCoF,LuminousPhotoDoFBlades,LuminousPhotoVignette,LuminousPhotoVignetteAmount,LuminousPhotoVignetteSize,LuminousPhotoVignetteSoftness,LuminousPhotoVignetteRoundness,LuminousPhotoBloom,LuminousPhotoBloomStrength,LuminousPhotoBloomSize,LuminousPhotoChromaticAberration,LuminousPhotoChromaticAberrationAmount,LuminousPhotoHalation,LuminousPhotoAnamorphic,LuminousPhotoAnamorphicTint,LuminousPhotoLensFlare,LuminousPhotoLensFlareGhosts,LuminousPhotoLensFlareHalo,LuminousPhotoLensFlareStarburst,LuminousPhotoLensFlareStarBlur,LuminousPhotoLensFlareDirt,LuminousPhotoLensFlareVariation,LuminousPhotoLensFlareAmplify,LuminousPhotoLensFlareRenderOnly,LuminousPhotoDistortion,LuminousPhotoDoFBlur,LuminousPhotoGrain,LuminousPhotoGrainSize,LuminousPhotoDoFRenderOnly,LuminousPhotoDepthOfFieldRenderOnly,LuminousPhotoVignetteRenderOnly,LuminousPhotoBloomRenderOnly,LuminousPhotoChromaticAberrationRenderOnly,LuminousPhotoHalationRenderOnly,LuminousPhotoAnamorphicRenderOnly,LuminousPhotoDistortionRenderOnly,LuminousPhotoGrainRenderOnly,RenderGlow,RenderGlowStrength,RenderGlowWidth" />
 			</button>
 			<button
 			 control_name="LuminousScenePaused"
@@ -3855,7 +3894,7 @@
 			 image_overlay="Pause_Off"
 			 is_toggle="true"
 			 layout="topleft"
-			 left="172"
+			 left="132"
 			 name="pause_scene_lens_defaults"
 			 tool_tip="Pause everything that moves (animations, water, clouds, particles) while you move the camera freely. Click again to go on."
 			 top="655"
@@ -3863,13 +3902,26 @@
 			<button
 			 follows="right|bottom"
 			 height="22"
-			 label="Render image"
+			 label="Preview"
 			 layout="topleft"
-			 left="204"
+			 left="164"
+			 name="lens_defaults_preview"
+			 tool_tip="A quick picture with every effect at full quality: four frames at the window's size, without the margin or Full detail's wait. Render then makes the full picture of the same moment."
+			 top="655"
+			 width="74">
+				<button.commit_callback
+				 function="Luminous.PreviewImage" />
+			</button>
+			<button
+			 follows="right|bottom"
+			 height="22"
+			 label="Render"
+			 layout="topleft"
+			 left="242"
 			 name="lens_defaults_capture"
 			 tool_tip="Render the picture now, with the Render tab's settings."
 			 top="655"
-			 width="116">
+			 width="78">
 				<button.commit_callback
 				 function="Luminous.SaveSnapshot" />
 			</button>
@@ -4379,13 +4431,13 @@
 			<button
 			 follows="left|bottom"
 			 height="22"
-			 label="Reset capture settings"
+			 label="Reset render"
 			 layout="topleft"
 			 left="10"
 			 name="snapshot_defaults"
 			 tool_tip="Put this tab back as Luminous ships it."
 			 top="655"
-			 width="158">
+			 width="118">
 				<button.commit_callback
 				 function="Luminous.ResetSettings"
 				 parameter="LuminousSnapshotScale,LuminousHDRSnapshotSmooth,LuminousSnapshotFrames,LuminousSnapshotMargin,LuminousSnapshotSampledDoF,LuminousSnapshotSampledShadows,LuminousSnapshotFullTextures,LuminousSnapshotOpen,LuminousAnimationSpeed,LuminousSnapshotFormat,LuminousRenderToDisk" />
@@ -4397,7 +4449,7 @@
 			 image_overlay="Pause_Off"
 			 is_toggle="true"
 			 layout="topleft"
-			 left="172"
+			 left="132"
 			 name="pause_scene_snapshot_defaults"
 			 tool_tip="Pause everything that moves (animations, water, clouds, particles) while you move the camera freely. Click again to go on."
 			 top="655"
@@ -4405,13 +4457,26 @@
 			<button
 			 follows="right|bottom"
 			 height="22"
-			 label="Render image"
+			 label="Preview"
 			 layout="topleft"
-			 left="204"
+			 left="164"
+			 name="snapshot_defaults_preview"
+			 tool_tip="A quick picture with every effect at full quality: four frames at the window's size, without the margin or Full detail's wait. Render then makes the full picture of the same moment."
+			 top="655"
+			 width="74">
+				<button.commit_callback
+				 function="Luminous.PreviewImage" />
+			</button>
+			<button
+			 follows="right|bottom"
+			 height="22"
+			 label="Render"
+			 layout="topleft"
+			 left="242"
 			 name="snapshot_defaults_capture"
 			 tool_tip="Render the picture now, with the Render tab's settings."
 			 top="655"
-			 width="116">
+			 width="78">
 				<button.commit_callback
 				 function="Luminous.SaveSnapshot" />
 			</button>
@@ -4783,7 +4848,7 @@
 			 image_overlay="Pause_Off"
 			 is_toggle="true"
 			 layout="topleft"
-			 left="172"
+			 left="132"
 			 name="pause_scene_presets"
 			 tool_tip="Pause everything that moves (animations, water, clouds, particles) while you move the camera freely. Click again to go on."
 			 top="655"
@@ -4791,13 +4856,26 @@
 			<button
 			 follows="right|bottom"
 			 height="22"
-			 label="Render image"
+			 label="Preview"
 			 layout="topleft"
-			 left="204"
+			 left="164"
+			 name="presets_preview"
+			 tool_tip="A quick picture with every effect at full quality: four frames at the window's size, without the margin or Full detail's wait. Render then makes the full picture of the same moment."
+			 top="655"
+			 width="74">
+				<button.commit_callback
+				 function="Luminous.PreviewImage" />
+			</button>
+			<button
+			 follows="right|bottom"
+			 height="22"
+			 label="Render"
+			 layout="topleft"
+			 left="242"
 			 name="presets_capture"
 			 tool_tip="Render the picture now, with the Render tab's settings."
 			 top="655"
-			 width="116">
+			 width="78">
 				<button.commit_callback
 				 function="Luminous.SaveSnapshot" />
 			</button>
@@ -4866,6 +4944,29 @@
 							 name="q_live_line"
 							 top="28"
 							 width="296" />
+						</layout_panel>
+						<layout_panel
+						 auto_resize="false"
+						 follows="left|top|right"
+						 height="30"
+						 layout="topleft"
+						 name="optimise_lp"
+						 user_resize="false"
+						 width="316">
+							<button
+							 follows="left|top"
+							 height="22"
+							 label="Optimise my settings..."
+							 layout="topleft"
+							 left="22"
+							 name="optimise_btn"
+							 tool_tip="Measures what each live effect costs where you are, and suggests what to keep for renders to make the live view faster. Nothing changes until you apply it."
+							 top="4"
+							 width="184">
+								<button.commit_callback
+								 function="Floater.Show"
+								 parameter="luminous_optimise" />
+							</button>
 						</layout_panel>
 						<layout_panel
 						 auto_resize="false"
@@ -5163,7 +5264,7 @@
 			 name="graphics_reset"
 			 tool_tip="Put this tab back as Luminous ships it."
 			 top="655"
-			 width="158">
+			 width="118">
 				<button.commit_callback
 				 function="Luminous.ResetSettings"
 				 parameter="LuminousPhotoLiveScale,LuminousPhotoLowQualityLiveShadows,LuminousPhotoLowQualityLiveVolumetric,LuminousPhotoLowQualityLiveBeams,LuminousPhotoLowQualityLiveAO,LuminousPhotoVolumetricSamples,LuminousPhotoShadowMapSize,RenderShadowSplitExponent,RenderShadowBias" />
@@ -5175,7 +5276,7 @@
 			 image_overlay="Pause_Off"
 			 is_toggle="true"
 			 layout="topleft"
-			 left="172"
+			 left="132"
 			 name="pause_scene_graphics_reset"
 			 tool_tip="Pause everything that moves (animations, water, clouds, particles) while you move the camera freely. Click again to go on."
 			 top="655"
@@ -5183,13 +5284,26 @@
 			<button
 			 follows="right|bottom"
 			 height="22"
-			 label="Render image"
+			 label="Preview"
 			 layout="topleft"
-			 left="204"
+			 left="164"
+			 name="graphics_reset_preview"
+			 tool_tip="A quick picture with every effect at full quality: four frames at the window's size, without the margin or Full detail's wait. Render then makes the full picture of the same moment."
+			 top="655"
+			 width="74">
+				<button.commit_callback
+				 function="Luminous.PreviewImage" />
+			</button>
+			<button
+			 follows="right|bottom"
+			 height="22"
+			 label="Render"
+			 layout="topleft"
+			 left="242"
 			 name="graphics_reset_capture"
 			 tool_tip="Render the picture now, with the Render tab's settings."
 			 top="655"
-			 width="116">
+			 width="78">
 				<button.commit_callback
 				 function="Luminous.SaveSnapshot" />
 			</button>

@@ -50,6 +50,17 @@
 	<button
 	 follows="right|bottom"
 	 height="26"
+	 label="Render"
+	 layout="topleft"
+	 left="404"
+	 name="render_full"
+	 tool_tip="Renders the full picture of this same moment, with the Render tab's settings."
+	 top="356"
+	 visible="false"
+	 width="88" />
+	<button
+	 follows="right|bottom"
+	 height="26"
 	 label="Close"
 	 layout="topleft"
 	 left="496"
