@@ -64,6 +64,11 @@
 
 #include "zlib.h"
 
+#include <algorithm>
+#include <filesystem>
+#include <regex>
+#include <set>
+
 namespace
 {
     // The API's limits (GET on the endpoint gives them live): 16 MB a file
@@ -221,7 +226,43 @@ namespace
         bool log = true;
         bool previous_log = false;
         std::string picture;
+        // Without the avatar's name: the avatars' names and the key, in
+        // lower case, longest first, taken out of the logs before they are
+        // packed.
+        std::vector<std::string> scrub;
+        // The home folder, written "~" in the logs: its name is the Mac
+        // user's.
+        std::string home;
     };
+
+    // The home folder becomes "~", and each word, in any case, "(avatar)".
+    void scrubText(std::string& text, const std::string& home, const std::vector<std::string>& words)
+    {
+        if (home.size() > 1)
+        {
+            LLStringUtil::replaceString(text, home, "~");
+        }
+        std::string lower = text;
+        LLStringUtil::toLower(lower); // one byte for one byte, so places match
+        for (const std::string& word : words)
+        {
+            std::string out, out_lower;
+            size_t from = 0;
+            for (size_t at = lower.find(word); at != std::string::npos; at = lower.find(word, from))
+            {
+                out.append(text, from, at - from).append("(avatar)");
+                out_lower.append(lower, from, at - from).append("(avatar)");
+                from = at + word.size();
+            }
+            if (from > 0)
+            {
+                out.append(text, from);
+                out_lower.append(lower, from);
+                text.swap(out);
+                lower.swap(out_lower);
+            }
+        }
+    }
 
     class Multipart
     {
@@ -310,11 +351,13 @@ namespace
             body.field(field.first, field.second);
         }
         std::string text, packed;
-        if (report.log && readTail(currentLogPath(), MAX_LOG_TEXT, text) && gzipString(text, packed))
+        if (report.log && readTail(currentLogPath(), MAX_LOG_TEXT, text)
+            && (scrubText(text, report.home, report.scrub), gzipString(text, packed)))
         {
             body.file("log", "luminous.log.gz", "application/gzip", packed);
         }
-        if (report.previous_log && readTail(previousLogPath(), MAX_LOG_TEXT, text) && gzipString(text, packed))
+        if (report.previous_log && readTail(previousLogPath(), MAX_LOG_TEXT, text)
+            && (scrubText(text, report.home, report.scrub), gzipString(text, packed)))
         {
             body.file("log_previous", "luminous-previous.log.gz", "application/gzip", packed);
         }
@@ -477,6 +520,7 @@ void LuminousBugReportFloater::onSend()
     }
 
     Report report;
+    report.home = LLStringUtil::getenv("HOME");
     auto add = [&report](const std::string& name, const std::string& value, S32 max_bytes)
     {
         if (!value.empty())
@@ -500,10 +544,86 @@ void LuminousBugReportFloater::onSend()
     add("system", LLAppViewer::instance()->getViewerInfoString(true), 8000);
     std::string name;
     LLAgentUI::buildFullname(name);
-    add("avatar", name, 63);
-    if (gAgentID.notNull())
+    if (gSavedSettings.getBOOL("LuminousBugReportIncludeName"))
     {
-        add("agent_id", gAgentID.asString(), 36);
+        add("avatar", name, 63);
+        if (gAgentID.notNull())
+        {
+            add("agent_id", gAgentID.asString(), 36);
+        }
+    }
+    else
+    {
+        // The names as the logs write them: the avatar's as shown, as the
+        // login gives it and as its folder's name, and the name of every
+        // account folder on this Mac (first_last, or first_last.grid), since
+        // the login screen writes the selected account's name, logged in or
+        // not; each as a user name (first.last), with a space and with an
+        // underscore, in lower case (scrubText ignores case); and the key.
+        std::vector<std::string> names { name, gAgentUsername, gDirUtilp->getBaseFileName(gDirUtilp->getLindenUserDir(), true) };
+        static const std::regex account_folder("[a-z0-9]+_[a-z0-9]+(\\..+)?");
+        std::error_code ec;
+        for (std::filesystem::directory_iterator it(gDirUtilp->getOSUserAppDir(), ec), end; !ec && it != end; it.increment(ec))
+        {
+            const std::string folder = it->path().filename().string();
+            std::error_code dir_ec;
+            if (it->is_directory(dir_ec) && std::regex_match(folder, account_folder)
+                && folder != "user_settings" && folder != "browser_profile")
+            {
+                const std::string account = folder.substr(0, folder.find('.'));
+                names.push_back(account);
+                // a single-name account logs in with its first name alone
+                const std::string resident = "_resident";
+                if (account.size() > resident.size()
+                    && account.compare(account.size() - resident.size(), resident.size(), resident) == 0)
+                {
+                    names.push_back(account.substr(0, account.size() - resident.size()));
+                }
+            }
+        }
+        std::set<std::string> words;
+        for (std::string variant : names)
+        {
+            if (variant.size() < 3)
+            {
+                continue;
+            }
+            LLStringUtil::toLower(variant);
+            for (const char join : { ' ', '.', '_' })
+            {
+                for (char& c : variant)
+                {
+                    if (c == ' ' || c == '.' || c == '_')
+                    {
+                        c = join;
+                    }
+                }
+                words.insert(variant);
+            }
+        }
+        if (gAgentID.notNull())
+        {
+            words.insert(gAgentID.asString());
+        }
+        // and the key of every account that has logged out on this Mac, from
+        // its inventory and mute list caches (key[.grid].inv.llsd.gz,
+        // key.cached_mute); the library's owner comes along, which is harmless
+        for (std::filesystem::directory_iterator it(gDirUtilp->getExpandedFilename(LL_PATH_CACHE, ""), ec), end; !ec && it != end; it.increment(ec))
+        {
+            const std::string file = it->path().filename().string();
+            if (file.size() > UUID_STR_LENGTH && file[UUID_STR_LENGTH - 1] == '.'
+                && (file.ends_with(".inv.llsd.gz") || file.ends_with(".cached_mute"))
+                && LLUUID::validate(file.substr(0, UUID_STR_LENGTH - 1)))
+            {
+                std::string key = file.substr(0, UUID_STR_LENGTH - 1);
+                LLStringUtil::toLower(key);
+                words.insert(key);
+            }
+        }
+        // longest first, so a name is not cut through by a shorter one inside it
+        report.scrub.assign(words.begin(), words.end());
+        std::sort(report.scrub.begin(), report.scrub.end(),
+                  [](const std::string& a, const std::string& b) { return a.size() > b.size(); });
     }
     add("grid", LLGridManager::getInstance()->getGridId(), 60);
     if (LLViewerRegion* region = gAgent.getRegion())

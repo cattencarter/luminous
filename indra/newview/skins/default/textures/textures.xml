@@ -174,8 +174,11 @@ with the same filename but different name
   <!-- <Luminous> the Luminous window's effect buttons: off, live, only in the rendered picture -->
   <texture name="Luminous_Effect_Off" file_name="icons/luminous_effect_off.png" preload="true" />
   <texture name="Luminous_Effect_Live" file_name="icons/luminous_effect_live.png" preload="true" />
+  <texture name="Luminous_Aspect_Landscape" file_name="icons/luminous_aspect_landscape.png" preload="true" />
+  <texture name="Luminous_Aspect_Portrait" file_name="icons/luminous_aspect_portrait.png" preload="true" />
   <texture name="Luminous_Effect_Render" file_name="icons/luminous_effect_render.png" preload="true" />
   <texture name="Luminous_Presets" file_name="icons/luminous_presets.png" preload="true" />
+  <texture name="Luminous_Portrait" file_name="icons/luminous_portrait.png" preload="true" />
   <texture name="Luminous_Preview_Volumetric" file_name="icons/luminous_preview_volumetric.png" preload="false" />
   <texture name="Luminous_Preview_Beams" file_name="icons/luminous_preview_beams.png" preload="false" />
   <texture name="Luminous_Preview_Shafts" file_name="icons/luminous_preview_shafts.png" preload="false" />

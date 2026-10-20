@@ -64,6 +64,12 @@ extern bool gHiDPISupport;
 namespace
 {
     const F32 MEASURE = 3.f; // seconds of frames counted for each step
+    const F32 MEASURE_LONGEST = 9.f; // a step whose frame time keeps swinging is counted up to this long
+    const F32 CHUNK = 0.5f; // the count is also kept per half second, to see how much it swings
+    const F32 STEADY = 0.08f; // half-second frame times within this share of their mean count as steady
+    const F32 TOO_UNSTEADY = 0.3f; // the view as it is swinging more than this share is not judged
+    const F32 SWAY_METRES = 2.f; // the camera may sway this far from where the measure began
+    const F32 SWAY_COS = 0.9659f; // and turn up to 15 degrees
 
     bool sMeasuring = false;
     bool sOfferedThisSession = false;
@@ -423,10 +429,12 @@ void LuminousOptimiseFloater::showStatus(const std::string& text)
     getChild<LLUICtrl>("status")->setValue(text);
 }
 
+// The camera may sway about where it stood when the measure began -- on a
+// boat at anchor, say -- but not travel or turn away.
 bool LuminousOptimiseFloater::cameraMoved() const
 {
     const LLViewerCamera* camera = LLViewerCamera::getInstance();
-    return (camera->getOrigin() - mCameraOrigin).length() > 0.1f || camera->getAtAxis() * mCameraAt < 0.9994f; // 2 degrees
+    return (camera->getOrigin() - mCameraOrigin).length() > SWAY_METRES || camera->getAtAxis() * mCameraAt < SWAY_COS;
 }
 
 void LuminousOptimiseFloater::onMeasure()
@@ -540,7 +548,7 @@ void LuminousOptimiseFloater::beginStep()
         what = s.label + " in renders only";
     }
     const S32 seconds = ll_round((F32)(mSteps.size() - mStep) * (MEASURE + 1.8f));
-    showStatus(llformat("Measuring %d of %d: %s. Keep the camera still -- about %d s.", (S32)mStep + 1,
+    showStatus(llformat("Measuring %d of %d: %s. Keep the camera where it is -- about %d s.", (S32)mStep + 1,
                         (S32)mSteps.size(), what.c_str(), seconds));
 }
 
@@ -579,7 +587,8 @@ bool LuminousOptimiseFloater::step()
     }
     if (cameraMoved())
     {
-        stop("Stopped: the camera moved. Keep it still and measure again.");
+        stop("Stopped: the camera moved too far. A little sway is fine, as on a boat at anchor; keep it near "
+             "one place and measure again.");
         return true;
     }
     Step& s = mSteps[mStep];
@@ -590,17 +599,52 @@ bool LuminousOptimiseFloater::step()
         {
             mCounting = true;
             mFrames = LLFrameTimer::getFrameCount();
+            mChunkFrames = mFrames;
+            mChunkStart = 0.f;
+            mChunks.clear();
             mTimer.reset();
         }
         return false;
+    }
+    // The frame time of each half second, to see how much it swings
+    if (t - mChunkStart >= CHUNK)
+    {
+        const U32 now = LLFrameTimer::getFrameCount();
+        mChunks.push_back(1000.f * (t - mChunkStart) / (F32)llmax(1U, now - mChunkFrames));
+        mChunkFrames = now;
+        mChunkStart = t;
     }
     if (t < MEASURE)
     {
         return false;
     }
+    F32 mean = 0.f;
+    for (F32 ms : mChunks)
+    {
+        mean += ms;
+    }
+    mean /= (F32)llmax((size_t)1, mChunks.size());
+    F32 squares = 0.f;
+    for (F32 ms : mChunks)
+    {
+        squares += (ms - mean) * (ms - mean);
+    }
+    const F32 deviation = mChunks.size() > 1 ? sqrtf(squares / (F32)(mChunks.size() - 1)) : 0.f;
+    const F32 spread = deviation / llmax(mean, 0.1f);
+    // A frame time that swings is counted longer, so that the swing
+    // averages out
+    if (spread > STEADY && t < MEASURE_LONGEST)
+    {
+        return false;
+    }
     const U32 frames = llmax(1U, LLFrameTimer::getFrameCount() - mFrames);
     s.ms = 1000.f * t / (F32)frames;
-    LL_INFOS("LuminousOptimise") << s.label << ": " << s.ms << " ms" << LL_ENDL;
+    // Half seconds next to each other swing together, so the uncertainty
+    // takes one independent sample for every two seconds counted
+    s.err = deviation / sqrtf(llmax(1.f, t / 2.f));
+    s.spread = spread;
+    LL_INFOS("LuminousOptimise") << s.label << ": " << s.ms << " ms, swinging " << ll_round(spread * 100.f)
+                                 << " %, counted " << t << " s" << LL_ENDL;
     endStep();
     if (++mStep < mSteps.size())
     {
@@ -636,10 +680,34 @@ void LuminousOptimiseFloater::propose()
     const F32 target_fps = llmax(1.f, gSavedSettings.getF32("LuminousOptimiseTargetFPS"));
     const F32 target_ms = 1000.f / target_fps;
     auto fps = [](F32 ms) { return ll_round(1000.f / llmax(ms, 1.f)); };
+    // How much the frame time swung within a step: the view as it is, and any step
+    F32 swing = 0.f;
+    F32 any_swing = 0.f;
+    for (const Step& s : mSteps)
+    {
+        any_swing = llmax(any_swing, s.spread);
+        if (s.baseline)
+        {
+            swing = llmax(swing, s.spread);
+        }
+    }
+    if (swing > TOO_UNSTEADY)
+    {
+        const std::string text = llformat("The frame rate swung too much while it measured -- by about %d%% within a "
+                                          "few seconds -- as it does when much in view moves, a boat in waves or a "
+                                          "crowd. Pause the scene (the pause button beside Reset) and measure again, "
+                                          "or measure somewhere steadier.",
+                                          ll_round(swing * 100.f));
+        getChild<LLUICtrl>("results")->setValue(text);
+        showStatus("Not measured: the frame rate swung too much.");
+        LL_INFOS("LuminousOptimise") << text << LL_ENDL;
+        return;
+    }
     if (highest - lowest > base * 0.25f)
     {
         const std::string text = llformat("The live view kept changing while it measured, from %d to %d fps -- most "
-                                          "likely the region is still loading. Measure again once it has settled.",
+                                          "likely the region is still loading, or much in view moves. Measure again "
+                                          "once it has settled.",
                                           fps(highest), fps(lowest));
         getChild<LLUICtrl>("results")->setValue(text);
         showStatus("Not measured: the view kept changing.");
@@ -675,16 +743,27 @@ void LuminousOptimiseFloater::propose()
         const F32 f = (F32)(i - before) / (F32)llmax((size_t)1, after - before);
         const F32 then = mSteps[before].ms + (mSteps[after].ms - mSteps[before].ms) * f;
         const F32 saved = then - s.ms;
+        // A saving must also stand above twice what the swing leaves
+        // uncertain, in the step and in the view as it is round it
+        const F32 then_err = llmax(mSteps[before].err, mSteps[after].err);
+        const F32 step_noise = llmax(noise, 2.f * sqrtf(s.err * s.err + then_err * then_err));
         if (s.resolution)
         {
-            scale = &s;
-            scale_ratio = s.ms / llmax(then, 1.f);
+            if (saved > step_noise)
+            {
+                scale = &s;
+                scale_ratio = s.ms / llmax(then, 1.f);
+            }
             continue;
         }
         costs += llformat("\n  %s: %.1f ms", s.label.c_str(), llmax(saved, 0.f));
-        if (saved > noise)
+        if (saved > step_noise)
         {
             effects.push_back({ &s, saved });
+        }
+        else if (saved > noise)
+        {
+            costs += " (no more than the swing here)";
         }
     }
     std::sort(effects.begin(), effects.end(), [](const Saving& a, const Saving& b) { return a.ms > b.ms; });
@@ -740,6 +819,11 @@ void LuminousOptimiseFloater::propose()
     if (!costs.empty())
     {
         text += "\n\nWhat each live effect costs here:" + costs;
+    }
+    if (any_swing > STEADY)
+    {
+        text += "\n\nThe frame rate swung while it measured, so the steps that swung were counted longer, and "
+                "only savings larger than the swing are suggested.";
     }
     getChild<LLUICtrl>("results")->setValue(text);
     getChildView("apply_btn")->setEnabled(!mChanges.empty());

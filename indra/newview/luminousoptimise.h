@@ -80,6 +80,8 @@ private:
         std::vector<Setting> settings;  // what the step changes, none for the baseline
         F32 settle = 1.5f;              // seconds before counting frames
         F32 ms = 0.f;                   // the frame time measured
+        F32 err = 0.f;                  // how far the frame time measured may be off, from how much it swung
+        F32 spread = 0.f;               // how much the half-second frame times swung, as a share of their mean
         bool baseline = false;          // the view as the user has it, nothing changed
         bool resolution = false;        // a lower preview resolution, not an effect
     };
@@ -105,6 +107,9 @@ private:
     size_t mStep = 0;
     bool mCounting = false;
     U32 mFrames = 0;
+    std::vector<F32> mChunks;           // the frame time of each half second counted
+    U32 mChunkFrames = 0;
+    F32 mChunkStart = 0.f;
     LLTimer mTimer;
     LLVector3 mCameraOrigin;
     LLVector3 mCameraAt;

@@ -15580,6 +15580,13 @@ For the full picture, use Render in the Luminous sidebar.
      name="okignore"
      yestext="OK"/>
   </notification>
+  <notification
+   icon="notifytip.tga"
+   name="LuminousStylePauseRequired"
+   type="notifytip">
+    <unique/>
+Pause the scene before choosing a portrait style or framing.
+  </notification>
   <!-- </Luminous> -->
 
 </notifications>

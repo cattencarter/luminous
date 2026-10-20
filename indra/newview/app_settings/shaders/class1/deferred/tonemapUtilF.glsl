@@ -141,6 +141,111 @@ uniform float luminous_look_grain_size;  // pixels of a 1080-line frame
 
 const vec3 LUMINOUS_LUMA = vec3(0.2126, 0.7152, 0.0722);
 
+vec3 luminousWorn(vec3 c, vec2 frame_uv, vec2 res); // luminousWornF.glsl
+
+// Light leak: light that reached the film past the camera's seal, coming
+// in from the frame's edge -- a soft glow, or a band down the edge with a
+// sharp inner side and stripes along it (Hardness) -- strongest where it
+// comes in. Taken as film takes light: faint, it is its colour; stronger,
+// the film's other layers fill too, so a red leak goes on through orange
+// and yellow to white where it comes in. Rainbow turns its colour further
+// in. Screened onto the finished picture, as a leak lies over a photograph,
+// so a dark part takes its colour; a light part a little of it. Laid out on
+// the picture, as Worn photo is, from a hash: the same live and in every
+// frame of a render.
+uniform float luminous_leak;          // 0 .. 1; 0 draws nothing
+uniform vec3 luminous_leak_colour;    // its colour where faint, brightest channel 1
+uniform float luminous_leak_place;    // where it comes in, once round the frame: 0 the right edge's middle, 0.25 the top's
+uniform float luminous_leak_size;     // 0 .. 1, how far in it reaches
+uniform float luminous_leak_hardness; // 0 a soft glow .. 1 a band with a sharp inner side
+uniform float luminous_leak_rainbow;  // 0 .. 1, its colour turning further in
+uniform float luminous_leak_seed;     // which shape: a whole number
+uniform float luminous_frame_scale;   // the frame this many picture heights tall: a render's margin, or a shape chosen live
+uniform float luminous_picture_aspect; // the picture's width over height; 0: the frame's (a shape chosen on the Render tab, live)
+
+vec3 luminousToSrgb(vec3 c);
+vec3 luminousFromSrgb(vec3 c);
+
+float luminousLeakHash(vec2 p)
+{
+    vec3 p3 = fract(vec3(p.xyx) * 0.1031);
+    p3 += dot(p3, p3.yzx + 33.33);
+    return fract((p3.x + p3.y) * p3.z);
+}
+
+float luminousLeakNoise(vec2 p)
+{
+    vec2 i = floor(p);
+    vec2 f = fract(p);
+    f = f * f * (3.0 - 2.0 * f);
+    return mix(mix(luminousLeakHash(i), luminousLeakHash(i + vec2(1.0, 0.0)), f.x),
+               mix(luminousLeakHash(i + vec2(0.0, 1.0)), luminousLeakHash(i + vec2(1.0, 1.0)), f.x), f.y);
+}
+
+// a turn of the hue round the grey axis, in radians
+vec3 luminousLeakTurn(vec3 c, float a)
+{
+    const vec3 k = vec3(0.57735027);
+    float ca = cos(a);
+    return c * ca + cross(k, c) * sin(a) + k * dot(k, c) * (1.0 - ca);
+}
+
+vec3 luminousLightLeak(vec3 c)
+{
+    if (luminous_leak <= 0.0)
+    {
+        return c;
+    }
+    float frame_scale = luminous_frame_scale > 0.0 ? luminous_frame_scale : 1.0;
+    float aspect = screen_res.x / max(screen_res.y, 1.0);
+    vec2 half_size = vec2(0.5 * (luminous_picture_aspect > 0.0 ? luminous_picture_aspect : aspect), 0.5);
+    vec2 q = (vary_fragcoord - 0.5) * frame_scale * vec2(aspect, 1.0); // picture heights from its middle
+    // where the frame's edge meets the chosen direction, and which way is in
+    float angle = luminous_leak_place * 6.2831853;
+    vec2 dir = vec2(cos(angle), sin(angle));
+    vec2 hit = half_size / max(abs(dir), vec2(1e-4));
+    vec2 at = dir * min(hit.x, hit.y);
+    vec2 inward = hit.x < hit.y ? vec2(-sign(dir.x), 0.0) : vec2(0.0, -sign(dir.y));
+    vec2 along = vec2(-inward.y, inward.x);
+    float size = mix(0.15, 0.9, luminous_leak_size); // picture heights
+    float hard = clamp(luminous_leak_hardness, 0.0, 1.0);
+    float rainbow = clamp(luminous_leak_rainbow, 0.0, 1.0);
+    vec2 o = vec2(13.0, 29.0) * luminous_leak_seed;
+    vec2 d = q - at;
+    float depth = max(dot(d, inward), 0.0); // into the picture
+    float side = dot(d, along);             // along the edge
+    // how far in it reaches varies along the edge
+    float reach = size * (0.7 + 0.6 * luminousLeakNoise(vec2(side / size * 1.5, 3.0) + o)) * (1.0 + rainbow);
+    // soft: a glow that fades in and along the edge; hard: a band most of
+    // the edge's length, fading toward its sharp inner side
+    float glow = exp(-2.0 * pow(depth / reach, 2.0) - pow(side / (1.6 * size), 2.0));
+    float band = (1.0 - smoothstep(reach * mix(0.3, 0.9, hard), reach, depth))
+               * mix(1.0, exp(-1.5 * depth / reach), 0.6) * exp(-pow(side / (3.5 * size), 2.0));
+    float shape = mix(glow, band, hard);
+    // stripes along the edge, and the light uneven over its length
+    shape *= mix(1.0, 0.5 + 0.9 * smoothstep(0.25, 0.75, luminousLeakNoise(vec2(depth / size * 6.0, side / size * 0.25) + o + 7.0)), 0.3 + 0.7 * hard);
+    shape *= 0.8 + 0.4 * luminousLeakNoise(q / size * 2.0 + o + 11.0);
+    // brightest where it comes in
+    float core = exp(-pow(depth / (0.2 * reach), 2.0));
+    float exposure = shape * luminous_leak * 1.6 * (1.0 + 2.5 * core);
+    // the film's layers: the leak's colour first, the others as it grows
+    vec3 sens = luminous_leak_colour / max(max(luminous_leak_colour.r, luminous_leak_colour.g), max(luminous_leak_colour.b, 1e-3)) * 1.4 + 0.05;
+    vec3 light = 1.0 - exp(-exposure * sens);
+    if (rainbow > 0.0)
+    {
+        light = clamp(luminousLeakTurn(light, rainbow * 3.5 * smoothstep(0.1, 1.0, depth / reach)), 0.0, 1.0);
+    }
+    vec3 s = luminousToSrgb(clamp(c, 0.0, 1.0));
+    s = 1.0 - (1.0 - s) * (1.0 - light);
+    // and where it is strong, its colour over the picture's -- screened alone,
+    // a red leak over a blue sky turns pink -- most for a band, least for a
+    // glow and a rainbow, which the picture shows through
+    float l = dot(s, LUMINOUS_LUMA);
+    vec3 tinted = clamp(light * (l / max(dot(light, LUMINOUS_LUMA), 0.05)), 0.0, 1.0);
+    s = mix(s, tinted, clamp(exposure * 0.6, 0.0, 1.0) * mix(0.3, 0.75, hard) * (1.0 - 0.5 * rainbow));
+    return luminousFromSrgb(s);
+}
+
 vec3 luminousGrade(vec3 c)
 {
     c = max(luminous_look_balance * c, vec3(0.0)) * luminous_look_ev;
@@ -277,6 +382,8 @@ vec3 luminousFinish(vec3 c)
     vec3 sepia = luma * vec3(1.18, 1.0, 0.72);
     c = mix(c, sepia, luminous_look_tone);
 
+    c = luminousLightLeak(c);
+
     // Film grain: soft noise in clumps of the chosen size, scaled with the
     // frame so a large snapshot grains as the screen does; strongest in the
     // middle tones, as film's is, and the same for all three channels.
@@ -290,7 +397,8 @@ vec3 luminousFinish(vec3 c)
         float l = sqrt(clamp(dot(c, LUMINOUS_LUMA), 0.0, 1.0));
         c *= 1.0 + (n - 0.5) * luminous_look_grain * 0.6 * (4.0 * l * (1.0 - l));
     }
-    return c;
+    // Worn photo (luminousWornF.glsl), after the grain
+    return luminousWorn(c, vary_fragcoord, screen_res);
 }
 
 // AgX (Troy Sobotka), as fitted by Benjamin Wrensch: into AgX's working space,

@@ -155,19 +155,34 @@ attributedStringInfo getSegments(NSAttributedString *str)
     [[NSNotificationCenter defaultCenter] addObserver:self
                                              selector:@selector(windowDidChangeScreen:) name:NSWindowDidChangeScreenNotification
                                                object:[self window]];
+    // <Luminous> the window's scale settled or changed (it opened on, or
+    // went to, a display of another density): its size asked again
+    [[NSNotificationCenter defaultCenter] addObserver:self
+                                             selector:@selector(windowDidChangeScreen:) name:NSWindowDidChangeBackingPropertiesNotification
+                                               object:[self window]];
+    // </Luminous>
 
 
-    NSRect wnd_rect = [[self window] frame];
-    NSRect dev_rect = [self convertRectToBacking:wnd_rect];
-    if (!NSEqualSizes(wnd_rect.size,dev_rect.size))
+    // <Luminous> Only with HiDPI: without it the surface is in points, but
+    // the view, just put in its window, still converted to the display's
+    // pixels -- on a Retina display the viewer laid itself out twice the
+    // window's size and showed a corner of it, until the window changed
+    // display.
+    if (gHiDPISupport)
     {
-        callResize(dev_rect.size.width, dev_rect.size.height);
+        NSRect wnd_rect = [[self window] frame];
+        NSRect dev_rect = [self convertRectToBacking:wnd_rect];
+        if (!NSEqualSizes(wnd_rect.size,dev_rect.size))
+        {
+            callResize(dev_rect.size.width, dev_rect.size.height);
+        }
     }
+    // </Luminous>
 }
 
 - (void)windowResized:(NSNotification *)notification;
 {
-    NSSize dev_sz = [self convertSizeToBacking:[self frame].size];
+    NSSize dev_sz = gHiDPISupport ? [self convertSizeToBacking:[self frame].size] : [self frame].size; // <Luminous/> points without HiDPI
     callResize(dev_sz.width, dev_sz.height);
 }
 
@@ -366,7 +381,7 @@ attributedStringInfo getSegments(NSAttributedString *str)
         callRightMouseUp(mMousePos, [theEvent modifierFlags]);
         mSimulatedRightClick = false;
     } else {
-        NSPoint mPoint = [self convertPointToBacking:[theEvent locationInWindow]];
+        NSPoint mPoint = (gHiDPISupport ? [self convertPointToBacking:[theEvent locationInWindow]] : [theEvent locationInWindow]) /* <Luminous/> points without HiDPI */;
         mMousePos[0] = mPoint.x;
         mMousePos[1] = mPoint.y;
         callLeftMouseUp(mMousePos, [theEvent modifierFlags]);
@@ -385,7 +400,7 @@ attributedStringInfo getSegments(NSAttributedString *str)
 
 - (void)mouseMoved:(NSEvent *)theEvent
 {
-    NSPoint dev_delta = [self convertPointToBacking:NSMakePoint([theEvent deltaX], [theEvent deltaY])];
+    NSPoint dev_delta = (gHiDPISupport ? [self convertPointToBacking:NSMakePoint([theEvent deltaX], [theEvent deltaY])] : NSMakePoint([theEvent deltaX], [theEvent deltaY])) /* <Luminous/> */;
 
     float mouseDeltas[] = {
         float(dev_delta.x),
@@ -394,7 +409,7 @@ attributedStringInfo getSegments(NSAttributedString *str)
 
     callDeltaUpdate(mouseDeltas, 0);
 
-    NSPoint mPoint = [self convertPointToBacking:[theEvent locationInWindow]];
+    NSPoint mPoint = (gHiDPISupport ? [self convertPointToBacking:[theEvent locationInWindow]] : [theEvent locationInWindow]) /* <Luminous/> points without HiDPI */;
     mMousePos[0] = mPoint.x;
     mMousePos[1] = mPoint.y;
     callMouseMoved(mMousePos, 0);
@@ -409,7 +424,7 @@ attributedStringInfo getSegments(NSAttributedString *str)
     // The old CoreGraphics APIs we previously relied on are now flagged as obsolete.
     // NSEvent isn't obsolete, and provides us with the correct deltas.
 
-    NSPoint dev_delta = [self convertPointToBacking:NSMakePoint([theEvent deltaX], [theEvent deltaY])];
+    NSPoint dev_delta = (gHiDPISupport ? [self convertPointToBacking:NSMakePoint([theEvent deltaX], [theEvent deltaY])] : NSMakePoint([theEvent deltaX], [theEvent deltaY])) /* <Luminous/> */;
 
     float mouseDeltas[] = {
         float(dev_delta.x),
@@ -418,7 +433,7 @@ attributedStringInfo getSegments(NSAttributedString *str)
 
     callDeltaUpdate(mouseDeltas, 0);
 
-    NSPoint mPoint = [self convertPointToBacking:[theEvent locationInWindow]];
+    NSPoint mPoint = (gHiDPISupport ? [self convertPointToBacking:[theEvent locationInWindow]] : [theEvent locationInWindow]) /* <Luminous/> points without HiDPI */;
     mMousePos[0] = mPoint.x;
     mMousePos[1] = mPoint.y;
     callMouseDragged(mMousePos, 0);

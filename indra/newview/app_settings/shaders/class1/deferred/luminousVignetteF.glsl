@@ -46,13 +46,15 @@ uniform float luminous_vig_size;       // where the darkening is half, 0 centre 
 uniform float luminous_vig_softness;   // 0 a hard edge .. 1 very gradual
 uniform float luminous_vig_roundness;  // 1 round like a lens, 0 follows the frame
 uniform float luminous_aspect;         // frame width / height
-uniform float luminous_frame_scale;    // a render's margin: the frame this much larger than the picture
+uniform float luminous_frame_scale;    // the frame this many picture heights tall: a render's margin, or a shape chosen live
+uniform float luminous_picture_aspect; // the picture's width over height; 0: the frame's (a shape chosen on the Render tab, live)
 
 void main()
 {
-    // Distance from the centre, with the corner at 1 whatever the shape.
-    vec2 d = (vary_fragcoord.xy - 0.5) * luminous_frame_scale;
-    vec2 scale = vec2(mix(1.0, luminous_aspect, luminous_vig_roundness), 1.0);
+    // Distance from the picture's centre, with its corner at 1 whatever the shape.
+    float picture_aspect = luminous_picture_aspect > 0.0 ? luminous_picture_aspect : luminous_aspect;
+    vec2 d = (vary_fragcoord.xy - 0.5) * luminous_frame_scale * vec2(luminous_aspect / picture_aspect, 1.0);
+    vec2 scale = vec2(mix(1.0, picture_aspect, luminous_vig_roundness), 1.0);
     float r = length(d * scale) / length(0.5 * scale);
 
     float half_width = 0.5 * max(luminous_vig_softness, 0.02);

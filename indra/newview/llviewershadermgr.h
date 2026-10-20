@@ -276,6 +276,8 @@ extern LLGLSLShader         gLuminousFlareBrightProgram;     // <Luminous/> Phot
 extern LLGLSLShader         gLuminousFlareProgram;           // <Luminous/> Photo mode
 extern LLGLSLShader         gLuminousFlareCompositeProgram;  // <Luminous/> Photo mode
 extern LLGLSLShader         gLuminousDistortionProgram;      // <Luminous/> Photo mode
+extern LLGLSLShader         gLuminousGlitchProgram;          // <Luminous/> Photo mode
+extern LLGLSLShader         gLuminousFrameProgram;           // <Luminous/> Photo mode
 extern LLGLSLShader         gDeferredPostGammaCorrectProgram;
 extern LLGLSLShader         gLegacyPostGammaCorrectProgram;
 extern LLGLSLShader         gDeferredPostTonemapProgram;

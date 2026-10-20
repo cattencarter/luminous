@@ -57,6 +57,7 @@
 #include "lliconctrl.h"
 #include "llrender2dutils.h"
 #include "llsliderctrl.h"
+#include "llviewercamera.h"
 #include "luminousphotomode.h"
 #include "llagent.h"
 #include "llagentbenefits.h"
@@ -140,6 +141,9 @@ namespace
         { "lens_flare_mode", nullptr, "LuminousPhotoLensFlare",  "luminousphotolensflare_amount",  0.15f, "LuminousPhotoLensFlareRenderOnly" },
         { "distortion_mode", nullptr, "LuminousPhotoDistortion", "luminousphotodistortion_amount", 0.15f, "LuminousPhotoDistortionRenderOnly" },
         { "grain_mode",      nullptr, "LuminousPhotoGrain",      "grain_amount",                   0.25f, "LuminousPhotoGrainRenderOnly" },
+        { "worn_mode",       nullptr, "LuminousPhotoWorn",       "worn_amount",                    0.5f,  "LuminousPhotoWornRenderOnly" },
+        { "light_leak_mode", nullptr, "LuminousPhotoLightLeak",  "light_leak_amount",              0.5f,  "LuminousPhotoLightLeakRenderOnly" },
+        { "glitch_mode",     nullptr, "LuminousPhotoGlitch",     "glitch_amount",                  0.5f,  "LuminousPhotoGlitchRenderOnly" },
         { "clarity_mode",    nullptr, "LuminousPhotoClarity",    "look_clarity",                   0.2f,  "LuminousPhotoClarityRenderOnly" },
         { "sharpen_mode",    nullptr, "RenderCASSharpness",      "look_sharpening",                0.3f,  nullptr },
     };
@@ -345,7 +349,7 @@ namespace
 
     // The tabs, by their panels' names.
     const char* const TABS[] = { "luminous_light", "luminous_look", "luminous_colour",
-                                 "luminous_lens", "luminous_snapshot", "luminous_presets", "luminous_graphics" };
+                                 "luminous_lens", "luminous_snapshot", "luminous_styles", "luminous_presets", "luminous_graphics" };
 
     // What each snapshot format is, in the format menu's tooltip, by the
     // setting's value.
@@ -360,8 +364,8 @@ namespace
 
 // The sidebar's column, always there on the right edge: the tabs, each label
 // turned to read from top to bottom as Blender draws its sidebar's tabs,
-// Presets among them as a floppy disk, and below them, set a little apart,
-// Settings as a gear. The tab container's own row is hidden; this draws its
+// Portraits as a head and shoulders, Presets as a floppy disk and Settings as
+// a gear, the same gap between them all. The tab container's own row is hidden; this draws its
 // panels' labels and selects them.
 class LuminousSideTabs : public LLView
 {
@@ -371,7 +375,6 @@ public:
     static constexpr S32 GAP = 2;       // between tabs
     static constexpr S32 TOP = 4;       // inside the column's background, top and bottom
     static constexpr S32 ICON = 16;     // an icon tab's glyph
-    static constexpr S32 ICON_GAP = 10; // above the settings gear
 
     // The tabs drawn as an icon rather than a turned label: their image's
     // name, or nullptr.
@@ -384,6 +387,10 @@ public:
         if (panel->getName() == "luminous_presets")
         {
             return "Luminous_Presets";
+        }
+        if (panel->getName() == "luminous_styles")
+        {
+            return "Luminous_Portrait";
         }
         return panel->getName() == "luminous_graphics" ? "Icon_Gear" : nullptr;
     }
@@ -509,10 +516,6 @@ private:
             {
                 h = WIDTH - 2;             // square: the icon alone
             }
-            if (panel->getName() == "luminous_graphics")
-            {
-                top -= ICON_GAP - GAP;     // set a little apart from the tabs above
-            }
             rects.emplace_back(1, top, WIDTH - 1, top - h);
             top -= h + GAP;
         }
@@ -574,6 +577,23 @@ LuminousFloater::LuminousFloater(const LLSD& key)
     mCommitCallbackRegistrar.add("Luminous.Preset.Delete", boost::bind(&LuminousFloater::onDeletePreset, this));
     mCommitCallbackRegistrar.add("Luminous.ShowTab", boost::bind(&LuminousFloater::onShowTab, this, _2));
     mCommitCallbackRegistrar.add("Luminous.SidebarClose", boost::bind(&LuminousFloater::setFolded, this, true));
+}
+
+void LuminousFloater::refreshShapeButtons()
+{
+    // lying or standing means nothing for the window's own shape or a square
+    static LLCachedControl<S32> aspect(gSavedSettings, "LuminousSnapshotAspect", 0);
+    static LLCachedControl<bool> portrait(gSavedSettings, "LuminousSnapshotPortrait", false);
+    const bool turns = aspect() >= 2;
+    for (const char* name : { "snapshot_landscape", "snapshot_portrait" })
+    {
+        if (LLButton* button = findChild<LLButton>(name))
+        {
+            const bool is_portrait = std::string(name) == "snapshot_portrait";
+            button->setEnabled(turns);
+            button->setToggleState(turns && portrait() == is_portrait);
+        }
+    }
 }
 
 bool LuminousFloater::postBuild()
@@ -639,6 +659,20 @@ bool LuminousFloater::postBuild()
     }
     refreshEffectSwitches();
     refreshCapture();
+    // the picture's shape lying or standing (refreshed with the size below)
+    for (const char* name : { "snapshot_landscape", "snapshot_portrait" })
+    {
+        if (LLButton* button = findChild<LLButton>(name))
+        {
+            const bool portrait = std::string(name) == "snapshot_portrait";
+            button->setCommitCallback([this, portrait](LLUICtrl*, const LLSD&)
+            {
+                gSavedSettings.setBOOL("LuminousSnapshotPortrait", portrait);
+                refreshShapeButtons();
+            });
+        }
+    }
+    refreshShapeButtons();
     if (LLButton* choose = findChild<LLButton>("snapshot_folder_choose"))
     {
         choose->setCommitCallback([](LLUICtrl*, const LLSD&)
@@ -817,6 +851,39 @@ void LuminousFloater::dock()
     reserveRight(isInVisibleChain() ? space.mRight - rect.mLeft + RESERVE_GAP : 0);
 }
 
+// A floater opened from the sidebar -- a colour swatch's picker -- is its
+// dependent and snapped to it, so the two would be kept on screen as one: a
+// picker placed above the sidebar pushed it down, and each dock pulled the
+// picker back up with it, too often for a click on it to land. It is set
+// free instead, once: left of the box, its top level with the sidebar's, on
+// screen, and from then on it stays where it is put.
+void LuminousFloater::releaseDependents()
+{
+    if (!gFloaterView)
+    {
+        return;
+    }
+    const LLRect space = gFloaterView->getSnapRect();
+    for (LLView* view : *gFloaterView->getChildList())
+    {
+        LLFloater* floater = dynamic_cast<LLFloater*>(view);
+        if (!floater || floater->getDependee() != this || floater->getSnapTarget() != getHandle())
+        {
+            continue;
+        }
+        floater->clearSnapTarget();
+        const S32 width = floater->getRect().getWidth();
+        const S32 height = floater->getRect().getHeight();
+        LLRect rect;
+        rect.setLeftTopAndSize(llmax(space.mLeft, getRect().mLeft - 4 - width), llmin(space.mTop, getRect().mTop), width, height);
+        if (rect.mBottom < space.mBottom)
+        {
+            rect.translate(0, space.mBottom - rect.mBottom);
+        }
+        floater->setRect(rect);
+    }
+}
+
 namespace
 {
     S32 sReservedRight = 0;
@@ -955,6 +1022,9 @@ namespace
         { "LuminousUIHSLOptions",          "look_hsl_lp" },
         { "LuminousUIHSLOptions",          "hsl_sliders_lp" },
         { "LuminousUIGrainOptions",        "grain_options_lp" },
+        { "LuminousUIWornOptions",         "worn_options_lp" },
+        { "LuminousUILightLeakOptions",    "light_leak_options_lp" },
+        { "LuminousUIGlitchOptions",       "glitch_options_lp" },
         { "LuminousUIAnamorphicOptions",   "anamorphic_options_lp" },
         { "LuminousUILensFlareOptions",    "lens_flare_options_lp" },
         { "LuminousUIAlphaSortOptions",    "alpha_sort_options_lp" },
@@ -1504,7 +1574,17 @@ void LuminousFloater::refreshPauseButtons()
         return;
     }
     mPauseShown = shown;
-    for (const char* tab : { "light_defaults", "look_reset", "colour_defaults", "lens_defaults", "snapshot_defaults", "presets", "graphics_reset" })
+    if (!paused)
+    {
+        for (const char* name : { "style_names", "frame_combo" })
+        {
+            if (LLComboBox* menu = findChild<LLComboBox>(name))
+            {
+                menu->hideList();
+            }
+        }
+    }
+    for (const char* tab : { "light_defaults", "look_reset", "colour_defaults", "lens_defaults", "snapshot_defaults", "styles", "presets", "graphics_reset" })
     {
         if (LLButton* button = findChild<LLButton>(std::string("pause_scene_") + tab))
         {
@@ -1521,10 +1601,27 @@ void LuminousFloater::draw()
     refreshOptions(); // cheap: only a change re-lays the window out
     refreshLogSliders(); // cheap: four sliders, set only on a change
     refreshVectorSliders(); // and one
+    releaseDependents(); // before dock: a snapped floater would move with it
     dock(); // cheap: only a change of the window, the toolbars or the rows moves it
     refreshEffectSwitches();
     refreshCapture();
     refreshPauseButtons();
+    if (LLSliderCtrl* angle = findChild<LLSliderCtrl>("portrait_view_angle"))
+    {
+        if (!angle->hasFocus() && !angle->isMouseHeldDown())
+        {
+            angle->setValue(LLViewerCamera::getInstance()->getDefaultFOV());
+        }
+    }
+    if (LLComboBox* styles = findChild<LLComboBox>("style_names"))
+    {
+        const std::string selected = gSavedSettings.getString("LuminousStyle");
+        LLView* list = styles->findChild<LLView>("ComboBox");
+        if ((!list || !list->getVisible()) && styles->getValue().asString() != selected)
+        {
+            styles->setValue(selected);
+        }
+    }
     // Settings can change behind the window's back -- in preferences, by a
     // preset -- so look again twice a second while it is open.
     if (mRefreshTimer.getElapsedTimeF32() > 0.5f)
@@ -1543,14 +1640,14 @@ void LuminousFloater::draw()
         }
         if (LLTextBox* size = findChild<LLTextBox>("snapshot_size_px"))
         {
-            // What the snapshot size comes to, in pixels: the window's, or
-            // twice it (luminoushdrsnapshot.cpp, capped at the largest texture).
+            // What the picture comes to, in pixels: the window's, or twice
+            // it, in the chosen shape (LuminousHDRSnapshot::pictureSize)
             static LLCachedControl<U32> scale(gSavedSettings, "LuminousSnapshotScale", 1);
-            const U32 most = (U32)gGLManager.mGLMaxTextureSize;
-            const U32 s = llclamp((U32)scale(), 1U, 2U);
-            size->setText(llformat("%u x %u", llmin((U32)gViewerWindow->getWindowWidthRaw() * s, most),
-                                   llmin((U32)gViewerWindow->getWindowHeightRaw() * s, most)));
+            U32 w, h;
+            LuminousHDRSnapshot::pictureSize((F32)llclamp((U32)scale(), 1U, 2U), w, h);
+            size->setText(llformat("%u x %u", w, h));
         }
+        refreshShapeButtons();
         if (LLTextBox* live = findChild<LLTextBox>("live_view_size"))
         {
             // What the live view renders, before it is scaled up.

@@ -1,10 +1,10 @@
 <?xml version="1.0" encoding="utf-8" standalone="yes" ?>
 <!-- <Luminous> Luminous's own window: everything Luminous adds for photography,
      in one place, laid out in sections. Photo mode is always on. Tabs in
-     working order: Scene, Tone, Colour, Effects, Render, Save / Load (a
+     working order: Scene, Tone, Colour, Effects, Render, Portraits (L), Save / Load (a
      floppy disk), Settings (a gear); panel names are not the labels
      (luminous_light is Scene, luminous_look Tone, luminous_lens Effects,
-     luminous_snapshot Render, luminous_presets Save / Load,
+     luminous_snapshot Render, luminous_styles Portraits, luminous_presets Save / Load,
      luminous_graphics Settings). Every tab ends with its reset and a way to
      the shot. Most effects have one main slider; the arrow shows its finer
      settings (LuminousFloater::refreshOptions).
@@ -3766,7 +3766,7 @@
 							 left="10"
 							 mouse_opaque="true"
 							 name="lens_film_title"
-							 tool_tip="Film grain."
+							 tool_tip="Film grain, a worn print and light leaks."
 							 top="8"
 							 width="216">Film texture</text>
 							<view_border
@@ -3870,6 +3870,582 @@
 							 top="4"
 							 width="270" />
 						</layout_panel>
+						<layout_panel
+						 auto_resize="false"
+						 follows="left|top|right"
+						 height="26"
+						 layout="topleft"
+						 name="worn_lp"
+						 user_resize="false"
+						 width="316">
+							<button
+							 control_name="LuminousUIWornOptions"
+							 follows="left|top"
+							 height="10"
+							 image_pressed="Accordion_ArrowClosed_Press"
+							 image_pressed_selected="Accordion_ArrowOpened_Press"
+							 image_selected="Accordion_ArrowOpened_Off"
+							 image_unselected="Accordion_ArrowClosed_Off"
+							 is_toggle="true"
+							 label=""
+							 layout="topleft"
+							 left="8"
+							 name="worn_options"
+							 tool_tip="Show or hide the finer settings."
+							 top="7"
+							 width="10" />
+							<button
+							 follows="left|top"
+							 height="18"
+							 image_overlay="Luminous_Effect_Live"
+							 label=""
+							 layout="topleft"
+							 left="20"
+							 name="worn_mode"
+							 tab_stop="false"
+							 top="5"
+							 width="22" />
+							<text
+							 follows="left|top"
+							 height="16"
+							 layout="topleft"
+							 left="46"
+							 mouse_opaque="true"
+							 name="worn_name"
+							 tool_tip="Makes the picture look like an old, handled print: fading, stains, dust, scratches and worn edges. Not tied to the light."
+							 top="7"
+							 width="91">Worn photo</text>
+							<slider
+							 control_name="LuminousPhotoWorn"
+							 decimal_digits="2"
+							 follows="left|top"
+							 height="16"
+							 increment="0.01"
+							 initial_value="0"
+							 label=""
+							 label_width="0"
+							 layout="topleft"
+							 left="141"
+							 max_val="1"
+							 min_val="0"
+							 name="worn_amount"
+							 text_width="44"
+							 tool_tip="Makes the picture look like an old, handled print: fading, stains, dust, scratches and worn edges. Not tied to the light."
+							 top="4"
+							 width="165" />
+						</layout_panel>
+						<layout_panel
+						 auto_resize="false"
+						 follows="left|top|right"
+						 height="152"
+						 layout="topleft"
+						 name="worn_options_lp"
+						 user_resize="false"
+						 width="316">
+							<slider
+							 control_name="LuminousPhotoWornDust"
+							 decimal_digits="2"
+							 follows="left|top"
+							 height="16"
+							 increment="0.01"
+							 initial_value="0.5"
+							 label="Dust"
+							 label_width="102"
+							 layout="topleft"
+							 left="36"
+							 max_val="1"
+							 min_val="0"
+							 name="worn_dust"
+							 text_width="44"
+							 tool_tip="Light and dark specks; 0 none."
+							 top="4"
+							 width="270" />
+							<slider
+							 control_name="LuminousPhotoWornScratches"
+							 decimal_digits="2"
+							 follows="left|top"
+							 height="16"
+							 increment="0.01"
+							 initial_value="0.4"
+							 label="Scratches"
+							 label_width="102"
+							 layout="topleft"
+							 left="36"
+							 max_val="1"
+							 min_val="0"
+							 name="worn_scratches"
+							 text_width="44"
+							 tool_tip="Thin scratches across the picture; 0 none."
+							 top="28"
+							 width="270" />
+							<slider
+							 control_name="LuminousPhotoWornStains"
+							 decimal_digits="2"
+							 follows="left|top"
+							 height="16"
+							 increment="0.01"
+							 initial_value="0.5"
+							 label="Fading, stains"
+							 label_width="102"
+							 layout="topleft"
+							 left="36"
+							 max_val="1"
+							 min_val="0"
+							 name="worn_stains"
+							 text_width="44"
+							 tool_tip="Pale patches, brown stains and spots; 0 none."
+							 top="52"
+							 width="270" />
+							<slider
+							 control_name="LuminousPhotoWornEdges"
+							 decimal_digits="2"
+							 follows="left|top"
+							 height="16"
+							 increment="0.01"
+							 initial_value="0.5"
+							 label="Worn edges"
+							 label_width="102"
+							 layout="topleft"
+							 left="36"
+							 max_val="1"
+							 min_val="0"
+							 name="worn_edges"
+							 text_width="44"
+							 tool_tip="Edges and rounded corners worn down to the paper; 0 none."
+							 top="76"
+							 width="270" />
+							<slider
+							 control_name="LuminousPhotoWornPaper"
+							 decimal_digits="2"
+							 follows="left|top"
+							 height="16"
+							 increment="0.01"
+							 initial_value="0.4"
+							 label="Paper"
+							 label_width="102"
+							 layout="topleft"
+							 left="36"
+							 max_val="1"
+							 min_val="0"
+							 name="worn_paper"
+							 text_width="44"
+							 tool_tip="The paper's texture, seen most in light parts; 0 none."
+							 top="100"
+							 width="270" />
+							<slider
+							 control_name="LuminousPhotoWornVariation"
+							 decimal_digits="2"
+							 follows="left|top"
+							 height="16"
+							 increment="0.01"
+							 initial_value="0"
+							 label="Variation"
+							 label_width="102"
+							 layout="topleft"
+							 left="36"
+							 max_val="1"
+							 min_val="0"
+							 name="worn_variation"
+							 text_width="44"
+							 tool_tip="Another pattern of wear for each step."
+							 top="124"
+							 width="270" />
+						</layout_panel>
+						<layout_panel
+						 auto_resize="false"
+						 follows="left|top|right"
+						 height="26"
+						 layout="topleft"
+						 name="light_leak_lp"
+						 user_resize="false"
+						 width="316">
+							<button
+							 control_name="LuminousUILightLeakOptions"
+							 follows="left|top"
+							 height="10"
+							 image_pressed="Accordion_ArrowClosed_Press"
+							 image_pressed_selected="Accordion_ArrowOpened_Press"
+							 image_selected="Accordion_ArrowOpened_Off"
+							 image_unselected="Accordion_ArrowClosed_Off"
+							 is_toggle="true"
+							 label=""
+							 layout="topleft"
+							 left="8"
+							 name="light_leak_options"
+							 tool_tip="Show or hide the finer settings."
+							 top="7"
+							 width="10" />
+							<button
+							 follows="left|top"
+							 height="18"
+							 image_overlay="Luminous_Effect_Live"
+							 label=""
+							 layout="topleft"
+							 left="20"
+							 name="light_leak_mode"
+							 tab_stop="false"
+							 top="5"
+							 width="22" />
+							<text
+							 follows="left|top"
+							 height="16"
+							 layout="topleft"
+							 left="46"
+							 mouse_opaque="true"
+							 name="light_leak_name"
+							 tool_tip="Light in from the edge of the frame, as on film that let light in. Not tied to the scene's light."
+							 top="7"
+							 width="91">Light leak</text>
+							<slider
+							 control_name="LuminousPhotoLightLeak"
+							 decimal_digits="2"
+							 follows="left|top"
+							 height="16"
+							 increment="0.01"
+							 initial_value="0"
+							 label=""
+							 label_width="0"
+							 layout="topleft"
+							 left="141"
+							 max_val="1"
+							 min_val="0"
+							 name="light_leak_amount"
+							 text_width="44"
+							 tool_tip="Light in from the edge of the frame, as on film that let light in. Not tied to the scene's light."
+							 top="4"
+							 width="165" />
+						</layout_panel>
+						<layout_panel
+						 auto_resize="false"
+						 follows="left|top|right"
+						 height="152"
+						 layout="topleft"
+						 name="light_leak_options_lp"
+						 user_resize="false"
+						 width="316">
+							<text
+							 follows="left|top"
+							 height="16"
+							 layout="topleft"
+							 left="36"
+							 mouse_opaque="true"
+							 name="light_leak_colour_label"
+							 tool_tip="The leak's colour where it is faint, deep red as Luminous ships; stronger it goes on toward white, as on film. Click the swatch to choose another."
+							 top="7"
+							 width="100">Colour</text>
+							<color_swatch
+							 can_apply_immediately="true"
+							 control_name="LuminousPhotoLightLeakColour"
+							 follows="left|top"
+							 height="22"
+							 label_height="0"
+							 layout="topleft"
+							 left="141"
+							 name="light_leak_colour"
+							 tool_tip="The leak's colour where it is faint, deep red as Luminous ships; stronger it goes on toward white, as on film. Click the swatch to choose another."
+							 top="4"
+							 width="44" />
+							<slider
+							 control_name="LuminousPhotoLightLeakPlace"
+							 decimal_digits="2"
+							 follows="left|top"
+							 height="16"
+							 increment="0.01"
+							 initial_value="0"
+							 label="Where"
+							 label_width="102"
+							 layout="topleft"
+							 left="36"
+							 max_val="1"
+							 min_val="0"
+							 name="light_leak_place"
+							 text_width="44"
+							 tool_tip="Where it comes in, once round the frame: 0 the right edge, 0.25 the top, 0.5 the left, 0.75 the bottom."
+							 top="32"
+							 width="270" />
+							<slider
+							 control_name="LuminousPhotoLightLeakSize"
+							 decimal_digits="2"
+							 follows="left|top"
+							 height="16"
+							 increment="0.01"
+							 initial_value="0.5"
+							 label="Size"
+							 label_width="102"
+							 layout="topleft"
+							 left="36"
+							 max_val="1"
+							 min_val="0"
+							 name="light_leak_size"
+							 text_width="44"
+							 tool_tip="How far it reaches into the picture."
+							 top="56"
+							 width="270" />
+							<slider
+							 control_name="LuminousPhotoLightLeakHardness"
+							 decimal_digits="2"
+							 follows="left|top"
+							 height="16"
+							 increment="0.01"
+							 initial_value="0.4"
+							 label="Hardness"
+							 label_width="102"
+							 layout="topleft"
+							 left="36"
+							 max_val="1"
+							 min_val="0"
+							 name="light_leak_hardness"
+							 text_width="44"
+							 tool_tip="A soft glow (0) to a band down the edge with a sharp inner side and stripes (1)."
+							 top="80"
+							 width="270" />
+							<slider
+							 control_name="LuminousPhotoLightLeakRainbow"
+							 decimal_digits="2"
+							 follows="left|top"
+							 height="16"
+							 increment="0.01"
+							 initial_value="0"
+							 label="Rainbow"
+							 label_width="102"
+							 layout="topleft"
+							 left="36"
+							 max_val="1"
+							 min_val="0"
+							 name="light_leak_rainbow"
+							 text_width="44"
+							 tool_tip="Its colour turning through the rainbow further in; 0 none."
+							 top="104"
+							 width="270" />
+							<slider
+							 control_name="LuminousPhotoLightLeakVariation"
+							 decimal_digits="2"
+							 follows="left|top"
+							 height="16"
+							 increment="0.01"
+							 initial_value="0"
+							 label="Variation"
+							 label_width="102"
+							 layout="topleft"
+							 left="36"
+							 max_val="1"
+							 min_val="0"
+							 name="light_leak_variation"
+							 text_width="44"
+							 tool_tip="Another shape for each step."
+							 top="128"
+							 width="270" />
+						</layout_panel>
+						<layout_panel
+						 auto_resize="false"
+						 follows="left|top|right"
+						 height="34"
+						 layout="topleft"
+						 name="lens_digital_lp"
+						 user_resize="false"
+						 width="316">
+							<text
+							 follows="left|top"
+							 font="SansSerifBold"
+							 height="16"
+							 layout="topleft"
+							 left="10"
+							 mouse_opaque="true"
+							 name="lens_digital_title"
+							 tool_tip="Effects of a digital image gone wrong."
+							 top="8"
+							 width="216">Digital</text>
+							<view_border
+							 bevel_style="in"
+							 follows="left|top|right"
+							 height="0"
+							 layout="topleft"
+							 left="10"
+							 name="lens_digital_line"
+							 top="28"
+							 width="296" />
+						</layout_panel>
+						<layout_panel
+						 auto_resize="false"
+						 follows="left|top|right"
+						 height="26"
+						 layout="topleft"
+						 name="glitch_lp"
+						 user_resize="false"
+						 width="316">
+							<button
+							 control_name="LuminousUIGlitchOptions"
+							 follows="left|top"
+							 height="10"
+							 image_pressed="Accordion_ArrowClosed_Press"
+							 image_pressed_selected="Accordion_ArrowOpened_Press"
+							 image_selected="Accordion_ArrowOpened_Off"
+							 image_unselected="Accordion_ArrowClosed_Off"
+							 is_toggle="true"
+							 label=""
+							 layout="topleft"
+							 left="8"
+							 name="glitch_options"
+							 tool_tip="Show or hide the finer settings."
+							 top="7"
+							 width="10" />
+							<button
+							 follows="left|top"
+							 height="18"
+							 image_overlay="Luminous_Effect_Live"
+							 label=""
+							 layout="topleft"
+							 left="20"
+							 name="glitch_mode"
+							 tab_stop="false"
+							 top="5"
+							 width="22" />
+							<text
+							 follows="left|top"
+							 height="16"
+							 layout="topleft"
+							 left="46"
+							 mouse_opaque="true"
+							 name="glitch_name"
+							 tool_tip="Breaks the picture up like a damaged video: colours pulled apart, a worn tape's waver and static, ripples and scan lines."
+							 top="7"
+							 width="91">Glitch</text>
+							<slider
+							 control_name="LuminousPhotoGlitch"
+							 decimal_digits="2"
+							 follows="left|top"
+							 height="16"
+							 increment="0.01"
+							 initial_value="0"
+							 label=""
+							 label_width="0"
+							 layout="topleft"
+							 left="141"
+							 max_val="1"
+							 min_val="0"
+							 name="glitch_amount"
+							 text_width="44"
+							 tool_tip="Breaks the picture up like a damaged video: colours pulled apart, a worn tape's waver and static, ripples and scan lines."
+							 top="4"
+							 width="165" />
+						</layout_panel>
+						<layout_panel
+						 auto_resize="false"
+						 follows="left|top|right"
+						 height="152"
+						 layout="topleft"
+						 name="glitch_options_lp"
+						 user_resize="false"
+						 width="316">
+							<slider
+							 control_name="LuminousPhotoGlitchSplit"
+							 decimal_digits="2"
+							 follows="left|top"
+							 height="16"
+							 increment="0.01"
+							 initial_value="0.5"
+							 label="Colour split"
+							 label_width="102"
+							 layout="topleft"
+							 left="36"
+							 max_val="1"
+							 min_val="0"
+							 name="glitch_split"
+							 text_width="44"
+							 tool_tip="Red and cyan pulled apart; 0 none."
+							 top="4"
+							 width="270" />
+							<slider
+							 control_name="LuminousPhotoGlitchVHS"
+							 decimal_digits="2"
+							 follows="left|top"
+							 height="16"
+							 increment="0.01"
+							 initial_value="0.5"
+							 label="VHS"
+							 label_width="102"
+							 layout="topleft"
+							 left="36"
+							 max_val="1"
+							 min_val="0"
+							 name="glitch_vhs"
+							 text_width="44"
+							 tool_tip="A worn video tape: the picture wavers, soft bands of static, colour smeared sideways; 0 none."
+							 top="28"
+							 width="270" />
+							<slider
+							 control_name="LuminousPhotoGlitchWaves"
+							 decimal_digits="2"
+							 follows="left|top"
+							 height="16"
+							 increment="0.01"
+							 initial_value="0.3"
+							 label="Waves"
+							 label_width="102"
+							 layout="topleft"
+							 left="36"
+							 max_val="1"
+							 min_val="0"
+							 name="glitch_waves"
+							 text_width="44"
+							 tool_tip="Bands rippled in a sharp zigzag; 0 none."
+							 top="52"
+							 width="270" />
+							<slider
+							 control_name="LuminousPhotoGlitchLines"
+							 decimal_digits="2"
+							 follows="left|top"
+							 height="16"
+							 increment="0.01"
+							 initial_value="0.3"
+							 label="Scan lines"
+							 label_width="102"
+							 layout="topleft"
+							 left="36"
+							 max_val="1"
+							 min_val="0"
+							 name="glitch_lines"
+							 text_width="44"
+							 tool_tip="Fine dark lines across, as on a screen. Shown where the picture has enough pixels for them."
+							 top="76"
+							 width="270" />
+							<slider
+							 control_name="LuminousPhotoGlitchLineSize"
+							 decimal_digits="1"
+							 follows="left|top"
+							 height="16"
+							 increment="0.1"
+							 initial_value="3"
+							 label="Line size"
+							 label_width="102"
+							 layout="topleft"
+							 left="36"
+							 max_val="8"
+							 min_val="2"
+							 name="glitch_line_size"
+							 text_width="44"
+							 tool_tip="Fine (2) to coarse (8) scan lines, the same on the picture at any size."
+							 top="100"
+							 width="270" />
+							<slider
+							 control_name="LuminousPhotoGlitchVariation"
+							 decimal_digits="2"
+							 follows="left|top"
+							 height="16"
+							 increment="0.01"
+							 initial_value="0"
+							 label="Variation"
+							 label_width="102"
+							 layout="topleft"
+							 left="36"
+							 max_val="1"
+							 min_val="0"
+							 name="glitch_variation"
+							 text_width="44"
+							 tool_tip="Another pattern for each step."
+							 top="124"
+							 width="270" />
+						</layout_panel>
 					</layout_stack>
 				</panel>
 			</scroll_container>
@@ -3885,7 +4461,7 @@
 			 width="118">
 				<button.commit_callback
 				 function="Luminous.ResetSettings"
-				 parameter="LuminousPhotoDoF,LuminousPhotoDoFFront,CameraFNumber,CameraMaxCoF,LuminousPhotoDoFBlades,LuminousPhotoVignette,LuminousPhotoVignetteAmount,LuminousPhotoVignetteSize,LuminousPhotoVignetteSoftness,LuminousPhotoVignetteRoundness,LuminousPhotoBloom,LuminousPhotoBloomStrength,LuminousPhotoBloomSize,LuminousPhotoChromaticAberration,LuminousPhotoChromaticAberrationAmount,LuminousPhotoHalation,LuminousPhotoAnamorphic,LuminousPhotoAnamorphicTint,LuminousPhotoLensFlare,LuminousPhotoLensFlareGhosts,LuminousPhotoLensFlareHalo,LuminousPhotoLensFlareStarburst,LuminousPhotoLensFlareStarBlur,LuminousPhotoLensFlareDirt,LuminousPhotoLensFlareVariation,LuminousPhotoLensFlareAmplify,LuminousPhotoLensFlareRenderOnly,LuminousPhotoDistortion,LuminousPhotoDoFBlur,LuminousPhotoGrain,LuminousPhotoGrainSize,LuminousPhotoDoFRenderOnly,LuminousPhotoDepthOfFieldRenderOnly,LuminousPhotoVignetteRenderOnly,LuminousPhotoBloomRenderOnly,LuminousPhotoChromaticAberrationRenderOnly,LuminousPhotoHalationRenderOnly,LuminousPhotoAnamorphicRenderOnly,LuminousPhotoDistortionRenderOnly,LuminousPhotoGrainRenderOnly,RenderGlow,RenderGlowStrength,RenderGlowWidth" />
+				 parameter="LuminousPhotoDoF,LuminousPhotoDoFFront,CameraFNumber,CameraMaxCoF,LuminousPhotoDoFBlades,LuminousPhotoVignette,LuminousPhotoVignetteAmount,LuminousPhotoVignetteSize,LuminousPhotoVignetteSoftness,LuminousPhotoVignetteRoundness,LuminousPhotoBloom,LuminousPhotoBloomStrength,LuminousPhotoBloomSize,LuminousPhotoChromaticAberration,LuminousPhotoChromaticAberrationAmount,LuminousPhotoHalation,LuminousPhotoAnamorphic,LuminousPhotoAnamorphicTint,LuminousPhotoLensFlare,LuminousPhotoLensFlareGhosts,LuminousPhotoLensFlareHalo,LuminousPhotoLensFlareStarburst,LuminousPhotoLensFlareStarBlur,LuminousPhotoLensFlareDirt,LuminousPhotoLensFlareVariation,LuminousPhotoLensFlareAmplify,LuminousPhotoLensFlareRenderOnly,LuminousPhotoDistortion,LuminousPhotoDoFBlur,LuminousPhotoGrain,LuminousPhotoGrainSize,LuminousPhotoDoFRenderOnly,LuminousPhotoDepthOfFieldRenderOnly,LuminousPhotoVignetteRenderOnly,LuminousPhotoBloomRenderOnly,LuminousPhotoChromaticAberrationRenderOnly,LuminousPhotoHalationRenderOnly,LuminousPhotoAnamorphicRenderOnly,LuminousPhotoDistortionRenderOnly,LuminousPhotoGrainRenderOnly,LuminousPhotoWorn,LuminousPhotoWornDust,LuminousPhotoWornScratches,LuminousPhotoWornStains,LuminousPhotoWornEdges,LuminousPhotoWornPaper,LuminousPhotoWornVariation,LuminousPhotoWornRenderOnly,LuminousPhotoLightLeak,LuminousPhotoLightLeakColour,LuminousPhotoLightLeakPlace,LuminousPhotoLightLeakSize,LuminousPhotoLightLeakVariation,LuminousPhotoLightLeakHardness,LuminousPhotoLightLeakRainbow,LuminousPhotoLightLeakRenderOnly,LuminousPhotoGlitch,LuminousPhotoGlitchSplit,LuminousPhotoGlitchVHS,LuminousPhotoGlitchWaves,LuminousPhotoGlitchLines,LuminousPhotoGlitchLineSize,LuminousPhotoGlitchVariation,LuminousPhotoGlitchRenderOnly,RenderGlow,RenderGlowStrength,RenderGlowWidth" />
 			</button>
 			<button
 			 control_name="LuminousScenePaused"
@@ -4028,6 +4604,69 @@
 								 name="x2"
 								 value="2" />
 							</combo_box>
+						</layout_panel>
+						<layout_panel
+						 auto_resize="false"
+						 follows="left|top|right"
+						 height="30"
+						 layout="topleft"
+						 name="snapshot_shape_lp"
+						 user_resize="false"
+						 width="316">
+							<text
+							 follows="left|top"
+							 height="16"
+							 layout="topleft"
+							 left="22"
+							 mouse_opaque="true"
+							 name="snapshot_shape_label"
+							 tool_tip="The picture's shape: the window's, or the middle of the view in another. The live view shows what a render keeps, the rest dimmed."
+							 top="7"
+							 width="115">Shape</text>
+							<combo_box
+							 control_name="LuminousSnapshotAspect"
+							 follows="left|top"
+							 height="22"
+							 layout="topleft"
+							 left="138"
+							 name="snapshot_aspect"
+							 tool_tip="The picture's shape: the window's, or the middle of the view in another. The live view shows what a render keeps, the rest dimmed."
+							 top="4"
+							 width="98">
+								<combo_box.item label="Window" name="aspect_window" value="0" />
+								<combo_box.item label="1:1" name="aspect_1_1" value="1" />
+								<combo_box.item label="5:4" name="aspect_5_4" value="2" />
+								<combo_box.item label="4:3" name="aspect_4_3" value="3" />
+								<combo_box.item label="3:2" name="aspect_3_2" value="4" />
+								<combo_box.item label="16:9" name="aspect_16_9" value="5" />
+								<combo_box.item label="21:9" name="aspect_21_9" value="6" />
+							</combo_box>
+							<button
+							 follows="left|top"
+							 height="22"
+							 image_overlay="Luminous_Aspect_Landscape"
+							 is_toggle="true"
+							 label=""
+							 layout="topleft"
+							 left="240"
+							 name="snapshot_landscape"
+							 tab_stop="false"
+							 tool_tip="The shape lying: wider than tall."
+							 top="4"
+							 width="22" />
+							<button
+							 follows="left|top"
+							 height="22"
+							 image_overlay="Luminous_Aspect_Portrait"
+							 is_toggle="true"
+							 label=""
+							 layout="topleft"
+							 left="264"
+							 name="snapshot_portrait"
+							 tab_stop="false"
+							 tool_tip="The shape standing: 4:5, 3:4, 2:3, 9:16, taller than wide."
+							 top="4"
+							 width="22" />
 						</layout_panel>
 						<layout_panel
 						 auto_resize="false"
@@ -4484,16 +5123,16 @@
 		<panel
 		 follows="all"
 		 height="687"
-		 label="Save / Load"
+		 label="Portraits"
 		 layout="topleft"
-		 name="luminous_presets"
-		 tool_tip="Styles, presets and camera positions.">
+		 name="luminous_styles"
+		 tool_tip="Pause, choose a style and render a portrait.">
 			<scroll_container
 			 follows="all"
 			 height="643"
 			 layout="topleft"
 			 left="0"
-			 name="luminous_presets_scroll"
+			 name="luminous_styles_scroll"
 			 opaque="false"
 			 reserve_scroll_corner="false"
 			 top="0"
@@ -4501,23 +5140,50 @@
 				<panel
 				 background_visible="false"
 				 follows="left|top"
-				 height="302"
+				 height="318"
 				 layout="topleft"
 				 left="0"
-				 name="luminous_presets_content"
+				 name="luminous_styles_content"
 				 top="0"
 				 width="316">
 					<layout_stack
 					 animate="false"
 					 border_size="0"
 					 follows="left|top|right"
-					 height="302"
+					 height="318"
 					 layout="topleft"
 					 left="0"
-					 name="luminous_presets_stack"
+					 name="luminous_styles_stack"
 					 orientation="vertical"
 					 top="0"
 					 width="316">
+						<layout_panel
+						 auto_resize="false"
+						 follows="left|top|right"
+						 height="82"
+						 layout="topleft"
+						 name="portrait_pause_lp"
+						 user_resize="false"
+						 width="316">
+							<text
+							 follows="left|top"
+							 font="SansSerifBold"
+							 height="16"
+							 layout="topleft"
+							 left="10"
+							 name="portrait_pause_heading"
+							 top="8"
+							 width="296">1. Pause on a pose you like</text>
+							<text
+							 follows="left|top"
+							 height="44"
+							 layout="topleft"
+							 left="22"
+							 name="portrait_pause_instructions"
+							 top="30"
+							 width="284"
+							 wrap="true">Pause below to hold your pose and expression and unlock styles.</text>
+						</layout_panel>
 						<layout_panel
 						 auto_resize="false"
 						 follows="left|top|right"
@@ -4534,9 +5200,9 @@
 							 left="10"
 							 mouse_opaque="true"
 							 name="style_title"
-							 tool_tip="Looks made after photographs: light, sky, blur, colour and tone."
+							 tool_tip="Portrait looks combining light, sky, blur, colour and tone."
 							 top="8"
-							 width="216">Styles</text>
+							 width="296">2. Choose a style</text>
 							<view_border
 							 bevel_style="in"
 							 follows="left|top|right"
@@ -4550,7 +5216,7 @@
 						<layout_panel
 						 auto_resize="false"
 						 follows="left|top|right"
-						 height="50"
+						 height="30"
 						 layout="topleft"
 						 name="style_names_lp"
 						 user_resize="false"
@@ -4564,29 +5230,35 @@
 							 top="7"
 							 width="115">Style</text>
 							<combo_box
-							 control_name="LuminousStyle"
+							 enabled_control="LuminousScenePaused"
 							 follows="left|top"
 							 height="22"
 							 layout="topleft"
 							 left="138"
 							 name="style_names"
-							 tool_tip="Applies the style: sky, water, sun and every setting on Lighting, Tone, Colour and Effects. Only you see the sky."
+							 tool_tip="Pause the scene before choosing a style. Frames your avatar and applies the style's sky, water, sun and settings. Only you see the sky."
 							 top="4"
 							 width="161">
 								<combo_box.commit_callback
 								 function="Luminous.ApplyStyle" />
 							</combo_box>
-							<check_box
-							 control_name="LuminousStyleCamera"
+						</layout_panel>
+						<layout_panel
+						 auto_resize="false"
+						 follows="left|top|right"
+						 height="24"
+						 layout="topleft"
+						 name="style_open_sky_lp"
+						 user_resize="false"
+						 width="316">
+							<text
 							 follows="left|top"
 							 height="16"
-							 label="Move the camera"
 							 layout="topleft"
-							 left="138"
-							 name="style_camera"
-							 tool_tip="Also moves the camera to frame you as the style wants."
-							 top="30"
-							 width="161" />
+							 left="22"
+							 name="style_open_sky"
+							 top="2"
+							 width="284">Styles work best under an open sky.</text>
 						</layout_panel>
 						<layout_panel
 						 auto_resize="false"
@@ -4602,16 +5274,18 @@
 							 layout="topleft"
 							 left="22"
 							 name="frame_label"
-							 tool_tip="Moves the camera to frame you, focused on your eyes. Esc gives the camera back."
+							 tool_tip="Pause to frame yourself. With a style selected, its light follows the new angle. Esc gives the camera back."
 							 top="7"
 							 width="115">Frame me</text>
 							<combo_box
+							 enabled_control="LuminousScenePaused"
 							 follows="left|top"
 							 height="22"
 							 label="Choose..."
 							 layout="topleft"
 							 left="138"
 							 name="frame_combo"
+							 tool_tip="Pause to choose a framing. Keeps the current style's light aligned with the camera."
 							 top="4"
 							 width="161">
 								<combo_box.item
@@ -4642,6 +5316,165 @@
 								 function="Luminous.Frame" />
 							</combo_box>
 						</layout_panel>
+						<layout_panel
+						 auto_resize="false"
+						 follows="left|top|right"
+						 height="30"
+						 layout="topleft"
+						 name="portrait_view_lp"
+						 user_resize="false"
+						 width="316">
+							<text
+							 follows="left|top"
+							 height="16"
+							 layout="topleft"
+							 left="22"
+							 name="portrait_view_label"
+							 top="7"
+							 width="115">View angle</text>
+							<slider
+							 can_edit_text="true"
+							 decimal_digits="3"
+							 enabled_control="LuminousScenePaused"
+							 follows="left|top"
+							 height="22"
+							 increment="0.002"
+							 initial_value="1.048"
+							 label=""
+							 label_width="0"
+							 layout="topleft"
+							 left="138"
+							 max_val="3.06"
+							 min_val="0.08"
+							 name="portrait_view_angle"
+							 text_width="44"
+							 tool_tip="Changes perspective while keeping your avatar roughly the same size in the picture. The camera moves automatically. Play restores the previous view angle."
+							 top="4"
+							 width="137">
+								<slider.commit_callback
+								 function="Luminous.PortraitViewAngle" />
+							</slider>
+							<button
+							 enabled_control="LuminousScenePaused"
+							 follows="left|top"
+							 height="16"
+							 label="D"
+							 layout="topleft"
+							 left="279"
+							 name="portrait_view_default"
+							 tool_tip="Reset the portrait view angle to 1.048 while keeping your framing."
+							 top="7"
+							 width="20">
+								<button.commit_callback
+								 function="Luminous.PortraitViewAngleDefault" />
+							</button>
+						</layout_panel>
+						<layout_panel
+						 auto_resize="false"
+						 follows="left|top|right"
+						 height="88"
+						 layout="topleft"
+						 name="portrait_render_lp"
+						 user_resize="false"
+						 width="316">
+							<text
+							 follows="left|top"
+							 font="SansSerifBold"
+							 height="16"
+							 layout="topleft"
+							 left="10"
+							 name="portrait_render_heading"
+							 top="8"
+							 width="296">3. Press Render</text>
+							<text
+							 follows="left|top"
+							 height="44"
+							 layout="topleft"
+							 left="22"
+							 name="portrait_render_instructions"
+							 top="30"
+							 width="284"
+							 wrap="true">Adjust the camera if you like, then press Render. Press pause again when you're done.</text>
+						</layout_panel>
+					</layout_stack>
+				</panel>
+			</scroll_container>
+			<button
+			 control_name="LuminousScenePaused"
+			 follows="left|bottom"
+			 height="22"
+			 image_overlay="Pause_Off"
+			 is_toggle="true"
+			 layout="topleft"
+			 left="132"
+			 name="pause_scene_styles"
+			 tool_tip="Pause everything that moves (animations, water, clouds, particles) while you move the camera freely. Click again to go on."
+			 top="655"
+			 width="28" />
+			<button
+			 follows="right|bottom"
+			 height="22"
+			 label="Preview"
+			 layout="topleft"
+			 left="164"
+			 name="styles_preview"
+			 tool_tip="A quick picture with every effect at full quality: four frames at the window's size, without the margin or Full detail's wait. Render then makes the full picture of the same moment."
+			 top="655"
+			 width="74">
+				<button.commit_callback
+				 function="Luminous.PreviewImage" />
+			</button>
+			<button
+			 follows="right|bottom"
+			 height="22"
+			 label="Render"
+			 layout="topleft"
+			 left="242"
+			 name="styles_capture"
+			 tool_tip="Render the picture now, with the Render tab's settings."
+			 top="655"
+			 width="78">
+				<button.commit_callback
+				 function="Luminous.SaveSnapshot" />
+			</button>
+		</panel>
+		<panel
+		 follows="all"
+		 height="687"
+		 label="Save / Load"
+		 layout="topleft"
+		 name="luminous_presets"
+		 tool_tip="Your saved presets and camera positions.">
+			<scroll_container
+			 follows="all"
+			 height="643"
+			 layout="topleft"
+			 left="0"
+			 name="luminous_presets_scroll"
+			 opaque="false"
+			 reserve_scroll_corner="false"
+			 top="0"
+			 width="330">
+				<panel
+				 background_visible="false"
+				 follows="left|top"
+				 height="188"
+				 layout="topleft"
+				 left="0"
+				 name="luminous_presets_content"
+				 top="0"
+				 width="316">
+					<layout_stack
+					 animate="false"
+					 border_size="0"
+					 follows="left|top|right"
+					 height="188"
+					 layout="topleft"
+					 left="0"
+					 name="luminous_presets_stack"
+					 orientation="vertical"
+					 top="0"
+					 width="316">
 						<layout_panel
 						 auto_resize="false"
 						 follows="left|top|right"

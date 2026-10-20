@@ -236,6 +236,8 @@ LLGLSLShader            gLuminousFlareBrightProgram;     // <Luminous/> Photo mo
 LLGLSLShader            gLuminousFlareProgram;           // <Luminous/> Photo mode
 LLGLSLShader            gLuminousFlareCompositeProgram;  // <Luminous/> Photo mode
 LLGLSLShader            gLuminousDistortionProgram;      // <Luminous/> Photo mode
+LLGLSLShader            gLuminousGlitchProgram;          // <Luminous/> Photo mode
+LLGLSLShader            gLuminousFrameProgram;           // <Luminous/> Photo mode
 LLGLSLShader            gDeferredWLSkyProgram;
 LLGLSLShader            gEnvironmentMapProgram;
 LLGLSLShader            gDeferredWLCloudProgram;
@@ -948,6 +950,7 @@ std::string LLViewerShaderMgr::loadBasicShaders()
     index_channels.push_back(-1);    shaders.push_back( make_pair( "deferred/aoUtil.glsl",                          1) );
     index_channels.push_back(-1);    shaders.push_back( make_pair( "deferred/pbrterrainUtilF.glsl",                 1) );
     index_channels.push_back(-1);    shaders.push_back( make_pair( "deferred/tonemapUtilF.glsl",                    1) );
+    index_channels.push_back(-1);    shaders.push_back( make_pair( "deferred/luminousWornF.glsl",                   1) ); // <Luminous/> Worn photo
     index_channels.push_back(-1);    shaders.push_back( make_pair( "deferred/reflectionProbeF.glsl",                has_reflection_probes ? 3 : 2) );
     index_channels.push_back(-1);    shaders.push_back( make_pair( "deferred/screenSpaceReflUtil.glsl",             ssr ? 3 : 1) );
     index_channels.push_back(-1);    shaders.push_back( make_pair( "lighting/lightNonIndexedF.glsl",                    mShaderLevel[SHADER_LIGHTING] ) );
@@ -1228,6 +1231,8 @@ bool LLViewerShaderMgr::loadShadersDeferred()
         gLuminousFlareProgram.unload();           // <Luminous/>
         gLuminousFlareCompositeProgram.unload();  // <Luminous/>
         gLuminousDistortionProgram.unload();      // <Luminous/>
+        gLuminousGlitchProgram.unload();          // <Luminous/>
+        gLuminousFrameProgram.unload();           // <Luminous/>
         gDeferredPostTonemapGammaCorrectProgram.unload();
         gNoPostTonemapGammaCorrectProgram.unload();
         gDeferredPostTonemapLegacyGammaCorrectProgram.unload();
@@ -2849,6 +2854,7 @@ bool LLViewerShaderMgr::loadShadersDeferred()
         gCASProgram.mShaderFiles.clear();
         gCASProgram.mShaderFiles.push_back(make_pair("deferred/postDeferredNoTCV.glsl", GL_VERTEX_SHADER));
         gCASProgram.mShaderFiles.push_back(make_pair("deferred/CASF.glsl", GL_FRAGMENT_SHADER));
+        gCASProgram.mShaderFiles.push_back(make_pair("deferred/luminousWornF.glsl", GL_FRAGMENT_SHADER)); // <Luminous/> Worn photo
         gCASProgram.mShaderLevel = mShaderLevel[SHADER_DEFERRED];
         success = gCASProgram.createShader();
         // llassert(success);
@@ -2867,6 +2873,7 @@ bool LLViewerShaderMgr::loadShadersDeferred()
         gCASLegacyGammaProgram.mShaderFiles.clear();
         gCASLegacyGammaProgram.mShaderFiles.push_back(make_pair("deferred/postDeferredNoTCV.glsl", GL_VERTEX_SHADER));
         gCASLegacyGammaProgram.mShaderFiles.push_back(make_pair("deferred/CASF.glsl", GL_FRAGMENT_SHADER));
+        gCASLegacyGammaProgram.mShaderFiles.push_back(make_pair("deferred/luminousWornF.glsl", GL_FRAGMENT_SHADER)); // <Luminous/> Worn photo
         gCASLegacyGammaProgram.mShaderLevel = mShaderLevel[SHADER_DEFERRED];
         gCASLegacyGammaProgram.clearPermutations();
         gCASLegacyGammaProgram.addPermutation("GAMMA_CORRECT", "1");
@@ -3177,6 +3184,26 @@ bool LLViewerShaderMgr::loadShadersDeferred()
         if (!gLuminousDistortionProgram.createShader())
         {
             LL_WARNS("Shader") << "Luminous distortion shader failed to build; photo mode continues without it" << LL_ENDL;
+        }
+        gLuminousGlitchProgram.mName = "Luminous Glitch Shader";
+        gLuminousGlitchProgram.mShaderFiles.clear();
+        gLuminousGlitchProgram.clearPermutations();
+        gLuminousGlitchProgram.mShaderFiles.push_back(make_pair("deferred/postDeferredNoTCV.glsl", GL_VERTEX_SHADER));
+        gLuminousGlitchProgram.mShaderFiles.push_back(make_pair("deferred/luminousGlitchF.glsl", GL_FRAGMENT_SHADER));
+        gLuminousGlitchProgram.mShaderLevel = mShaderLevel[SHADER_DEFERRED];
+        if (!gLuminousGlitchProgram.createShader())
+        {
+            LL_WARNS("Shader") << "Luminous glitch shader failed to build; photo mode continues without it" << LL_ENDL;
+        }
+        gLuminousFrameProgram.mName = "Luminous Frame Shader";
+        gLuminousFrameProgram.mShaderFiles.clear();
+        gLuminousFrameProgram.clearPermutations();
+        gLuminousFrameProgram.mShaderFiles.push_back(make_pair("deferred/postDeferredNoTCV.glsl", GL_VERTEX_SHADER));
+        gLuminousFrameProgram.mShaderFiles.push_back(make_pair("deferred/luminousFrameF.glsl", GL_FRAGMENT_SHADER));
+        gLuminousFrameProgram.mShaderLevel = mShaderLevel[SHADER_DEFERRED];
+        if (!gLuminousFrameProgram.createShader())
+        {
+            LL_WARNS("Shader") << "Luminous frame shader failed to build; photo mode continues without it" << LL_ENDL;
         }
     }
     if (success && LuminousPhotoMode::isOn())

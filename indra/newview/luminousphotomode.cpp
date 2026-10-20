@@ -36,6 +36,7 @@
 #include "llagentcamera.h"
 #include "llappviewer.h"
 #include "llcharacter.h"
+#include "llhudeffectlookat.h"
 #include "llenvironment.h"
 #include "llmotioncontroller.h"
 #include "lldiriterator.h"
@@ -48,6 +49,7 @@
 #include "llsdutil_math.h"
 #include "lluictrl.h"
 #include "llviewercamera.h"
+#include "llviewerjoystick.h"
 #include "llviewertexture.h"
 #include "llvovolume.h"
 #include "llviewercontrol.h"
@@ -737,12 +739,46 @@ namespace LuminousPhotoMode
         // A render's margin: the frame drawn this much larger each way than
         // the picture, which is cut from its middle; 1 without.
         F32 sFrameScale = 1.f;
-        // The lens effects that place themselves by the frame's corners --
-        // vignette, aberration, distortion -- measure from the picture's.
+
+        // A frame that becomes a picture: any of Firestorm's snapshots, and
+        // each frame of Luminous's accumulated renders.
+        bool pictureFrame()
+        {
+            return gSnapshot || sAccumulationFrame >= 0;
+        }
+
+        // The picture within the frame: how many picture heights the frame
+        // is tall, and the picture's shape (0: the frame's own). In a render,
+        // the margin round it, in its shape; live, in a shape chosen on the
+        // Render tab, the centred part a render keeps.
+        void pictureInFrame(F32& frame_scale, F32& picture_aspect)
+        {
+            frame_scale = sFrameScale;
+            picture_aspect = 0.f;
+            if (pictureFrame())
+            {
+                return;
+            }
+            const F32 aspect = LuminousHDRSnapshot::chosenAspect();
+            const F32 frame_aspect = gViewerWindow ? gViewerWindow->getWorldViewAspectRatio() : 0.f;
+            if (aspect > 0.f && frame_aspect > 0.f && std::fabs(aspect - frame_aspect) > 0.002f)
+            {
+                picture_aspect = aspect;
+                frame_scale = llmax(1.f, aspect / frame_aspect); // a wider picture is the frame's width, less tall
+            }
+        }
+
+        // The lens effects that place themselves by the picture's edges and
+        // corners -- vignette, aberration, distortion, the flare, Worn photo,
+        // Light leak, Glitch -- measure from the picture's.
         void bindFrameScale(LLGLSLShader& shader)
         {
             static LLStaticHashedString s_scale("luminous_frame_scale");
-            shader.uniform1f(s_scale, sFrameScale);
+            static LLStaticHashedString s_aspect("luminous_picture_aspect");
+            F32 frame_scale, picture_aspect;
+            pictureInFrame(frame_scale, picture_aspect);
+            shader.uniform1f(s_scale, frame_scale);
+            shader.uniform1f(s_aspect, picture_aspect);
         }
         // The lens distortion drawn into this frame, 0 if none: Second
         // Life's depth of field comes after it (bindDistortedDepth).
@@ -754,13 +790,6 @@ namespace LuminousPhotoMode
         F32 sNotedAperture = 0.f;
         F32 sLensFocus = 0.f;
         F32 sLensAperture = 0.f;
-
-        // A frame that becomes a picture: any of Firestorm's snapshots, and
-        // each frame of Luminous's accumulated renders.
-        bool pictureFrame()
-        {
-            return gSnapshot || sAccumulationFrame >= 0;
-        }
 
         // Low quality in the live view: a smaller size while the shot is set
         // up, never in a picture, with one switch for each effect where it
@@ -799,7 +828,7 @@ namespace LuminousPhotoMode
         // by pixel.
         enum class Kept { VolumetricLight, ProjectorBeams, SoftShadows, AmbientOcclusion, Reflections, DepthOfField, Enhance, Bloom,
                           SunShafts, Vignette, ChromaticAberration, Clarity, Halation, Anamorphic, Distortion, Grain,
-                          LensFlare, ContactShadows, AlphaSort };
+                          LensFlare, ContactShadows, AlphaSort, Worn, Glitch, LightLeak };
 
         bool keptForRenders(Kept effect)
         {
@@ -817,6 +846,9 @@ namespace LuminousPhotoMode
             static LLCachedControl<bool> anamorphic(gSavedSettings, "LuminousPhotoAnamorphicRenderOnly", false);
             static LLCachedControl<bool> distortion(gSavedSettings, "LuminousPhotoDistortionRenderOnly", false);
             static LLCachedControl<bool> grain(gSavedSettings, "LuminousPhotoGrainRenderOnly", false);
+            static LLCachedControl<bool> worn(gSavedSettings, "LuminousPhotoWornRenderOnly", false);
+            static LLCachedControl<bool> glitch(gSavedSettings, "LuminousPhotoGlitchRenderOnly", false);
+            static LLCachedControl<bool> leak(gSavedSettings, "LuminousPhotoLightLeakRenderOnly", false);
             static LLCachedControl<bool> flare(gSavedSettings, "LuminousPhotoLensFlareRenderOnly", true);
             static LLCachedControl<bool> contact(gSavedSettings, "LuminousPhotoContactShadowsRenderOnly", true);
             static LLCachedControl<bool> soft(gSavedSettings, "LuminousPhotoSoftShadowsRenderOnly", true);
@@ -841,6 +873,9 @@ namespace LuminousPhotoMode
                 case Kept::LensFlare:           return flare;
                 case Kept::ContactShadows:      return contact;
                 case Kept::AlphaSort:           return true; // never live
+                case Kept::Worn:                return worn;
+                case Kept::Glitch:              return glitch;
+                case Kept::LightLeak:           return leak;
             }
             return false;
         }
@@ -1722,6 +1757,75 @@ namespace LuminousPhotoMode
             endRewrite(lens, shader);
             sDistortionDrawn = llclamp(distortion(), -1.f, 1.f);
         }
+
+        // Glitch, after everything else the lens does: it breaks up the
+        // picture the lens has made.
+        void renderGlitch(LensFrame& lens)
+        {
+            static LLCachedControl<F32> glitch(gSavedSettings, "LuminousPhotoGlitch", 0.f);
+            static LLCachedControl<F32> split(gSavedSettings, "LuminousPhotoGlitchSplit", 0.5f);
+            static LLCachedControl<F32> vhs(gSavedSettings, "LuminousPhotoGlitchVHS", 0.5f);
+            static LLCachedControl<F32> waves(gSavedSettings, "LuminousPhotoGlitchWaves", 0.3f);
+            static LLCachedControl<F32> lines(gSavedSettings, "LuminousPhotoGlitchLines", 0.3f);
+            static LLCachedControl<F32> line_size(gSavedSettings, "LuminousPhotoGlitchLineSize", 3.f);
+            static LLCachedControl<F32> variation(gSavedSettings, "LuminousPhotoGlitchVariation", 0.f);
+            if (glitch() < 0.005f || !drawnNow(Kept::Glitch))
+            {
+                return;
+            }
+            LLGLSLShader& shader = gLuminousGlitchProgram;
+            if (!shader.isComplete())
+            {
+                return;
+            }
+            LL_PROFILE_GPU_ZONE("luminous glitch");
+            static LLStaticHashedString s_glitch("luminous_glitch");
+            static LLStaticHashedString s_parts("luminous_glitch_parts");
+            static LLStaticHashedString s_seed("luminous_glitch_seed");
+            static LLStaticHashedString s_line_size("luminous_glitch_line_size");
+            LLGLDisable blend(GL_BLEND);
+            beginRewrite(lens, shader);
+            shader.uniform2f(LLShaderMgr::DEFERRED_SCREEN_RES, (F32)lens.frame->getWidth(), (F32)lens.frame->getHeight());
+            shader.uniform1f(s_glitch, llclamp((F32)glitch(), 0.f, 1.f));
+            shader.uniform4f(s_parts, llclamp((F32)split(), 0.f, 1.f), llclamp((F32)vhs(), 0.f, 1.f),
+                             llclamp((F32)waves(), 0.f, 1.f), llclamp((F32)lines(), 0.f, 1.f));
+            shader.uniform1f(s_line_size, llclamp((F32)line_size(), 2.f, 8.f));
+            shader.uniform1f(s_seed, (F32)ll_round(llclamp((F32)variation(), 0.f, 1.f) * 100.f));
+            bindFrameScale(shader);
+            drawScreenTriangle();
+            endRewrite(lens, shader);
+        }
+    }
+
+    bool renderPictureFrame(LLRenderTarget* src, LLRenderTarget* dst)
+    {
+        if (gSnapshot || gCubeSnapshot || !gPipeline.hasRenderDebugFeatureMask(LLPipeline::RENDER_DEBUG_FEATURE_UI))
+        {
+            return false;
+        }
+        F32 frame_scale, picture_aspect;
+        pictureInFrame(frame_scale, picture_aspect);
+        LLGLSLShader& shader = gLuminousFrameProgram;
+        if (picture_aspect <= 0.f || !shader.isComplete())
+        {
+            return false;
+        }
+        // the centred part in the picture's shape, as rawSnapshot keeps it
+        const F32 frame_aspect = (F32)src->getWidth() / (F32)llmax(src->getHeight(), 1U);
+        const F32 w = picture_aspect < frame_aspect ? picture_aspect / frame_aspect : 1.f;
+        const F32 h = picture_aspect < frame_aspect ? 1.f : frame_aspect / picture_aspect;
+        LL_PROFILE_GPU_ZONE("luminous frame");
+        static LLStaticHashedString s_rect("luminous_frame_rect");
+        LLGLDisable blend(GL_BLEND);
+        dst->bindTarget();
+        shader.bind();
+        bindClamped(shader, src);
+        shader.uniform2f(LLShaderMgr::DEFERRED_SCREEN_RES, (F32)dst->getWidth(), (F32)dst->getHeight());
+        shader.uniform4f(s_rect, 0.5f - 0.5f * w, 0.5f - 0.5f * h, 0.5f + 0.5f * w, 0.5f + 0.5f * h);
+        drawScreenTriangle();
+        shader.unbind();
+        dst->flush();
+        return true;
     }
 
     LLRenderTarget* renderLens(LLRenderTarget* hdr_screen, LLRenderTarget* scratch)
@@ -1745,6 +1849,7 @@ namespace LuminousPhotoMode
             renderChromaticAberration(lens);
         }
         renderDistortion(lens);
+        renderGlitch(lens);
         return lens.frame;
     }
 
@@ -1869,6 +1974,65 @@ namespace LuminousPhotoMode
         shader.uniform1f(s_dither, eight_bit ? 1.f / 255.f : 0.f);
     }
 
+    namespace
+    {
+        // Worn photo (luminousWornF.glsl), drawn in the pass that grain is
+        // drawn in: on is whether this pass draws it.
+        void bindWornUniforms(LLGLSLShader& shader, bool on)
+        {
+            static LLCachedControl<F32> worn(gSavedSettings, "LuminousPhotoWorn", 0.f);
+            static LLCachedControl<F32> dust(gSavedSettings, "LuminousPhotoWornDust", 0.5f);
+            static LLCachedControl<F32> scratches(gSavedSettings, "LuminousPhotoWornScratches", 0.4f);
+            static LLCachedControl<F32> stains(gSavedSettings, "LuminousPhotoWornStains", 0.5f);
+            static LLCachedControl<F32> edges(gSavedSettings, "LuminousPhotoWornEdges", 0.5f);
+            static LLCachedControl<F32> paper(gSavedSettings, "LuminousPhotoWornPaper", 0.4f);
+            static LLCachedControl<F32> variation(gSavedSettings, "LuminousPhotoWornVariation", 0.f);
+            static LLStaticHashedString s_worn("luminous_worn");
+            static LLStaticHashedString s_parts("luminous_worn_parts");
+            static LLStaticHashedString s_paper("luminous_worn_paper");
+            static LLStaticHashedString s_seed("luminous_worn_seed");
+            shader.uniform1f(s_worn, on && drawnNow(Kept::Worn) ? llclamp((F32)worn(), 0.f, 1.f) : 0.f);
+            shader.uniform4f(s_parts, llclamp((F32)dust(), 0.f, 1.f), llclamp((F32)scratches(), 0.f, 1.f),
+                             llclamp((F32)stains(), 0.f, 1.f), llclamp((F32)edges(), 0.f, 1.f));
+            shader.uniform1f(s_paper, llclamp((F32)paper(), 0.f, 1.f));
+            shader.uniform1f(s_seed, (F32)ll_round(llclamp((F32)variation(), 0.f, 1.f) * 100.f));
+            bindFrameScale(shader);
+        }
+    }
+
+    namespace
+    {
+        // Light leak (tonemapUtilF.glsl), in the tonemap pass's grading.
+        void bindLightLeakUniforms(LLGLSLShader& shader)
+        {
+            static LLCachedControl<F32> leak(gSavedSettings, "LuminousPhotoLightLeak", 0.f);
+            static LLCachedControl<LLColor4> colour_setting(gSavedSettings, "LuminousPhotoLightLeakColour", LLColor4(1.f, 0.2f, 0.06f, 1.f));
+            static LLCachedControl<F32> place(gSavedSettings, "LuminousPhotoLightLeakPlace", 0.f);
+            static LLCachedControl<F32> size(gSavedSettings, "LuminousPhotoLightLeakSize", 0.5f);
+            static LLCachedControl<F32> variation(gSavedSettings, "LuminousPhotoLightLeakVariation", 0.f);
+            static LLCachedControl<F32> hardness(gSavedSettings, "LuminousPhotoLightLeakHardness", 0.4f);
+            static LLCachedControl<F32> rainbow(gSavedSettings, "LuminousPhotoLightLeakRainbow", 0.f);
+            static LLStaticHashedString s_hardness("luminous_leak_hardness");
+            static LLStaticHashedString s_rainbow("luminous_leak_rainbow");
+            static LLStaticHashedString s_leak("luminous_leak");
+            static LLStaticHashedString s_colour("luminous_leak_colour");
+            static LLStaticHashedString s_place("luminous_leak_place");
+            static LLStaticHashedString s_size("luminous_leak_size");
+            static LLStaticHashedString s_seed("luminous_leak_seed");
+            shader.uniform1f(s_leak, drawnNow(Kept::LightLeak) ? llclamp((F32)leak(), 0.f, 1.f) : 0.f);
+            // the colour's hue, at full brightness: the strength is the slider's
+            LLColor4 c = colour_setting();
+            const F32 top = llmax(c.mV[0], llmax(c.mV[1], c.mV[2]));
+            LLColor3 colour = top > 1e-4f ? LLColor3(c.mV[0] / top, c.mV[1] / top, c.mV[2] / top) : LLColor3(1.f, 0.2f, 0.06f);
+            shader.uniform3fv(s_colour, 1, colour.mV);
+            shader.uniform1f(s_place, llclamp((F32)place(), 0.f, 1.f));
+            shader.uniform1f(s_size, llclamp((F32)size(), 0.f, 1.f));
+            shader.uniform1f(s_hardness, llclamp((F32)hardness(), 0.f, 1.f));
+            shader.uniform1f(s_rainbow, llclamp((F32)rainbow(), 0.f, 1.f));
+            shader.uniform1f(s_seed, (F32)ll_round(llclamp((F32)variation(), 0.f, 1.f) * 100.f));
+        }
+    }
+
     void bindGrainUniforms(LLGLSLShader& shader)
     {
         static LLCachedControl<F32> grain(gSavedSettings, "LuminousPhotoGrain", 0.f);
@@ -1878,6 +2042,7 @@ namespace LuminousPhotoMode
         const bool on = sGrainAfterSharpening && isOn() && !gSnapshotNoPost && drawnNow(Kept::Grain);
         shader.uniform1f(s_grain, on ? llclamp((F32)grain(), 0.f, 1.f) : 0.f);
         shader.uniform1f(s_grain_size, llclamp((F32)grain_size(), 1.f, 4.f));
+        bindWornUniforms(shader, sGrainAfterSharpening && isOn() && !gSnapshotNoPost);
     }
 
     namespace
@@ -2499,6 +2664,12 @@ namespace LuminousPhotoMode
             "LuminousPhotoMonochrome", "LuminousPhotoSepia", "LuminousPhotoHighlights",
             "LuminousPhotoShadows", "LuminousPhotoVibrance", "LuminousPhotoMonochromeFilter",
             "LuminousPhotoGrain", "LuminousPhotoGrainSize", "LuminousPhotoWhites", "LuminousPhotoBlacks",
+            "LuminousPhotoWorn", "LuminousPhotoWornDust", "LuminousPhotoWornScratches", "LuminousPhotoWornStains",
+            "LuminousPhotoWornEdges", "LuminousPhotoWornPaper", "LuminousPhotoWornVariation",
+            "LuminousPhotoGlitch", "LuminousPhotoGlitchSplit", "LuminousPhotoGlitchVHS",
+            "LuminousPhotoGlitchWaves", "LuminousPhotoGlitchLines", "LuminousPhotoGlitchLineSize",
+            "LuminousPhotoGlitchVariation", "LuminousPhotoLightLeak", "LuminousPhotoLightLeakColour",
+            "LuminousPhotoLightLeakPlace", "LuminousPhotoLightLeakSize", "LuminousPhotoLightLeakVariation", "LuminousPhotoLightLeakHardness", "LuminousPhotoLightLeakRainbow",
             "LuminousPhotoShadowsWarmth", "LuminousPhotoShadowsTint", "LuminousPhotoMidtonesWarmth",
             "LuminousPhotoMidtonesTint", "LuminousPhotoHighlightsWarmth", "LuminousPhotoHighlightsTint",
             "LuminousPhotoClarity", "LuminousPhotoLUT", "LuminousPhotoLUTStrength", "LuminousPhotoTonemapMix",
@@ -2676,6 +2847,8 @@ namespace LuminousPhotoMode
         // kept for renders: none live; after sharpening: in that pass instead
         shader.uniform1f(s_grain, drawnNow(Kept::Grain) && !sGrainAfterSharpening ? llclamp((F32)grain(), 0.f, 1.f) : 0.f);
         shader.uniform1f(s_grain_size, llclamp(grain_size(), 1.f, 4.f));
+        bindWornUniforms(shader, !sGrainAfterSharpening);
+        bindLightLeakUniforms(shader);
         shader.uniform1f(s_whites, llclamp(whites(), -1.f, 1.f));
         shader.uniform1f(s_blacks, llclamp(blacks(), -1.f, 1.f));
         shader.uniform3fv(s_bal_sh, 1, balanceGains(sh_warm(), sh_tint()).mV);
@@ -2989,6 +3162,13 @@ namespace LuminousPhotoMode
             "LuminousPhotoBloomRenderOnly", "LuminousPhotoChromaticAberrationRenderOnly",
             "LuminousPhotoHalationRenderOnly", "LuminousPhotoAnamorphicRenderOnly",
             "LuminousPhotoDistortionRenderOnly", "LuminousPhotoGrainRenderOnly",
+            "LuminousPhotoWorn", "LuminousPhotoWornDust", "LuminousPhotoWornScratches", "LuminousPhotoWornStains",
+            "LuminousPhotoWornEdges", "LuminousPhotoWornPaper", "LuminousPhotoWornVariation", "LuminousPhotoWornRenderOnly",
+            "LuminousPhotoGlitch", "LuminousPhotoGlitchSplit", "LuminousPhotoGlitchVHS",
+            "LuminousPhotoGlitchWaves", "LuminousPhotoGlitchLines", "LuminousPhotoGlitchLineSize",
+            "LuminousPhotoGlitchVariation", "LuminousPhotoGlitchRenderOnly", "LuminousPhotoLightLeak",
+            "LuminousPhotoLightLeakColour", "LuminousPhotoLightLeakPlace", "LuminousPhotoLightLeakSize",
+            "LuminousPhotoLightLeakVariation", "LuminousPhotoLightLeakHardness", "LuminousPhotoLightLeakRainbow", "LuminousPhotoLightLeakRenderOnly",
             "LuminousPhotoLensFlare", "LuminousPhotoLensFlareGhosts", "LuminousPhotoLensFlareHalo",
             "LuminousPhotoLensFlareStarburst", "LuminousPhotoLensFlareStarBlur", "LuminousPhotoLensFlareDirt", "LuminousPhotoLensFlareVariation",
             "LuminousPhotoLensFlareAmplify",
@@ -3123,10 +3303,19 @@ namespace LuminousPhotoMode
 
         bool sOwnWater = false; // the personal water showing came with one of these
 
+        // The moon a style placed for its camera, kept with its environment
+        bool sMoonPlaced = false;
+        F32 sMoonAzimuth = 0.f;
+        F32 sMoonElevation = 0.f;
+
         void showSky(const LLSettingsSky::ptr_t& sky, F32 azimuth, F32 elevation,
                      const LLSettingsWater::ptr_t& water = LLSettingsWater::ptr_t())
         {
             sky->setSunRotation(sunRotation(azimuth, elevation));
+            if (sMoonPlaced)
+            {
+                sky->setMoonRotation(sunRotation(sMoonAzimuth, sMoonElevation));
+            }
             sky->update();
             LLEnvironment& environment = LLEnvironment::instance();
             if (water)
@@ -3158,12 +3347,21 @@ namespace LuminousPhotoMode
     // Second Life's own environment windows, on land, and by friends. A
     // network call: each is uploaded to the grid as an inventory item
     // (settings items cost nothing). Names already there are left alone, so
-    // it never makes doubles.
+    // it never makes doubles; the items of the earlier styles go to the
+    // Trash first, which keeps them.
     namespace
     {
-        constexpr S32 ENVIRONMENTS_VERSION = 2; // raise when the shipped styles change
+        constexpr S32 ENVIRONMENTS_VERSION = 6; // raise when the shipped styles change
         const std::string ENVIRONMENTS_FOLDER = "#Environments";
         const std::string OLD_ENVIRONMENTS_FOLDER = "Environments"; // version 1's, one sky per environment
+        // version 2's items: a sky per style and two waters, of the styles
+        // before the portraits; to the Trash for an account that had version 2
+        // or earlier
+        const std::set<std::string> EARLIER_ITEMS = {
+            "Autumn rays", "Blue hour", "Cinematic", "Dreamy pastel", "Dusty road", "Faded film", "Golden backlight",
+            "High key", "Lilac", "Low key", "Misty morning", "Moonlight", "Noir", "Pink dusk", "Rembrandt",
+            "Silhouette", "Storm", "Summer day", "Sunset sea", "Teal shadows", "Warm glow",
+            "Low key water", "Sunset sea water" };
 
         LLSD readDoc(const std::string& folder, const std::string& name)
         {
@@ -3234,12 +3432,30 @@ namespace LuminousPhotoMode
             LLInventoryModel::cat_array_t* cats = nullptr;
             LLInventoryModel::item_array_t* items = nullptr;
             gInventory.getDirectDescendentsOf(folder, cats, items);
+            std::vector<LLUUID> earlier;
+            const bool had_earlier = gSavedPerAccountSettings.getS32("LuminousEnvironmentsInInventory") < 3;
             if (items)
             {
                 for (const auto& item : *items)
                 {
-                    have.insert(item->getName());
+                    if (had_earlier && EARLIER_ITEMS.count(item->getName()))
+                    {
+                        earlier.push_back(item->getUUID());
+                    }
+                    else
+                    {
+                        have.insert(item->getName());
+                    }
                 }
+            }
+            for (const LLUUID& id : earlier)
+            {
+                gInventory.removeItem(id);
+            }
+            if (!earlier.empty())
+            {
+                LL_INFOS("LuminousPhotoMode") << "Moved " << earlier.size() << " items of the earlier styles from #Luminous/"
+                                              << ENVIRONMENTS_FOLDER << " to the Trash." << LL_ENDL;
             }
             const std::string styles = gDirUtilp->getExpandedFilename(LL_PATH_APP_SETTINGS, "luminous_styles");
             std::set<std::string> waters; // environments whose water goes in too
@@ -3268,6 +3484,13 @@ namespace LuminousPhotoMode
                 if (LLSettingsSky::ptr_t sky = environmentSkyFor(doc, elevation))
                 {
                     sky->setSunRotation(sunRotation(90.f, elevation));
+                    if (style.has("moon_offset"))
+                    {
+                        // the moon as far round from the sun as the style has it
+                        const F32 moon_azimuth = 90.f + (F32)(style["sun_offset"].asReal() - style["moon_offset"].asReal());
+                        const F32 moon_elevation = style.has("moon_elevation") ? (F32)style["moon_elevation"].asReal() : 20.f;
+                        sky->setMoonRotation(sunRotation(moon_azimuth, moon_elevation));
+                    }
                     sky->setName(name);
                     sky->update();
                     LLSettingsVOBase::createInventoryItem(sky, folder, name);
@@ -3559,6 +3782,7 @@ namespace LuminousPhotoMode
                 }
                 sEnvironmentSky = sky;
                 sEnvironmentKeys.clear();
+                sMoonPlaced = false;
                 showSky(environmentSkyAt(elevation), azimuth, elevation, water);
                 gSavedSettings.setF32("LuminousEnvSunAzimuth", fmodf(azimuth + 360.f, 360.f));
                 gSavedSettings.setF32("LuminousEnvSunElevation", elevation);
@@ -3578,7 +3802,8 @@ namespace LuminousPhotoMode
         return applyEnvironmentWithSun(name, nullptr, nullptr);
     }
 
-    bool applyEnvironmentWithSun(const std::string& name, const F32* sun_azimuth, const F32* sun_elevation)
+    bool applyEnvironmentWithSun(const std::string& name, const F32* sun_azimuth, const F32* sun_elevation,
+                                 const F32* moon_azimuth, const F32* moon_elevation)
     {
         LLEnvironment& environment = LLEnvironment::instance();
         if (name.empty())
@@ -3586,6 +3811,7 @@ namespace LuminousPhotoMode
             // the region's (or parcel's) own sky again
             sEnvironmentSky.reset();
             sEnvironmentKeys.clear();
+            sMoonPlaced = false;
             sOwnSky = false;
             sOwnWater = false;
             environment.clearEnvironment(LLEnvironment::ENV_LOCAL);
@@ -3658,6 +3884,13 @@ namespace LuminousPhotoMode
         }
         sEnvironmentSky = sky;
         sEnvironmentKeys = keys;
+        // the moon where given, else where the environment has it
+        sMoonPlaced = moon_azimuth != nullptr;
+        if (sMoonPlaced)
+        {
+            sMoonAzimuth = fmodf(*moon_azimuth + 360.f, 360.f);
+            sMoonElevation = moon_elevation ? *moon_elevation : 20.f;
+        }
         showSky(environmentSkyAt(elevation), azimuth, elevation, water);
         gSavedSettings.setF32("LuminousEnvSunAzimuth", fmodf(azimuth + 360.f, 360.f));
         gSavedSettings.setF32("LuminousEnvSunElevation", elevation);
@@ -3724,6 +3957,7 @@ namespace LuminousPhotoMode
                 environment.updateEnvironment(LLEnvironment::TRANSITION_INSTANT);
                 sEnvironmentSky.reset();
                 sEnvironmentKeys.clear();
+                sMoonPlaced = false;
                 sOwnSky = false;
                 gSavedSettings.setString("LuminousEnvTemplate", std::string());
                 followShownSun();
@@ -3736,7 +3970,10 @@ namespace LuminousPhotoMode
         }
         else if (!sky.empty())
         {
-            applyEnvironmentWithSun(sky, &azimuth, &elevation);
+            const F32 moon_azimuth = (F32)preset["moon_azimuth"].asReal();
+            const F32 moon_elevation = (F32)preset["moon_elevation"].asReal();
+            const bool moon = preset.has("moon_azimuth");
+            applyEnvironmentWithSun(sky, &azimuth, &elevation, moon ? &moon_azimuth : nullptr, moon ? &moon_elevation : nullptr);
         }
         else
         {
@@ -3789,12 +4026,16 @@ namespace LuminousPhotoMode
 
         // The framings: how much of her the frame holds, from how far round
         // and how high. Around 0 is straight in front of her; pitch above 0
-        // looks down at her, below 0 up at her. Only the camera's place and
-        // the way it looks: the view angle stays the user's, and the camera
-        // is not tilted.
+        // looks down at her, below 0 up at her. All framings start with the
+        // same portrait view angle. The camera is not tilted.
         // `ahead`: she looks the way she faces, not toward the camera --
         // from behind her the camera is where she would have to turn to.
         struct Framing { const char* name; const char* span; F32 around; F32 pitch; bool ahead; };
+        constexpr F32 DEFAULT_PORTRAIT_VIEW_ANGLE = 1.048f;
+        constexpr F32 FRAMING_VIEW_ANGLE = 0.95f;
+        F32 sViewBeforePause = 0.f;
+        F32 sCameraAngleBeforePause = 0.f;
+        bool sPauseViewSaved = false;
         // Her face, or her from the hips up: straight on, from below, a
         // little round and above (tilted), from behind a little to one side
         // with her back to the camera, or a little from the side and below.
@@ -3833,6 +4074,65 @@ namespace LuminousPhotoMode
         LLVector3d sFramedEye;
         bool sArrived = false;     // the camera has reached the framed place (it glides there)
         F32 sFramedAt = 0.f;
+
+        // Keep the focused plane's size and position in the image while
+        // changing the lens. Using the camera target also handles several
+        // slider changes before the next camera update.
+        void setPortraitViewAngle(F32 angle)
+        {
+            if (!scenePaused() || !isAgentAvatarValid()
+                || gAgentCamera.cameraMouselook()
+                || LLViewerJoystick::getInstance()->getOverrideCamera())
+            {
+                return;
+            }
+            LLViewerCamera* camera = LLViewerCamera::getInstance();
+            const F32 old_angle = camera->getDefaultFOV();
+            camera->setDefaultFOV(angle);
+            const F32 new_angle = camera->getDefaultFOV();
+            gSavedSettings.setF32("CameraAngle", new_angle);
+            if (fabsf(old_angle - new_angle) < 0.00001f)
+            {
+                return;
+            }
+            const LLVector3d eye = gAgentCamera.calcCameraPositionTargetGlobal();
+            const LLVector3d focus = gAgentCamera.calcFocusPositionTargetGlobal();
+            const LLVector3d offset = eye - focus;
+            const F64 scale = tanf(old_angle * 0.5f) / tanf(new_angle * 0.5f);
+            const LLVector3d new_eye = focus + offset * scale;
+
+            // Setting camera focus also changes her gaze. Keep the gaze
+            // chosen by her pose or framing, including views from behind.
+            ELookAtType look_type = LOOKAT_TARGET_NONE;
+            LLPointer<LLViewerObject> look_object;
+            LLVector3 look_position;
+            if (gAgentCamera.mLookAt && !gAgentCamera.mLookAt->isDead())
+            {
+                look_type = gAgentCamera.mLookAt->getLookAtType();
+                look_object = gAgentCamera.mLookAt->getTargetObject();
+                const LLVector3d target = gAgentCamera.mLookAt->getTargetOffset();
+                look_position = look_object ? LLVector3(target) : gAgent.getPosAgentFromGlobal(target);
+            }
+            gAgentCamera.unlockView();
+            gAgentCamera.setFocusOnAvatar(false, false);
+            gAgentCamera.setCameraPosAndFocusGlobal(new_eye, focus, LLUUID::null);
+            gAgentCamera.stopCameraAnimation();
+            gAgentCamera.stopCameraSmoothing();
+            gAgentCamera.setLookAt(LOOKAT_TARGET_CLEAR);
+            if (look_type != LOOKAT_TARGET_NONE && look_type != LOOKAT_TARGET_CLEAR)
+            {
+                gAgentCamera.setLookAt(look_type, look_object, look_position);
+            }
+            if (sFramed)
+            {
+                sFramedFocus = focus;
+                sFramedEye = new_eye;
+                sArrived = false;
+                sFramedAt = (F32)gFrameTimeSeconds;
+            }
+            LL_INFOS("LuminousPhotoMode") << "Portrait lens: " << old_angle << " -> " << new_angle
+                << ", distance " << offset.magVec() << " -> " << (new_eye - focus).magVec() << LL_ENDL;
+        }
 
         void letGo()
         {
@@ -3928,8 +4228,18 @@ namespace LuminousPhotoMode
         }
         const F32 around = camera.has("around") ? (F32)camera["around"].asReal() : framing.around;
         const F32 pitch = camera.has("pitch") ? (F32)camera["pitch"].asReal() : framing.pitch;
-        // the user's view angle, to fit the span to
-        const F32 fov = llclamp(LLViewerCamera::getInstance()->getDefaultFOV() * RAD_TO_DEG, 10.f, 100.f);
+        // A style may also move the camera along its axis (times the fitted
+        // distance) and up or down with its focus (metres)
+        const F32 scale = camera.has("distance") ? llclamp((F32)camera["distance"].asReal(), 0.25f, 4.f) : 1.f;
+        const F32 raise = camera.has("raise") ? llclamp((F32)camera["raise"].asReal(), -1.f, 1.f) : 0.f;
+        // and its own vertical view angle, in degrees
+        const F32 view_angle = camera.has("view_angle") ? llclamp((F32)camera["view_angle"].asReal(), 10.f, 100.f) * DEG_TO_RAD
+                                                        : FRAMING_VIEW_ANGLE;
+        LLViewerCamera* viewer_camera = LLViewerCamera::getInstance();
+        viewer_camera->setDefaultFOV(view_angle);
+        gSavedSettings.setF32("CameraAngle", viewer_camera->getDefaultFOV());
+        // Fit the span to the actual view angle, including camera limits.
+        const F32 fov = llclamp(viewer_camera->getDefaultFOV() * RAD_TO_DEG, 10.f, 100.f);
 
         // Where she is, from her skeleton: the frame's top and bottom for the
         // span, measured from her eyes, and the way she faces as her pose
@@ -3968,9 +4278,9 @@ namespace LuminousPhotoMode
             bottom = eyes.mV[VZ] - 0.45f;
         }
         LLVector3 centre = eyes;
-        centre.mV[VZ] = (top + bottom) * 0.5f;
+        centre.mV[VZ] = (top + bottom) * 0.5f + raise;
         // Far enough that the span fills the frame's height
-        const F32 distance = ((top - bottom) * 0.5f) / tanf(fov * DEG_TO_RAD * 0.5f);
+        const F32 distance = scale * ((top - bottom) * 0.5f) / tanf(fov * DEG_TO_RAD * 0.5f);
         LLQuaternion turn;
         turn.setAngleAxis(around * DEG_TO_RAD, LLVector3::z_axis);
         LLVector3 out = forward * turn;
@@ -4018,12 +4328,68 @@ namespace LuminousPhotoMode
             *view_direction = centre - eye;
         }
         LL_INFOS("LuminousPhotoMode") << "Framed: " << name << ", " << distance << " m, around " << around << ", pitch " << pitch
-                                      << ", at the view angle " << fov << LL_ENDL;
+                                      << ", at the view angle " << fov
+                                      << (scale != 1.f || raise != 0.f ? llformat(", distance x%.3f, raised %.3f m", scale, raise) : std::string())
+                                      << LL_ENDL;
         return true;
     }
 
-    bool applyStyle(const std::string& name, bool move_camera)
+    namespace
     {
+        bool framePortrait(const LLSD& camera)
+        {
+            if (!scenePaused())
+            {
+                LLNotificationsUtil::add("LuminousStylePauseRequired");
+                return false;
+            }
+            LLVector3 previous_view = LLViewerCamera::getInstance()->getAtAxis();
+            if (sFramed && !gAgentCamera.getFocusOnAvatar()
+                && (gAgentCamera.getFocusTargetGlobal() - sFramedFocus).magVec() <= 0.01)
+            {
+                // The last framing's destination, even while the camera glides there.
+                previous_view = LLVector3(sFramedFocus - sFramedEye);
+            }
+            LLSettingsSky::ptr_t sky = gSavedSettings.getString("LuminousStyle").empty()
+                ? LLSettingsSky::ptr_t() : shownSky();
+            LLVector3 view;
+            if (!frameAvatar(camera, &view))
+            {
+                return false;
+            }
+            previous_view.mV[VZ] = 0.f;
+            view.mV[VZ] = 0.f;
+            if (sky && previous_view.normVec() > 0.01f && view.normVec() > 0.01f)
+            {
+                const F32 turn = atan2f(previous_view.mV[VX] * view.mV[VY]
+                                      - previous_view.mV[VY] * view.mV[VX],
+                                       previous_view * view) * RAD_TO_DEG;
+                F32 azimuth = 0.f;
+                F32 elevation = 0.f;
+                LLVirtualTrackball::getAzimuthAndElevationDeg(sky->getSunRotation(), azimuth, elevation);
+                azimuth = fmodf(azimuth - turn + 360.f, 360.f);
+                if (sMoonPlaced)
+                {
+                    sMoonAzimuth = fmodf(sMoonAzimuth - turn + 360.f, 360.f);
+                }
+                // Rotate the showing sky's sun (and a style's moon) without replacing its other settings or water.
+                sKeepProbes = true;
+                showSky(sky->buildClone(), azimuth, elevation);
+                sKeepProbes = false;
+                gSavedSettings.setF32("LuminousEnvSunAzimuth", azimuth);
+                gSavedSettings.setF32("LuminousEnvSunElevation", elevation);
+            }
+            return true;
+        }
+    }
+
+    bool applyStyle(const std::string& name)
+    {
+        if (!scenePaused())
+        {
+            LLNotificationsUtil::add("LuminousStylePauseRequired");
+            return false;
+        }
         LLSD doc;
         const std::string path = namedFile(stylesFolder(), name);
         if (LLFile::isfile(path))
@@ -4038,27 +4404,35 @@ namespace LuminousPhotoMode
         }
         // The camera first: the sun is placed for where it looks from.
         LLVector3 view = LLViewerCamera::getInstance()->getAtAxis();
-        if (move_camera && doc.has("camera"))
+        if (doc.has("camera"))
         {
             frameAvatar(doc["camera"], &view);
         }
         if (doc.has("environment"))
         {
             // The sun round from straight behind the camera: 0 lights her
-            // from the front, 180 from behind her.
+            // from the front, 180 from behind her; the moon likewise.
             view.mV[VZ] = 0.f;
             if (view.normVec() < 0.01f)
             {
                 view = LLVector3::x_axis;
             }
-            LLQuaternion turn;
-            turn.setAngleAxis((F32)doc["sun_offset"].asReal() * DEG_TO_RAD, LLVector3::z_axis);
-            const LLVector3 sun = (-view) * turn;
-            // Personal Lighting's azimuth: 0 east, 90 south (along x, then -y)
-            F32 azimuth = atan2f(-sun.mV[VY], sun.mV[VX]) * RAD_TO_DEG;
-            azimuth = fmodf(azimuth + 360.f, 360.f);
+            auto azimuthFor = [&view](F32 offset)
+            {
+                LLQuaternion turn;
+                turn.setAngleAxis(offset * DEG_TO_RAD, LLVector3::z_axis);
+                const LLVector3 dir = (-view) * turn;
+                // Personal Lighting's azimuth: 0 east, 90 south (along x, then -y)
+                return fmodf(atan2f(-dir.mV[VY], dir.mV[VX]) * RAD_TO_DEG + 360.f, 360.f);
+            };
+            F32 azimuth = azimuthFor((F32)doc["sun_offset"].asReal());
             F32 elevation = doc.has("sun_elevation") ? (F32)doc["sun_elevation"].asReal() : 0.f;
-            applyEnvironmentWithSun(doc["environment"].asString(), &azimuth, doc.has("sun_elevation") ? &elevation : nullptr);
+            // The moon the same way, if the style places it (a night's)
+            const bool moon = doc.has("moon_offset");
+            F32 moon_azimuth = moon ? azimuthFor((F32)doc["moon_offset"].asReal()) : 0.f;
+            F32 moon_elevation = doc.has("moon_elevation") ? (F32)doc["moon_elevation"].asReal() : 20.f;
+            applyEnvironmentWithSun(doc["environment"].asString(), &azimuth, doc.has("sun_elevation") ? &elevation : nullptr,
+                                    moon ? &moon_azimuth : nullptr, moon ? &moon_elevation : nullptr);
         }
         if (doc.has("settings"))
         {
@@ -4089,6 +4463,12 @@ namespace LuminousPhotoMode
         preset["sun_azimuth"] = gSavedSettings.getF32("LuminousEnvSunAzimuth");
         preset["sun_elevation"] = gSavedSettings.getF32("LuminousEnvSunElevation");
         preset["sun_moved"] = sOwnSky; // the region's sky with its sun moved
+        if (sMoonPlaced)
+        {
+            // a style's moon, placed for its camera
+            preset["moon_azimuth"] = sMoonAzimuth;
+            preset["moon_elevation"] = sMoonElevation;
+        }
         // Any sky the menu does not name goes in whole, as it shows: a
         // personal sky Second Life kept from the last session (Luminous's
         // choice is not kept across a restart) or set elsewhere, which by
@@ -4491,6 +4871,24 @@ namespace LuminousPhotoMode
     void initCommands()
     {
         gIdleCallbacks.addFunction(watchFraming, nullptr);
+        LLUICtrl::CommitCallbackRegistry::defaultRegistrar().add("Luminous.PortraitViewAngle",
+            [](LLUICtrl* ctrl, const LLSD& param)
+            {
+                if (param.isReal() || param.isInteger())
+                {
+                    setPortraitViewAngle((F32)param.asReal());
+                }
+                else if (ctrl)
+                {
+                    setPortraitViewAngle((F32)ctrl->getValue().asReal());
+                }
+                if (ctrl)
+                {
+                    ctrl->setValue(LLViewerCamera::getInstance()->getDefaultFOV());
+                }
+            });
+        LLUICtrl::CommitCallbackRegistry::defaultRegistrar().add("Luminous.PortraitViewAngleDefault",
+            [](LLUICtrl*, const LLSD&) { setPortraitViewAngle(DEFAULT_PORTRAIT_VIEW_ANGLE); });
         // The Lighting tab's environment: the menu (or a name, from LEAP or a
         // gesture; "" the region's sky) and the sun's sliders.
         LLUICtrl::CommitCallbackRegistry::defaultRegistrar().add("Luminous.Environment",
@@ -4504,17 +4902,19 @@ namespace LuminousPhotoMode
             [](LLUICtrl*, const LLSD&) { applyEnvironment(std::string()); });
         LLUICtrl::CommitCallbackRegistry::defaultRegistrar().add("Luminous.EnvSun",
             [](LLUICtrl*, const LLSD&) { moveEnvironmentSun(); });
-        // Styles: the Save / Load tab's menu and Apply, or a name from LEAP
+        // Styles: the Portraits tab's menu, or a name from LEAP
         // or a gesture; and the camera's framings on their own.
         LLUICtrl::CommitCallbackRegistry::defaultRegistrar().add("Luminous.ApplyStyle",
             [](LLUICtrl* ctrl, const LLSD& param)
             {
-                static LLCachedControl<bool> move_camera(gSavedSettings, "LuminousStyleCamera", true);
                 const std::string name = param.isString() && !param.asString().empty() ? param.asString()
                                          : ctrl ? ctrl->getValue().asString() : std::string();
                 if (!name.empty())
                 {
-                    applyStyle(name, move_camera);
+                    if (!applyStyle(name) && ctrl)
+                    {
+                        ctrl->setValue(gSavedSettings.getString("LuminousStyle"));
+                    }
                 }
             });
         LLUICtrl::CommitCallbackRegistry::defaultRegistrar().add("Luminous.Frame",
@@ -4525,7 +4925,7 @@ namespace LuminousPhotoMode
                                             : ctrl ? ctrl->getValue().asString() : std::string();
                 if (!framing.empty())
                 {
-                    frameAvatar(llsd::map("framing", framing), nullptr);
+                    framePortrait(llsd::map("framing", framing));
                 }
             });
         LLUICtrl::CommitCallbackRegistry::defaultRegistrar().add("Luminous.ResetLook",
@@ -4602,6 +5002,9 @@ namespace LuminousPhotoMode
             const F64 now = LLFrameTimer::getElapsedSeconds();
             if (paused)
             {
+                sViewBeforePause = LLViewerCamera::getInstance()->getDefaultFOV();
+                sCameraAngleBeforePause = gSavedSettings.getF32("CameraAngle");
+                sPauseViewSaved = true;
                 sPausedAt = now;
                 sPausedClouds = !LLEnvironment::instance().isCloudScrollPaused();
                 if (sPausedClouds)
@@ -4611,6 +5014,12 @@ namespace LuminousPhotoMode
             }
             else
             {
+                if (sPauseViewSaved)
+                {
+                    gSavedSettings.setF32("CameraAngle", sCameraAngleBeforePause);
+                    LLViewerCamera::getInstance()->setDefaultFOV(sViewBeforePause);
+                    sPauseViewSaved = false;
+                }
                 sPausedFor += now - sPausedAt;
                 if (sPausedClouds)
                 {

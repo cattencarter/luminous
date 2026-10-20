@@ -69,7 +69,7 @@ float specks(vec2 p, float cells, float keep)
 
 float dirt(vec2 uv)
 {
-    vec2 p = uv * vec2(luminous_aspect, 1.0);
+    vec2 p = (uv - 0.5) * vec2(luminous_aspect, 1.0); // from the picture's middle, so the same in any shape
     float d = specks(p, 9.0, 0.35) * 0.8 + specks(p + 0.37, 23.0, 0.25) * 0.6 + specks(p + 0.71, 57.0, 0.2) * 0.35;
     // a faint smear across it all
     float smear = 0.5 + 0.5 * sin(p.x * 3.1 + sin(p.y * 2.3) * 1.7) * sin(p.y * 1.7 + p.x * 0.6);

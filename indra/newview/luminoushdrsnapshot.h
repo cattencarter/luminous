@@ -91,6 +91,19 @@ namespace LuminousHDRSnapshot
     void endPreview();
     /// The shape a render from Render image will have: width over height.
     F32 pictureAspect();
+    /// The shape chosen on the Render tab (LuminousSnapshotAspect, turned
+    /// upright by LuminousSnapshotPortrait), width over height; 0 for the
+    /// window's own.
+    F32 chosenAspect();
+    /// The picture's size at a scale of the window: the window's, or the
+    /// largest centred part of it in the chosen shape, as rawSnapshot draws
+    /// it (a narrower shape keeps the height, a wider one the width). At
+    /// most the GPU's largest texture.
+    void pictureSize(F32 scale, U32& width, U32& height);
+    /// During one of Luminous's renders in a shape other than the window's:
+    /// rawSnapshot then draws into targets of the picture's size, as for a
+    /// picture larger than the window.
+    bool shapedRender();
 
     /// Registers the commit callbacks Luminous.SaveHDRSnapshot (EXR),
     /// Luminous.Save16BitSnapshot (TIFF) and Luminous.SaveLargeSnapshot

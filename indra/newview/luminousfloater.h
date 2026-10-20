@@ -84,6 +84,7 @@ public:
     void onSideTab(S32 index);
 
 private:
+    void refreshShapeButtons(); ///< the Render tab's lying / standing buttons, by the chosen shape
     void refreshShots(const std::string& select = std::string());
     void refreshTonemapper();
     void refreshLUTs();
@@ -112,6 +113,7 @@ private:
     void fitTabs();
     void setFolded(bool folded);
     void dock();
+    void releaseDependents();
 
     LLFrameTimer mRefreshTimer;
     // Each tab's rows as laid out, so that its scrolling panel can be fitted

@@ -297,6 +297,12 @@ bool LLShaderMgr::attachShaderFeatures(LLGLSLShader * shader)
         {
             return false;
         }
+        // <Luminous> Worn photo, which the Look's finish calls
+        if (!shader->attachFragmentObject("deferred/luminousWornF.glsl"))
+        {
+            return false;
+        }
+        // </Luminous>
     }
 
     // NOTE order of shader object attaching is VERY IMPORTANT!!!

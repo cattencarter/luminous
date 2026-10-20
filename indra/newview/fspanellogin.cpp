@@ -903,7 +903,13 @@ void FSPanelLogin::loadLoginPage()
             std::string page = gDirUtilp->findSkinnedFilename("html", "lumen/login.html");
             if (!page.empty())
             {
-                web_browser->navigateTo("file://" + page, HTTP_CONTENT_TEXT_HTML);
+                // <Luminous> The release's name and number, which the start
+                // page shows under its title.
+                const std::string version = llformat("%s %s (%d)", LLVersionInfo::getInstance()->getChannel().c_str(),
+                                                     LLVersionInfo::getInstance()->getShortVersion().c_str(),
+                                                     LLVersionInfo::getInstance()->getBuild());
+                web_browser->navigateTo("file://" + page + "?version=" + LLURI::escape(version), HTTP_CONTENT_TEXT_HTML);
+                // </Luminous>
                 return;
             }
             LL_WARNS("AppInit") << "Luminous start page not found; using the stock one." << LL_ENDL;

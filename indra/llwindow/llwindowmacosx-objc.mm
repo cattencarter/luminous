@@ -32,6 +32,13 @@
 #include "llwindowmacosx-objc.h"
 #include "llappdelegate-objc.h"
 
+// <Luminous> Without HiDPI the surface is in points, and so is every size
+// and place the viewer works in; right after the view is put in a window on
+// a Retina display, AppKit's backing conversions still give the display's
+// pixels, and the viewer laid itself out twice the window's size.
+extern bool gHiDPISupport;
+// </Luminous>
+
 /*
  * These functions are broken out into a separate file because the
  * objective-C typedef for 'BOOL' conflicts with the one in
@@ -261,7 +268,7 @@ unsigned long getVramSize(GLViewRef view)
 
 float getDeviceUnitSize(GLViewRef view)
 {
-    return [(LLOpenGLView*)view convertSizeToBacking:NSMakeSize(1, 1)].width;
+    return gHiDPISupport ? [(LLOpenGLView*)view convertSizeToBacking:NSMakeSize(1, 1)].width : 1.f; // <Luminous/> points without HiDPI
 }
 
 CGRect getContentViewRect(NSWindowRef window)
@@ -271,7 +278,8 @@ CGRect getContentViewRect(NSWindowRef window)
 
 CGRect getBackingViewRect(NSWindowRef window, GLViewRef view)
 {
-    return [(NSOpenGLView*)view convertRectToBacking:[[(LLNSWindow*)window contentView] bounds]];
+    NSRect bounds = [[(LLNSWindow*)window contentView] bounds];
+    return gHiDPISupport ? [(NSOpenGLView*)view convertRectToBacking:bounds] : bounds; // <Luminous/> points without HiDPI
 }
 
 void getWindowSize(NSWindowRef window, float* size)
@@ -334,7 +342,8 @@ int takeHeldClicks(GLViewRef view, float* positions, int max_clicks, bool* escap
             }
             else if (clicks < max_clicks && [event window] == [(LLOpenGLView*)view window])
             {
-                NSPoint point = [(LLOpenGLView*)view convertPointToBacking:[event locationInWindow]];
+                NSPoint point = gHiDPISupport ? [(LLOpenGLView*)view convertPointToBacking:[event locationInWindow]]
+                                              : [event locationInWindow]; // <Luminous/> points without HiDPI
                 positions[2 * clicks] = point.x;
                 positions[2 * clicks + 1] = point.y;
                 ++clicks;

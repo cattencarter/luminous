@@ -75,9 +75,9 @@
       <real>1.0</real>
       <key>glow</key>
       <array>
-        <real>5.0</real>
+        <real>30.0</real>
         <real>0.0010000000474974513</real>
-        <real>-0.47999998927116394</real>
+        <real>-0.8</real>
       </array>
       <key>halo_id</key>
       <uuid>12149143-f599-91a7-77ac-b52a3c0f59cd</uuid>
@@ -278,9 +278,9 @@
           <real>1.0</real>
           <key>glow</key>
           <array>
-            <real>5.0</real>
+            <real>30.0</real>
             <real>0.0010000000474974513</real>
-            <real>-0.47999998927116394</real>
+            <real>-0.8</real>
           </array>
           <key>halo_id</key>
           <uuid>12149143-f599-91a7-77ac-b52a3c0f59cd</uuid>
@@ -478,9 +478,9 @@
           <real>1.0</real>
           <key>glow</key>
           <array>
-            <real>5.0</real>
+            <real>30.0</real>
             <real>0.0010000000474974513</real>
-            <real>-0.47999998927116394</real>
+            <real>-0.8</real>
           </array>
           <key>halo_id</key>
           <uuid>12149143-f599-91a7-77ac-b52a3c0f59cd</uuid>

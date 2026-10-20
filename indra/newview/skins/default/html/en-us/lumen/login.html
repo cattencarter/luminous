@@ -60,6 +60,12 @@
     color: #9aa0b4;
     letter-spacing: 0.03em;
   }
+  p.version {
+    margin: 0.35rem 0 0;
+    font-size: 0.75rem;
+    color: #5f6478;
+    letter-spacing: 0.03em;
+  }
   p.note {
     margin-top: 2.4rem;
     font-size: 0.8rem;
@@ -76,11 +82,19 @@
     <!-- Luminous by Needful; opens in the browser -->
     <p class="by">by <a href="https://needfulsl.com" target="_external">Needful</a></p>
     <p class="sub">A Second Life Viewer</p>
+    <!-- the release, from the viewer: ?version=Luminous 0.8.4 (build) -->
+    <p class="version" id="version"></p>
     <p class="note">
       Sign in below to begin.
     </p>
   </div>
   <script>
+    (function () {
+      var m = /[?&]version=([^&]*)/.exec(location.search);
+      if (m) {
+        document.getElementById("version").textContent = decodeURIComponent(m[1].replace(/\+/g, " "));
+      }
+    })();
     // A still page paints only when something on it changes, and after the
     // window is resized the browser's first paint at the new size can be
     // lost: the page then stays black until it is reloaded. So it paints

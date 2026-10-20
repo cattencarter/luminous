@@ -36,7 +36,8 @@ out vec4 frag_color;
 uniform sampler2D diffuseRect; // the frame, drawn anew into the other target
 uniform vec2 screen_res;
 uniform float luminous_distortion;
-uniform float luminous_frame_scale; // a render's margin: the frame this much larger than the picture
+uniform float luminous_frame_scale; // the frame this many picture heights tall: a render's margin, or a shape chosen live
+uniform float luminous_picture_aspect; // the picture's width over height; 0: the frame's (a shape chosen on the Render tab, live)
 
 in vec2 vary_fragcoord;
 
@@ -45,7 +46,8 @@ void main()
     float aspect = screen_res.x / screen_res.y;
     vec2 p = (vary_fragcoord - 0.5) * vec2(aspect, 1.0) * luminous_frame_scale; // in the picture's units
     float k = luminous_distortion * 0.25;
-    float corner2 = dot(vec2(aspect, 1.0) * 0.5, vec2(aspect, 1.0) * 0.5);
+    float picture_aspect = luminous_picture_aspect > 0.0 ? luminous_picture_aspect : aspect;
+    float corner2 = dot(vec2(picture_aspect, 1.0) * 0.5, vec2(picture_aspect, 1.0) * 0.5); // the picture's corner
     float fit = k > 0.0 ? 1.0 / (1.0 + k * corner2) : 1.0;
     vec2 q = p * (1.0 + k * dot(p, p)) * fit;
     // the alpha is Firestorm's glow mask: this pixel's, carried over

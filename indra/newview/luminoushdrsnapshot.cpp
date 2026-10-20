@@ -495,6 +495,7 @@ namespace LuminousHDRSnapshot
         // A preview renders (renderPreview), and its moment held after it
         // while its overlay shows: the playback speed to give back.
         bool sPreview = false;
+        bool sShapedRender = false; // a render in a shape other than the window's (shapedRender)
         bool sPreviewHold = false;
         F32 sPreviewHeldFactor = 1.f;
 
@@ -1037,8 +1038,7 @@ namespace LuminousHDRSnapshot
         auto sizes_for = [&](F32 scale, bool margin)
         {
             Sizes z;
-            z.out_w = llclamp((U32)ll_round((F32)gViewerWindow->getWindowWidthRaw() * scale), 16U, most);
-            z.out_h = llclamp((U32)ll_round((F32)gViewerWindow->getWindowHeightRaw() * scale), 16U, most);
+            pictureSize(scale, z.out_w, z.out_h);
             // An eight-bit picture is read after anti-aliasing, and an
             // accumulated snapshot's frames are shifted by fractions of a
             // pixel, so neither needs doubling.
@@ -1322,6 +1322,7 @@ namespace LuminousHDRSnapshot
                 camera->setViewNoBroadcast(view);
                 sArmed = false;
                 sAverage = false;
+                sShapedRender = false;
                 sAverageTarget.release();
                 // the effects' own targets, sized to the render: those drawn
                 // live are made again at the live view's size
@@ -1345,6 +1346,14 @@ namespace LuminousHDRSnapshot
                 now();
             }
         } put_back{ camera, view, big_shadows };
+        // A shape other than the window's is drawn into targets of the
+        // picture's size, so that the frame is the picture and its effects
+        // lie on it (rawSnapshot).
+        {
+            const F32 window_aspect = (F32)gViewerWindow->getWindowWidthRaw() / (F32)llmax(gViewerWindow->getWindowHeightRaw(), 1);
+            const F32 aspect = chosenAspect();
+            sShapedRender = aspect > 0.f && std::fabs(aspect - window_aspect) > 0.002f;
+        }
         U64 peak_footprint = 0; // before each frame and after the last, for the log
         for (S32 f = 0; f < frames && rendered; ++f)
         {
@@ -1736,14 +1745,50 @@ namespace LuminousHDRSnapshot
             [](LLUICtrl*, const LLSD&) { renderPreview(); });
     }
 
+    F32 chosenAspect()
+    {
+        // landscape as listed; Portrait turns them upright
+        static const F32 ASPECTS[] = { 0.f, 1.f, 5.f / 4.f, 4.f / 3.f, 3.f / 2.f, 16.f / 9.f, 21.f / 9.f };
+        static LLCachedControl<S32> aspect(gSavedSettings, "LuminousSnapshotAspect", 0);
+        static LLCachedControl<bool> portrait(gSavedSettings, "LuminousSnapshotPortrait", false);
+        const F32 a = ASPECTS[llclamp((S32)aspect(), 0, (S32)LL_ARRAY_SIZE(ASPECTS) - 1)];
+        return a > 0.f && portrait() ? 1.f / a : a;
+    }
+
+    void pictureSize(F32 scale, U32& width, U32& height)
+    {
+        const U32 most = (U32)gGLManager.mGLMaxTextureSize;
+        const F32 window_w = (F32)gViewerWindow->getWindowWidthRaw() * scale;
+        const F32 window_h = (F32)gViewerWindow->getWindowHeightRaw() * scale;
+        F32 w = window_w;
+        F32 h = window_h;
+        const F32 aspect = chosenAspect();
+        if (aspect > 0.f && window_h > 0.f)
+        {
+            if (aspect < window_w / window_h)
+            {
+                w = window_h * aspect; // narrower: the height kept, the sides cut
+            }
+            else
+            {
+                h = window_w / aspect; // wider: the width kept, top and bottom cut
+            }
+        }
+        width = llclamp((U32)ll_round(w), 16U, most);
+        height = llclamp((U32)ll_round(h), 16U, most);
+    }
+
+    bool shapedRender()
+    {
+        return sShapedRender;
+    }
+
     F32 pictureAspect()
     {
-        // as takeAndSave sizes the picture: the window's, or twice it
+        // as takeAndSave sizes the picture
         static LLCachedControl<U32> scale_setting(gSavedSettings, "LuminousSnapshotScale", 1);
-        const U32 scale = sPreview ? 1U : llclamp((U32)scale_setting(), 1U, 2U);
-        const U32 most = (U32)gGLManager.mGLMaxTextureSize;
-        const U32 w = llclamp((U32)gViewerWindow->getWindowWidthRaw() * scale, 16U, most);
-        const U32 h = llclamp((U32)gViewerWindow->getWindowHeightRaw() * scale, 16U, most);
+        U32 w, h;
+        pictureSize(sPreview ? 1.f : (F32)llclamp((U32)scale_setting(), 1U, 2U), w, h);
         return (F32)w / (F32)llmax(h, 1U);
     }
 

@@ -190,6 +190,7 @@
 #include "llworldmapview.h"
 #include "pipeline.h"
 #include "luminousphotomode.h" // <Luminous/>
+#include "luminoushdrsnapshot.h" // <Luminous/>
 #include "llappviewer.h"
 #include "llviewerdisplay.h"
 #include "llspatialpartition.h"
@@ -6277,7 +6278,8 @@ bool LLViewerWindow::rawSnapshot(LLImageRaw *raw, S32 image_width, S32 image_hei
     if (!keep_window_aspect || (image_width > window_width) || (image_height > window_height))
     {
         if ((image_width <= gGLManager.mGLMaxTextureSize && image_height <= gGLManager.mGLMaxTextureSize) &&
-            (image_width > window_width || image_height > window_height) && LLPipeline::sRenderDeferred && !show_ui)
+            (image_width > window_width || image_height > window_height || LuminousHDRSnapshot::shapedRender()) // <Luminous/> its own shape
+            && LLPipeline::sRenderDeferred && !show_ui)
         {
             // <FS:Ansariel> FIRE-15667: 24bit depth maps
             //U32 color_fmt = type == LLSnapshotModel::SNAPSHOT_TYPE_DEPTH ? GL_DEPTH_COMPONENT : GL_RGBA;

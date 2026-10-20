@@ -40,7 +40,8 @@ out vec4 frag_color;
 uniform sampler2D diffuseRect; // the frame, drawn anew into the other target
 uniform vec2 screen_res;
 uniform float luminous_ca_amount; // the spread at the frame's corners, in pixels
-uniform float luminous_frame_scale; // a render's margin: the frame this much larger than the picture
+uniform float luminous_frame_scale; // the frame this many picture heights tall: a render's margin, or a shape chosen live
+uniform float luminous_picture_aspect; // the picture's width over height; 0: the frame's (a shape chosen on the Render tab, live)
 
 in vec2 vary_fragcoord;
 
@@ -48,7 +49,8 @@ void main()
 {
     vec2 tc = vary_fragcoord;
     vec2 from_centre = (tc - 0.5) * screen_res;
-    float corner = length(0.5 * screen_res / luminous_frame_scale); // the picture's corner
+    float picture_aspect = luminous_picture_aspect > 0.0 ? luminous_picture_aspect : screen_res.x / screen_res.y;
+    float corner = 0.5 * length(vec2(picture_aspect, 1.0)) * screen_res.y / luminous_frame_scale; // the picture's corner
     vec2 shift = from_centre / corner * luminous_ca_amount / screen_res;
 
     vec3 sum = vec3(0.0);

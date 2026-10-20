@@ -2,15 +2,19 @@
 <llsd>
 <map>
     <key>environment</key>
-    <string>Golden hour</string>
+    <string>Portrait - Faded film</string>
     <key>sun_offset</key>
-    <real>50.0</real>
+    <real>30.0</real>
     <key>sun_elevation</key>
-    <real>25.0</real>
+    <real>30.0</real>
     <key>camera</key>
     <map>
       <key>framing</key>
       <string>half</string>
+      <key>around</key>
+      <real>20.0</real>
+      <key>pitch</key>
+      <real>2.0</real>
     </map>
     <key>settings</key>
     <map>
@@ -20,32 +24,70 @@
       <real>4.0</real>
       <key>CameraMaxCoF</key>
       <real>20.0</real>
-      <key>LuminousPhotoContrast</key>
-      <real>0.85</real>
-      <key>LuminousPhotoBlacks</key>
+      <key>LuminousPhotoDoFFront</key>
+      <boolean>false</boolean>
+      <key>LuminousPhotoClarity</key>
+      <real>0.12</real>
+      <key>LuminousPhotoContactShadowsStrength</key>
       <real>0.25</real>
-      <key>LuminousPhotoWhites</key>
-      <real>-0.1</real>
-      <key>LuminousPhotoSaturation</key>
+      <key>LuminousPhotoShadowStrength</key>
       <real>0.75</real>
-      <key>LuminousPhotoSepia</key>
-      <real>0.15</real>
-      <key>LuminousPhotoGrain</key>
-      <real>0.35</real>
-      <key>LuminousPhotoWarmth</key>
-      <real>0.1</real>
-      <key>LuminousPhotoShadowsTint</key>
-      <real>-0.1</real>
+      <key>LuminousPhotoShadowSoftness</key>
+      <real>4.0</real>
+      <key>LuminousPhotoProjectorBeams</key>
+      <boolean>false</boolean>
+      <key>LuminousPhotoVolumetricLight</key>
+      <boolean>false</boolean>
+      <key>LuminousPhotoSunShafts</key>
+      <boolean>false</boolean>
       <key>LuminousPhotoVignette</key>
       <boolean>true</boolean>
       <key>LuminousPhotoVignetteAmount</key>
-      <real>0.25</real>
-      <key>LuminousPhotoContactShadowsStrength</key>
-      <real>0.35</real>
-      <key>LuminousPhotoShadowStrength</key>
+      <real>0.18</real>
+      <key>LuminousPhotoVignetteSize</key>
       <real>0.85</real>
-      <key>LuminousPhotoShadowSoftness</key>
-      <real>4.0</real>
+      <key>LuminousPhotoTonemapper</key>
+      <integer>4</integer>
+      <key>LuminousPhotoTonemapMix</key>
+      <real>1.0</real>
+      <key>LuminousPhotoExposure</key>
+      <real>0.45</real>
+      <key>LuminousPhotoContrast</key>
+      <real>0.98</real>
+      <key>LuminousPhotoShadows</key>
+      <real>0.2</real>
+      <key>LuminousPhotoBlacks</key>
+      <real>0.25</real>
+      <key>LuminousPhotoHighlights</key>
+      <real>-0.3</real>
+      <key>LuminousPhotoWhites</key>
+      <real>-0.1</real>
+      <key>LuminousPhotoSaturation</key>
+      <real>0.84</real>
+      <key>LuminousPhotoWarmth</key>
+      <real>0.04</real>
+      <key>LuminousPhotoShadowsWarmth</key>
+      <real>-0.08</real>
+      <key>LuminousPhotoHighlightsWarmth</key>
+      <real>0.1</real>
+      <key>LuminousPhotoGrain</key>
+      <real>0.14</real>
+      <key>LuminousPhotoGrainSize</key>
+      <real>1.3</real>
+      <key>LuminousPhotoWorn</key>
+      <real>0.35</real>
+      <key>LuminousPhotoWornDust</key>
+      <real>0.35</real>
+      <key>LuminousPhotoWornScratches</key>
+      <real>0.25</real>
+      <key>LuminousPhotoWornStains</key>
+      <real>0.6</real>
+      <key>LuminousPhotoWornEdges</key>
+      <real>0.3</real>
+      <key>LuminousPhotoWornPaper</key>
+      <real>0.3</real>
+      <key>LuminousPhotoHalation</key>
+      <real>0.07</real>
     </map>
   </map>
 </llsd>

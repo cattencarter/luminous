@@ -2610,6 +2610,8 @@ vec3 luminousGrain(vec3 c)
     float l = sqrt(clamp(dot(c, vec3(0.2126, 0.7152, 0.0722)), 0.0, 1.0));
     return c * (1.0 + (n - 0.5) * luminous_look_grain * 0.6 * (4.0 * l * (1.0 - l)));
 }
+
+vec3 luminousWorn(vec3 c, vec2 frame_uv, vec2 res); // luminousWornF.glsl: Worn photo, after the grain
 // </Luminous>
 
 void main()
@@ -2618,7 +2620,7 @@ void main()
     uvec2 point = uvec2(vary_fragcoord * out_screen_res.xy);
     CasFilter(diff.r, diff.g, diff.b, point, cas_param_0, cas_param_1, true);
     diff.a = texture(diffuseRect, vary_fragcoord).a;
-    diff.rgb = clamp(luminousGrain(diff.rgb), 0.0, 1.0); // <Luminous/>
+    diff.rgb = clamp(luminousWorn(clamp(luminousGrain(diff.rgb), 0.0, 1.0), vary_fragcoord, out_screen_res), 0.0, 1.0); // <Luminous/>
     diff.rgb = linear_to_srgb(diff.rgb);
 
 #ifdef LEGACY_GAMMA

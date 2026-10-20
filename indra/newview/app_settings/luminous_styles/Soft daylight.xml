@@ -1,0 +1,83 @@
+<?xml version="1.0" ?>
+<llsd>
+<map>
+    <key>environment</key>
+    <string>Portrait - Soft daylight</string>
+    <key>sun_offset</key>
+    <real>-27.2</real>
+    <key>sun_elevation</key>
+    <real>30.0</real>
+    <key>camera</key>
+    <map>
+      <key>framing</key>
+      <string>sidelow</string>
+      <key>around</key>
+      <real>20.4</real>
+      <key>pitch</key>
+      <real>-2.16</real>
+      <key>distance</key>
+      <real>1.027</real>
+      <key>raise</key>
+      <real>-0.02</real>
+    </map>
+    <key>settings</key>
+    <map>
+      <key>LuminousPhotoVolumetricLight</key>
+      <boolean>false</boolean>
+      <key>LuminousPhotoProjectorBeams</key>
+      <boolean>false</boolean>
+      <key>LuminousPhotoSunShafts</key>
+      <boolean>false</boolean>
+      <key>LuminousPhotoShadowSoftness</key>
+      <real>5.0</real>
+      <key>LuminousPhotoContactShadowsStrength</key>
+      <real>0.25</real>
+      <key>LuminousPhotoShadowStrength</key>
+      <real>0.65</real>
+      <key>LuminousPhotoTonemapper</key>
+      <integer>4</integer>
+      <key>LuminousPhotoTonemapMix</key>
+      <real>0.73</real>
+      <key>LuminousPhotoExposure</key>
+      <real>0.35</real>
+      <key>LuminousPhotoContrast</key>
+      <real>1.15</real>
+      <key>LuminousPhotoHighlights</key>
+      <real>-0.43</real>
+      <key>LuminousPhotoShadows</key>
+      <real>0.08</real>
+      <key>LuminousPhotoWhites</key>
+      <real>0.14</real>
+      <key>LuminousPhotoBlacks</key>
+      <real>-0.06</real>
+      <key>LuminousPhotoClarity</key>
+      <real>-0.16</real>
+      <key>LuminousPhotoSaturation</key>
+      <real>0.97</real>
+      <key>LuminousPhotoVibrance</key>
+      <real>-0.02</real>
+      <key>LuminousPhotoWarmth</key>
+      <real>0.03</real>
+      <key>LuminousPhotoLUT</key>
+      <string>Soft Portrait</string>
+      <key>LuminousPhotoLUTStrength</key>
+      <real>0.35</real>
+      <key>LuminousPhotoHSLOrangesSat</key>
+      <real>-0.08</real>
+      <key>LuminousPhotoColourAmount</key>
+      <real>-0.05</real>
+      <key>RenderDepthOfField</key>
+      <boolean>true</boolean>
+      <key>CameraFNumber</key>
+      <real>13.1</real>
+      <key>CameraMaxCoF</key>
+      <real>18.0</real>
+      <key>LuminousPhotoVignette</key>
+      <boolean>true</boolean>
+      <key>LuminousPhotoVignetteAmount</key>
+      <real>0.18</real>
+      <key>LuminousPhotoVignetteSize</key>
+      <real>0.85</real>
+    </map>
+</map>
+</llsd>

@@ -49,7 +49,7 @@ const std::string APP_NAME = "Luminous";
 // </Luminous>
 //
 // Bump this before tagging a release, not after.
-const std::string LUMEN_VERSION = "0.8.3";
+const std::string LUMEN_VERSION = "0.8.4";
 // </Lumen>
 
 static constexpr F32 REGION_WIDTH_METERS = 256.f;

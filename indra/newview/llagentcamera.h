@@ -224,6 +224,7 @@ public:
     void            setAnimationDuration(F32 seconds);
     void            startCameraAnimation();
     void            stopCameraAnimation();
+    void            stopCameraSmoothing() { mCameraSmoothingStop = true; }
 private:
     LLFrameTimer    mAnimationTimer;    // Seconds that transition animation has been active
     F32             mAnimationDuration; // In seconds

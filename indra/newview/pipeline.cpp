@@ -9245,6 +9245,12 @@ void LLPipeline::renderFinalize()
     {
         std::swap(auxActiveBuffer, auxTargetBuffer);
     };
+    // <Luminous> live, in a shape chosen on the Render tab, the picture's frame
+    if (LuminousPhotoMode::renderPictureFrame(auxActiveBuffer, auxTargetBuffer))
+    {
+        std::swap(auxActiveBuffer, auxTargetBuffer);
+    }
+    // </Luminous>
 
     sourceBuffer = auxActiveBuffer;
     // </FS:Beq>

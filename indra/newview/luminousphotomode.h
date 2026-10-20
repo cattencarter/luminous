@@ -141,6 +141,10 @@ namespace LuminousPhotoMode
     bool bloom();
     bool chromaticAberration();
     LLRenderTarget* renderLens(LLRenderTarget* hdr_screen, LLRenderTarget* scratch);
+    /// Live, in a shape chosen on the Render tab: what a render will keep,
+    /// the rest dimmed, drawn from src into dst. False (nothing drawn) in a
+    /// snapshot, with the interface hidden, or in the window's own shape.
+    bool renderPictureFrame(LLRenderTarget* src, LLRenderTarget* dst);
 
     /// Photo mode's depth of field, LuminousPhotoDoF: Firestorm's, with its
     /// focus and its lens settings, but blurred at full resolution in HDR,
@@ -418,14 +422,16 @@ namespace LuminousPhotoMode
     void moveEnvironmentSun();
     /// While the region's own sky shows: the sun settings follow its sun.
     void followShownSun();
-    /// As applyEnvironment, the sun where given instead.
-    bool applyEnvironmentWithSun(const std::string& name, const F32* sun_azimuth, const F32* sun_elevation);
+    /// As applyEnvironment, the sun where given instead, and the moon where
+    /// given (kept as the sun moves, until another sky).
+    bool applyEnvironmentWithSun(const std::string& name, const F32* sun_azimuth, const F32* sun_elevation,
+                                 const F32* moon_azimuth = nullptr, const F32* moon_elevation = nullptr);
     /// Luminous's styles (app_settings/luminous_styles): looks of light,
     /// blur, volumetric light, colour, tone, sky, water and fog, each an
     /// environment, the sun placed round from behind the camera, a preset's
-    /// settings (complete), and a framing of her, used if move_camera.
+    /// settings (complete), and a framing of her.
     std::vector<std::string> styleNames();
-    bool applyStyle(const std::string& name, bool move_camera);
+    bool applyStyle(const std::string& name);
     /// The camera framed on her from her skeleton: [framing] face, half,
     /// low, tilted, behind or sidelow; [around] and [pitch] in degrees
     /// change it. view_direction, if given, gets where it looks.
