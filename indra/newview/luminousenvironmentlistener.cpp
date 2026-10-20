@@ -56,7 +56,7 @@ namespace
     public:
         LuminousEnvironmentListener()
             : LLEventAPI("LuminousEnvironment",
-                         "The sun of the personal environment, for test scripts")
+                         "The personal environment's sky, sun and water, as Personal Lighting sets them")
         {
             add("setSun",
                 "Freeze the sky that is showing into the personal environment, with its sun\n"
