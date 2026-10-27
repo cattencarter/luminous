@@ -545,8 +545,16 @@ void LLViewerTexture::updateClass()
 
     F32 over_pct = (used - target) / target;
 
-    bool is_sys_low = isSystemMemoryLow();
-    bool is_low = is_sys_low || over_pct > 0.f;
+    // <Luminous> Low too while the scene leaves no room for a render at the
+    // window's size: macOS compresses and swaps rather than saying so.
+    bool is_sys_low = isSystemMemoryLow() || LuminousHDRSnapshot::sceneShort();
+    // </Luminous>
+    // <Luminous> Room kept for a render at the Render tab's size: while it is
+    // short, textures out of view give way -- the bias raised to ROOM_BIAS at
+    // most, which leaves what is on screen as it is -- and it is not lowered.
+    const bool room_short = LuminousHDRSnapshot::roomShort();
+    bool is_low = is_sys_low || over_pct > 0.f || (room_short && sDesiredDiscardBias < LuminousHDRSnapshot::ROOM_BIAS);
+    // </Luminous>
 
     static bool was_low = false;
 
@@ -585,6 +593,12 @@ void LLViewerTexture::updateClass()
             F32 increment = low_mem_min_discard_increment + llmax(over_pct, 0.f);
             sDesiredDiscardBias += increment * gFrameIntervalSeconds;
         }
+        // <Luminous> low only for the room: no further than ROOM_BIAS
+        if (!is_sys_low && over_pct <= 0.f)
+        {
+            sDesiredDiscardBias = llmin(sDesiredDiscardBias, LuminousHDRSnapshot::ROOM_BIAS);
+        }
+        // </Luminous>
     }
     else
     {
@@ -596,7 +610,7 @@ void LLViewerTexture::updateClass()
         constexpr U32 FREE_SYS_MEM_TRESHOLD = 100;
         static LLCachedControl<U32> min_free_main_memory(gSavedSettings, "RenderMinFreeMainMemoryThreshold", 512);
         const S32Megabytes MIN_FREE_MAIN_MEMORY(min_free_main_memory() + FREE_SYS_MEM_TRESHOLD);
-        if (sDesiredDiscardBias > 1.f
+        if (sDesiredDiscardBias > (room_short ? LuminousHDRSnapshot::ROOM_BIAS : 1.f) // <Luminous/> kept there while the room is short
             && over_pct < FREE_PERCENTAGE_TRESHOLD
             && getFreeSystemMemory() > MIN_FREE_MAIN_MEMORY)
         {
@@ -604,6 +618,10 @@ void LLViewerTexture::updateClass()
 
             F32 decrement = high_mem_discard_decrement - llmin(over_pct - FREE_PERCENTAGE_TRESHOLD, 0.f);
             sDesiredDiscardBias -= decrement * gFrameIntervalSeconds;
+            if (room_short) // <Luminous/>
+            {
+                sDesiredDiscardBias = llmax(sDesiredDiscardBias, LuminousHDRSnapshot::ROOM_BIAS);
+            }
         }
     }
 

@@ -14830,16 +14830,82 @@ Change of this parameter will affect the layout of buttons in notification toast
       <key>Value</key>
       <integer>0</integer>
   </map>
+  <key>LuminousSnapshotMemoryMargin</key>
+    <map>
+      <key>Comment</key>
+      <string>Luminous's renders: megabytes left to macOS and the other apps. A render may take the viewer as far as it has and macOS could still give it, less this, and no further than LuminousSnapshotMemoryShare of the Mac.</string>
+      <key>Persist</key>
+      <integer>1</integer>
+      <key>Type</key>
+      <string>U32</string>
+      <key>Value</key>
+      <integer>1024</integer>
+  </map>
   <key>LuminousSnapshotMemoryShare</key>
     <map>
       <key>Comment</key>
-      <string>Luminous's renders: the share of the Mac's memory the viewer may come to while one renders. Past it, the render stops between frames with a message, rather than push the Mac into swap. 0.75; lower only to test the stop.</string>
+      <string>Luminous's renders: the most of the Mac's memory the viewer may come to while one renders, whatever macOS could still give it (LuminousSnapshotMemoryMargin). Past it, a render stops between frames with a message -- unless the scene alone is past it, when LuminousRenderWhenShort lets the render go ahead with macOS's swap. 0.9; lower only to test the stop.</string>
       <key>Persist</key>
       <integer>1</integer>
       <key>Type</key>
       <string>F32</string>
       <key>Value</key>
-      <real>0.75</real>
+      <real>0.9</real>
+  </map>
+  <key>LuminousTextureDetailByPoints</key>
+    <map>
+      <key>Comment</key>
+      <string>With HiDPI, textures in the live view load for the window's size in points, not its pixels: the level a display without HiDPI shows, a quarter of the texture memory on a Retina display. A render with Full detail still loads what it shows for its own pixels. Takes effect for textures loaded from then on.</string>
+      <key>Persist</key>
+      <integer>1</integer>
+      <key>Type</key>
+      <string>Boolean</string>
+      <key>Value</key>
+      <integer>1</integer>
+  </map>
+  <key>LuminousTextureInView</key>
+    <map>
+      <key>Comment</key>
+      <string>A texture counts as in view only while a face that shows it is inside the camera's view. Textures out of view are the first to load less finely when memory runs short, and only those in view load finely for a render with Full detail. Off: every face counts as in view, as in Second Life's own code.</string>
+      <key>Persist</key>
+      <integer>1</integer>
+      <key>Type</key>
+      <string>Boolean</string>
+      <key>Value</key>
+      <integer>1</integer>
+  </map>
+  <key>LuminousTextureForgetShare</key>
+    <map>
+      <key>Comment</key>
+      <string>Once the viewer holds more than this share of the Mac's memory, textures out of view let go of the largest size they were ever wanted at, and load again at the size they are wanted at now when they come back into view. Second Life lets them go only once memory runs short. 0 never.</string>
+      <key>Persist</key>
+      <integer>1</integer>
+      <key>Type</key>
+      <string>F32</string>
+      <key>Value</key>
+      <real>0.5</real>
+  </map>
+  <key>LuminousRenderWhenShort</key>
+    <map>
+      <key>Comment</key>
+      <string>When no size of render fits beside the scene, render all the same with the help of macOS's swap, at the largest size whose need fits in what macOS could still give (the window's size at least), stopping only if memory turns critical or the render takes much more than reckoned; a larger render so stopped is made again at the window's size.</string>
+      <key>Persist</key>
+      <integer>1</integer>
+      <key>Type</key>
+      <string>Boolean</string>
+      <key>Value</key>
+      <integer>1</integer>
+  </map>
+  <key>LuminousMemoryStepDown</key>
+    <map>
+      <key>Comment</key>
+      <string>When the scene leaves no room for a render at the window's size, textures on screen load with a little less detail too, and after 20 seconds objects are drawn with half the object detail, until there is room again. macOS compresses and swaps memory rather than saying it is short, so Second Life on its own would not notice.</string>
+      <key>Persist</key>
+      <integer>1</integer>
+      <key>Type</key>
+      <string>Boolean</string>
+      <key>Value</key>
+      <integer>1</integer>
   </map>
   <key>LuminousSnapshotOpen</key>
     <map>

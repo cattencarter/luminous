@@ -280,6 +280,10 @@ public:
 
     // true if face was recently in the main camera frustum according to LLViewerTextureList updates
     bool mInFrustum = false;
+    // <Luminous> whether the face's box was in the main camera's view at the
+    // last calcPixelArea, which tests only media faces in its answer
+    bool mLuminousInView = true;
+    // </Luminous>
     // value of gFrameCount the last time the face was touched by LLViewerTextureList::updateImageDecodePriority
     U32 mLastTextureUpdate = 0;
 

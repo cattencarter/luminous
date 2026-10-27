@@ -971,6 +971,11 @@ void LLViewerTextureList::updateImageDecodePriority(LLViewerFetchedTexture* imag
                         // this helps eliminate redundant calls to calcPixelArea for faces that have multiple textures
                         // assigned to them, such as is the case with GLTF materials or Blinn-Phong materials
                         face->mInFrustum = face->calcPixelArea(cos_angle_to_view_dir, radius);
+                        // <Luminous> In view only while its box is in the camera's view:
+                        // calcPixelArea's answer counts every face but media's as in view.
+                        static LLCachedControl<bool> in_view(gSavedSettings, "LuminousTextureInView", true);
+                        face->mInFrustum = face->mInFrustum && (face->mLuminousInView || !in_view());
+                        // </Luminous>
                         face->mLastTextureUpdate = gFrameCount;
                     }
 
@@ -1025,13 +1030,12 @@ void LLViewerTextureList::updateImageDecodePriority(LLViewerFetchedTexture* imag
             }
         }
 
-        // <Luminous> A render's Full detail: what is on screen as sharp as the
-        // picture needs, the rest as ever. Every texture at full size can
-        // take a busy region past 28 GB before the first frame.
-        if (on_screen)
-        {
-            max_vsize *= LuminousHDRSnapshot::fullDetailAreaScale(); // 1 unless a render waits for full detail
-        }
+        // <Luminous> With HiDPI, the area in the window's points, so textures
+        // load at the level a display without HiDPI shows. A render's Full
+        // detail: what is on screen as sharp as the picture needs, the rest
+        // as ever. Every texture at full size can take a busy region past
+        // 28 GB before the first frame.
+        max_vsize *= LuminousHDRSnapshot::textureAreaScale(on_screen);
         // </Luminous>
 
         if (face_count > max_faces_to_check)
@@ -1046,7 +1050,8 @@ void LLViewerTextureList::updateImageDecodePriority(LLViewerFetchedTexture* imag
           // that keeps textures from continously downrezzing and uprezzing in the background
 
             if (LLViewerTexture::sDesiredDiscardBias > BIAS_TRS_OUT_OF_SCREEN ||
-                (!on_screen && LLViewerTexture::sDesiredDiscardBias > BIAS_TRS_ON_SCREEN))
+                (!on_screen && LLViewerTexture::sDesiredDiscardBias > BIAS_TRS_ON_SCREEN)
+                || (!on_screen && LuminousHDRSnapshot::forgetOutOfView())) // <Luminous/> before memory runs short
             {
                 imagep->mMaxVirtualSize = 0.f;
             }

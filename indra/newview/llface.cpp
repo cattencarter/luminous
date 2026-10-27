@@ -2524,6 +2524,8 @@ bool LLFace::calcPixelArea(F32& cos_angle_to_view_dir, F32& radius)
     x_axis.load3(camera->getXAxis().mV);
     cos_angle_to_view_dir = lookAt.dot3(x_axis).getF32();
 
+    mLuminousInView = camera->AABBInFrustum(center, size) != 0; // <Luminous/>
+
     //if has media, check if the face is out of the view frustum.
     if(hasMedia())
     {

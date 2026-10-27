@@ -45,6 +45,7 @@
 #include "lltoolfocus.h"
 #include "lltoolmgr.h"
 #include "llwebprofile.h"
+#include "luminousphotomode.h" // <Luminous/>
 
 // <FS:CR> FIRE-9621 - Hide Profile panel on Snapshots on non-sl grids
 #ifdef OPENSIM
@@ -56,6 +57,15 @@
 /// Local function declarations, constants, enums, and typedefs
 ///----------------------------------------------------------------------------
 LLSnapshotFloaterView* gSnapshotFloaterView = nullptr;
+
+// <Luminous> The snapshot layer takes the window's input only for the
+// snapshot's own freeze frame. Luminous's Pause scene holds FreezeTime too,
+// and the interface behind the layer answers then.
+static bool snapshotFreezeFrame()
+{
+    return gSavedSettings.getBOOL("FreezeTime") && !LuminousPhotoMode::scenePaused();
+}
+// </Luminous>
 
 constexpr F32 AUTO_SNAPSHOT_TIME_DELAY = 1.f;
 
@@ -1662,7 +1672,7 @@ LLSnapshotFloaterView::~LLSnapshotFloaterView()
 bool LLSnapshotFloaterView::handleKey(KEY key, MASK mask, bool called_from_parent)
 {
     // use default handler when not in freeze-frame mode
-    if(!gSavedSettings.getBOOL("FreezeTime"))
+    if (!snapshotFreezeFrame()) // <Luminous/>
     {
         return LLFloaterView::handleKey(key, mask, called_from_parent);
     }
@@ -1684,7 +1694,7 @@ bool LLSnapshotFloaterView::handleKey(KEY key, MASK mask, bool called_from_paren
 bool LLSnapshotFloaterView::handleMouseDown(S32 x, S32 y, MASK mask)
 {
     // use default handler when not in freeze-frame mode
-    if(!gSavedSettings.getBOOL("FreezeTime"))
+    if (!snapshotFreezeFrame()) // <Luminous/>
     {
         return LLFloaterView::handleMouseDown(x, y, mask);
     }
@@ -1700,7 +1710,7 @@ bool LLSnapshotFloaterView::handleMouseDown(S32 x, S32 y, MASK mask)
 bool LLSnapshotFloaterView::handleMouseUp(S32 x, S32 y, MASK mask)
 {
     // use default handler when not in freeze-frame mode
-    if(!gSavedSettings.getBOOL("FreezeTime"))
+    if (!snapshotFreezeFrame()) // <Luminous/>
     {
         return LLFloaterView::handleMouseUp(x, y, mask);
     }
@@ -1716,7 +1726,7 @@ bool LLSnapshotFloaterView::handleMouseUp(S32 x, S32 y, MASK mask)
 bool LLSnapshotFloaterView::handleHover(S32 x, S32 y, MASK mask)
 {
     // use default handler when not in freeze-frame mode
-    if(!gSavedSettings.getBOOL("FreezeTime"))
+    if (!snapshotFreezeFrame()) // <Luminous/>
     {
         return LLFloaterView::handleHover(x, y, mask);
     }

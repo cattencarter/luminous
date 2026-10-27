@@ -121,6 +121,41 @@ namespace LuminousHDRSnapshot
     /// texture's screen area is taken to be (LLViewerTextureList), so that
     /// objects' textures load as finely as the picture needs; 1 otherwise.
     F32 fullDetailAreaScale();
+
+    /// How much of a texture's screen area LLViewerTextureList counts. With
+    /// HiDPI and LuminousTextureDetailByPoints, the area in the window's
+    /// points, not its pixels: textures load at the level a display without
+    /// HiDPI shows, a quarter of the memory on a Retina display. While a
+    /// snapshot waits for full detail, on-screen textures as finely as the
+    /// picture needs (fullDetailAreaScale).
+    F32 textureAreaScale(bool on_screen);
+
+    /// Whether textures out of view let go of the largest size they were
+    /// ever wanted at: while the viewer holds more than
+    /// LuminousTextureForgetShare of the Mac, measured twice a second.
+    /// Second Life lets them go only once the discard bias passes 1.
+    bool forgetOutOfView();
+
+    /// Whether the viewer lacks room for a render at the Render tab's size:
+    /// its footprint and the render's need past what a render may reach
+    /// (what macOS could still give, less a margin), measured twice a
+    /// second. LLViewerTexture::updateClass then lets textures out of view
+    /// give way, the discard bias up to ROOM_BIAS and no further.
+    bool roomShort();
+    /// Whether the scene itself leaves no room for a render at the window's
+    /// size (LuminousMemoryStepDown): macOS compresses and swaps rather than
+    /// saying memory is low, so LLViewerTexture::updateClass counts this as
+    /// low system memory -- the discard bias rising past the 1.9 at which
+    /// textures on screen give way too. Room again with a gigabyte to spare;
+    /// measured twice a second, not while a render waits or renders. After
+    /// 20 s short, objects are drawn with half the user's detail
+    /// (RenderVolumeLODFactor, not saved) until there has been room for a
+    /// minute with 3 GB to spare.
+    bool sceneShort();
+    /// The discard bias room is kept with: below the 1.9 past which
+    /// LLViewerTextureList biases textures on screen too, so only those out
+    /// of view lose detail.
+    constexpr F32 ROOM_BIAS = 1.85f;
 }
 
 #endif // LUMINOUS_HDR_SNAPSHOT_H

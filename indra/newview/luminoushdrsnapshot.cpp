@@ -67,6 +67,9 @@
 #include "llmeshrepository.h"
 #include "llvoavatar.h"
 #include "llvovolume.h"
+#include "llstartup.h"
+#include "llviewertexture.h"
+#include "llviewertexturelist.h"
 
 #include <algorithm>
 #include <cmath>
@@ -77,6 +80,8 @@
 #include <mach/mach.h>
 #include <sys/sysctl.h>
 #endif
+
+extern bool gHiDPISupport;
 
 namespace LuminousHDRSnapshot
 {
@@ -496,6 +501,10 @@ namespace LuminousHDRSnapshot
         // while its overlay shows: the playback speed to give back.
         bool sPreview = false;
         bool sShapedRender = false; // a render in a shape other than the window's (shapedRender)
+        // A render past the limit larger than the window, stopped for memory
+        // (takeAndSave), and the render again at the window's size (saveTo).
+        bool sSwapStoppedLarge = false;
+        bool sWindowSizeOnly = false;
         bool sPreviewHold = false;
         F32 sPreviewHeldFactor = 1.f;
 
@@ -527,7 +536,19 @@ namespace LuminousHDRSnapshot
             LLPointer<LLImageRaw> shown;
             sShow = show == TEMPORARY ? &shown : nullptr;
             sProgress = show != SAVE_ONLY;
-            const bool saved = takeAndSave(format, path, error);
+            sSwapStoppedLarge = false;
+            bool saved = takeAndSave(format, path, error);
+            if (!saved && sSwapStoppedLarge)
+            {
+                // Too large for what macOS could give after all: once more
+                // at the window's size.
+                LL_INFOS("LuminousHDRSnapshot") << "Rendering again at the window's size" << LL_ENDL;
+                sSwapStoppedLarge = false;
+                sWindowSizeOnly = true;
+                error.clear();
+                saved = takeAndSave(format, path, error);
+                sWindowSizeOnly = false;
+            }
             if (sProgress)
             {
                 LuminousPictureView::pollStop(); // clicks made while it saved: dropped
@@ -581,6 +602,7 @@ namespace LuminousHDRSnapshot
 
         bool sWaiting = false;
         bool sFullTextures = false;
+        bool sMakingRoom = false; // a render lets textures out of view go before it begins (whenSharp)
 
         // Every snapshot says first that it will take a while, and waits a
         // moment so that the notice is drawn before the viewer pauses to
@@ -591,8 +613,13 @@ namespace LuminousHDRSnapshot
         // highest detail however far off (the LOD factors at their maxima,
         // for the shot only), and the shot waits -- three seconds at least,
         // thirty at most -- until neither textures nor meshes have been
-        // loading for one. Meanwhile the reflection probes, which update one
-        // at a time every frame, take in the new detail.
+        // loading for one, or until what loads would leave the render no
+        // room at its size: then the loading ends, the detail factors go
+        // back, textures are weighed again as for making room, and the
+        // render takes what has loaded. A render already short of room at
+        // its start leaves Full detail out.
+        // Meanwhile the reflection probes, which update one at a time every
+        // frame, take in the new detail.
         void whenSharp(std::function<void()> act, bool overlay, std::function<void()> on_stop = nullptr);
 
         // The viewer's memory as macOS counts it, what macOS could still
@@ -600,6 +627,12 @@ namespace LuminousHDRSnapshot
         U64 footprintBytes();
         U64 availableBytes();
         S32 memoryPressure();
+        // What a render may let the viewer reach, and the least a render at
+        // the Render tab's size (or at a scale given) takes above the scene
+        // (below).
+        U64 memoryLimitFor(U64 footprint, U64 available);
+        U64 roomNeededBytes(U32 scale = 0);
+        bool lacksRoom(U64 footprint);
         // What a memory message suggests besides the Render tab.
         const char* const QUIT_OTHER_APPS =
             " Quitting apps you are not using frees memory for it: right-click each in the Dock and choose Quit"
@@ -707,7 +740,43 @@ namespace LuminousHDRSnapshot
                 return;
             }
             sWaiting = true;
-            const bool use_full = full && !sPreview; // a preview takes the textures as they are
+            // A render short of room at its size lets textures out of view go
+            // first: the discard bias at ROOM_BIAS -- which leaves what is on
+            // screen as it is -- and every texture weighed again at once, then
+            // a few seconds while the memory falls, before the size is chosen
+            // (takeAndSave). A preview renders at the window's size as it is.
+            const U64 footprint_asked = footprintBytes();
+            bool making_room = !sPreview && lacksRoom(footprint_asked);
+            if (making_room)
+            {
+                sMakingRoom = true;
+                LLViewerTexture::sDesiredDiscardBias = llmax(LLViewerTexture::sDesiredDiscardBias, ROOM_BIAS);
+                for (auto& image : gTextureList)
+                {
+                    gTextureList.updateImageDecodePriority(image, false);
+                }
+                LL_INFOS("LuminousHDRSnapshot") << "Making room for the render: the viewer at " << footprint_asked / (1024 * 1024)
+                    << " MB of " << memoryLimitFor(footprint_asked, availableBytes()) / (1024 * 1024) << " MB allowed, the render needs about "
+                    << roomNeededBytes() / (1024 * 1024) << " MB" << LL_ENDL;
+                if (overlay)
+                {
+                    LuminousPictureView::setProgress(-1.f, "Making room: letting go of what the picture does not show...", false);
+                }
+            }
+            U64 lowest = footprint_asked;
+            U64 room_from = footprint_asked;
+            LLTimer room_time;
+            LLTimer falling;
+            LLTimer room_check;
+            bool full_cut = false; // Full detail ended early to keep the render's room
+            // A preview takes the textures as they are, and so does a render
+            // already short of room: Full detail would load more into memory
+            // the render needs.
+            const bool use_full = full && !sPreview && !making_room;
+            if (full && !sPreview && making_room)
+            {
+                report("Full detail is left out of this render: there is no room for it here, so the render takes the scene as it is.");
+            }
             sFullTextures = use_full;
             // Every avatar's gaze held from now to the end: Second Life's own
             // glances aside and blinks would otherwise be in one picture in a
@@ -731,7 +800,7 @@ namespace LuminousHDRSnapshot
                             : (frames() > 1 ? "Taking the snapshot. This takes a few seconds, and the viewer pauses while it renders."
                                             : "Taking the snapshot..."));
             }
-            else if (use_full)
+            else if (use_full && !making_room)
             {
                 LuminousPictureView::setProgress(-1.f, "Loading everything in full detail...", false);
             }
@@ -760,6 +829,7 @@ namespace LuminousHDRSnapshot
                     }
                     sFullTextures = false;
                     sWaiting = false;
+                    sMakingRoom = false;
                     LLEyeMotion::sHoldGaze = false;
                     LuminousPictureView::endRender();
                     if (on_stop)
@@ -767,6 +837,35 @@ namespace LuminousHDRSnapshot
                         on_stop();
                     }
                     return true;
+                }
+                if (making_room)
+                {
+                    // Until the render fits at its size, or the memory has not
+                    // fallen for a second and a half; eight seconds at most.
+                    const U64 footprint = footprintBytes();
+                    if (footprint + (64ULL << 20) < lowest)
+                    {
+                        lowest = footprint;
+                        falling.reset();
+                    }
+                    const F32 waited = room_time.getElapsedTimeF32();
+                    const bool fits = !lacksRoom(footprint);
+                    if (!fits && waited < 8.f && (waited < 1.5f || falling.getElapsedTimeF32() < 1.5f))
+                    {
+                        return false; // call again
+                    }
+                    LL_INFOS("LuminousHDRSnapshot") << "Room made in " << waited << " s: the viewer from " << room_from / (1024 * 1024)
+                        << " to " << footprint / (1024 * 1024) << " MB, " << (fits ? "the render fits at its size" : "still short; the render's size is chosen to fit") << LL_ENDL;
+                    making_room = false;
+                    sMakingRoom = false;
+                    // the usual wait from here
+                    started.reset();
+                    quiet.reset();
+                    if (overlay && use_full && !full_cut)
+                    {
+                        LuminousPictureView::setProgress(-1.f, "Loading everything in full detail...", false);
+                    }
+                    return false;
                 }
                 const F32 elapsed = started.getElapsedTimeF32();
                 if (!wait_for_textures)
@@ -776,8 +875,48 @@ namespace LuminousHDRSnapshot
                         return false; // let the notice be drawn
                     }
                 }
-                else
+                else if (!full_cut)
                 {
+                    // Four times a second: the render must still fit at its
+                    // size. If not, the loading ends here, textures are weighed
+                    // again without Full detail as for making room (above), and
+                    // the render takes what has loaded.
+                    if (room_check.getElapsedTimeF32() >= 0.25f)
+                    {
+                        room_check.reset();
+                        const U64 footprint = footprintBytes();
+                        if (lacksRoom(footprint))
+                        {
+                            sFullTextures = false;
+                            full_cut = true;
+                            // the objects' and avatars' detail as it was, so
+                            // no finer meshes are asked for meanwhile
+                            LLVOVolume::sLODFactor = volume_lod;
+                            LLVOVolume::sDistanceFactor = volume_distance;
+                            LLVOAvatar::sLODFactor = avatar_lod;
+                            LL_INFOS("LuminousHDRSnapshot") << "Full detail ended after " << elapsed << " s to keep room for the render: the viewer at "
+                                << start_mb << " MB when asked, " << footprint / (1024 * 1024) << " MB of "
+                                << memoryLimitFor(footprint, availableBytes()) / (1024 * 1024) << " MB allowed now, the render needs about "
+                                << roomNeededBytes() / (1024 * 1024) << " MB" << LL_ENDL;
+                            report("Full detail loaded what fits in memory here; the rest of the picture keeps its usual detail.");
+                            making_room = true;
+                            sMakingRoom = true;
+                            room_from = footprint;
+                            lowest = footprint;
+                            room_time.reset();
+                            falling.reset();
+                            LLViewerTexture::sDesiredDiscardBias = llmax(LLViewerTexture::sDesiredDiscardBias, ROOM_BIAS);
+                            for (auto& image : gTextureList)
+                            {
+                                gTextureList.updateImageDecodePriority(image, false);
+                            }
+                            if (overlay)
+                            {
+                                LuminousPictureView::setProgress(-1.f, "Keeping room for the render...", false);
+                            }
+                            return false; // call again
+                        }
+                    }
                     if (LLAppViewer::getTextureFetch()->getNumRequests() > 0 || meshesLoading())
                     {
                         quiet.reset();
@@ -996,6 +1135,181 @@ namespace LuminousHDRSnapshot
 #endif
             return 0;
         }
+
+        // What a render may let the viewer reach: what it has now and macOS
+        // could still give it, less a margin for macOS and the other apps
+        // (LuminousSnapshotMemoryMargin, MB), and no more than a share of the
+        // Mac (LuminousSnapshotMemoryShare). So other apps' memory counts, and
+        // quitting them leaves more room.
+        U64 memoryLimitFor(U64 footprint, U64 available)
+        {
+            static LLCachedControl<F32> memory_share(gSavedSettings, "LuminousSnapshotMemoryShare", 0.9f);
+            static LLCachedControl<U32> margin_mb(gSavedSettings, "LuminousSnapshotMemoryMargin", 1024);
+            U64 limit = (U64)((F64)gSysMemory.getPhysicalMemoryKB().value() * 1024.0 * llclamp((F64)memory_share(), 0.05, 0.95));
+            const U64 reserve = (U64)margin_mb() << 20;
+            if (footprint > 0 && available > 0)
+            {
+                limit = llmin(limit, footprint + (available > reserve ? available - reserve : 0));
+            }
+            return limit;
+        }
+
+        // The least a render at the Render tab's size (scale 0) or at the
+        // scale given takes above the scene: as takeAndSave reckons it,
+        // without the margin and with the smaller shadow maps -- the last way
+        // it tries before a smaller size, so what must stay free for the
+        // picture to keep its size.
+        U64 roomNeededBytes(U32 scale)
+        {
+            static LLCachedControl<U32> scale_setting(gSavedSettings, "LuminousSnapshotScale", 1);
+            static LLCachedControl<F32> bytes_setting(gSavedSettings, "LuminousRenderBytesPerPixel", 140.f);
+            static LLCachedControl<U32> format_setting(gSavedSettings, "LuminousSnapshotFormat", 0);
+            static LLCachedControl<U32> shadow_setting(gSavedSettings, "LuminousPhotoShadowMapSize", 8192);
+            static LLCachedControl<S32> shadow_detail(gSavedSettings, "RenderShadowDetail", 2);
+            U32 w = 0;
+            U32 h = 0;
+            pictureSize((F32)llclamp(scale > 0 ? scale : (U32)scale_setting(), 1U, 2U), w, h);
+            const bool eight_bit = format_setting() != 1 && format_setting() != 2; // not TIFF or EXR
+            const F64 bytes_a_pixel = llclamp((F64)bytes_setting(), 60.0, 300.0) + (eight_bit ? 0.0 : 20.0);
+            S64 need = (S64)((F64)w * h * bytes_a_pixel) + (256LL << 20);
+            if (shadow_detail() > 0 && LuminousPhotoMode::isOn()) // the sun's four, less the live view's they replace
+            {
+                const S64 shadow = llmin((S64)shadow_setting(), 4096LL);
+                const LLRenderTarget& live = gPipeline.mRT->shadow[0];
+                need += llmax(4LL * shadow * shadow * 4 - 4LL * live.getWidth() * live.getHeight() * 4, 0LL);
+            }
+            return (U64)llmax(need, (S64)(256LL << 20));
+        }
+
+        // Whether the viewer lacks that room now.
+        bool lacksRoom(U64 footprint)
+        {
+            return footprint > 0 && footprint + roomNeededBytes() > memoryLimitFor(footprint, availableBytes());
+        }
+    }
+
+    bool roomShort()
+    {
+        // Twice a second; not while a render waits or renders, which takes
+        // the room it was kept for -- unless it is making room itself.
+        static LLFrameTimer timer;
+        static bool short_now = false;
+        if (sMakingRoom)
+        {
+            return true;
+        }
+        if (sWaiting || LLStartUp::getStartupState() < STATE_STARTED)
+        {
+            return false;
+        }
+        if (timer.getElapsedTimeF32() < 0.5f)
+        {
+            return short_now;
+        }
+        timer.reset();
+        const U64 footprint = footprintBytes();
+        const bool was_short = short_now;
+        short_now = lacksRoom(footprint);
+        if (short_now != was_short)
+        {
+            LL_INFOS("LuminousHDRSnapshot") << (short_now ? "Short of room for a render at its size" : "Room for a render at its size again")
+                << ": the viewer at " << footprint / (1024 * 1024) << " MB of " << memoryLimitFor(footprint, availableBytes()) / (1024 * 1024)
+                << " MB allowed, the render needs about " << roomNeededBytes() / (1024 * 1024) << " MB"
+                << (short_now ? "; textures out of view give way" : "") << LL_ENDL;
+        }
+        return short_now;
+    }
+
+    bool sceneShort()
+    {
+        // Twice a second; not while a render waits or renders. Short once a
+        // render at the window's size would no longer fit; room again only
+        // with a gigabyte to spare beyond that, so it does not swing.
+        static LLFrameTimer timer;
+        static bool short_now = false;
+        static bool told = false;
+        static LLCachedControl<bool> enabled(gSavedSettings, "LuminousMemoryStepDown", true);
+        // Objects with less detail while the scene stays short: after 20 s
+        // short, half the user's object detail (RenderVolumeLODFactor, 1 at
+        // least) as a value that is not saved; the user's own again once
+        // there has been room for a minute with 3 GB to spare, as the detail
+        // loading again takes 1-2 GB in a crowd.
+        static LLFrameTimer short_for;
+        static LLFrameTimer room_for;
+        static bool lowered = false;
+        static bool told_lowered = false;
+        LLControlVariable* detail = gSavedSettings.getControl("RenderVolumeLODFactor");
+        if (!enabled() || sWaiting || LLStartUp::getStartupState() < STATE_STARTED)
+        {
+            if (!enabled() && lowered && detail)
+            {
+                detail->setValue(detail->getSaveValue(), false);
+                lowered = false;
+            }
+            short_now = short_now && enabled();
+            return short_now;
+        }
+        if (timer.getElapsedTimeF32() < 0.5f)
+        {
+            return short_now;
+        }
+        timer.reset();
+        const U64 footprint = footprintBytes();
+        if (footprint == 0)
+        {
+            return short_now;
+        }
+        const U64 limit = memoryLimitFor(footprint, availableBytes());
+        const U64 need = roomNeededBytes(1) + (short_now ? (1024ULL << 20) : 0);
+        const bool was_short = short_now;
+        short_now = footprint + need > limit;
+        if (!short_now || !was_short)
+        {
+            short_for.reset();
+        }
+        if (footprint + roomNeededBytes(1) + (3ULL << 30) > limit)
+        {
+            room_for.reset();
+        }
+        if (detail && !lowered && short_now && short_for.getElapsedTimeF32() > 20.f)
+        {
+            const F32 lower = llmax(1.f, (F32)detail->getSaveValue().asReal() * 0.5f);
+            if (lower < (F32)detail->getValue().asReal())
+            {
+                LL_INFOS("LuminousHDRSnapshot") << "The scene still leaves no room: objects drawn with less detail, "
+                    << detail->getValue().asReal() << " to " << lower << ", the viewer at " << footprint / (1024 * 1024) << " MB of "
+                    << limit / (1024 * 1024) << " MB allowed" << LL_ENDL;
+                detail->setValue(lower, false);
+                lowered = true;
+                if (!told_lowered)
+                {
+                    told_lowered = true;
+                    LLNotificationsUtil::add("SystemMessageTip", LLSD().with("MESSAGE",
+                        "Memory is still short here, so Luminous draws objects with less detail until there is room again."));
+                }
+            }
+        }
+        else if (detail && lowered && room_for.getElapsedTimeF32() > 60.f)
+        {
+            LL_INFOS("LuminousHDRSnapshot") << "Room again: objects drawn with their detail, " << detail->getSaveValue().asReal()
+                << ", the viewer at " << footprint / (1024 * 1024) << " MB of " << limit / (1024 * 1024) << " MB allowed" << LL_ENDL;
+            detail->setValue(detail->getSaveValue(), false);
+            lowered = false;
+        }
+        if (short_now != was_short)
+        {
+            LL_INFOS("LuminousHDRSnapshot") << (short_now ? "The scene leaves no room for a render at the window's size" : "Room for a render at the window's size again")
+                << ": the viewer at " << footprint / (1024 * 1024) << " MB of " << limit / (1024 * 1024)
+                << " MB allowed, the render needs about " << roomNeededBytes(1) / (1024 * 1024) << " MB"
+                << (short_now ? "; textures on screen give way too" : "") << LL_ENDL;
+            if (short_now && !told)
+            {
+                told = true;
+                LLNotificationsUtil::add("SystemMessageTip", LLSD().with("MESSAGE",
+                    "Memory is short here, so Luminous loads textures with a little less detail until there is room again."));
+            }
+        }
+        return short_now;
     }
 
     bool takePicture(LLPointer<LLImageRaw>& picture, std::string& error)
@@ -1010,7 +1324,7 @@ namespace LuminousHDRSnapshot
     {
         // The window's size, in pixels, or twice it.
         static LLCachedControl<U32> scale_setting(gSavedSettings, "LuminousSnapshotScale", 1);
-        const U32 asked_scale = sPreview ? 1U : llclamp((U32)scale_setting(), 1U, 2U); // what fits may be less (below)
+        const U32 asked_scale = sPreview || sWindowSizeOnly ? 1U : llclamp((U32)scale_setting(), 1U, 2U); // what fits may be less (below)
         static LLCachedControl<bool> smooth(gSavedSettings, "LuminousHDRSnapshotSmooth", true);
         static LLCachedControl<U32> frames_setting(gSavedSettings, "LuminousSnapshotFrames", 16);
         // A preview takes four: enough for smooth edges and hair.
@@ -1078,19 +1392,11 @@ namespace LuminousHDRSnapshot
         // LuminousRenderBytesPerPixel starts at 140 and is learnt from each
         // render (below); TIFF and EXR read floats back, 20 more. Then 256 MB,
         // and the shadow maps whatever the size.
-        // The limit: a share of the Mac's memory (LuminousSnapshotMemoryShare,
-        // three quarters), and no more than the viewer has now and macOS
-        // could still give it, less 0.5 GB for macOS and the rest -- so other
-        // apps' memory counts, and quitting them leaves more room.
-        static LLCachedControl<F32> memory_share(gSavedSettings, "LuminousSnapshotMemoryShare", 0.75f);
-        U64 memory_limit = (U64)((F64)gSysMemory.getPhysicalMemoryKB().value() * 1024.0 * llclamp((F64)memory_share(), 0.05, 0.95));
+        // The limit: what the viewer has now and macOS could still give it,
+        // less a margin, at most a share of the Mac (memoryLimitFor).
         const U64 footprint_now = footprintBytes();
         const U64 available_now = availableBytes();
-        const U64 reserve = 512ULL << 20;
-        if (footprint_now > 0 && available_now > 0)
-        {
-            memory_limit = llmin(memory_limit, footprint_now + (available_now > reserve ? available_now - reserve : 0));
-        }
+        const U64 memory_limit = memoryLimitFor(footprint_now, available_now);
         static LLCachedControl<U32> shadow_setting(gSavedSettings, "LuminousPhotoShadowMapSize", 8192);
         static LLCachedControl<S32> shadow_detail(gSavedSettings, "RenderShadowDetail", 2);
         static LLCachedControl<F32> bytes_setting(gSavedSettings, "LuminousRenderBytesPerPixel", 140.f);
@@ -1159,6 +1465,7 @@ namespace LuminousHDRSnapshot
         }
         Option chosen = options.front(); // unread memory: as asked, the limit between frames still holds
         bool fits = true;
+        static LLCachedControl<bool> when_short(gSavedSettings, "LuminousRenderWhenShort", true);
         if (footprint_now > 0)
         {
             chosen = options.back(); // none fits: the smallest, and the limit between frames decides
@@ -1170,6 +1477,20 @@ namespace LuminousHDRSnapshot
                     chosen = option;
                     fits = true;
                     break;
+                }
+            }
+            // Past the limit (LuminousRenderWhenShort): the largest size that
+            // fits in what macOS could still give without taking it from
+            // other apps, else the smallest.
+            if (!fits && when_short())
+            {
+                for (const Option& option : options)
+                {
+                    if (need_bytes(sizes_for(option.scale, option.margin), option.shadow) <= available_now)
+                    {
+                        chosen = option;
+                        break;
+                    }
                 }
             }
             LL_INFOS("LuminousHDRSnapshot") << "Memory: the viewer at " << footprint_now / (1024 * 1024) << " MB of "
@@ -1228,6 +1549,32 @@ namespace LuminousHDRSnapshot
                        + QUIT_OTHER_APPS);
             }
         }
+        // Not even the window's size fits beside the scene: with
+        // LuminousRenderWhenShort it renders all the same, at the size chosen
+        // above, on what macOS frees by compressing and swapping, and stops
+        // only if macOS's pressure turns critical or the render takes half as
+        // much again as it was reckoned to; stopped larger than the window,
+        // it renders again at the window's size (saveTo).
+        const bool on_swap = !fits && footprint_now > 0 && when_short();
+        const U64 frame_limit = on_swap
+            ? footprint_now + need_bytes(sizes_for(chosen.scale, chosen.margin), chosen.shadow) * 3 / 2 + (512ULL << 20)
+            : memory_limit;
+        if (on_swap)
+        {
+            const std::string how = chosen.scale > 1.01f ? llformat("%g times the window's size", chosen.scale) : std::string("the window's size");
+            LL_INFOS("LuminousHDRSnapshot") << "Rendering at " << how << " beyond the limit: the viewer at " << footprint_now / (1024 * 1024)
+                << " MB of " << memory_limit / (1024 * 1024) << " MB allowed, macOS could give " << available_now / (1024 * 1024)
+                << " MB more; frames stop past " << frame_limit / (1024 * 1024) << " MB or at critical memory pressure" << LL_ENDL;
+            const std::string what = "Memory is short here: this render is drawn at " + how + " with the help of the Mac's swap, so it takes longer than usual.";
+            if (sProgress)
+            {
+                LuminousPictureView::setNote(what + "\nQuitting apps you are not using -- right-click each in the Dock and choose Quit -- makes room for larger renders.");
+            }
+            else
+            {
+                report(what + QUIT_OTHER_APPS);
+            }
+        }
         const Sizes sizes = sizes_for(chosen.scale, chosen.margin);
         const S64 render_shadow_bytes = shadow_bytes(sizes, chosen.shadow); // before the maps are made, for the learning below
         const U32 out_w = sizes.out_w;
@@ -1280,10 +1627,9 @@ namespace LuminousHDRSnapshot
             gGL.getTexUnit(unit)->unbind(LLTexUnit::TT_TEXTURE);
         }
         gGL.getTexUnit(0)->activate();
-        // A render that would take more than a share of the Mac's memory
-        // (LuminousSnapshotMemoryShare, three quarters; memory_limit above)
-        // stops between frames, with a message, rather than push the Mac
-        // into swap.
+        // A render that would take the viewer past what it may reach
+        // (frame_limit above: the limit, or for a render on swap what was
+        // reckoned for it) stops between frames, with a message.
         bool too_big = false;
         bool stopped = false;
         LuminousPhotoMode::setAccumulationFrames(frames); // for the lens and sun sampled across them
@@ -1375,10 +1721,10 @@ namespace LuminousHDRSnapshot
                 LL_WARNS("LuminousHDRSnapshot") << "The viewer's memory footprint could not be read: no memory limit for this render" << LL_ENDL;
             }
             const S32 pressure = memoryPressure();
-            if (footprint > memory_limit || pressure >= 4)
+            if (footprint > frame_limit || pressure >= 4)
             {
                 LL_WARNS("LuminousHDRSnapshot") << "Render stopped after " << f << " of " << frames << " frames: the viewer uses "
-                    << footprint / (1024 * 1024) << " MB of " << memory_limit / (1024 * 1024) << " MB allowed, macOS's memory pressure "
+                    << footprint / (1024 * 1024) << " MB of " << frame_limit / (1024 * 1024) << " MB allowed, macOS's memory pressure "
                     << pressure << LL_ENDL;
                 too_big = true;
                 break;
@@ -1467,6 +1813,7 @@ namespace LuminousHDRSnapshot
         }
         if (too_big)
         {
+            sSwapStoppedLarge = on_swap && chosen.scale > 1.01f;
             // Full detail loads the scene finer first, and a busy region is
             // most of the memory then: say so.
             // more frames do not cost more: they reuse the same targets
@@ -1698,14 +2045,62 @@ namespace LuminousHDRSnapshot
         {
             return 1.f;
         }
-        // The picture's pixels per pixel of the window, the margin included,
-        // and that area four times over: a level of detail finer than the
-        // picture shows, for its shifted frames and surfaces seen at a slant.
-        // A texture large on screen still loads at full size.
+        // The picture's pixels per pixel of the window, the margin included:
+        // a texture as fine as the picture shows it. A texture large on
+        // screen still loads at full size.
         static LLCachedControl<U32> scale_setting(gSavedSettings, "LuminousSnapshotScale", 1);
         static LLCachedControl<bool> margin(gSavedSettings, "LuminousSnapshotMargin", true);
         const F32 side = (F32)llclamp((U32)scale_setting(), 1U, 2U) * (margin() && LuminousPhotoMode::isOn() ? 1.2f : 1.f);
-        return side * side * 4.f;
+        return side * side;
+    }
+
+    F32 textureAreaScale(bool on_screen)
+    {
+        if (on_screen && sFullTextures)
+        {
+            return fullDetailAreaScale(); // the picture's pixels, which the window's are part of
+        }
+        static LLCachedControl<bool> by_points(gSavedSettings, "LuminousTextureDetailByPoints", true);
+        if (!by_points() || !gHiDPISupport || !gViewerWindow || !gViewerWindow->getWindow())
+        {
+            return 1.f;
+        }
+        // Asked for every texture updated: the backing scale once a frame.
+        static U32 frame = 0;
+        static F32 scale = 1.f;
+        if (frame != gFrameCount)
+        {
+            frame = gFrameCount;
+            const F32 backing = llmax(gViewerWindow->getWindow()->getSystemUISize(), 1.f);
+            scale = 1.f / (backing * backing);
+        }
+        return scale;
+    }
+
+    bool forgetOutOfView()
+    {
+        static LLFrameTimer timer;
+        static bool forget = false;
+        if (LLStartUp::getStartupState() < STATE_STARTED)
+        {
+            return false;
+        }
+        if (timer.getElapsedTimeF32() < 0.5f)
+        {
+            return forget;
+        }
+        timer.reset();
+        static LLCachedControl<F32> share(gSavedSettings, "LuminousTextureForgetShare", 0.5f);
+        const U64 footprint = footprintBytes();
+        const U64 limit = (U64)((F64)gSysMemory.getPhysicalMemoryKB().value() * 1024.0 * llclamp((F64)share(), 0.05, 1.0));
+        const bool was = forget;
+        forget = share() > 0.f && footprint > limit;
+        if (forget != was)
+        {
+            LL_INFOS("LuminousHDRSnapshot") << (forget ? "Textures out of view let go of their largest size" : "Textures out of view keep their largest size again")
+                << ": the viewer at " << footprint / (1024 * 1024) << " MB, " << limit / (1024 * 1024) << " MB the mark" << LL_ENDL;
+        }
+        return forget;
     }
 
     void init()
