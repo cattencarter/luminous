@@ -117,11 +117,13 @@
 #include "llscenemonitor.h"
 #include "llsdserialize.h"
 #include "llrendersphere.h"
+#include "llrhi.h" // [Viewer Lab] the morph masks' textures of the viewer's device
 #include "llskinningutil.h"
 
 #include "llperfstats.h"
 
 #include <boost/lexical_cast.hpp>
+#include <atomic>
 
 #include "fsavatarrenderpersistence.h"
 #include "fscommon.h"
@@ -1048,10 +1050,19 @@ void LLVOAvatar::deleteLayerSetCaches(bool clearAll)
                 mBakedTextureDatas[i].mTexLayerSet->deleteCaches();
             }
         }
-        if (mBakedTextureDatas[i].mMaskTexName)
+        if (mBakedTextureDatas[i].mMaskTexture)
         {
-            LLImageGL::deleteTextures(1, (GLuint*)&(mBakedTextureDatas[i].mMaskTexName));
-            mBakedTextureDatas[i].mMaskTexName = 0 ;
+            // [Viewer Lab] Coverage marker, once per session
+            static std::atomic<bool> sReached{ false };
+            if (!sReached.exchange(true))
+            {
+                LL_INFOS("RHI") << "Facade site reached: llvoavatar.cpp:deleteLayerSetCaches" << LL_ENDL;
+            }
+            // [Viewer Lab] The encoder lets go of the mask first, then its one reference goes and with it its name to
+            // LLImageGL's deletion lists, as deleteTextures queued it
+            LLTexUnit::releaseTexture(mBakedTextureDatas[i].mMaskTexture);
+            mBakedTextureDatas[i].mMaskTexture->unref();
+            mBakedTextureDatas[i].mMaskTexture = nullptr;
         }
     }
 }
@@ -4827,9 +4838,15 @@ bool LLVOAvatar::isRlvSilhouette() const
     if (!RlvActions::hasBehaviour(RLV_BHVR_SETCAM_AVDIST))
         return false;
 
-    // <FS> FIRE-34340-2 RLV silhouette should not override the user's complexity settings
-    if (isSelf() || isTooComplex() || isTooSlowWithoutShadows())
+    // <FS> FIRE-34340-2 Your own avatar and attached animesh shouldn't be a silhouette
+    if (isSelf())
         return false;
+
+    if (const LLVOAvatar* wearer = getAttachedAvatar())
+    {
+        if (wearer->isSelf())
+            return false;
+    }
     // </FS>
 
     static RlvCachedBehaviourModifier<float> s_nSetCamAvDist(RLV_MODIFIER_SETCAM_AVDIST);
@@ -9809,6 +9826,12 @@ bool LLVOAvatar::hasFirstFullAttachmentData() const
 
 bool LLVOAvatar::isTooComplex() const
 {
+    // [RLVa] FIRE-35778 @camavdist:1=n RLVa command turns avatars invisible instead of a silhouette (fix from Ellie Sable)
+    if (isRlvSilhouette())
+    {
+        return true;
+    }
+    // [/RLVa]
     bool too_complex;
     static LLCachedControl<S32> complexity_render_mode(gSavedSettings, "RenderAvatarComplexityMode");
     bool render_friend =  (isBuddy() && complexity_render_mode > AV_RENDER_LIMIT_BY_COMPLEXITY);
@@ -11422,20 +11445,36 @@ void LLVOAvatar::onBakedTextureMasksLoaded( bool success, LLViewerFetchedTexture
                 return;
             }
 
-            U32 gl_name;
-            LLImageGL::generateTextures(1, &gl_name );
+            // [Viewer Lab] Coverage marker, once per session
+            static std::atomic<bool> sReached{ false };
+            if (!sReached.exchange(true))
+            {
+                LL_INFOS("RHI") << "Facade site reached: llvoavatar.cpp:onBakedTextureMasksLoaded" << LL_ENDL;
+            }
+            // [Viewer Lab] The mask as a texture of the viewer's device: generateTextures' one name, bindManual's GL and
+            // setManualImage's level. Where createTextureNames is false (GL disabled, no device, off the main thread, a
+            // refused description) nothing is bound or specified, the morph mask below is still applied, and the
+            // previous mask stays
+            std::vector<LLPointer<LL::RHI::Texture>> textures;
+            const bool made = LLImageGL::createTextureNames(textures, 1, LLTexUnit::TT_TEXTURE, GL_ALPHA8, GL_ALPHA,
+                                                            GL_UNSIGNED_BYTE, aux_src->getWidth(), aux_src->getHeight(),
+                                                            LL::RHI::TEXTURE_SAMPLED, true);
+            LL::RHI::Texture* texture = made ? textures[0].get() : nullptr;
             stop_glerror();
 
-            gGL.getTexUnit(0)->bindManual(LLTexUnit::TT_TEXTURE, gl_name);
-            stop_glerror();
+            if (texture)
+            {
+                gGL.getTexUnit(0)->bindTexture(LLTexUnit::TT_TEXTURE, texture);
+                stop_glerror();
 
-            LLImageGL::setManualImage(
-                GL_TEXTURE_2D, 0, GL_ALPHA8,
-                aux_src->getWidth(), aux_src->getHeight(),
-                GL_ALPHA, GL_UNSIGNED_BYTE, aux_src->getData());
-            stop_glerror();
+                LLImageGL::specifyTexture(
+                    texture, 0, GL_ALPHA8,
+                    aux_src->getWidth(), aux_src->getHeight(),
+                    GL_ALPHA, GL_UNSIGNED_BYTE, aux_src->getData());
+                stop_glerror();
 
-            gGL.getTexUnit(0)->setTextureFilteringOption(LLTexUnit::TFO_BILINEAR);
+                gGL.getTexUnit(0)->setTextureFilteringOption(LLTexUnit::TFO_BILINEAR);
+            }
 
             /* if( id == head_baked->getID() )
                  if (self->mBakedTextureDatas[BAKED_HEAD].mTexLayerSet)
@@ -11458,11 +11497,19 @@ void LLVOAvatar::onBakedTextureMasksLoaded( bool success, LLViewerFetchedTexture
                         const EBakedTextureIndex baked_index = texture_dict->mBakedTextureIndex;
                         self->applyMorphMask(aux_src->getData(), aux_src->getWidth(), aux_src->getHeight(), 1, baked_index);
                         maskData->mLastDiscardLevel = discard_level;
-                        if (self->mBakedTextureDatas[baked_index].mMaskTexName)
+                        // [Viewer Lab] The new mask replaces the previous one, which goes as deleteLayerSetCaches lets go
+                        // of it; without a new mask the previous one stays
+                        LL::RHI::Texture*& mask = self->mBakedTextureDatas[baked_index].mMaskTexture;
+                        if (texture)
                         {
-                            LLImageGL::deleteTextures(1, &(self->mBakedTextureDatas[baked_index].mMaskTexName));
+                            if (mask)
+                            {
+                                LLTexUnit::releaseTexture(mask);
+                                mask->unref();
+                            }
+                            texture->ref();
+                            mask = texture;
                         }
-                        self->mBakedTextureDatas[baked_index].mMaskTexName = gl_name;
                         found_texture_id = true;
                         break;
                     }
@@ -11471,6 +11518,11 @@ void LLVOAvatar::onBakedTextureMasksLoaded( bool success, LLViewerFetchedTexture
             if (!found_texture_id)
             {
                 LL_INFOS() << "unexpected image id: " << id << LL_ENDL;
+                // [Viewer Lab] Kept, as the GL name was never deleted (as LLPipeline's SMAA sample map)
+                if (texture)
+                {
+                    texture->ref();
+                }
             }
             self->dirtyMesh();
             self->markBodyPartsComplexityDirty();
@@ -12268,6 +12320,13 @@ bool LLVOAvatar::isImpostor()
     // <FS:minerjr> [FIRE-35735] Imposter/Impostor Avatar Exclusions
     static LLCachedControl<U32> impostor_avatar_exclude(gSavedSettings,"FSImpostorAvatarExclude", 0);
 
+    // <FS> FIRE-34340-2 RLV silhouettes must be impostored
+    if (isRlvSilhouette())
+    {
+        return true;
+    }
+    // </FS>
+
     // Store the result of is visually muted as used in possibly 2 places
     bool is_visual_muted = isVisuallyMuted();
 
@@ -12282,9 +12341,6 @@ bool LLVOAvatar::isImpostor()
             // isVisuallyMuted() ||
             is_visual_muted || // Save from calling isVisuallyMuted a second time
             // </FS:minerjr> [FIRE-35735]
-            // <FS> FIRE-34340-2 RLV silhouettes must be impostored
-            isRlvSilhouette() ||
-            // </FS>
             isTooSlowWithoutShadows() ||
             (sLimitNonImpostors && (mUpdatePeriod > 1) )
     );
@@ -13281,6 +13337,12 @@ LLVOAvatar::AvatarOverallAppearance LLVOAvatar::getOverallAppearance() const
         {
             result = AOA_INVISIBLE;
         }
+        // <FS> FIRE-34340-2 RLV silhouettes take priority over Always Render
+        else if (isRlvSilhouette() && (!isControlAvatar() || getAttachedAvatar()))
+        {
+            result = AOA_JELLYDOLL;
+        }
+        // </FS>
         else if (mVisuallyMuteSetting == AV_ALWAYS_RENDER)
         {
             result = AOA_NORMAL;
@@ -13464,29 +13526,29 @@ bool LLVOAvatar::isTextureVisible(LLAvatarAppearanceDefines::ETextureIndex type,
 
 void LLVOAvatar::placeProfileQuery()
 {
-    if (mGPUTimerQuery == 0)
+    // [Viewer Lab] Through LLGPUQuery, made and begun as GL's query
+    if (!mGPUTimerQuery)
     {
-        glGenQueries(1, &mGPUTimerQuery);
+        mGPUTimerQuery = LLGPUQuery::create(GL_TIME_ELAPSED);
     }
 
-    glBeginQuery(GL_TIME_ELAPSED, mGPUTimerQuery);
+    mGPUTimerQuery.begin(GL_TIME_ELAPSED);
 }
 
 void LLVOAvatar::readProfileQuery(S32 retries)
 {
+    // [Viewer Lab] Through LLGPUQuery, ended and read as GL's query
     if (!mGPUProfilePending)
     {
-        glEndQuery(GL_TIME_ELAPSED);
+        mGPUTimerQuery.end(GL_TIME_ELAPSED);
         mGPUProfilePending = true;
     }
 
-    GLuint64 result = 0;
-    glGetQueryObjectui64v(mGPUTimerQuery, GL_QUERY_RESULT_AVAILABLE, &result);
+    GLuint64 result = mGPUTimerQuery.get(GL_QUERY_RESULT_AVAILABLE);
 
     if (result == GL_TRUE || --retries <= 0)
     { // query available, readback result
-        GLuint64 time_elapsed = 0;
-        glGetQueryObjectui64v(mGPUTimerQuery, GL_QUERY_RESULT, &time_elapsed);
+        GLuint64 time_elapsed = mGPUTimerQuery.get(GL_QUERY_RESULT);
         mGPURenderTime = time_elapsed / 1000000.f;
         mGPUProfilePending = false;
 

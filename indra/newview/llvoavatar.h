@@ -38,6 +38,7 @@
 #include "llavatarappearance.h"
 #include "llchat.h"
 #include "lldrawpoolalpha.h"
+#include "llglslshader.h" // [Viewer Lab] LLGPUQuery
 #include "llviewerobject.h"
 #include "llcharacter.h"
 #include "llcontrol.h"
@@ -608,7 +609,7 @@ private:
     S32         mNumInitFaces; //number of faces generated when creating the avatar drawable, does not inculde splitted faces due to long vertex buffer.
 
     // profile handle
-    U32 mGPUTimerQuery = 0;
+    LLGPUQuery mGPUTimerQuery; // [Viewer Lab] deleted with the avatar on the main thread while the device lives
 
     // profile results
 

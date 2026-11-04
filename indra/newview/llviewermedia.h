@@ -44,6 +44,8 @@
 #include "llcoros.h"
 #include "llcorehttputil.h"
 
+#include <atomic> // [Viewer Lab]
+
 class LLViewerMediaImpl;
 class LLUUID;
 class LLViewerMediaTexture;
@@ -396,6 +398,23 @@ public:
     void setPriority(LLPluginClassMedia::EPriority priority);
     LLPluginClassMedia::EPriority getPriority() { return mPriority; };
 
+    /// [Viewer Lab] The media texture updates since startup: doMediaTexUpdate's calls on any thread and the
+    /// bytes of the dirty rects they copied, its calls on the main thread and their microseconds, and updateMediaImage's
+    /// calls and microseconds on the main thread (as llimagegl.cpp's MainCreateTime). Counters only: the updates run as
+    /// before.
+    struct TexUpdateCounts
+    {
+        U64 updates = 0;
+        U64 bytes = 0;
+        U64 mainUpdates = 0;
+        U64 mainUs = 0;
+        U64 imageCalls = 0;
+        U64 imageUs = 0;
+    };
+    static TexUpdateCounts texUpdateCounts();
+    /// [Viewer Lab] This impl's doMediaTexUpdate calls since it was made
+    U64 getTexUpdateCount() const { return mTexUpdateCount; }
+
     void setLowPrioritySizeLimit(int size);
 
     void setTextureID(LLUUID id = LLUUID::null);
@@ -470,6 +489,7 @@ private:
     S32 mTextureUsedHeight;
     bool mSuspendUpdates;
     bool mTextureUpdatePending = false;
+    std::atomic<U64> mTexUpdateCount{ 0 }; // [Viewer Lab] getTexUpdateCount
     bool mVisible;
     ECursorType mLastSetCursor;
     EMediaNavState mMediaNavState;

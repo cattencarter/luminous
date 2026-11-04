@@ -37,12 +37,15 @@ U64 LLFrameTimer::sTotalTime = 0;
 F64 LLFrameTimer::sTotalSeconds = 0.0;
 S32 LLFrameTimer::sFrameCount = 0;
 U64 LLFrameTimer::sFrameDeltaTime = 0;
+U64 LLFrameTimer::sFixedFrameStep = 0;
+U64 LLFrameTimer::sFrameWallTime = 0;
 const F64 USEC_TO_SEC_F64 = 0.000001;
 
 // static
 void LLFrameTimer::updateFrameTime()
 {
-    U64 total_time = totalTime();
+    sFrameWallTime = totalTime();
+    U64 total_time = sFixedFrameStep ? sTotalTime + sFixedFrameStep : sFrameWallTime;
     sFrameDeltaTime = total_time - sTotalTime;
     sTotalTime = total_time;
     sTotalSeconds = U64_to_F64(sTotalTime) * USEC_TO_SEC_F64;
@@ -135,11 +138,18 @@ F32 LLFrameTimer::getFrameDeltaTimeF32()
 }
 
 
+// static
+void LLFrameTimer::setFixedFrameStep(F64 seconds)
+{
+    sFixedFrameStep = seconds > 0.0 ? (U64)(seconds * 1000000.0 + 0.5) : 0;
+}
+
 //  static
 // Return seconds since the current frame started
 F32  LLFrameTimer::getCurrentFrameTime()
 {
-    U64 frame_time = totalTime() - sTotalTime;
+    // On the wall clock, also with a fixed frame step: this measures work within a frame.
+    U64 frame_time = totalTime() - (sFixedFrameStep ? sFrameWallTime : sTotalTime);
     return (F32)(U64_to_F64(frame_time) * USEC_TO_SEC_F64);
 }
 

@@ -48,6 +48,7 @@
 #include "lldrawpoolwater.h"
 #include "llspatialpartition.h"
 #include "luminousphotomode.h" // <Luminous/>
+#include "llrhi.h" // <Luminous/>
 #include "llglcommonfunc.h"
 #include "llvoavatar.h"
 #include "gltfscenemanager.h"
@@ -494,7 +495,7 @@ void LLDrawPoolAlpha::renderDebugAlpha()
         if (sShowDebugAlphaRigged)
         {
         // </FS:Beq>
-        gHighlightProgram.mRiggedVariant->bind();
+        gHighlightProgram.bind(true); // [Viewer Lab] refuses an incomplete shader without a rigged variant
         gGL.diffuseColor4f(0, 1, 0, 1);// <FS:Beq/> FIRE-32132 et al. (can plain PASS_ALPHA_MASK_RIGGED exist?) paint it green if so.
         pushRiggedBatches(LLRenderPass::PASS_ALPHA_MASK_RIGGED, false);
         pushRiggedBatches(LLRenderPass::PASS_ALPHA_INVISIBLE_RIGGED, false);
@@ -724,7 +725,7 @@ void LLDrawPoolAlpha::renderPbrEmissives(std::vector<LLDrawInfo*>& emissives)
 void LLDrawPoolAlpha::renderRiggedEmissives(std::vector<LLDrawInfo*>& emissives)
 {
     LLGLDepthTest depth(GL_TRUE, GL_FALSE); //disable depth writes since "emissive" is additive so sorting doesn't matter
-    LLGLSLShader* shader = emissive_shader->mRiggedVariant;
+    LLGLSLShader* shader = emissive_shader->riggedVariant(); // [Viewer Lab] the shader itself when incomplete without a rigged variant
     shader->bind();
     shader->uniform1f(LLShaderMgr::EMISSIVE_BRIGHTNESS, 1.f);
 
@@ -885,7 +886,7 @@ void LLDrawPoolAlpha::renderAlphaGroups(U32 mask, bool depth_only, bool rigged, 
                     target_shader = pbr_shader;
                     if (params.mAvatar != nullptr)
                     {
-                        target_shader = target_shader->mRiggedVariant;
+                        target_shader = target_shader->riggedVariant(); // [Viewer Lab] the shader itself when incomplete without a rigged variant
                     }
 
                     // shader must be bound before LLGLTFMaterial::bind
@@ -947,8 +948,8 @@ void LLDrawPoolAlpha::renderAlphaGroups(U32 mask, bool depth_only, bool rigged, 
 
                     if (params.mAvatar != nullptr)
                     {
-                        llassert(target_shader->mRiggedVariant != nullptr);
-                        target_shader = target_shader->mRiggedVariant;
+                        target_shader = target_shader->riggedVariant(); // [Viewer Lab] the shader itself when incomplete without a rigged variant
+                        llassert(target_shader != nullptr);
                     }
 
                     if (current_shader != target_shader)
@@ -1027,6 +1028,15 @@ void LLDrawPoolAlpha::renderAlphaGroups(U32 mask, bool depth_only, bool rigged, 
                         const U64 key = (U64)(uintptr_t)params.mVertexBuffer.get() * 2654435761ULL
                                         ^ ((U64)params.mStart << 20) ^ (U64)params.mOffset;
                         current_shader->uniform1f(s_alpha_seed, (F32)(key % 10007ULL) / 10007.f);
+                        if (LL::RHI::viewerBackend() == LL::RHI::BackendType::Metal)
+                        {
+                            // the hashed coverage on Metal takes the frame's sub-pixel shift back
+                            static LLStaticHashedString s_alpha_jitter("luminous_alpha_jitter");
+                            F32 jitter_x = 0.f;
+                            F32 jitter_y = 0.f;
+                            LuminousPhotoMode::snapshotJitter(jitter_x, jitter_y);
+                            current_shader->uniform2f(s_alpha_jitter, jitter_x, jitter_y);
+                        }
                     }
                 }
                 // </Luminous>

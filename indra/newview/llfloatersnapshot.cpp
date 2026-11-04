@@ -1294,8 +1294,11 @@ void LLFloaterSnapshot::onOpen(const LLSD& key)
 
     // <Luminous> A notice: snapshots here are one quick frame, and the
     // sidebar's Render draws all of Luminous. Until "don't show this again"
-    // is ticked.
-    LLNotificationsUtil::add("LuminousSnapshotWindow");
+    // is ticked. Not with photo mode off, where the sidebar cannot render.
+    if (LuminousPhotoMode::isOn())
+    {
+        LLNotificationsUtil::add("LuminousSnapshotWindow");
+    }
     // </Luminous>
 
     // Initialize default tab.

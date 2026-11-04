@@ -37,6 +37,7 @@
 #include "llglheaders.h"
 #include "llvoavatar.h"
 #include "pipeline.h"
+#include <atomic>
 
 static constexpr S32 MIN_PIXEL_AREA_3PASS_HAIR = 64*64;
 
@@ -118,14 +119,20 @@ U32 LLViewerJoint::render( F32 pixelArea, bool first_pass, bool is_dummy )
             }
             else
             {
+                // [Viewer Lab] Coverage marker, once per session
+                static std::atomic<bool> sReached{ false };
+                if (!sReached.exchange(true))
+                {
+                    LL_INFOS("RHI") << "Facade site reached: llviewerjoint.cpp:render" << LL_ENDL;
+                }
                 // Render Inside (no Z buffer write)
-                glCullFace(GL_FRONT);
+                gGL.setCullFace(GL_FRONT); // [Viewer Lab]
                 {
                     LLGLDepthTest gls_depth(GL_TRUE, GL_FALSE);
                     triangle_count += drawShape( pixelArea, first_pass, is_dummy  );
                 }
                 // Render Outside (write to the Z buffer)
-                glCullFace(GL_BACK);
+                gGL.setCullFace(GL_BACK); // [Viewer Lab]
                 {
                     triangle_count += drawShape( pixelArea, false, is_dummy  );
                 }

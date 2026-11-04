@@ -110,7 +110,7 @@ void LLTexLayerParamAlpha::getCacheByteCount(S32* gl_bytes)
         {
             S32 bytes = (S32)tex->getWidth() * tex->getHeight() * tex->getComponents();
 
-            if (tex->hasGLTexture())
+            if (tex->hasTexture()) // [Viewer Lab] any backend
             {
                 *gl_bytes += bytes;
             }

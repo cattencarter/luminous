@@ -105,16 +105,20 @@ long showAlert(std::string title, std::string text, int type);
 void setTitleCocoa(NSWindowRef window, const std::string &title);   // <FS:CR> Set Window title
 
 NSWindowRef createNSWindow(int x, int y, int width, int height);
+bool setNSWindowTitle(NSWindowRef window, const char* title); // [Viewer Lab] UTF-8; false when it is not
 
 #include <OpenGL/OpenGL.h>
 
+void setOpenGLViewMetalLayer(bool use); // [Viewer Lab]
 GLViewRef createOpenGLView(NSWindowRef window, unsigned int samples, bool vsync);
+void createOpenGLContext(GLViewRef view, bool vsync); // [Viewer Lab]
 void glSwapBuffers(void* context);
-CGLContextObj getCGLContextObj(GLViewRef view);
-unsigned long getVramSize(GLViewRef view);
+unsigned long getVramSize(GLViewRef view); // [Viewer Lab] uses no view: also the CGL query's
+void makeOpenGLViewLayer(GLViewRef view); // [Viewer Lab]
 float getDeviceUnitSize(GLViewRef view);
 CGRect getContentViewRect(NSWindowRef window);
 CGRect getBackingViewRect(NSWindowRef window, GLViewRef view);
+void setOpenGLViewTestBackingScale(GLViewRef view, float scale); // [Viewer Lab] the golden hook's
 void getWindowSize(NSWindowRef window, float* size);
 void setWindowSize(NSWindowRef window, int width, int height);
 void getCursorPos(NSWindowRef window, float* pos);
@@ -151,6 +155,7 @@ void callWindowUnfocus();
 void callWindowHide();
 void callWindowUnhide();
 void callWindowDidChangeScreen();
+void callMetalLayerProbe(const char* line, bool ok); // [Viewer Lab]
 void callDeltaUpdate(float *delta, unsigned int mask);
 void callOtherMouseDown(float *pos, unsigned int mask, int button);
 void callOtherMouseUp(float *pos, unsigned int mask, int button);

@@ -55,6 +55,17 @@
 
 LLPointer<LLImageGL> gEXRImage;
 
+// [Viewer Lab] The array's device texture is the one bound on the unit, null for a raw name (an empty array), which the
+// facade counts untracked; GL copies as before either way. Off GL a copy the encoder did not take copies nothing
+void copy_to_cube_map_array(S32 channel, S32 level, S32 layer, S32 res)
+{
+    if (!LLGPUCopy::fromFramebuffer(gGL.getTexUnit(channel)->getCurrRHITexture(), GL_TEXTURE_CUBE_MAP_ARRAY, level, layer, 0,
+                                    0, 0, 0, res, res))
+    {
+        LL_WARNS_ONCE("RHI") << "A reflection probe copy into the cube map array was not made" << LL_ENDL;
+    }
+}
+
 void load_exr(const std::string& filename)
 {
     // reset reflection maps when previewing a new HDRI
@@ -69,25 +80,11 @@ void load_exr(const std::string& filename)
     int ret =  LoadEXRWithLayer(&out, &width, &height, filename.c_str(), /* layername */ nullptr, &err);
     if (ret == TINYEXR_SUCCESS)
     {
-        U32 texName = 0;
-        LLImageGL::generateTextures(1, &texName);
-
-        gEXRImage = new LLImageGL(texName, 4, GL_TEXTURE_2D, GL_RGB16F, GL_RGB16F, GL_FLOAT, LLTexUnit::TAM_CLAMP);
-        gEXRImage->setHasMipMaps(true);
-        gEXRImage->setUseMipMaps(true);
-        gEXRImage->setFilteringOption(LLTexUnit::TFO_TRILINEAR);
-
-        gGL.getTexUnit(0)->bind(gEXRImage);
-
-        glTexImage2D(GL_TEXTURE_2D, 0, GL_RGB16F, width, height, 0, GL_RGBA, GL_FLOAT, out);
-
-        LLImageGLMemory::alloc_tex_image(width, height, GL_RGB16F, 1);
+        // [Viewer Lab] The image and its texture of the viewer's render device at the EXR's size, also one that is not a
+        // power of two, through LLImageGL
+        gEXRImage = LLImageGL::createFloatImage(width, height, out);
 
         free(out); // release memory of image data
-
-        glGenerateMipmap(GL_TEXTURE_2D);
-
-        gGL.getTexUnit(0)->unbind(LLTexUnit::TT_TEXTURE);
 
     }
     else
@@ -144,6 +141,9 @@ static void touch_default_probe(LLReflectionMap* probe)
 
 LLReflectionMapManager::LLReflectionMapManager()
 {
+    // [Viewer Lab] read at the render interface's point from the first shader load: gPipeline is a global, so this runs
+    // before LLViewerWindow loads the shaders
+    LLShaderUniformBuffer::declareBlock(LLGLSLShader::UB_REFLECTION_PROBES);
     mDynamicProbeCount = LL_MAX_REFLECTION_PROBE_COUNT;
     initCubeFree();
 }
@@ -573,23 +573,25 @@ U32 LLReflectionMapManager::probeMemory()
     return (mDynamicProbeCount * 6 * (mProbeResolution * mProbeResolution) * 4) / 1024 / 1024 + (mDynamicProbeCount * 6 * (LL_IRRADIANCE_MAP_RESOLUTION * LL_IRRADIANCE_MAP_RESOLUTION) * 4) / 1024 / 1024;
 }
 
-GLuint LLReflectionMapManager::allocateQuery()
+LLGPUQuery LLReflectionMapManager::allocateQuery()
 {
+    // [Viewer Lab] Through LLGPUQuery, one made when the pool is empty
     if (mQueryPool.empty())
     {
-        GLuint query;
-        glGenQueries(1, &query);
-        return query;
+        return LLGPUQuery::create(GL_ANY_SAMPLES_PASSED);
     }
 
-    GLuint query = mQueryPool.front();
+    LLGPUQuery query = std::move(mQueryPool.front());
     mQueryPool.pop_front();
     return query;
 }
 
-void LLReflectionMapManager::recycleQuery(GLuint query)
+void LLReflectionMapManager::recycleQuery(LLGPUQuery query)
 {
-    mQueryPool.push_back(query);
+    if (query) // [Viewer Lab]
+    {
+        mQueryPool.push_back(std::move(query));
+    }
 }
 
 struct CompareProbeDepth
@@ -916,7 +918,7 @@ void LLReflectionMapManager::updateProbeFace(LLReflectionMap* probe, U32 face)
                 LL_PROFILE_GPU_ZONE("probe mip copy");
                 mTexture->bind(0);
                 //glCopyTexSubImage3D(GL_TEXTURE_CUBE_MAP_ARRAY, mip, 0, 0, probe->mCubeIndex * 6 + face, 0, 0, res, res);
-                glCopyTexSubImage3D(GL_TEXTURE_CUBE_MAP_ARRAY, mip, 0, 0, sourceIdx * 6 + face, 0, 0, res, res);
+                copy_to_cube_map_array(0, mip, sourceIdx * 6 + face, res); // [Viewer Lab]
                 //if (i == 0)
                 //{
                     //glCopyTexSubImage3D(GL_TEXTURE_CUBE_MAP_ARRAY, mip, 0, 0, probe->mCubeIndex * 6 + face, 0, 0, res, res);
@@ -975,13 +977,13 @@ void LLReflectionMapManager::updateProbeFace(LLReflectionMap* probe, U32 face)
 
                     mVertexBuffer->drawArrays(gGL.TRIANGLE_STRIP, 0, 4);
 
-                    glCopyTexSubImage3D(GL_TEXTURE_CUBE_MAP_ARRAY, i, 0, 0, probe->mCubeIndex * 6 + cf, 0, 0, res, res);
+                    copy_to_cube_map_array(channel, i, probe->mCubeIndex * 6 + cf, res); // [Viewer Lab]
                 }
 
                 if (i != mMipChain.size() - 1)
                 {
                     res /= 2;
-                    glViewport(0, 0, res, res);
+                    gGL.setViewport(0, 0, res, res); // [Viewer Lab]
                 }
             }
 
@@ -1012,7 +1014,7 @@ void LLReflectionMapManager::updateProbeFace(LLReflectionMap* probe, U32 face)
             {
                 int i = start_mip;
                 LL_PROFILE_GPU_ZONE("probe irradiance gen");
-                glViewport(0, 0, mMipChain[i].getWidth(), mMipChain[i].getHeight());
+                gGL.setViewport(0, 0, mMipChain[i].getWidth(), mMipChain[i].getHeight()); // [Viewer Lab]
                 for (int cf = 0; cf < 6; ++cf)
                 { // for each cube face
                     LLCoordFrame frame;
@@ -1026,7 +1028,7 @@ void LLReflectionMapManager::updateProbeFace(LLReflectionMap* probe, U32 face)
 
                     S32 res = mMipChain[i].getWidth();
                     mIrradianceMaps->bind(channel);
-                    glCopyTexSubImage3D(GL_TEXTURE_CUBE_MAP_ARRAY, i - start_mip, 0, 0, probe->mCubeIndex * 6 + cf, 0, 0, res, res);
+                    copy_to_cube_map_array(channel, i - start_mip, probe->mCubeIndex * 6 + cf, res); // [Viewer Lab]
                     mTexture->bind(channel);
                 }
             }
@@ -1312,16 +1314,16 @@ void LLReflectionMapManager::updateUniforms()
     mProbeData.heroProbeCount = gPipeline.mHeroProbeManager.mHeroData.heroProbeCount;
 
     //copy mProbeData into uniform buffer object
-    if (mUBO == 0)
+    // [Viewer Lab] through the uniform buffer facade: every program reads the block at the render interface's point for
+    // it, as the block is declared in the constructor, so no raw binding is left for it
+    if (!mUBO.isAllocated() && !mUBO.allocate(LLGLSLShader::UB_REFLECTION_PROBES, sizeof(ReflectionProbeData), true))
     {
-        glGenBuffers(1, &mUBO);
+        LL_WARNS_ONCE("RHI") << "The reflection probes' uniform buffer could not be made" << LL_ENDL;
     }
 
     {
         LL_PROFILE_ZONE_NAMED_CATEGORY_DISPLAY("rmmsu - update buffer");
-        glBindBuffer(GL_UNIFORM_BUFFER, mUBO);
-        glBufferData(GL_UNIFORM_BUFFER, sizeof(ReflectionProbeData), &mProbeData, GL_STREAM_DRAW);
-        glBindBuffer(GL_UNIFORM_BUFFER, 0);
+        mUBO.update(0, &mProbeData, sizeof(ReflectionProbeData)); // [Viewer Lab]
     }
 
 #if 0
@@ -1347,11 +1349,11 @@ void LLReflectionMapManager::setUniforms()
         return;
     }
 
-    if (mUBO == 0)
+    if (!mUBO.isAllocated()) // [Viewer Lab]
     {
         updateUniforms();
     }
-    glBindBufferBase(GL_UNIFORM_BUFFER, LLGLSLShader::UB_REFLECTION_PROBES, mUBO);
+    mUBO.bind(); // [Viewer Lab]
 }
 
 
@@ -1423,7 +1425,7 @@ void renderReflectionProbe(LLReflectionMap* probe, std::map<LLSpatialGroup*, int
         float pointSize = (dupByGroup || dupByObject || dupByLoc)
                             ? bigSize
                             : normalSize;
-        glPointSize(pointSize);
+        gGL.setPointSize(pointSize);
         gGL.begin(gGL.POINTS);
         gGL.vertex3fv(po);
         gGL.end();
@@ -1515,6 +1517,7 @@ void LLReflectionMapManager::initReflectionMaps()
 
         gEXRImage = nullptr;
         mReset = false;
+        ++mResets; // [Viewer Lab] golden-image tests
         mReflectionProbeCount = mDynamicProbeCount;
         mProbeResolution = probe_resolution;
         mMaxProbeLOD = log2f((F32)mProbeResolution) - 1.f; // number of mips - 1
@@ -1627,8 +1630,9 @@ void LLReflectionMapManager::cleanup()
     mDefaultProbe = nullptr;
     mUpdatingProbe = nullptr;
 
-    glDeleteBuffers(1, &mUBO);
-    mUBO = 0;
+    // [Viewer Lab] Only a buffer updateUniforms made (on Metal none exists before login), let go of on the main thread
+    // before the device goes; nothing when none was made, as GL ignored the name 0
+    mUBO.release();
 
     cleanupQueryPool();
 
@@ -1641,10 +1645,103 @@ void LLReflectionMapManager::cleanupQueryPool()
     if (!mQueryPool.empty())
     {
         LL_PROFILE_ZONE_NAMED_CATEGORY_DISPLAY("cleanup query pool");
-        std::vector<GLuint> queries(mQueryPool.begin(), mQueryPool.end());
-        glDeleteQueries(static_cast<GLsizei>(queries.size()), queries.data());
+        // [Viewer Lab] Each one deleted here, where one glDeleteQueries deleted them all
+        for (LLGPUQuery& query : mQueryPool)
+        {
+            query.release();
+        }
         mQueryPool.clear();
     }
+}
+
+// [Viewer Lab] Probes are updated over and over, one at a time and a face a frame, so this asks
+// only that each probe update() would pick has run `updates` whole updates that began at or after
+// `since` (frame time) and faded in: the default probe always, the others only with reflection
+// coverage (level above 0), within the probe count, when relevant and not paused. A probe renders
+// the scene with the probes' own reflections, so its content settles over several updates.
+std::string LLReflectionMapManager::probesNotComplete(F32 since, U32 updates, std::set<const LLReflectionMap*>& begun,
+                                                      std::map<const LLReflectionMap*, U32>& finished) const
+{
+    if (!mCreateList.empty())
+    {
+        return llformat("%d probes waiting to be created", (S32)mCreateList.size());
+    }
+    if (mPaused)
+    {
+        return "probe updates are paused";
+    }
+    // An update begins with the first face of the irradiance pass (doProbeUpdate).
+    if (mUpdatingProbe && mUpdatingFace == 1 && !mRadiancePass && mUpdatingProbe->mLastUpdateTime >= since)
+    {
+        begun.insert(mUpdatingProbe);
+    }
+    S32 waiting = 0;
+    S32 in_use = 0;
+    std::string example;
+    for (U32 i = 0; i < mProbes.size(); ++i)
+    {
+        LLReflectionMap* probe = mProbes[i];
+        if (!probe || (probe != mDefaultProbe && (mRenderReflectionProbeLevel == 0 || i >= mReflectionProbeCount
+                                                  || !probe->isRelevant() || (probe->mOccluded && probe->mComplete))))
+        {
+            continue; // update() does not render it, and an occluded probe is not drawn either
+        }
+        ++in_use;
+        if (probe != mUpdatingProbe && begun.erase(probe) && probe->mComplete)
+        {
+            ++finished[probe];
+        }
+        const auto done = finished.find(probe);
+        if (done == finished.end() || done->second < updates || !probe->mComplete || probe->mFadeIn < 1.f)
+        {
+            if (waiting++ == 0)
+            {
+                example = llformat(", e.g. cube %d: %s, faded in %.2f, updated at %.1f s%s", probe->mCubeIndex,
+                                   probe->mComplete ? "complete" : "not complete", probe->mFadeIn,
+                                   probe->mLastUpdateTime, probe == mDefaultProbe ? " (the default probe)" : "");
+            }
+        }
+    }
+    return waiting ? llformat("%d of %d probes in use not updated", waiting, in_use) + example : std::string();
+}
+
+// [Viewer Lab]
+void LLReflectionMapManager::restart()
+{
+    reset();
+    sUpdateCount = 0;
+}
+
+// [Viewer Lab]
+LLSD LLReflectionMapManager::probeState() const
+{
+    std::vector<LLSD> probes;
+    for (const LLPointer<LLReflectionMap>& probe : mProbes)
+    {
+        const F32* origin = probe->mOrigin.getF32ptr();
+        probes.push_back(llsd::map("origin", llsd::array(origin[0], origin[1], origin[2]), "radius", probe->mRadius,
+                                   "cube", probe->mCubeIndex, "complete", probe->mComplete,
+                                   "since_update", (F32)gFrameTimeSeconds - probe->mLastUpdateTime,
+                                   "default", probe == mDefaultProbe, "updating", probe == mUpdatingProbe));
+    }
+    std::sort(probes.begin(), probes.end(), [](const LLSD& a, const LLSD& b)
+    {
+        for (S32 i = 0; i < 3; ++i)
+        {
+            if (a["origin"][i].asReal() != b["origin"][i].asReal())
+            {
+                return a["origin"][i].asReal() < b["origin"][i].asReal();
+            }
+        }
+        return a["radius"].asReal() < b["radius"].asReal();
+    });
+    LLSD state = llsd::map("updating_face", (S32)mUpdatingFace, "radiance_pass", mRadiancePass);
+    state["probes"] = LLSD::emptyArray();
+    for (const LLSD& probe : probes)
+    {
+        state["probes"].append(probe);
+    }
+    return state;
 }
 
 void LLReflectionMapManager::doOcclusion()

@@ -65,6 +65,8 @@
 // [RLVa:KB] - Checked: 2010-03-23 (RLVa-1.2.0a)
 #include "rlvhandler.h"
 // [/RLVa:KB]
+#include "llrhi.h" // [Viewer Lab] the grid's texture of the viewer's device
+#include <atomic>
 
 const S32 NUM_AXES = 3;
 const S32 MOUSE_DRAG_SLOP = 2;       // pixels
@@ -77,7 +79,8 @@ const F32 PLANE_TICK_SIZE = 0.4f;
 const F32 MANIPULATOR_SCALE_HALF_LIFE = 0.07f;
 const F32 SNAP_ARROW_SCALE = 0.7f;
 
-static LLPointer<LLViewerTexture> sGridTex = NULL ;
+// [Viewer Lab] the grid as a texture of the viewer's device with its ten levels
+static LLPointer<LL::RHI::Texture> sGridTexture;
 
 const LLManip::EManipPart MANIPULATOR_IDS[9] =
 {
@@ -132,29 +135,31 @@ LLManipTranslate::LLManipTranslate( LLToolComposite* composite )
     mPlaneScales(1.f, 1.f, 1.f),
     mPlaneManipPositions(1.f, 1.f, 1.f, 1.f)
 {
-    if (sGridTex.isNull())
+    if (sGridTexture.isNull())
     {
         restoreGL();
     }
 }
 
 //static
-U32 LLManipTranslate::getGridTexName()
+LL::RHI::Texture* LLManipTranslate::getGridTexture()
 {
-    if(sGridTex.isNull())
+    if(sGridTexture.isNull())
     {
         restoreGL() ;
     }
 
-    return sGridTex.isNull() ? 0 : sGridTex->getTexName() ;
+    return sGridTexture.get() ;
 }
 
 //static
 void LLManipTranslate::destroyGL()
 {
-    if (sGridTex)
+    if (sGridTexture)
     {
-        sGridTex = NULL ;
+        // [Viewer Lab] the encoder lets go of it first, then its name goes to LLImageGL's deletion lists
+        LLTexUnit::releaseTexture(sGridTexture.get());
+        sGridTexture = nullptr;
     }
 }
 
@@ -166,16 +171,22 @@ void LLManipTranslate::restoreGL()
     U32 mip = 0;
 
     destroyGL() ;
-    sGridTex = LLViewerTextureManager::getLocalTexture() ;
-    if(!sGridTex->createGLTexture())
+    // [Viewer Lab] createGLTexture's one name from the pool, for a texture described with the grid's ten levels (512 down
+    // to 1); false leaves no grid, as a failed createGLTexture did
+    std::vector<LLPointer<LL::RHI::Texture>> textures;
+    stop_glerror();
+    if (!LLImageGL::createTextureNames(textures, 1, LLTexUnit::TT_TEXTURE, GL_RGBA, GL_RGBA, GL_UNSIGNED_BYTE, rez, rez,
+                                       LL::RHI::TEXTURE_SAMPLED, true, 10))
     {
-        sGridTex = NULL ;
+        sGridTexture = nullptr;
         return ;
     }
+    stop_glerror();
+    sGridTexture = textures[0];
 
     GLuint* d = new GLuint[rez*rez];
 
-    gGL.getTexUnit(0)->bindManual(LLTexUnit::TT_TEXTURE, sGridTex->getTexName(), true);
+    gGL.getTexUnit(0)->bindTexture(LLTexUnit::TT_TEXTURE, sGridTexture.get(), true); // [Viewer Lab] bindManual's GL
     gGL.getTexUnit(0)->setTextureFilteringOption(LLTexUnit::TFO_TRILINEAR);
 
     while (rez >= 1)
@@ -271,7 +282,7 @@ void LLManipTranslate::restoreGL()
                 }
             }
         }
-        LLImageGL::setManualImage(GL_TEXTURE_2D, mip, GL_RGBA, rez, rez, GL_RGBA, GL_UNSIGNED_BYTE, d);
+        LLImageGL::specifyTexture(sGridTexture.get(), mip, GL_RGBA, rez, rez, GL_RGBA, GL_UNSIGNED_BYTE, d); // [Viewer Lab]
         rez = rez >> 1;
         mip++;
     }
@@ -1570,8 +1581,14 @@ void LLManipTranslate::renderSnapGuides()
             {
                 //LLGLDisable stencil(GL_STENCIL_TEST);
                 {
+                    // [Viewer Lab] Coverage marker, once per session
+                    static std::atomic<bool> sReached{ false };
+                    if (!sReached.exchange(true))
+                    {
+                        LL_INFOS("RHI") << "Facade site reached: llmaniptranslate.cpp:renderSnapGuides (grid)" << LL_ENDL;
+                    }
                     LLGLDepthTest gls_depth(GL_TRUE, GL_FALSE, GL_GREATER);
-                    gGL.getTexUnit(0)->bindManual(LLTexUnit::TT_TEXTURE, getGridTexName());
+                    gGL.getTexUnit(0)->bindTexture(LLTexUnit::TT_TEXTURE, getGridTexture()); // [Viewer Lab]
                     gGL.flush();
                     gGL.blendFunc(LLRender::BF_ZERO, LLRender::BF_ONE_MINUS_SOURCE_ALPHA);
                     renderGrid(u,v,tiles,0.9f, 0.9f, 0.9f,a*0.15f);
@@ -1585,7 +1602,7 @@ void LLManipTranslate::renderSnapGuides()
                     renderGrid(u,v,tiles,0.0f, 0.0f, 0.0f,a*0.16f);
 
                     //draw grid top
-                    gGL.getTexUnit(0)->bindManual(LLTexUnit::TT_TEXTURE, getGridTexName());
+                    gGL.getTexUnit(0)->bindTexture(LLTexUnit::TT_TEXTURE, getGridTexture()); // [Viewer Lab]
                     renderGrid(u,v,tiles,1,1,1,a);
 
                     gGL.popMatrix();

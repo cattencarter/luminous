@@ -169,7 +169,7 @@ bool LLGLTexture::createGLTexture()
     return mGLTexturep->createGLTexture() ;
 }
 
-bool LLGLTexture::createGLTexture(S32 discard_level, const LLImageRaw* imageraw, S32 usename, bool to_create, S32 category, bool defer_copy, LLGLuint* tex_name)
+bool LLGLTexture::createGLTexture(S32 discard_level, const LLImageRaw* imageraw, S32 usename, bool to_create, S32 category, bool defer_copy, LLImageGLHandle* tex_name)
 {
     llassert(mGLTexturep.notNull());
 
@@ -234,20 +234,19 @@ S8  LLGLTexture::getComponents() const
     return mGLTexturep->getComponents() ;
 }
 
-LLGLuint LLGLTexture::getTexName() const
-{
-    llassert(mGLTexturep.notNull()) ;
-
-    return mGLTexturep->getTexName() ;
-}
-
 bool LLGLTexture::hasGLTexture() const
 {
     if(mGLTexturep.notNull())
     {
-        return mGLTexturep->getHasGLTexture() ;
+        return mGLTexturep->hasTexture() ; // [Viewer Lab] any backend: off GL a texture has no GL name
     }
     return false ;
+}
+
+bool LLGLTexture::hasTexture() const
+{
+    // [Viewer Lab] A texture on any backend; hasGLTexture() gives the same answer
+    return mGLTexturep.notNull() && mGLTexturep->hasTexture();
 }
 
 bool LLGLTexture::getBoundRecently() const
@@ -265,7 +264,7 @@ LLTexUnit::eTextureType LLGLTexture::getTarget(void) const
     return mGLTexturep->getTarget() ;
 }
 
-bool LLGLTexture::setSubImage(const LLImageRaw* imageraw, S32 x_pos, S32 y_pos, S32 width, S32 height, LLGLuint use_name)
+bool LLGLTexture::setSubImage(const LLImageRaw* imageraw, S32 x_pos, S32 y_pos, S32 width, S32 height, LLImageGLHandle use_name)
 {
     LL_PROFILE_ZONE_SCOPED_CATEGORY_TEXTURE;
     llassert(mGLTexturep.notNull()) ;
@@ -273,7 +272,7 @@ bool LLGLTexture::setSubImage(const LLImageRaw* imageraw, S32 x_pos, S32 y_pos, 
     return mGLTexturep->setSubImage(imageraw, x_pos, y_pos, width, height, 0, use_name) ;
 }
 
-bool LLGLTexture::setSubImage(const U8* datap, S32 data_width, S32 data_height, S32 x_pos, S32 y_pos, S32 width, S32 height, LLGLuint use_name)
+bool LLGLTexture::setSubImage(const U8* datap, S32 data_width, S32 data_height, S32 x_pos, S32 y_pos, S32 width, S32 height, LLImageGLHandle use_name)
 {
     LL_PROFILE_ZONE_SCOPED_CATEGORY_TEXTURE;
     llassert(mGLTexturep.notNull()) ;
@@ -381,7 +380,7 @@ bool LLGLTexture::isGLTextureCreated() const
 
 void LLGLTexture::destroyGLTexture()
 {
-    if(mGLTexturep.notNull() && mGLTexturep->getHasGLTexture())
+    if(mGLTexturep.notNull() && mGLTexturep->hasTexture()) // [Viewer Lab] any backend
     {
         mGLTexturep->destroyGLTexture() ;
         mTextureState = DELETED ;

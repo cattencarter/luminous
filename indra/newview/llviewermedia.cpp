@@ -73,6 +73,10 @@
 #include "llwindow.h"
 #include "llvieweraudio.h"
 #include "llcorehttputil.h"
+#include "llthread.h" // [Viewer Lab] on_main_thread
+
+#include <atomic>
+#include <chrono>
 
 #include "llfloaterwebcontent.h"    // for handling window close requests and geometry change requests in media browser windows.
 
@@ -3123,10 +3127,66 @@ bool LLViewerMediaImpl::preMediaTexUpdate(LLViewerMediaTexture*& media_tex, U8*&
     return retval;
 }
 
+// [Viewer Lab] LLViewerMediaImpl::texUpdateCounts' sums
+static std::atomic<U64> sTexUpdates{ 0 };
+static std::atomic<U64> sTexUpdateBytes{ 0 };
+static std::atomic<U64> sTexMainUpdates{ 0 };
+static std::atomic<U64> sTexMainUs{ 0 };
+static std::atomic<U64> sImageCalls{ 0 };
+static std::atomic<U64> sImageUs{ 0 };
+
+namespace
+{
+    /// [Viewer Lab] Adds one call and the time from its making to its end to two sums when it is made on the main
+    /// thread, as llimagegl.cpp's MainCreateTime
+    class MainThreadTime
+    {
+    public:
+        MainThreadTime(std::atomic<U64>& calls, std::atomic<U64>& us)
+            : mCalls(calls), mUs(us), mOn(on_main_thread()), mStart(std::chrono::steady_clock::now())
+        {
+        }
+        ~MainThreadTime()
+        {
+            if (mOn)
+            {
+                ++mCalls;
+                mUs += static_cast<U64>(
+                    std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now() - mStart).count());
+            }
+        }
+
+    private:
+        std::atomic<U64>& mCalls;
+        std::atomic<U64>& mUs;
+        const bool mOn;
+        const std::chrono::steady_clock::time_point mStart;
+    };
+}
+
+// [Viewer Lab]
+// static
+LLViewerMediaImpl::TexUpdateCounts LLViewerMediaImpl::texUpdateCounts()
+{
+    TexUpdateCounts counts;
+    counts.updates = sTexUpdates;
+    counts.bytes = sTexUpdateBytes;
+    counts.mainUpdates = sTexMainUpdates;
+    counts.mainUs = sTexMainUs;
+    counts.imageCalls = sImageCalls;
+    counts.imageUs = sImageUs;
+    return counts;
+}
+
 //////////////////////////////////////////////////////////////////////////////////////////
 void LLViewerMediaImpl::doMediaTexUpdate(LLViewerMediaTexture* media_tex, U8* data, S32 data_width, S32 data_height, S32 x_pos, S32 y_pos, S32 width, S32 height, bool sync)
 {
     LL_PROFILE_ZONE_SCOPED_CATEGORY_MEDIA;
+    const MainThreadTime timed(sTexMainUpdates, sTexMainUs); // [Viewer Lab]
+    ++sTexUpdates;
+    ++mTexUpdateCount;
+    sTexUpdateBytes += static_cast<U64>(llmax(width, 0)) * static_cast<U64>(llmax(height, 0))
+                       * static_cast<U64>(media_tex->getComponents());
     LLCoros::LockType lock(mLock); // don't allow media source tear-down during update
 
     // wrap "data" in an LLImageRaw but do NOT make a copy
@@ -3138,7 +3198,7 @@ void LLViewerMediaImpl::doMediaTexUpdate(LLViewerMediaTexture* media_tex, U8* da
     // updated textures by the OpenGL implementation. (Windows 10/Nvidia)
     // -Cosmic,2023-04-04
     // Allocate GL texture based on LLImageRaw but do NOT copy to GL
-    LLGLuint tex_name = 0;
+    LLImageGLHandle tex_name; // [Viewer Lab] the new texture's opaque handle, not its GL name
     if (!media_tex->createGLTexture(0, raw, 0, true, LLGLTexture::OTHER, true, &tex_name))
     {
         LL_WARNS("Media") << "Failed to create media texture" << LL_ENDL;
@@ -3170,6 +3230,7 @@ void LLViewerMediaImpl::updateImagesMediaStreams()
 LLViewerMediaTexture* LLViewerMediaImpl::updateMediaImage()
 {
     LL_PROFILE_ZONE_SCOPED_CATEGORY_MEDIA;
+    const MainThreadTime timed(sImageCalls, sImageUs); // [Viewer Lab]
     llassert(!gCubeSnapshot);
     if (!mMediaSource)
     {

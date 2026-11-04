@@ -1,0 +1,42 @@
+{
+  "libraries": [
+    {
+      "name": "tone",
+      "files": [
+        "luminous/tone/frame.metal",
+        "luminous/tone/present.metal"
+      ],
+      "defines": {},
+      "compute": [],
+      "render": [
+        {
+          "vertex": "luminous_fullscreen_vs",
+          "fragment": "luminous_picture_frame_fs",
+          "colorFormats": [
+            "RGBA8Unorm"
+          ],
+          "depthFormat": "",
+          "blend": "none"
+        },
+        {
+          "vertex": "luminous_fullscreen_vs",
+          "fragment": "luminous_present_upscale_fs",
+          "colorFormats": [
+            "RGBA8Unorm"
+          ],
+          "depthFormat": "Depth32Float",
+          "blend": "none"
+        },
+        {
+          "vertex": "luminous_fullscreen_vs",
+          "fragment": "luminous_present_upscale_nodepth_fs",
+          "colorFormats": [
+            "RGBA8Unorm"
+          ],
+          "depthFormat": "",
+          "blend": "none"
+        }
+      ]
+    }
+  ]
+}

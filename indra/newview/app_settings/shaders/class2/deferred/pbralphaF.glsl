@@ -123,7 +123,7 @@ vec3 pbrCalcPointLightOrSpotLight(vec3 diffuseColor, vec3 specularColor,
                     vec3 lightColor,
                     float lightSize, float falloff, float is_pointlight, float ambiance);
 
-#if defined(HAS_SKIN)
+#if defined(HAS_SKIN) && defined(LUMINOUS_ALPHA_SORT)
 // <Luminous> Alpha sorting in a render's frame of several: worn see-through
 // pixels drawn solid or not at all, with their depth, by a threshold that steps
 // evenly through the frames from an offset of the pixel's own -- so the
@@ -166,8 +166,80 @@ float luminousCoverage(float alpha)
 }
 #endif // </Luminous>
 
+#if defined(HAS_SKIN) && defined(LUMINOUS_ALPHA_SORT_HASH)
+// <Luminous> Alpha sorting as above where the triangle's own number is not
+// used (Metal). A layer's threshold is told apart from another's by where the
+// fragment lies on it: its texture coordinate and its depth, each in cells
+// about a pixel across, taken where the pixel lies in the render's unshifted
+// frame -- the frame's sub-pixel shift taken back along the derivatives -- so
+// that a pixel of a layer keeps its threshold in every frame and the frames
+// still step evenly through it. Layers within a cell of each other in both
+// (copies of one mesh pushed out a little, with the same texture
+// coordinates, in one draw) share a threshold and count as one; layers in
+// different draws never do (luminous_alpha_seed).
+uniform float luminous_alpha_step; // (frame + 0.5) / frames; 0 or below off (unset is 0)
+uniform float luminous_alpha_seed; // this draw's own number, 0-1
+uniform float luminous_alpha_faint; // the render's second pass: the faint parts, blended
+uniform vec2 luminous_alpha_jitter; // this frame's shift of the picture in pixels (unset is 0)
+float luminousCellHash(vec3 cell)
+{
+    vec3 p3 = fract(mod(cell, 4096.0) * vec3(0.1031, 0.1030, 0.0973));
+    p3 += dot(p3, p3.yzx + 33.33);
+    return fract((p3.x + p3.y) * p3.z);
+}
+// The layer's number, 0-1: at the top of main, before anything is discarded,
+// as it takes derivatives.
+float luminousCoverageLayer(vec2 uv, float depth)
+{
+    if (luminous_alpha_step <= 0.0)
+    {
+        return 0.0;
+    }
+    vec2 uv_x = dFdx(uv);
+    vec2 uv_y = dFdy(uv);
+    float depth_x = dFdx(depth);
+    float depth_y = dFdy(depth);
+    vec2 uv_c = uv + uv_x * luminous_alpha_jitter.x + uv_y * luminous_alpha_jitter.y;
+    float depth_c = depth + depth_x * luminous_alpha_jitter.x + depth_y * luminous_alpha_jitter.y;
+    // a pixel's step in each, rounded up to a power of two so that it is the
+    // same from frame to frame
+    float uv_step = max(max(abs(uv_x.x) + abs(uv_y.x), abs(uv_x.y) + abs(uv_y.y)), 1.0 / 65536.0);
+    float depth_step = max(abs(depth_x) + abs(depth_y), max(abs(depth_c), 0.01) / 4096.0);
+    uv_step = exp2(ceil(log2(uv_step)));
+    depth_step = exp2(ceil(log2(depth_step)));
+    return luminousCellHash(vec3(floor(uv_c / uv_step), floor(depth_c / depth_step)));
+}
+float luminousCoverage(float alpha, float layer_number)
+{
+    if (luminous_alpha_step <= 0.0)
+    {
+        return alpha;
+    }
+    if ((alpha < 0.5) != (luminous_alpha_faint > 0.5))
+    {
+        discard; // the other pass's
+    }
+    if (luminous_alpha_faint > 0.5)
+    {
+        return alpha;
+    }
+    float layer = luminous_alpha_seed + layer_number;
+    vec3 p3 = fract(vec3(gl_FragCoord.xyx) * 0.1031 + layer * vec3(17.31, 31.17, 23.71));
+    p3 += dot(p3, p3.yzx + 33.33);
+    float offset = fract((p3.x + p3.y) * p3.z);
+    if (alpha <= fract(offset + luminous_alpha_step))
+    {
+        discard;
+    }
+    return 1.0;
+}
+#endif // </Luminous>
+
 void main()
 {
+#if defined(HAS_SKIN) && defined(LUMINOUS_ALPHA_SORT_HASH)
+    float luminous_layer = luminousCoverageLayer(base_color_texcoord.xy, -vary_position.z); // <Luminous/> before any discard
+#endif
     mirrorClip(vary_position);
 
     vec3 color = vec3(0,0,0);
@@ -231,8 +303,8 @@ void main()
     vec3  radiance  = vec3(0);
     sampleReflectionProbes(irradiance, radiance, vary_position.xy*0.5+0.5, pos.xyz, norm.xyz, gloss, true, amblit);
 
-    vec3 diffuseColor;
-    vec3 specularColor;
+    vec3 diffuseColor = vec3(0.0);
+    vec3 specularColor = vec3(0.0);
     calcDiffuseSpecular(col.rgb, metallic, diffuseColor, specularColor);
 
     vec3 v = -normalize(pos.xyz);
@@ -260,8 +332,11 @@ void main()
     float final_scale = 1;
     if (classic_mode > 0)
         final_scale = 1.1;
-#if defined(HAS_SKIN)
+#if defined(HAS_SKIN) && defined(LUMINOUS_ALPHA_SORT)
     a = luminousCoverage(a); // <Luminous/>
+#endif
+#if defined(HAS_SKIN) && defined(LUMINOUS_ALPHA_SORT_HASH)
+    a = luminousCoverage(a, luminous_layer); // <Luminous/>
 #endif
     frag_color = max(vec4(color.rgb * final_scale,a), vec4(0));
 }

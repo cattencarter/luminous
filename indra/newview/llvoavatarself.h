@@ -293,7 +293,7 @@ public:
     static void     deleteScratchTextures();
 private:
     static S32Bytes sScratchTexBytes;
-    static std::map< LLGLenum, LLGLuint*> sScratchTexNames;
+    // [Viewer Lab] sScratchTexNames is gone: nothing ever filled it
 
 /**                    Textures
  **                                                                            **

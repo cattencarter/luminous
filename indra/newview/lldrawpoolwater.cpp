@@ -216,16 +216,21 @@ void LLDrawPoolWater::renderPostDeferred(S32 pass)
 
     F32 blend_factor = (F32)pwater->getBlendFactor();
 
+    // [Viewer Lab] With one normal map, bumpMap2 gets the same texture. waterF.glsl's BlendNormal samples it
+    // anyway and mixes with blend_factor 0, and mix(a, b, 0) is NaN where b is: unbound, the channel kept whatever it
+    // had last, which on Metal can be a render target with non-finite texels (black blocks in the transparent water).
     if (tex_a && (!tex_b || (tex_a == tex_b)))
     {
         tex_a->setFilteringOption(filter_mode);
         shader->bindTexture(LLViewerShaderMgr::BUMP_MAP, tex_a);
+        shader->bindTexture(LLViewerShaderMgr::BUMP_MAP2, tex_a);
         blend_factor = 0; // only one tex provided, no blending
     }
     else if (tex_b && !tex_a)
     {
         tex_b->setFilteringOption(filter_mode);
         shader->bindTexture(LLViewerShaderMgr::BUMP_MAP, tex_b);
+        shader->bindTexture(LLViewerShaderMgr::BUMP_MAP2, tex_b);
         blend_factor = 0; // only one tex provided, no blending
     }
     else if (tex_b != tex_a)

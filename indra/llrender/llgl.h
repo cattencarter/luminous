@@ -33,6 +33,7 @@
 #include <string>
 #include <unordered_map>
 #include <list>
+#include <vector> // [Viewer Lab] LLGLGated::counts
 
 #include "llerror.h"
 #include "v4color.h"
@@ -61,6 +62,11 @@ void ll_close_fail_log();
 
 class LLSD;
 
+namespace LL::RHI
+{
+struct Capabilities;
+}
+
 // Manage GL extensions...
 class LLGLManager
 {
@@ -69,12 +75,35 @@ public:
 
     bool initGL();
     void shutdownGL();
+    // [Viewer Lab] Where GL is not the backend: the render context exists (mInited) with the device's maximum texture
+    // size, and nothing else; the CGL query (LLWindowMacOSX::queryGLManager) fills the other fields first, and a
+    // maximum texture size other than the query's is a WARN
+    void initForDevice(const LL::RHI::Capabilities& caps);
+
+    // [Viewer Lab] The CGL store: the values the CGL query's initGL and the query itself set, so a later
+    // Metal start with the same key (below) needs no CGL call. toStoredLLSD gives every one of them;
+    // fromStoredLLSD sets them from such a map, and repeats initGL's effects outside LLGLManager
+    // (LLImageGL::sCompressTextures, LLGLState::initClass and the 'GL:' line), but not mInited (initForDevice's); it
+    // returns false and changes nothing when a value is missing or of another type. The key names the format, the viewer
+    // build (the caller's identity for it, so a new build queries once even where the values' layout is unchanged), the
+    // macOS version and build (sysctl kern.osversion), the Mac's memory (sysctl hw.memsize, which the query's mVRAM
+    // follows) and the Metal device; the first overload gathers this Mac's. Raise kGLStoreFormat whenever the stored
+    // values change (the static_assert in llgl.cpp says when).
+    static constexpr S32 kGLStoreFormat = 1;
+
+    LLSD        toStoredLLSD() const;
+    bool        fromStoredLLSD(const LLSD& stored);
+    static LLSD storeKey(const std::string& viewer_build, const std::string& gpu_name);
+    static LLSD storeKey(S32 format, const std::string& viewer_build, const std::string& os_version, const std::string& os_build,
+                         U64 memory_bytes, const std::string& gpu_name);
 
 #if LL_WINDOWS
     void initWGL(); // Initializes stupid WGL extensions
 #endif
 
     std::string getRawGLString(); // For sending to simulator
+    std::string getGLString(GLenum name); // [Viewer Lab] GL's own string, as GL gives it (Metal: the CGL query's)
+    bool needsIntelGL33Fallback() const; // [Viewer Lab] LLFeatureManager's Intel 3.3 fallback is still to come
 
     bool mInited;
     bool mIsDisabled;
@@ -144,6 +173,17 @@ public:
     // In ALL CAPS
     std::string mGLRenderer;
 
+    // [Viewer Lab] GL's extension names (initExtensions) and aliased line width range (initGL), for the GL backend,
+    // setLineWidth's clamp and the CGL store
+    std::set<std::string> mGLExtensions;
+    LLVector2 mAliasedLineRange = LLVector2(1.f, 1.f);
+
+    // [Viewer Lab] GL_VENDOR, GL_RENDERER and GL_VERSION as GL gave them to the CGL query's temporary context, which
+    // the GL string functions read when GL is not the backend; empty on GL
+    std::string mRawVendor;
+    std::string mRawRenderer;
+    std::string mRawVersion;
+
 private:
     void initExtensions();
     void initGLStates();
@@ -162,6 +202,49 @@ void log_glerror();
 void assert_glerror();
 
 void clear_glerror();
+
+void force_gl_driver_crash(); // [Viewer Lab] the Develop menu's deliberate crash in the GL driver
+
+// [Viewer Lab] The GL work that is skipped when GL is not the backend, counted per function. Every gate
+// of the GL facades (gl_is_backend() in llimagegl, llrender, llgl, llrendertarget, llglslshader, llvertexbuffer,
+// llcubemaparray, llshadermgr and llcubemap) calls LL_GL_GATED with "<file>:<function>" first in its non-GL branch, so
+// GL pays nothing. scripts/metal/gated-gl.json gives every name its twin in the encoder or why it needs none, and
+// scripts/metal/gated-gl.py keeps the list equal to the macros; the golden hook writes the counts into the render
+// profile (measured.gl_gated), and golden level 2 fails a Metal run that reaches a name outside the list.
+namespace LLGLGated
+{
+    U32 site(const char* name); ///< the name's index, the same for every site with that name; registered once
+    void count(U32 index);      ///< one more call; any thread
+    std::vector<std::pair<std::string, U64>> counts(); ///< the names reached so far and their calls, sorted by name
+}
+// One function-local index per site, so a call costs a relaxed atomic increment and no lookup.
+#define LL_GL_GATED(name)                                               \
+    do                                                                  \
+    {                                                                   \
+        static const U32 ll_gl_gated_index = LLGLGated::site(name);     \
+        LLGLGated::count(ll_gl_gated_index);                            \
+    } while (false)
+
+#if LL_PROFILER_ENABLE_RENDER_DOC
+// [Viewer Lab] LL_LABEL_OBJECT_GL's glObjectLabel, in the GL backend (llprofiler.h)
+void ll_label_object_gl(GLenum identifier, GLuint name, GLsizei length, const GLchar* label);
+#endif
+
+// [Viewer Lab] LL_PROFILE_GPU_ZONE's debug group on the viewer's render device, in developer and
+// test builds (llprofiler.h): pushed on the main thread when the device exists, and
+// popped only on the device it was pushed on.
+class LLGPUZone
+{
+public:
+    explicit LLGPUZone(const char* name);
+    ~LLGPUZone();
+
+    LLGPUZone(const LLGPUZone&) = delete;
+    LLGPUZone& operator=(const LLGPUZone&) = delete;
+
+private:
+    U64 mDeviceId = 0; // the device's id(); ids start at 1 and are never reused
+};
 
 
 # define stop_glerror() assert_glerror()
@@ -259,9 +342,15 @@ public:
     void enable() { setEnabled(ENABLED_STATE); }
     void disable() { setEnabled(DISABLED_STATE); }
 protected:
+    // [Viewer Lab] For the GL backend's own scopes (llrhigl.cpp): GL and LLGLState's map change as setEnabled changes them,
+    // and nothing goes to the viewer's encoder, so LLGLState and the GL adapter never call each other in a ring.
+    struct GLOnly {};
+    LLGLState(LLGLenum state, S32 enabled, GLOnly);
+
     LLGLenum mState;
     bool mWasEnabled;
     bool mIsEnabled;
+    bool mSendsToEncoder = true; // [Viewer Lab] false for the GL backend's own scopes
 };
 
 // New LLGLState class wrappers that don't depend on actual GL flags.

@@ -36,6 +36,7 @@
 #include "v4math.h"
 #include "llglheaders.h"
 #include "llrender.h"
+#include "llrhi.h" // [Viewer Lab] the bump image's texture of the viewer's device
 
 #include "llcubemap.h"
 #include "lldrawable.h"
@@ -49,6 +50,7 @@
 #include "llspatialpartition.h"
 #include "llviewershadermgr.h"
 #include "llmodel.h"
+#include <atomic>
 
 //#include "llimagebmp.h"
 //#include "../tools/imdebug/imdebug.h"
@@ -295,7 +297,9 @@ void LLDrawPoolBump::beginFullbrightShiny()
         shader = &gHUDFullbrightShinyProgram;
     }
 
-    if (mRigged)
+    // [Viewer Lab] As LLGLSLShader::bind(bool): a shader that is not complete and has no rigged variant (its group
+    // failed) stays, so its bind refuses it and the rigged pass's draws are skipped
+    if (mRigged && (shader->mRiggedVariant || shader->isComplete()))
     {
         llassert(shader->mRiggedVariant);
         shader = shader->mRiggedVariant;
@@ -503,7 +507,8 @@ void LLDrawPoolBump::beginBump()
 
     shader = &gObjectBumpProgram;
 
-    if (mRigged)
+    // [Viewer Lab] As in beginFullbrightShiny
+    if (mRigged && (shader->mRiggedVariant || shader->isComplete()))
     {
         llassert(shader->mRiggedVariant);
         shader = shader->mRiggedVariant;
@@ -524,7 +529,14 @@ void LLDrawPoolBump::renderBump(U32 pass)
     gGL.diffuseColor4f(1,1,1,1);
     /// Get rid of z-fighting with non-bump pass.
     LLGLEnable polyOffset(GL_POLYGON_OFFSET_FILL);
-    glPolygonOffset(-1.0f, -1.0f);
+    gGL.setPolygonOffset(-1.0f, -1.0f); // [Viewer Lab]
+    // [Viewer Lab] Coverage marker, once per session, when the pass has draws (pushBumpBatches' type)
+    static std::atomic<bool> sReached{ false };
+    const U32 type = mRigged ? pass + 1 : pass;
+    if (gPipeline.beginRenderMap(type) != gPipeline.endRenderMap(type) && !sReached.exchange(true))
+    {
+        LL_INFOS("RHI") << "Facade site reached: lldrawpoolbump.cpp:renderBump" << LL_ENDL;
+    }
     pushBumpBatches(pass);
 }
 
@@ -699,7 +711,7 @@ void LLBumpImageList::updateImages()
         if( image )
         {
             bool destroy = true;
-            if( image->hasGLTexture())
+            if( image->hasTexture()) // [Viewer Lab] any backend
             {
                 if( image->getBoundRecently() )
                 {
@@ -728,7 +740,7 @@ void LLBumpImageList::updateImages()
         if( image )
         {
             bool destroy = true;
-            if( image->hasGLTexture())
+            if( image->hasTexture()) // [Viewer Lab] any backend
             {
                 if( image->getBoundRecently() )
                 {
@@ -898,6 +910,13 @@ void LLBumpImageList::onSourceUpdated(LLViewerTexture* src, EBumpEffect bump_cod
         //convert to normal map
         LL_PROFILE_ZONE_NAMED("bil - create normal map");
 
+        // [Viewer Lab] Coverage marker, once per session
+        static std::atomic<bool> sReached{ false };
+        if (!sReached.exchange(true))
+        {
+            LL_INFOS("RHI") << "Facade site reached: lldrawpoolbump.cpp:onSourceUpdated" << LL_ENDL;
+        }
+
         bump->setExplicitFormat(GL_RGBA, GL_RGBA);
 
         LLImageGL* src_img = src->getGLTexture();
@@ -908,15 +927,17 @@ void LLBumpImageList::onSourceUpdated(LLViewerTexture* src, EBumpEffect bump_cod
         }
         dst_img->setUseMipMaps(true);
         dst_img->setDiscardLevel(0);
-        dst_img->createGLTexture();
+        // [Viewer Lab] createGLTexture()'s one name, for a texture of the viewer's device that the image owns, drawn into and
+        // sampled, with every level of its size for the mipmaps below; false is setManualImage's allow_compression
+        dst_img->createEmptyOwnTexture(LL::RHI::TEXTURE_SAMPLED | LL::RHI::TEXTURE_RENDER_TARGET,
+                                       LL::RHI::fullMipCount(dst_img->getWidth(), dst_img->getHeight()), false);
 
         gGL.getTexUnit(0)->bind(bump);
 
-        LLImageGL::setManualImage(GL_TEXTURE_2D, 0, dst_img->getPrimaryFormat(), dst_img->getWidth(), dst_img->getHeight(), GL_RGBA, GL_UNSIGNED_BYTE, nullptr, false);
+        dst_img->specifyOwnLevel(0, dst_img->getPrimaryFormat(), dst_img->getWidth(), dst_img->getHeight(), GL_RGBA, GL_UNSIGNED_BYTE, nullptr, false); // [Viewer Lab]
 
-        LLGLuint tex_name = dst_img->getTexName();
         // point render target at empty buffer
-        sRenderTarget.setColorAttachment(bump->getGLTexture(), tex_name);
+        sRenderTarget.setColorAttachment(dst_img); // [Viewer Lab] the image's own name, setColorAttachment's default
 
         // generate normal map in empty texture
         {
@@ -974,7 +995,7 @@ void LLBumpImageList::onSourceUpdated(LLViewerTexture* src, EBumpEffect bump_cod
 
         // generate mipmap
         gGL.getTexUnit(0)->bind(bump);
-        glGenerateMipmap(GL_TEXTURE_2D);
+        LLImageGL::generateMipmaps(dst_img->getRHITexture(), GL_TEXTURE_2D); // [Viewer Lab]
         gGL.getTexUnit(0)->unbind(LLTexUnit::TT_TEXTURE);
     }
 

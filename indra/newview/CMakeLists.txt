@@ -109,6 +109,14 @@ set(viewer_SOURCE_FILES
     luminousoptimise.cpp
     luminousfloater.cpp
     luminoushdrsnapshot.cpp
+    luminousmetal.cpp
+    luminousmetalair.cpp
+    luminousmetaldof.cpp
+    luminousmetallens.cpp
+    luminousmetalrender.cpp
+    luminousmetalscreen.cpp
+    luminousmetalshadow.cpp
+    luminousmetaltone.cpp
     luminousphotomode.cpp
     luminousupdatecheck.cpp
     fsassetblacklist.cpp
@@ -475,6 +483,8 @@ set(viewer_SOURCE_FILES
     llgltffoldermodel.cpp
     llgltfmateriallist.cpp
     llgltfmaterialpreviewmgr.cpp
+    llgoldentest.cpp
+    llgoldenwait.cpp
     llgroupactions.cpp
     llgroupiconctrl.cpp
     llgrouplist.cpp
@@ -983,6 +993,8 @@ set(viewer_HEADER_FILES
     luminousoptimise.h
     luminousfloater.h
     luminoushdrsnapshot.h
+    luminousmetal.h
+    luminousmetalparams.h
     luminousphotomode.h
     luminousupdatecheck.h
     fsassetblacklist.h
@@ -1358,6 +1370,8 @@ set(viewer_HEADER_FILES
     llgltffoldermodel.h
     llgltfmateriallist.h
     llgltfmaterialpreviewmgr.h
+    llgoldentest.h
+    llgoldenwait.h
     llgroupactions.h
     llgroupiconctrl.h
     llgrouplist.h
@@ -3099,6 +3113,7 @@ if (LL_TESTS)
   SET(viewer_TEST_SOURCE_FILES
     llagentaccess.cpp
     lldateutil.cpp
+    llgoldenwait.cpp
 #    llmediadataclient.cpp
     lllogininstance.cpp
 #    llremoteparcelrequest.cpp

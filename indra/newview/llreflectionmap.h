@@ -27,6 +27,7 @@
 #pragma once
 
 #include "llcubemaparray.h"
+#include "llglslshader.h" // [Viewer Lab] LLGPUQuery
 #include "llmemory.h"
 
 class LLSpatialGroup;
@@ -140,7 +141,7 @@ public:
     U32 mPriority = 0;
 
     // occlusion culling state
-    GLuint mOcclusionQuery = 0;
+    LLGPUQuery mOcclusionQuery; // [Viewer Lab]
     bool mOccluded = false;
     U32 mOcclusionPendingFrames = 0;
 

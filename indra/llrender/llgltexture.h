@@ -119,7 +119,8 @@ public:
     /*virtual*/S32         getHeight(S32 discard_level = -1) const;
 
     bool       hasGLTexture() const ;
-    LLGLuint   getTexName() const ;
+    // [Viewer Lab] A texture on any backend (LLImageGL::hasTexture); hasGLTexture() gives the same answer
+    bool       hasTexture() const;
     bool       createGLTexture() ;
 
     // Create a GL Texture from an image raw
@@ -129,14 +130,14 @@ public:
     // to_create - set to false to force gl texture to not be created
     // category - LLGLTexture category for this LLGLTexture
     // defer_copy - set to true to allocate GL texture but NOT initialize with imageraw data
-    // tex_name - if not null, will be set to the GL name of the texture created
-    bool       createGLTexture(S32 discard_level, const LLImageRaw* imageraw, S32 usename = 0, bool to_create = true, S32 category = LLGLTexture::OTHER, bool defer_copy = false, LLGLuint* tex_name = nullptr);
+    // tex_name - if not null, will be set to the handle of the texture created ([Viewer Lab] opaque, not its GL name)
+    bool       createGLTexture(S32 discard_level, const LLImageRaw* imageraw, S32 usename = 0, bool to_create = true, S32 category = LLGLTexture::OTHER, bool defer_copy = false, LLImageGLHandle* tex_name = nullptr);
 
     void       setFilteringOption(LLTexUnit::eTextureFilterOptions option);
     void       setExplicitFormat(LLGLint internal_format, LLGLenum primary_format, LLGLenum type_format = 0, bool swap_bytes = false);
     void       setAddressMode(LLTexUnit::eTextureAddressMode mode);
-    bool       setSubImage(const LLImageRaw* imageraw, S32 x_pos, S32 y_pos, S32 width, S32 height, LLGLuint use_name = 0);
-    bool       setSubImage(const U8* datap, S32 data_width, S32 data_height, S32 x_pos, S32 y_pos, S32 width, S32 height, LLGLuint use_name = 0);
+    bool       setSubImage(const LLImageRaw* imageraw, S32 x_pos, S32 y_pos, S32 width, S32 height, LLImageGLHandle use_name = LLImageGLHandle()); // [Viewer Lab] a handle
+    bool       setSubImage(const U8* datap, S32 data_width, S32 data_height, S32 x_pos, S32 y_pos, S32 width, S32 height, LLImageGLHandle use_name = LLImageGLHandle());
     void       setGLTextureCreated (bool initialized);
     void       setCategory(S32 category) ;
     void       setTexName(LLGLuint); // for forcing w/ externally created textures only

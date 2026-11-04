@@ -61,6 +61,7 @@ Graphics Card Memory (Budget): [VRAM_BUDGET]
 	</string>
 	<string name="AboutDriver">Windows Graphics Driver Version: [GRAPHICS_DRIVER_VERSION]</string>
 	<string name="AboutOGL">OpenGL Version: [OPENGL_VERSION]</string>
+	<string name="AboutGraphicsMetal">Graphics: Metal</string>
 	<string name="AboutSettings">
 Viewer Skin: [SKIN] ([THEME])
 Window size: [WINDOW_WIDTH]x[WINDOW_HEIGHT] px
@@ -1557,6 +1558,15 @@ Running in window.
 	<string name="MBPixelFmtSetErr">Can't set pixel format</string>
 	<string name="MBGLContextErr">Can't create GL rendering context</string>
 	<string name="MBGLContextActErr">Can't activate GL rendering context</string>
+	<!-- [Viewer Lab] A Metal device that cannot start or go on -->
+	<string name="MetalCouldNotStart">Metal graphics could not be started on this Mac. The viewer will close and use OpenGL from the next start.</string>
+	<string name="MetalGPUStoppedResponding">The graphics processor stopped responding. The viewer will close and use OpenGL from the next start.</string>
+	<!-- [Viewer Lab] A shader group that fails on Metal, inline or late -->
+	<string name="MetalShadersFailed">Metal graphics could not load its shaders. The viewer will close and use OpenGL from the next start.</string>
+	<!-- [Viewer Lab] The same without the promise, for the Metal UI dev mode and a second instance, which keep no marker -->
+	<string name="MetalCouldNotStartNoFallback">Metal graphics could not be started on this Mac. The viewer will close.</string>
+	<string name="MetalGPUStoppedRespondingNoFallback">The graphics processor stopped responding. The viewer will close.</string>
+	<string name="MetalShadersFailedNoFallback">Metal graphics could not load its shaders. The viewer will close.</string>
 	<string name="MBVideoDrvErr">
 		[APP_NAME] is unable to run because your video card drivers did not install properly, are out of date, or are for unsupported hardware. Please make sure you have the latest video card drivers and even if you do have the latest, try reinstalling them.
 
@@ -3381,4 +3391,6 @@ Your current position: [AVATAR_POS]
 
   <!-- <FS:TJ> Launch new instance option from macOS dock> -->
   <string name="FSMacOSNewViewerInstance">New Viewer Instance</string>
+  <!-- Photo mode is off with the Metal renderer (luminousphotomode.cpp): the sidebar's tooltip and the render commands' notice -->
+  <string name="LuminousPhotoModeNeedsOpenGL">Photo mode needs OpenGL. To use it, choose OpenGL as the graphics backend in Preferences &gt; Graphics &gt; Hardware Settings, then restart Luminous.</string>
 </strings>

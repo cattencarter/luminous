@@ -35,6 +35,8 @@
 #include "llversioninfo.h"
 
 #include "llrender.h"
+#include "llrhi.h"
+#include "llappviewer.h" // [Viewer Lab] stop_for_metal_device_failure
 #include "llenvironment.h"
 #include "llerrorcontrol.h"
 #include "llworld.h"
@@ -48,6 +50,7 @@
 
 #include "lljoint.h"
 #include "luminousphotomode.h" // <Luminous/>
+#include "luminousmetal.h" // <Luminous/>
 #include "llskinningutil.h"
 
 static LLStaticHashedString sTexture0("texture0");
@@ -57,6 +60,8 @@ static LLStaticHashedString sTex1("tex1");
 static LLStaticHashedString sDitherTex("dither_tex");
 static LLStaticHashedString sGlowMap("glowMap");
 static LLStaticHashedString sScreenMap("screenMap");
+
+static void stop_on_metal_shader_failure(S32 group, const char* site); // [Viewer Lab] defined below lateFailure
 
 // Lots of STL stuff in here, using namespace std to keep things more readable
 using std::vector;
@@ -75,6 +80,24 @@ S32 clamp_terrain_mapping(S32 mapping)
     mapping = llclamp(mapping, 1, 3);
     if (mapping == 2) { mapping = 1; }
     return mapping;
+}
+
+// [Viewer Lab] RenderTerrainPBRDetail no higher than the feature table's texture-unit
+// lists allow on Metal (LLFeatureManager::hardwareCapped; unchanged on GL), whatever route set the setting. The startup
+// and the setting's validate signal hold the setting itself (LLFeatureManager::applyHardwareCaps); this holds the
+// terrain programs also after a reset to the default, which no validate signal sees (LLDrawPoolTerrain caps its copy
+// alike). One WARN line per value lowered; never below TERRAIN_PBR_DETAIL_MIN.
+static S32 metal_capped_terrain_detail(S32 detail)
+{
+    const S32 capped = (S32)LLFeatureManager::getInstance()->hardwareCapped("RenderTerrainPBRDetail", (F32)detail);
+    static S32 logged = TERRAIN_PBR_DETAIL_MAX + 1;
+    if (capped < detail && detail != logged)
+    {
+        logged = detail;
+        LL_WARNS("RenderInit") << "RenderTerrainPBRDetail " << detail << " is above what this Metal device allows; "
+                               << "the terrain programs are built at " << capped << " (P3-UX2)" << LL_ENDL;
+    }
+    return llmax(capped, (S32)TERRAIN_PBR_DETAIL_MIN);
 }
 
 //utility shaders
@@ -272,6 +295,28 @@ LLGLSLShader            gDeferredPBRTerrainProgram[TERRAIN_PAINT_TYPE_COUNT];
 LLGLSLShader            gGLTFPBRMetallicRoughnessProgram;
 
 
+// <Luminous> Photo mode's alpha sorting in the worn (rigged) variants of the alpha programs (alphaF, pbralphaF,
+// fullbrightF, materialF): a define of the program's own, since the global defines (sGlobalDefines) reach only the
+// shared library files. LUMINOUS_ALPHA_SORT reads gl_PrimitiveID and is built on OpenGL only. On Metal its own
+// variant, LUMINOUS_ALPHA_SORT_HASH, tells layers apart by where the fragment lies instead; it is built only while
+// alpha sorting is on there (LuminousMetal::on; changing LuminousMetalAlphaSort reloads the shaders).
+static void add_luminous_alpha_sort(LLGLSLShader& shader)
+{
+    if (!LuminousPhotoMode::isOn())
+    {
+        return;
+    }
+    if (LL::RHI::viewerBackend() == LL::RHI::BackendType::GL)
+    {
+        shader.addPermutation("LUMINOUS_ALPHA_SORT", "1");
+    }
+    else if (LL::RHI::viewerBackend() == LL::RHI::BackendType::Metal && LuminousMetal::on(LuminousMetal::Effect::AlphaSort))
+    {
+        shader.addPermutation("LUMINOUS_ALPHA_SORT_HASH", "1");
+    }
+}
+// </Luminous>
+
 //helper for making a rigged variant of a given shader
 static bool make_rigged_variant(LLGLSLShader& shader, LLGLSLShader& riggedShader)
 {
@@ -281,6 +326,7 @@ static bool make_rigged_variant(LLGLSLShader& shader, LLGLSLShader& riggedShader
     riggedShader.mDefines = shader.mDefines;    // NOTE: Must come before addPermutation
 
     riggedShader.addPermutation("HAS_SKIN", "1");
+    add_luminous_alpha_sort(riggedShader); // <Luminous/>
     riggedShader.mShaderFiles = shader.mShaderFiles;
     riggedShader.mShaderLevel = shader.mShaderLevel;
     riggedShader.mShaderGroup = shader.mShaderGroup;
@@ -326,6 +372,7 @@ static bool make_gltf_variant(LLGLSLShader& shader, LLGLSLShader& variant, bool 
     if (rigged)
     {
         variant.addPermutation("HAS_SKIN", "1");
+        add_luminous_alpha_sort(variant); // <Luminous/>
     }
 
     if (unlit)
@@ -363,8 +410,12 @@ static bool make_gltf_variant(LLGLSLShader& shader, LLGLSLShader& variant, bool 
 
         // Alpha Shader Hack
         // See: LLRender::syncMatrices()
-        variant.mFeatures.calculatesLighting = true;
-        variant.mFeatures.hasLighting = true;
+        // [Viewer Lab] after the publication, so that a later retry builds what createShader was asked for
+        LLViewerShaderMgr::instance()->afterPublication(variant, [](LLGLSLShader& shader)
+        {
+            shader.mFeatures.calculatesLighting = true;
+            shader.mFeatures.hasLighting = true;
+        });
 
         return success;
     }
@@ -393,6 +444,49 @@ static bool make_gltf_variants(LLGLSLShader& shader, bool use_sun_shadow)
     }
 
     return true;
+}
+
+// [Viewer Lab] the normal-debug programs' geometry shader is GL only: loaded when the viewer's device reports it,
+// and as upstream without a device
+static bool geometry_shaders()
+{
+    LL::RHI::Device* device = LL::RHI::viewerDevice();
+    return !device || device->capabilities().geometryShaders;
+}
+
+// [Viewer Lab] The late outcomes: a program that createShader left pending on a backend that compiles in
+// the background, which is never so on GL, and a pending program whose backend has finished, so that publish takes its result
+static bool is_pending(const LLGLSLShader& s) { return s.isComplete() && !s.isReflectionReady(); }
+static bool finished(const LLGLSLShader& s) { return s.getRHIProgram() && s.getRHIProgram()->status() != LL::RHI::CompileStatus::Pending; }
+
+// [Viewer Lab] setShaders' order of the groups
+static const S32 LOAD_ORDER[] = { LLViewerShaderMgr::SHADER_WATER,  LLViewerShaderMgr::SHADER_EFFECT, LLViewerShaderMgr::SHADER_INTERFACE,
+                                  LLViewerShaderMgr::SHADER_OBJECT, LLViewerShaderMgr::SHADER_AVATAR, LLViewerShaderMgr::SHADER_DEFERRED };
+
+// [Viewer Lab] A group's index in LOAD_ORDER, and 6 for any other value, SHADER_COUNT included
+static S32 load_position(S32 group)
+{
+    for (S32 i = 0; i < S32(std::size(LOAD_ORDER)); ++i)
+    {
+        if (LOAD_ORDER[i] == group)
+        {
+            return i;
+        }
+    }
+    return S32(std::size(LOAD_ORDER));
+}
+
+// [Viewer Lab] What a decide gets: the first of its outcome's programs that is not complete, or null when every one is
+static LLGLSLShader* first_failed(const std::vector<LLGLSLShader*>& programs)
+{
+    for (LLGLSLShader* program : programs)
+    {
+        if (!program->isComplete())
+        {
+            return program;
+        }
+    }
+    return nullptr;
 }
 
 #ifdef SHOW_ASSERT
@@ -563,8 +657,20 @@ void LLViewerShaderMgr::setShaders()
     {
         return;
     }
+    // <Luminous> Settings set together (the preferences' cancel, a graphics preset) rebuild once, as the hold
+    // ends: the handlers that call this directly, not only handleSetShaderChanged, rebuilt every program for each
+    // setting, and on Metal the programs and targets they replace stay until the frame ends (25 GB in the soak).
+    if (LuminousPhotoMode::holdShaderRebuild())
+    {
+        return;
+    }
+    // </Luminous>
 
     mShaderList.clear();
+
+    // [Viewer Lab] Shader manifest: nothing without --shadermanifest.
+    static LLCachedControl<std::string> manifest_folder(gSavedSettings, "ShaderManifestFolder", "");
+    setManifestFolder(manifest_folder());
 
     if (!gGLManager.mHasRequirements)
     {
@@ -599,7 +705,10 @@ void LLViewerShaderMgr::setShaders()
     // when using indexed texture rendering, leave some texture units available for shadow and reflection maps
     static LLCachedControl<S32> reserved_texture_units(gSavedSettings, "RenderReservedTextureIndices", 14);
 
-    LLGLSLShader::sIndexedTextureChannels = 4;
+    // [Viewer Lab] On Metal one texture per draw: a batched draw's texture index is a flat value, which Metal takes from
+    // a triangle's first vertex and GL from its last, and Firestorm's batches can give a triangle's vertices different
+    // indices, so on Metal whole triangles drew with another face's texture
+    LLGLSLShader::sIndexedTextureChannels = LL::RHI::viewerBackend() == LL::RHI::BackendType::Metal ? 1 : 4;
         //llclamp<S32>(max_texture_index, 1, gGLManager.mNumTextureImageUnits-reserved_texture_units);
 
     reentrance = true;
@@ -683,7 +792,9 @@ void LLViewerShaderMgr::setShaders()
 
     gPipeline.mShadersLoaded = true;
 
-    bool loaded = loadShadersWater();
+    // [Viewer Lab] Each group's outcome is settled after its loader, also when a backend publishes a program later than
+    // createShader; on GL every settleGroup returns true
+    bool loaded = loadShadersWater() && settleGroup(SHADER_WATER);
 
     if (loaded)
     {
@@ -692,44 +803,47 @@ void LLViewerShaderMgr::setShaders()
     else
     {
         LL_WARNS() << "Failed to load water shaders." << LL_ENDL;
+        stop_on_metal_shader_failure(SHADER_WATER, "own"); // [Viewer Lab] on GL it returns
         llassert(loaded);
     }
 
-    if (loaded)
+    if (loaded && !loadFailed()) // [Viewer Lab]
     {
-        loaded = loadShadersEffects();
+        loaded = loadShadersEffects() && settleGroup(SHADER_EFFECT); // [Viewer Lab]
         if (loaded)
         {
             LL_INFOS() << "Loaded effects shaders." << LL_ENDL;
         }
-        else
+        else if (!earlierFailed(SHADER_EFFECT)) // [Viewer Lab] an earlier group's late failure stopped the chain
         {
             LL_WARNS() << "Failed to load effects shaders." << LL_ENDL;
+            stop_on_metal_shader_failure(SHADER_EFFECT, "own"); // [Viewer Lab] on GL it returns
             llassert(loaded);
         }
     }
 
-    if (loaded)
+    if (loaded && !loadFailed()) // [Viewer Lab]
     {
-        loaded = loadShadersInterface();
+        loaded = loadShadersInterface() && settleGroup(SHADER_INTERFACE); // [Viewer Lab]
         if (loaded)
         {
             LL_INFOS() << "Loaded interface shaders." << LL_ENDL;
         }
-        else
+        else if (!earlierFailed(SHADER_INTERFACE)) // [Viewer Lab] an earlier group's late failure stopped the chain
         {
             LL_WARNS() << "Failed to load interface shaders." << LL_ENDL;
+            stop_on_metal_shader_failure(SHADER_INTERFACE, "own"); // [Viewer Lab] on GL it returns
             llassert(loaded);
         }
     }
 
-    if (loaded)
+    if (loaded && !loadFailed()) // [Viewer Lab]
     {
         // Load max avatar shaders to set the max level
         mShaderLevel[SHADER_AVATAR] = 3;
         mMaxAvatarShaderLevel = 3;
 
-        if (loadShadersObject())
+        if (loadShadersObject() && settleGroup(SHADER_OBJECT)) // [Viewer Lab]
         { //hardware skinning is enabled and rigged attachment shaders loaded correctly
             // cloth is a class3 shader
             constexpr S32 avatar_class = 1;
@@ -737,20 +851,30 @@ void LLViewerShaderMgr::setShaders()
             // Set the actual level
             mShaderLevel[SHADER_AVATAR] = avatar_class;
 
-            loaded = loadShadersAvatar();
+            loaded = !loadFailed() && loadShadersAvatar() && settleGroup(SHADER_AVATAR); // [Viewer Lab]
+            if (!loaded) // [Viewer Lab] an earlier group's late failure has stopped Metal already
+            {
+                stop_on_metal_shader_failure(SHADER_AVATAR, "own"); // on GL it returns
+            }
             llassert(loaded);
         }
-        else
+        else if (!earlierFailed(SHADER_OBJECT)) // [Viewer Lab] an earlier group's late failure stopped the chain
         {
             // SHOULD NOT BE POSSIBLE
             // Hardware skinning not possible, neither is deferred rendering
             // but both are a hard requirement, viewer will crash without them
+            stop_on_metal_shader_failure(SHADER_OBJECT, "own"); // [Viewer Lab] Metal closes with the notice instead
             LL_ERRS() << "Failed to load object shaders, cannot continue." << LL_ENDL;
         }
     }
 
+    loaded = loaded && !loadFailed(); // [Viewer Lab] a group that failed late stops the chain
     llassert(loaded);
-    loaded = loaded && loadShadersDeferred();
+    loaded = loaded && loadShadersDeferred() && settleGroup(SHADER_DEFERRED) && !loadFailed(); // [Viewer Lab]
+    if (!loaded) // [Viewer Lab] an earlier group's failure has stopped Metal already, so this is deferred's own
+    {
+        stop_on_metal_shader_failure(SHADER_DEFERRED, "own"); // on GL it returns
+    }
     llassert(loaded);
 
     if (!LLAppViewer::instance()->isSecondInstance())
@@ -766,11 +890,66 @@ void LLViewerShaderMgr::setShaders()
 
     finalizeShaderList();
 
+    writeShaderManifest(loaded); // [Viewer Lab] nothing without --shadermanifest
+
     reentrance = false;
+}
+
+// [Viewer Lab] Shader manifest: after every load, the programs and what they were
+// compiled with, as manifest-<n>.json for the n-th load and manifest.json for the last. `loaded`
+// is false when a group of shaders failed, and the load stopped there.
+void LLViewerShaderMgr::writeShaderManifest(bool loaded)
+{
+    static LLCachedControl<std::string> manifest_folder(gSavedSettings, "ShaderManifestFolder", "");
+    if (manifest_folder().empty())
+    {
+        return;
+    }
+    LLGLSLShader::finishBuilds();
+    settlePublications();
+    loaded = loaded && !loadFailed(); // [Viewer Lab] every outcome decided before the manifest
+    // The settings that choose programs and defines in this file, and the graphics level.
+    static const char* const settings[] = {
+        "RenderQualityPerformance", "RenderShaderCacheEnabled", "RenderDeferredSSAO", "RenderShadowDetail",
+        "RenderReflectionsEnabled", "RenderReflectionProbeLevel", "RenderScreenSpaceReflections", "RenderMirrors",
+        "RenderEnableEmissiveBuffer", "GLTFEnabled", "RenderShaderLightingMaxLevel", "RenderTerrainPBRDetail",
+        "RenderTerrainPBRPlanarSampleCount", "RenderTerrainPBRTriplanarBlendFactor", "RenderGlowNoise",
+        "RenderTransparentWater", "RenderGlow", "RenderAvatarCloth", "LocalTerrainPaintEnabled", "TerrainPaintBitDepth",
+        "RenderFSAAType", "RenderHDREnabled" };
+    static U32 loads = 0;
+    ++loads;
+    LLSD context;
+    context["load"] = (S32)loads;
+    context["loaded"] = loaded;
+    context["gpu"] = gGLManager.getRawGLString();
+    context["gl_version"] = gGLManager.mGLVersionString;
+    context["glsl_version"] = llformat("%d.%d", gGLManager.mGLSLVersionMajor, gGLManager.mGLSLVersionMinor);
+    context["settings"] = LLSD::emptyMap();
+    for (const char* name : settings)
+    {
+        if (LLControlVariable* control = gSavedSettings.getControl(name))
+        {
+            context["settings"][name] = control->getValue();
+        }
+    }
+    // The programs this class keeps up to date, in the order it loaded them.
+    context["shader_list"] = LLSD::emptyArray();
+    for (const LLGLSLShader* shader : mShaderList)
+    {
+        context["shader_list"].append(shader->mName);
+    }
+    writeManifest(llformat("manifest-%u", loads), context);
+    writeManifest("manifest", context);
 }
 
 void LLViewerShaderMgr::unloadShaders()
 {
+    // [Viewer Lab] the late outcomes and counts belong to the programs unloaded here
+    mPendingOutcomes.clear();
+    mPendingChanges.clear();
+    mFailedGroups = 0;
+    mLatePublications = 0;
+
     while (!LLGLSLShader::sInstances.empty())
     {
         LLGLSLShader* shader = *(LLGLSLShader::sInstances.begin());
@@ -788,6 +967,307 @@ void LLViewerShaderMgr::unloadShaders()
 
     gPipeline.mShadersLoaded = false;
 }
+
+// [Viewer Lab] The late outcomes. A backend that compiles in the background can leave a program pending
+// when createShader returns true. Each group's outcome is then decided from its programs' state once none is pending,
+// whoever published them, and a failure takes setShaders' consequence for its own group, in setShaders' order. On GL no
+// program is ever pending: nothing is registered, every settle returns true, and no failure path runs.
+void LLViewerShaderMgr::afterPublication(LLGLSLShader& program, std::function<void(LLGLSLShader&)> change)
+{
+    if (!is_pending(program))
+    {
+        change(program);
+        return;
+    }
+    mPendingChanges.push_back({ &program, std::move(change) });
+}
+
+// [Viewer Lab] An outcome is kept only while one of its programs is pending, which is never so on GL
+void LLViewerShaderMgr::deferOutcome(S32 group, std::vector<LLGLSLShader*> programs, std::function<bool(LLGLSLShader*)> decide)
+{
+    if (std::any_of(programs.begin(), programs.end(), [](const LLGLSLShader* program) { return is_pending(*program); }))
+    {
+        mPendingOutcomes.push_back({ group, std::move(programs), std::move(decide) });
+    }
+}
+
+// [Viewer Lab] After a group's loader in setShaders: its unclaimed pending programs, then the settle
+bool LLViewerShaderMgr::settleGroup(S32 group)
+{
+    // The loader's failure tail, for each pending program of the group that no outcome claims: the group's required
+    // `success && createShader()` chain. A null `failed` means the program published, perhaps at a lower level after a
+    // retry, so the tail changes nothing.
+    std::function<bool(LLGLSLShader*)> tail;
+    switch (group)
+    {
+    case SHADER_WATER:
+        tail = [this](LLGLSLShader* failed)
+        {
+            if (!failed)
+            {
+                return true;
+            }
+            mShaderLevel[SHADER_WATER] = 0;
+            return false;
+        };
+        break;
+    case SHADER_INTERFACE:
+        tail = [this](LLGLSLShader* failed)
+        {
+            if (!failed)
+            {
+                return true;
+            }
+            mShaderLevel[SHADER_INTERFACE] = 0;
+            return false;
+        };
+        break;
+    case SHADER_OBJECT:
+        tail = [this](LLGLSLShader* failed)
+        {
+            if (!failed)
+            {
+                return true;
+            }
+            mShaderLevel[SHADER_OBJECT] = 0;
+            return false;
+        };
+        break;
+    case SHADER_AVATAR:
+        tail = [this](LLGLSLShader* failed)
+        {
+            if (!failed)
+            {
+                return true;
+            }
+            mShaderLevel[SHADER_AVATAR] = 0;
+            mMaxAvatarShaderLevel = 0;
+            LL_WARNS() << "Failed to create avatar shader!" << LL_ENDL;
+            return false;
+        };
+        break;
+    default: // effects and deferred set nothing
+        tail = [](LLGLSLShader* failed) { return failed == nullptr; };
+        break;
+    }
+    for (LLGLSLShader* shader : LLGLSLShader::sInstances)
+    {
+        if (is_pending(*shader)
+            && std::none_of(mPendingOutcomes.begin(), mPendingOutcomes.end(), [shader](const PendingOutcome& outcome)
+                            { return std::find(outcome.mPrograms.begin(), outcome.mPrograms.end(), shader) != outcome.mPrograms.end(); }))
+        {
+            deferOutcome(group, { shader }, tail);
+        }
+    }
+    settle(group);
+    // setShaders settles a group only while no group has failed, so this is false exactly when this group, or an earlier
+    // one, failed in this call
+    return !loadFailed();
+}
+
+// [Viewer Lab] False when a group failed in this call
+bool LLViewerShaderMgr::settle(S32 group)
+{
+    const U32 failed_before = mFailedGroups;
+
+    // (1) Every pending program whose backend has finished is published, until a pass publishes nothing: a publication that
+    // fails retries at a lower level, which can be pending again (LLGLSLShader::publish). A copy, as finishBuilds takes.
+    for (bool published = true; published;)
+    {
+        published = false;
+        const std::vector<LLGLSLShader*> shaders(LLGLSLShader::sInstances.begin(), LLGLSLShader::sInstances.end());
+        for (LLGLSLShader* shader : shaders)
+        {
+            if (is_pending(*shader) && finished(*shader))
+            {
+                const U32 generation = shader->getGeneration();
+                shader->publish(generation);
+                ++mLatePublications;
+                // publish's contract: the program ends published, or failed, or retries with a new generation
+                const bool progressed = !is_pending(*shader) || shader->getGeneration() != generation;
+                llassert(progressed);
+                published = published || progressed;
+            }
+        }
+    }
+
+    // (2) The changes that waited for their programs, before the decides, so that a decide's unload() resets what a change set
+    applyChanges();
+
+    // (3) In registration order, every outcome none of whose programs is pending is decided, with the first program that is
+    // not complete, or null when every one is
+    for (;;)
+    {
+        auto it = std::find_if(mPendingOutcomes.begin(), mPendingOutcomes.end(), [](const PendingOutcome& outcome)
+                               { return std::none_of(outcome.mPrograms.begin(), outcome.mPrograms.end(),
+                                                     [](const LLGLSLShader* program) { return is_pending(*program); }); });
+        if (it == mPendingOutcomes.end())
+        {
+            break;
+        }
+        const PendingOutcome outcome = std::move(*it);
+        mPendingOutcomes.erase(it);
+        if (!outcome.mDecide(first_failed(outcome.mPrograms)))
+        {
+            failure(outcome.mGroup, outcome.mGroup == group);
+        }
+    }
+    return mFailedGroups == failed_before;
+}
+
+// [Viewer Lab] settle's step (2)
+void LLViewerShaderMgr::applyChanges()
+{
+    for (;;)
+    {
+        auto it = std::find_if(mPendingChanges.begin(), mPendingChanges.end(),
+                               [](const PendingChange& change) { return !is_pending(*change.mProgram); });
+        if (it == mPendingChanges.end())
+        {
+            return;
+        }
+        const PendingChange change = std::move(*it);
+        mPendingChanges.erase(it);
+        change.mChange(*change.mProgram);
+    }
+}
+
+// [Viewer Lab] Only after a decide returned false. The group's consequence waits until every earlier group's outcome
+// is decided, and is taken only when none of them failed: inline, an earlier failure means that this group never loads.
+// setShaders takes the consequence of its own group's settle (own).
+void LLViewerShaderMgr::failure(S32 group, bool own)
+{
+    finishBefore(group);
+    const U32  bit   = 1u << group;
+    const bool taken = failedBefore(group) || (mFailedGroups & bit) != 0;
+    mFailedGroups |= bit;
+    if (!own && !taken)
+    {
+        lateFailure(group);
+    }
+}
+
+// [Viewer Lab] Decides the outcomes of the groups before this one in LOAD_ORDER, waiting for their programs: on a failure path
+// only, so a load that succeeds never waits. It reaches only strictly earlier groups, so it ends.
+void LLViewerShaderMgr::finishBefore(S32 group)
+{
+    const S32 position = load_position(group);
+    for (;;)
+    {
+        auto it = std::find_if(mPendingOutcomes.begin(), mPendingOutcomes.end(),
+                               [position](const PendingOutcome& outcome) { return load_position(outcome.mGroup) < position; });
+        if (it == mPendingOutcomes.end())
+        {
+            return;
+        }
+        const PendingOutcome outcome = std::move(*it);
+        mPendingOutcomes.erase(it);
+        for (LLGLSLShader* program : outcome.mPrograms)
+        {
+            program->waitForReflection();
+        }
+        applyChanges();
+        if (!outcome.mDecide(first_failed(outcome.mPrograms)))
+        {
+            failure(outcome.mGroup, false);
+        }
+    }
+}
+
+// [Viewer Lab] Whether a group before this one in LOAD_ORDER failed, as far as its outcomes are decided
+bool LLViewerShaderMgr::failedBefore(S32 group) const
+{
+    const S32 position = load_position(group);
+    for (S32 i = 0; i < position; ++i)
+    {
+        if (mFailedGroups & (1u << LOAD_ORDER[i]))
+        {
+            return true;
+        }
+    }
+    return false;
+}
+
+// [Viewer Lab] setShaders' test before it takes a failed group's consequence, also when the group's loader failed inline and
+// so skipped its settle: the earlier groups' outcomes are decided first, on this failure path only
+bool LLViewerShaderMgr::earlierFailed(S32 group)
+{
+    finishBefore(group);
+    return failedBefore(group);
+}
+
+// [Viewer Lab] On Metal a required shader group that fails, inline in setShaders (own) or later in a settle (late),
+// closes the viewer with the notice, and the next start is GL (stop_for_metal_device_failure). GL keeps its own
+// consequence, so this does nothing there. The optional effects' own decides switch the effect off and fail no group,
+// so they never come here; nor do the programs whose result LL's loaders throw away.
+static void stop_on_metal_shader_failure(S32 group, const char* site)
+{
+    if (LL::RHI::viewerBackend() != LL::RHI::BackendType::Metal)
+    {
+        return;
+    }
+    static const char* const NAMES[] = { "lighting", "object", "avatar", "environment", "interface", "effect", "windlight",
+                                         "water", "deferred" }; // ShaderClass's order, as golden level 2's SHADER_CLASSES
+    static_assert(std::size(NAMES) == LLViewerShaderMgr::SHADER_COUNT);
+    const char* name = group >= 0 && group < S32(std::size(NAMES)) ? NAMES[group] : "unknown";
+    LL_WARNS("Shader") << "Metal shader group " << name << " failed (" << site << "): the viewer closes (P3-04b)" << LL_ENDL;
+    stop_for_metal_device_failure("MetalShadersFailed");
+}
+
+// [Viewer Lab] setShaders' consequence for a group that failed after its own settle. A water, effects or interface
+// failure inline stops the chain before the object block, which leaves the avatar levels at setShaders' first 0; a later
+// group may have set them since
+void LLViewerShaderMgr::lateFailure(S32 group)
+{
+    switch (group)
+    {
+    case SHADER_WATER:
+        LL_WARNS() << "Failed to load water shaders." << LL_ENDL;
+        break;
+    case SHADER_EFFECT:
+        LL_WARNS() << "Failed to load effects shaders." << LL_ENDL;
+        break;
+    case SHADER_INTERFACE:
+        LL_WARNS() << "Failed to load interface shaders." << LL_ENDL;
+        break;
+    case SHADER_OBJECT:
+        // [Viewer Lab] Metal closes with the notice instead, before LL_ERRS; the call after the switch is not
+        // reached for this group on either backend.
+        stop_on_metal_shader_failure(group, "late");
+        LL_ERRS() << "Failed to load object shaders, cannot continue." << LL_ENDL;
+        break;
+    default: // avatar and deferred: setShaders logs nothing for them
+        break;
+    }
+    stop_on_metal_shader_failure(group, "late"); // [Viewer Lab] on GL it returns
+    if (group == SHADER_WATER || group == SHADER_EFFECT || group == SHADER_INTERFACE)
+    {
+        mShaderLevel[SHADER_AVATAR] = 0;
+        mMaxAvatarShaderLevel = 0;
+    }
+}
+
+// [Viewer Lab]
+bool LLViewerShaderMgr::settlePublications()
+{
+    return settle(SHADER_COUNT); // every result here is late
+}
+
+// [Viewer Lab] The frame's trigger, behind hasPendingPublications(): a frame counts once, however many
+// display_startup() calls it makes, and its publications are the rise in latePublications() over its settles
+void LLViewerShaderMgr::settleForFrame()
+{
+    const U32 frame = LLFrameTimer::getFrameCount();
+    if (frame != mLastSettleFrame)
+    {
+        mLastSettleFrame = frame;
+        ++mFrameSettles;
+    }
+    const U32 before = mLatePublications;
+    settlePublications();
+    mFramePublications += mLatePublications - before;
+}
+// [Viewer Lab] end of the late outcomes
 
 std::string LLViewerShaderMgr::loadBasicShaders()
 {
@@ -888,6 +1368,7 @@ std::string LLViewerShaderMgr::loadBasicShaders()
     {
         attribs["LUMINOUS_SSR"] = "1";
     }
+    // <Luminous> photo mode's alpha sorting is a define of the worn alpha programs' own: add_luminous_alpha_sort
 
     if (has_reflection_probes)
     {
@@ -907,6 +1388,7 @@ std::string LLViewerShaderMgr::loadBasicShaders()
         attribs["TERRAIN_TRIPLANAR_BLEND_FACTOR"] = llformat("%.2f", triplanar_factor);
         S32 detail = gSavedSettings.getS32("RenderTerrainPBRDetail");
         detail = llclamp(detail, TERRAIN_PBR_DETAIL_MIN, TERRAIN_PBR_DETAIL_MAX);
+        detail = metal_capped_terrain_detail(detail); // [Viewer Lab] capped on Metal
         attribs["TERRAIN_PBR_DETAIL"] = llformat("%d", detail);
     }
 
@@ -915,8 +1397,10 @@ std::string LLViewerShaderMgr::loadBasicShaders()
     // We no longer have to bind the shaders to global glhandles, they are automatically added to a map now.
     for (U32 i = 0; i < shaders.size(); i++)
     {
+        LLShaderMgr::ShaderSource source; // [Viewer Lab] compiled, also off GL where a compiled file has no GL object
         // Note usage of GL_VERTEX_SHADER
-        if (loadShaderFile(shaders[i].first, shaders[i].second, GL_VERTEX_SHADER, &attribs) == 0)
+        loadShaderFile(shaders[i].first, shaders[i].second, GL_VERTEX_SHADER, &attribs, -1, &source);
+        if (!source.mCompiled)
         {
             LL_WARNS("Shader") << "Failed to load basic vertex shader " << i << ": " << shaders[i].first << LL_ENDL;
             return shaders[i].first;
@@ -960,8 +1444,10 @@ std::string LLViewerShaderMgr::loadBasicShaders()
 
     for (U32 i = 0; i < shaders.size(); i++)
     {
+        LLShaderMgr::ShaderSource source; // [Viewer Lab] compiled, also off GL where a compiled file has no GL object
         // Note usage of GL_FRAGMENT_SHADER
-        if (loadShaderFile(shaders[i].first, shaders[i].second, GL_FRAGMENT_SHADER, &attribs, index_channels[i]) == 0)
+        loadShaderFile(shaders[i].first, shaders[i].second, GL_FRAGMENT_SHADER, &attribs, index_channels[i], &source);
+        if (!source.mCompiled)
         {
             LL_WARNS("Shader") << "Failed to load fragment shader " << shaders[i].first << LL_ENDL;
             return shaders[i].first;
@@ -1045,6 +1531,28 @@ bool LLViewerShaderMgr::loadShadersWater()
         mShaderLevel[SHADER_WATER] = llmin(gWaterProgram.mShaderLevel, gUnderWaterProgram.mShaderLevel);
     }
 
+    // [Viewer Lab] The same, when a program publishes later than createShader
+    const bool made = success;
+    deferOutcome(SHADER_WATER, { &gWaterProgram, &gUnderWaterProgram }, [this, made](LLGLSLShader* failed)
+    {
+        if (!made)
+        {
+            return true; // the loader took the failure already
+        }
+        /// Keep track of water shader levels
+        if (gWaterProgram.mShaderLevel != mShaderLevel[SHADER_WATER]
+            || gUnderWaterProgram.mShaderLevel != mShaderLevel[SHADER_WATER])
+        {
+            mShaderLevel[SHADER_WATER] = llmin(gWaterProgram.mShaderLevel, gUnderWaterProgram.mShaderLevel);
+        }
+        if (failed)
+        {
+            mShaderLevel[SHADER_WATER] = 0;
+            return false;
+        }
+        return true;
+    });
+
     if (!success)
     {
         mShaderLevel[SHADER_WATER] = 0;
@@ -1114,6 +1622,23 @@ bool LLViewerShaderMgr::loadShadersEffects()
             LLPipeline::sRenderGlow = false;
         }
     }
+
+    // [Viewer Lab] The same, when a program publishes later than createShader. Glow Extract is made only
+    // after Glow (Post) succeeded.
+    const bool made = success;
+    deferOutcome(SHADER_EFFECT, { &gGlowProgram, &gGlowExtractProgram }, [made](LLGLSLShader* failed)
+    {
+        if (!made || !failed)
+        {
+            return true; // the loader took the failure already, or nothing failed (perhaps after a retry at a lower level)
+        }
+        LLPipeline::sRenderGlow = false;
+        if (failed == &gGlowProgram)
+        {
+            gGlowExtractProgram.unload();
+        }
+        return false;
+    });
 
 // <FS:CR> Import Vignette from Exodus
     if (success)
@@ -1438,6 +1963,7 @@ bool LLViewerShaderMgr::loadShadersDeferred()
             if (has_skin)
             {
                 gDeferredMaterialProgram[i].addPermutation("HAS_SKIN", "1");
+                add_luminous_alpha_sort(gDeferredMaterialProgram[i]); // <Luminous/>
                 gDeferredMaterialProgram[i].mFeatures.hasObjectSkinning = true;
             }
             else
@@ -1450,14 +1976,12 @@ bool LLViewerShaderMgr::loadShadersDeferred()
         }
     }
 
-    gDeferredMaterialProgram[1].mFeatures.hasLighting = true;
-    gDeferredMaterialProgram[5].mFeatures.hasLighting = true;
-    gDeferredMaterialProgram[9].mFeatures.hasLighting = true;
-    gDeferredMaterialProgram[13].mFeatures.hasLighting = true;
-    gDeferredMaterialProgram[1+LLMaterial::SHADER_COUNT].mFeatures.hasLighting = true;
-    gDeferredMaterialProgram[5+LLMaterial::SHADER_COUNT].mFeatures.hasLighting = true;
-    gDeferredMaterialProgram[9+LLMaterial::SHADER_COUNT].mFeatures.hasLighting = true;
-    gDeferredMaterialProgram[13+LLMaterial::SHADER_COUNT].mFeatures.hasLighting = true;
+    // [Viewer Lab] after the publication, so that a later retry builds what createShader was asked for
+    for (U32 i : { 1, 5, 9, 13,
+                   1+LLMaterial::SHADER_COUNT, 5+LLMaterial::SHADER_COUNT, 9+LLMaterial::SHADER_COUNT, 13+LLMaterial::SHADER_COUNT })
+    {
+        afterPublication(gDeferredMaterialProgram[i], [](LLGLSLShader& shader) { shader.mFeatures.hasLighting = true; });
+    }
 
     if (success)
     {
@@ -1496,6 +2020,7 @@ bool LLViewerShaderMgr::loadShadersDeferred()
             add_common_permutations(&gGLTFPBRMetallicRoughnessProgram);
 
             success = make_gltf_variants(gGLTFPBRMetallicRoughnessProgram, use_sun_shadow);
+            const bool made = success; // [Viewer Lab]
 
             //llassert(success);
             if (!success)
@@ -1505,6 +2030,34 @@ bool LLViewerShaderMgr::loadShadersDeferred()
                 // continue as if this shader never happened
                 success = true;
             }
+
+            // [Viewer Lab] The same, when a variant publishes later than createShader, also when a later variant failed
+            // inline while an earlier one was pending
+            std::vector<LLGLSLShader*> programs;
+            for (LLGLSLShader& variant : gGLTFPBRMetallicRoughnessProgram.mGLTFVariants)
+            {
+                programs.push_back(&variant);
+            }
+            deferOutcome(SHADER_DEFERRED, std::move(programs), [made](LLGLSLShader* failed)
+            {
+                if (!failed)
+                {
+                    return true; // nothing failed, perhaps after a retry at a lower level
+                }
+                std::vector<LLGLSLShader>& variants = gGLTFPBRMetallicRoughnessProgram.mGLTFVariants;
+                const S32 k = S32(failed - variants.data());
+                llassert(!(k & LLGLSLShader::GLTFVariant::ALPHA_BLEND)); // as make_gltf_variant asserts
+                for (S32 i = k + 1; i < S32(variants.size()); ++i) // make_gltf_variants stops at the first failure
+                {
+                    variants[i].unload();
+                }
+                if (made)
+                {
+                    LL_WARNS() << "Failed to create GLTF PBR Metallic Roughness Shader, disabling!" << LL_ENDL;
+                    gSavedSettings.setBOOL("RenderCanUseGLTFPBROpaqueShaders", false);
+                }
+                return true;
+            });
         }
     }
 
@@ -1591,11 +2144,18 @@ bool LLViewerShaderMgr::loadShadersDeferred()
 
         // Alpha Shader Hack
         // See: LLRender::syncMatrices()
-        shader->mFeatures.calculatesLighting = true;
-        shader->mFeatures.hasLighting = true;
+        // [Viewer Lab] after the publication, so that a later retry builds what createShader was asked for
+        afterPublication(*shader, [](LLGLSLShader& shader)
+        {
+            shader.mFeatures.calculatesLighting = true;
+            shader.mFeatures.hasLighting = true;
+        });
 
-        shader->mRiggedVariant->mFeatures.calculatesLighting = true;
-        shader->mRiggedVariant->mFeatures.hasLighting = true;
+        afterPublication(*shader->mRiggedVariant, [](LLGLSLShader& shader)
+        {
+            shader.mFeatures.calculatesLighting = true;
+            shader.mFeatures.hasLighting = true;
+        });
     }
 
     if (success)
@@ -1624,6 +2184,7 @@ bool LLViewerShaderMgr::loadShadersDeferred()
     {
         S32 detail = gSavedSettings.getS32("RenderTerrainPBRDetail");
         detail = llclamp(detail, TERRAIN_PBR_DETAIL_MIN, TERRAIN_PBR_DETAIL_MAX);
+        detail = metal_capped_terrain_detail(detail); // [Viewer Lab] capped on Metal
         const S32 mapping = clamp_terrain_mapping(gSavedSettings.getS32("RenderTerrainPBRPlanarSampleCount"));
         for (U32 paint_type = 0; paint_type < TERRAIN_PAINT_TYPE_COUNT; ++paint_type)
         {
@@ -1910,6 +2471,7 @@ bool LLViewerShaderMgr::loadShadersDeferred()
             if (rigged)
             {
                 shader->addPermutation("HAS_SKIN", "1");
+                add_luminous_alpha_sort(*shader); // <Luminous/>
             }
 
             if (hud)
@@ -1923,8 +2485,12 @@ bool LLViewerShaderMgr::loadShadersDeferred()
             llassert(success);
 
             // Hack
-            shader->mFeatures.calculatesLighting = true;
-            shader->mFeatures.hasLighting = true;
+            // [Viewer Lab] after the publication, so that a later retry builds what createShader was asked for
+            afterPublication(*shader, [](LLGLSLShader& shader)
+            {
+                shader.mFeatures.calculatesLighting = true;
+                shader.mFeatures.hasLighting = true;
+            });
         }
     }
 
@@ -1965,6 +2531,7 @@ bool LLViewerShaderMgr::loadShadersDeferred()
             {
                 shader->mFeatures.hasObjectSkinning = true;
                 shader->addPermutation("HAS_SKIN", "1");
+                add_luminous_alpha_sort(*shader); // <Luminous/>
             }
 
             if (use_sun_shadow)
@@ -1984,8 +2551,12 @@ bool LLViewerShaderMgr::loadShadersDeferred()
             llassert(success);
 
             // End Hack
-            shader->mFeatures.calculatesLighting = true;
-            shader->mFeatures.hasLighting = true;
+            // [Viewer Lab] after the publication, so that a later retry builds what createShader was asked for
+            afterPublication(*shader, [](LLGLSLShader& shader)
+            {
+                shader.mFeatures.calculatesLighting = true;
+                shader.mFeatures.hasLighting = true;
+            });
         }
     }
 
@@ -2026,6 +2597,8 @@ bool LLViewerShaderMgr::loadShadersDeferred()
 
         success = make_rigged_variant(gDeferredFullbrightProgram, gDeferredSkinnedFullbrightProgram);
         success = gDeferredFullbrightProgram.createShader();
+        // [Viewer Lab] the line above throws its result away, so its failure is ignored also when it comes later
+        deferOutcome(SHADER_DEFERRED, { &gDeferredSkinnedFullbrightProgram }, [](LLGLSLShader*) { return true; });
         llassert(success);
     }
 
@@ -2509,8 +3082,12 @@ bool LLViewerShaderMgr::loadShadersDeferred()
         success = gDeferredAvatarAlphaProgram.createShader();
         llassert(success);
 
-        gDeferredAvatarAlphaProgram.mFeatures.calculatesLighting = true;
-        gDeferredAvatarAlphaProgram.mFeatures.hasLighting = true;
+        // [Viewer Lab] after the publication, so that a later retry builds what createShader was asked for
+        afterPublication(gDeferredAvatarAlphaProgram, [](LLGLSLShader& shader)
+        {
+            shader.mFeatures.calculatesLighting = true;
+            shader.mFeatures.hasLighting = true;
+        });
     }
 
     if (success)
@@ -2733,6 +3310,22 @@ bool LLViewerShaderMgr::loadShadersDeferred()
                 gFXAAProgram[i].unload();
             }
         }
+
+        // [Viewer Lab] The same, when a program publishes later than createShader. After an inline
+        // failure none of the four is pending.
+        deferOutcome(SHADER_DEFERRED, { &gFXAAProgram[0], &gFXAAProgram[1], &gFXAAProgram[2], &gFXAAProgram[3] }, [](LLGLSLShader* failed)
+        {
+            if (!failed)
+            {
+                return true; // nothing failed, perhaps after a retry at a lower level
+            }
+            LL_WARNS() << "Failed to create shader '" << failed->mName << "', disabling!" << LL_ENDL;
+            for (auto i = 0; i < 4; ++i)
+            {
+                gFXAAProgram[i].unload();
+            }
+            return true;
+        });
     }
 
     if (gGLManager.mGLVersion > 3.15f && success)
@@ -2845,6 +3438,31 @@ bool LLViewerShaderMgr::loadShadersDeferred()
                 gSMAANeighborhoodBlendProgram[i].unload();
             }
         }
+
+        // [Viewer Lab] The same, when a program publishes later than createShader, over the twelve in creation order
+        //. After an inline failure none of them is pending.
+        std::vector<LLGLSLShader*> programs;
+        for (auto i = 0; i < 4; ++i)
+        {
+            programs.push_back(&gSMAAEdgeDetectProgram[i]);
+            programs.push_back(&gSMAABlendWeightsProgram[i]);
+            programs.push_back(&gSMAANeighborhoodBlendProgram[i]);
+        }
+        deferOutcome(SHADER_DEFERRED, std::move(programs), [](LLGLSLShader* failed)
+        {
+            if (!failed)
+            {
+                return true; // nothing failed, perhaps after a retry at a lower level
+            }
+            LL_WARNS() << "Failed to create shader '" << failed->mName << "', disabling!" << LL_ENDL;
+            for (auto i = 0; i < 4; ++i)
+            {
+                gSMAAEdgeDetectProgram[i].unload();
+                gSMAABlendWeightsProgram[i].unload();
+                gSMAANeighborhoodBlendProgram[i].unload();
+            }
+            return true;
+        });
     }
 
     if (success && gGLManager.mGLVersion > 4.05f)
@@ -2864,6 +3482,17 @@ bool LLViewerShaderMgr::loadShadersDeferred()
             // continue as if this shader never happened
             success = true;
         }
+
+        // [Viewer Lab] The same, when the program publishes later than createShader
+        deferOutcome(SHADER_DEFERRED, { &gCASProgram }, [](LLGLSLShader* failed)
+        {
+            if (!failed)
+            {
+                return true; // nothing failed, perhaps after a retry at a lower level
+            }
+            LL_WARNS() << "Failed to create shader '" << gCASProgram.mName << "', disabling!" << LL_ENDL;
+            return true;
+        });
     }
 
     if (success && gGLManager.mGLVersion > 4.05f)
@@ -2886,6 +3515,18 @@ bool LLViewerShaderMgr::loadShadersDeferred()
             // continue as if this shader never happened
             success = true;
         }
+
+        // [Viewer Lab] The same, when the program publishes later than createShader, with the loader's text, which
+        // names gCASProgram
+        deferOutcome(SHADER_DEFERRED, { &gCASLegacyGammaProgram }, [](LLGLSLShader* failed)
+        {
+            if (!failed)
+            {
+                return true; // nothing failed, perhaps after a retry at a lower level
+            }
+            LL_WARNS() << "Failed to create shader '" << gCASProgram.mName << "', disabling!" << LL_ENDL;
+            return true;
+        });
     }
 
     if (success)
@@ -2954,7 +3595,7 @@ bool LLViewerShaderMgr::loadShadersDeferred()
 
     // <Luminous> Photo mode: the same present, scaling a live view rendered
     // smaller up to the window (Catmull-Rom; LuminousPhotoMode::upscaling).
-    if (success && LuminousPhotoMode::isOn())
+    if (success && LuminousMetal::translatedPasses() && LuminousPhotoMode::isOn()) // Luminous's own programs: OpenGL only
     {
         gLuminousPresentProgram.mName = "Luminous Present Upscale Shader";
         gLuminousPresentProgram.mFeatures.isDeferred = true;
@@ -2981,7 +3622,7 @@ bool LLViewerShaderMgr::loadShadersDeferred()
     // Linden's do with HAS_SUN_SHADOW; without that, photo mode's shaders would
     // see no shadows at all.
     const S32 luminous_shadow_detail = gSavedSettings.getS32("RenderShadowDetail");
-    if (success && LuminousPhotoMode::volumetricLight())
+    if (success && LuminousMetal::translatedPasses() && LuminousPhotoMode::volumetricLight()) // Luminous's own programs: OpenGL only
     {
         gLuminousVolumetricLightProgram.mName = "Luminous Volumetric Light Shader";
         gLuminousVolumetricLightProgram.mFeatures.isDeferred = true;
@@ -3010,7 +3651,7 @@ bool LLViewerShaderMgr::loadShadersDeferred()
     // then upsampled into the light map. hasAmbientOcclusion links
     // aoUtil.glsl, whose luminousGTAO it calls; isDeferred for getPosition
     // and getNorm. Without them the sun pass draws GTAO itself.
-    if (success && LuminousPhotoMode::ambientOcclusion())
+    if (success && LuminousMetal::translatedPasses() && LuminousPhotoMode::ambientOcclusion()) // Luminous's own programs: OpenGL only
     {
         gLuminousGTAOProgram.mName = "Luminous GTAO Half Shader";
         gLuminousGTAOProgram.mFeatures.isDeferred = true;
@@ -3039,7 +3680,7 @@ bool LLViewerShaderMgr::loadShadersDeferred()
 
     // Photo mode: projector beams. isDeferred for getPosition; the spot
     // shadow lookup is its own, against SPOT_SHADOW, asked for above.
-    if (success && LuminousPhotoMode::projectorBeams())
+    if (success && LuminousMetal::translatedPasses() && LuminousPhotoMode::projectorBeams()) // Luminous's own programs: OpenGL only
     {
         gLuminousProjectorBeamsProgram.mName = "Luminous Projector Beams Shader";
         gLuminousProjectorBeamsProgram.mFeatures.isDeferred = true;
@@ -3059,7 +3700,7 @@ bool LLViewerShaderMgr::loadShadersDeferred()
     }
 
     // Photo mode: the vignette, a plain full-screen factor.
-    if (success && LuminousPhotoMode::vignette())
+    if (success && LuminousMetal::translatedPasses() && LuminousPhotoMode::vignette()) // Luminous's own programs: OpenGL only
     {
         gLuminousVignetteProgram.mName = "Luminous Vignette Shader";
         gLuminousVignetteProgram.mShaderFiles.clear();
@@ -3075,7 +3716,7 @@ bool LLViewerShaderMgr::loadShadersDeferred()
 
     // Photo mode: depth of field, a full-screen gather over the output of
     // Firestorm's own circle-of-confusion pass (gDeferredCoFProgram).
-    if (success && LuminousPhotoMode::depthOfField())
+    if (success && LuminousMetal::translatedPasses() && LuminousPhotoMode::depthOfField()) // Luminous's own programs: OpenGL only
     {
         gLuminousDepthOfFieldProgram.mName = "Luminous Depth of Field Shader";
         gLuminousDepthOfFieldProgram.mShaderFiles.clear();
@@ -3103,7 +3744,7 @@ bool LLViewerShaderMgr::loadShadersDeferred()
 
     // Photo mode: bloom's chain of half-size copies down and back up, which
     // clarity uses too, so built whenever photo mode is on; and clarity.
-    if (success && LuminousPhotoMode::isOn())
+    if (success && LuminousMetal::translatedPasses() && LuminousPhotoMode::isOn()) // Luminous's own programs: OpenGL only
     {
         gLuminousClarityProgram.mName = "Luminous Clarity Shader";
         gLuminousClarityProgram.mShaderFiles.clear();
@@ -3206,7 +3847,7 @@ bool LLViewerShaderMgr::loadShadersDeferred()
             LL_WARNS("Shader") << "Luminous frame shader failed to build; photo mode continues without it" << LL_ENDL;
         }
     }
-    if (success && LuminousPhotoMode::isOn())
+    if (success && LuminousMetal::translatedPasses() && LuminousPhotoMode::isOn()) // Luminous's own programs: OpenGL only
     {
         gLuminousBloomDownProgram.mName = "Luminous Bloom Down Shader";
         gLuminousBloomDownProgram.mShaderFiles.clear();
@@ -3227,7 +3868,7 @@ bool LLViewerShaderMgr::loadShadersDeferred()
     }
 
     // Photo mode: chromatic aberration, a radial spread of the spectrum.
-    if (success && LuminousPhotoMode::chromaticAberration())
+    if (success && LuminousMetal::translatedPasses() && LuminousPhotoMode::chromaticAberration()) // Luminous's own programs: OpenGL only
     {
         gLuminousChromaticAberrationProgram.mName = "Luminous Chromatic Aberration Shader";
         gLuminousChromaticAberrationProgram.mShaderFiles.clear();
@@ -3244,7 +3885,7 @@ bool LLViewerShaderMgr::loadShadersDeferred()
     // Photo mode: sun shafts, a sky mask and a radial blur of it. Plain
     // full-screen programs: the mask reads only colour and depth, the blur
     // only the mask.
-    if (success && LuminousPhotoMode::sunShafts())
+    if (success && LuminousMetal::translatedPasses() && LuminousPhotoMode::sunShafts()) // Luminous's own programs: OpenGL only
     {
         gLuminousSunShaftMaskProgram.mName = "Luminous Sun Shaft Mask Shader";
         gLuminousSunShaftMaskProgram.mShaderFiles.clear();
@@ -3412,6 +4053,7 @@ bool LLViewerShaderMgr::loadShadersDeferred()
     if (success)
     {
         gDeferredGenBrdfLutProgram.mName = "Brdf Gen Shader";
+        gDeferredGenBrdfLutProgram.mLoginScreen = true; // [Viewer Lab] needed at the login screen
         gDeferredGenBrdfLutProgram.mShaderFiles.clear();
         gDeferredGenBrdfLutProgram.mShaderFiles.push_back(make_pair("deferred/genbrdflutV.glsl", GL_VERTEX_SHADER));
         gDeferredGenBrdfLutProgram.mShaderFiles.push_back(make_pair("deferred/genbrdflutF.glsl", GL_FRAGMENT_SHADER));
@@ -3464,10 +4106,12 @@ bool LLViewerShaderMgr::loadShadersObject()
     if (success)
     {
         gObjectBumpProgram.mName = "Bump Shader";
+        gObjectBumpProgram.mLoginScreen = true; // [Viewer Lab] needed at the login screen
         gObjectBumpProgram.mShaderFiles.clear();
         gObjectBumpProgram.mShaderFiles.push_back(make_pair("objects/bumpV.glsl", GL_VERTEX_SHADER));
         gObjectBumpProgram.mShaderFiles.push_back(make_pair("objects/bumpF.glsl", GL_FRAGMENT_SHADER));
         gObjectBumpProgram.mShaderLevel = mShaderLevel[SHADER_OBJECT];
+        gSkinnedObjectBumpProgram.mLoginScreen = true; // [Viewer Lab] needed at the login screen
         success = make_rigged_variant(gObjectBumpProgram, gSkinnedObjectBumpProgram);
         success = success && gObjectBumpProgram.createShader();
         if (success)
@@ -3480,6 +4124,8 @@ bool LLViewerShaderMgr::loadShadersObject()
                 shader[i]->uniform1i(sTexture1, 1);
                 shader[i]->unbind();
             }
+            // [Viewer Lab] a bind that publishes can fail it
+            success = success && gObjectBumpProgram.isComplete() && gSkinnedObjectBumpProgram.isComplete();
         }
     }
 
@@ -3519,8 +4165,11 @@ bool LLViewerShaderMgr::loadShadersObject()
         gObjectPreviewProgram.mShaderLevel = mShaderLevel[SHADER_OBJECT];
         success = make_rigged_variant(gObjectPreviewProgram, gSkinnedObjectPreviewProgram);
         success = gObjectPreviewProgram.createShader();
-        gObjectPreviewProgram.mFeatures.hasLighting = true;
-        gSkinnedObjectPreviewProgram.mFeatures.hasLighting = true;
+        // [Viewer Lab] the line above throws its result away, so its failure is ignored also when it comes later
+        deferOutcome(SHADER_OBJECT, { &gSkinnedObjectPreviewProgram }, [](LLGLSLShader*) { return true; });
+        // [Viewer Lab] after the publication, so that a later retry builds what createShader was asked for
+        afterPublication(gObjectPreviewProgram, [](LLGLSLShader& shader) { shader.mFeatures.hasLighting = true; });
+        afterPublication(gSkinnedObjectPreviewProgram, [](LLGLSLShader& shader) { shader.mFeatures.hasLighting = true; });
     }
 
     if (success)
@@ -3576,6 +4225,33 @@ bool LLViewerShaderMgr::loadShadersAvatar()
         }
     }
 
+    // [Viewer Lab] The same, when the program publishes later than createShader
+    const bool made = success;
+    deferOutcome(SHADER_AVATAR, { &gAvatarProgram }, [this, made](LLGLSLShader* failed)
+    {
+        if (!made)
+        {
+            return true; // the loader took the failure already
+        }
+        if (failedBefore(SHADER_AVATAR))
+        {
+            return true; // inline this group never loads after an earlier failure, whose lateFailure set the avatar levels
+        }
+        /// Keep track of avatar levels
+        if (gAvatarProgram.mShaderLevel != mShaderLevel[SHADER_AVATAR])
+        {
+            mMaxAvatarShaderLevel = mShaderLevel[SHADER_AVATAR] = gAvatarProgram.mShaderLevel;
+        }
+        if (failed)
+        {
+            mShaderLevel[SHADER_AVATAR] = 0;
+            mMaxAvatarShaderLevel = 0;
+            LL_WARNS() << "Failed to create avatar shader!" << LL_ENDL;
+            return false;
+        }
+        return true;
+    });
+
     if( !success )
     {
         // This isn't supposed to fail, otherwise defferred shaders would have failed.
@@ -3628,6 +4304,7 @@ bool LLViewerShaderMgr::loadShadersInterface()
     if (success)
     {
         gUIProgram.mName = "UI Shader";
+        gUIProgram.mLoginScreen = true; // [Viewer Lab] needed at the login screen
         gUIProgram.mShaderFiles.clear();
         gUIProgram.mShaderFiles.push_back(make_pair("interface/uiV.glsl", GL_VERTEX_SHADER));
         gUIProgram.mShaderFiles.push_back(make_pair("interface/uiF.glsl", GL_FRAGMENT_SHADER));
@@ -3658,6 +4335,7 @@ bool LLViewerShaderMgr::loadShadersInterface()
     if (success)
     {
         gGlowCombineProgram.mName = "Glow Combine Shader";
+        gGlowCombineProgram.mLoginScreen = true; // [Viewer Lab] needed at the login screen
         gGlowCombineProgram.mShaderFiles.clear();
         gGlowCombineProgram.mShaderFiles.push_back(make_pair("interface/glowcombineV.glsl", GL_VERTEX_SHADER));
         gGlowCombineProgram.mShaderFiles.push_back(make_pair("interface/glowcombineF.glsl", GL_FRAGMENT_SHADER));
@@ -3669,12 +4347,14 @@ bool LLViewerShaderMgr::loadShadersInterface()
             gGlowCombineProgram.uniform1i(sGlowMap, 0);
             gGlowCombineProgram.uniform1i(sScreenMap, 1);
             gGlowCombineProgram.unbind();
+            success = success && gGlowCombineProgram.isComplete(); // [Viewer Lab] a bind that publishes can fail it
         }
     }
 
     if (success)
     {
         gGlowCombineFXAAProgram.mName = "Glow CombineFXAA Shader";
+        gGlowCombineFXAAProgram.mLoginScreen = true; // [Viewer Lab] needed at the login screen
         gGlowCombineFXAAProgram.mShaderFiles.clear();
         gGlowCombineFXAAProgram.mShaderFiles.push_back(make_pair("interface/glowcombineFXAAV.glsl", GL_VERTEX_SHADER));
         gGlowCombineFXAAProgram.mShaderFiles.push_back(make_pair("interface/glowcombineFXAAF.glsl", GL_FRAGMENT_SHADER));
@@ -3686,6 +4366,7 @@ bool LLViewerShaderMgr::loadShadersInterface()
             gGlowCombineFXAAProgram.uniform1i(sGlowMap, 0);
             gGlowCombineFXAAProgram.uniform1i(sScreenMap, 1);
             gGlowCombineFXAAProgram.unbind();
+            success = success && gGlowCombineFXAAProgram.isComplete(); // [Viewer Lab] a bind that publishes can fail it
         }
     }
 
@@ -3726,6 +4407,7 @@ bool LLViewerShaderMgr::loadShadersInterface()
     if (success)
     {
         gSolidColorProgram.mName = "Solid Color Shader";
+        gSolidColorProgram.mLoginScreen = true; // [Viewer Lab] needed at the login screen
         gSolidColorProgram.mShaderFiles.clear();
         gSolidColorProgram.mShaderFiles.push_back(make_pair("interface/solidcolorV.glsl", GL_VERTEX_SHADER));
         gSolidColorProgram.mShaderFiles.push_back(make_pair("interface/solidcolorF.glsl", GL_FRAGMENT_SHADER));
@@ -3736,6 +4418,7 @@ bool LLViewerShaderMgr::loadShadersInterface()
             gSolidColorProgram.bind();
             gSolidColorProgram.uniform1i(sTex0, 0);
             gSolidColorProgram.unbind();
+            success = success && gSolidColorProgram.isComplete(); // [Viewer Lab] a bind that publishes can fail it
         }
     }
 
@@ -3783,7 +4466,7 @@ bool LLViewerShaderMgr::loadShadersInterface()
         success = success && gDebugProgram.createShader();
     }
 
-    if (success)
+    if (success && geometry_shaders()) // [Viewer Lab]
     {
         for (S32 variant = 0; variant < NORMAL_DEBUG_SHADER_COUNT; ++variant)
         {
@@ -3808,6 +4491,16 @@ bool LLViewerShaderMgr::loadShadersInterface()
             success = make_rigged_variant(shader, skinned_shader);
             success = success && shader.createShader();
         }
+        // [Viewer Lab] the loop's next iteration overwrites variant 0's result, so its failure is ignored also when it
+        // comes later. Variant 0 is never made after its skinned variant failed.
+        deferOutcome(SHADER_INTERFACE, { &gSkinnedNormalDebugProgram[0], &gNormalDebugProgram[0] }, [](LLGLSLShader* failed)
+        {
+            if (failed == &gSkinnedNormalDebugProgram[0])
+            {
+                gNormalDebugProgram[0].unload();
+            }
+            return true;
+        });
     }
 
     if (success)
@@ -3905,6 +4598,18 @@ bool LLViewerShaderMgr::loadShadersInterface()
                 // continue as if this shader never happened
                 success = true;
             }
+
+            // [Viewer Lab] The same, when the program publishes later than createShader
+            deferOutcome(SHADER_INTERFACE, { shader }, [](LLGLSLShader* failed)
+            {
+                if (!failed)
+                {
+                    return true; // nothing failed, perhaps after a retry at a lower level
+                }
+                LL_WARNS() << "Failed to create shader '" << failed->mName << "', disabling!" << LL_ENDL;
+                gSavedSettings.setBOOL("RenderCanUseTerrainBakeShaders", false);
+                return true;
+            });
         }
     }
 

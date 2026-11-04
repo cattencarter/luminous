@@ -45,8 +45,7 @@ LLReflectionMap::~LLReflectionMap()
 {
     if (mOcclusionQuery)
     {
-        gPipeline.mReflectionMapManager.recycleQuery(mOcclusionQuery);
-        mOcclusionQuery = 0;
+        gPipeline.mReflectionMapManager.recycleQuery(std::move(mOcclusionQuery)); // [Viewer Lab]
     }
 }
 
@@ -368,7 +367,8 @@ void LLReflectionMap::doOcclusion(const LLVector4a& eye)
         return;
     }
 
-    if (mOcclusionQuery == 0)
+    // [Viewer Lab] Through LLGPUQuery, made, read and begun as GL's query
+    if (!mOcclusionQuery)
     { // no query was previously issued, allocate one and issue
         LL_PROFILE_ZONE_NAMED_CATEGORY_PIPELINE("rmdo - glGenQueries");
         mOcclusionQuery = gPipeline.mReflectionMapManager.allocateQuery();
@@ -378,13 +378,12 @@ void LLReflectionMap::doOcclusion(const LLVector4a& eye)
     { // query was previously issued, check it and only issue a new query
         // if previous query is available
         LL_PROFILE_ZONE_NAMED_CATEGORY_PIPELINE("rmdo - glGetQueryObject");
-        GLuint result = 0;
-        glGetQueryObjectuiv(mOcclusionQuery, GL_QUERY_RESULT_AVAILABLE, &result);
+        GLuint result = GLuint(mOcclusionQuery.get(GL_QUERY_RESULT_AVAILABLE));
 
         if (result > 0)
         {
             do_query = true;
-            glGetQueryObjectuiv(mOcclusionQuery, GL_QUERY_RESULT, &result);
+            result = GLuint(mOcclusionQuery.get(GL_QUERY_RESULT));
             mOccluded = result == 0;
             mOcclusionPendingFrames = 0;
         }
@@ -397,7 +396,7 @@ void LLReflectionMap::doOcclusion(const LLVector4a& eye)
     if (do_query)
     {
         LL_PROFILE_ZONE_NAMED_CATEGORY_PIPELINE("rmdo - push query");
-        glBeginQuery(GL_ANY_SAMPLES_PASSED, mOcclusionQuery);
+        mOcclusionQuery.begin(GL_ANY_SAMPLES_PASSED);
 
         LLGLSLShader* shader = LLGLSLShader::sCurBoundShaderPtr;
 
@@ -406,7 +405,7 @@ void LLReflectionMap::doOcclusion(const LLVector4a& eye)
 
         gPipeline.mCubeVB->drawRange(LLRender::TRIANGLE_FAN, 0, 7, 8, get_box_fan_indices(LLViewerCamera::getInstance(), mOrigin));
 
-        glEndQuery(GL_ANY_SAMPLES_PASSED);
+        mOcclusionQuery.end(GL_ANY_SAMPLES_PASSED);
     }
 #endif
 }

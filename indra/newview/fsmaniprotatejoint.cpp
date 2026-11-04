@@ -48,6 +48,7 @@
 #include "llviewercontrol.h"
 #include "llviewershadermgr.h"
 #include "fsfloaterposer.h"
+#include "llrhi.h" // [Viewer Lab]
 // -------------------------------------
 
 
@@ -117,10 +118,14 @@ static void renderPulsingSphere(const LLVector3& joint_world_position, const LLC
     gGL.popMatrix();
 
     // Check for OpenGL errors
-    GLenum err;
-    while ((err = glGetError()) != GL_NO_ERROR)
+    // [Viewer Lab] only when OpenGL is the renderer chosen at startup
+    if (LL::RHI::viewerBackend() == LL::RHI::BackendType::GL)
     {
-        LL_INFOS() << "OpenGL Error: " << err << LL_ENDL;
+        GLenum err;
+        while ((err = glGetError()) != GL_NO_ERROR)
+        {
+            LL_INFOS() << "OpenGL Error: " << err << LL_ENDL;
+        }
     }
 }
 
@@ -162,10 +167,14 @@ static void renderStaticSphere(const LLVector3& joint_world_position, const LLCo
     gGL.popMatrix();
 
     // Check for OpenGL errors
-    GLenum err;
-    while ((err = glGetError()) != GL_NO_ERROR)
+    // [Viewer Lab] only when OpenGL is the renderer chosen at startup
+    if (LL::RHI::viewerBackend() == LL::RHI::BackendType::GL)
     {
-        LL_INFOS() << "OpenGL Error: " << err << LL_ENDL;
+        GLenum err;
+        while ((err = glGetError()) != GL_NO_ERROR)
+        {
+            LL_INFOS() << "OpenGL Error: " << err << LL_ENDL;
+        }
     }
 }
 

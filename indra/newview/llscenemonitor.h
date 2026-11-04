@@ -32,6 +32,7 @@
 #include "llfloater.h"
 #include "llcharacter.h"
 #include "lltracerecording.h"
+#include "llglslshader.h" // [Viewer Lab] LLGPUQuery
 
 class LLCharacter;
 class LLRenderTarget;
@@ -54,6 +55,9 @@ public:
     void setDiffTolerance(F32 tol) {mDiffTolerance = tol;}
 
     const LLRenderTarget* getDiffTarget() const {return mDiff;}
+    // [Viewer Lab] The target the last capture() copied into, or null before the first (capture swaps its two targets);
+    // for golden level 2's monitor_check (llgoldentest.cpp)
+    const LLRenderTarget* getLastCaptureTarget() const { return mFrames[1] ? mFrames[1] : mFrames[0]; }
     F32  getDiffTolerance() const {return mDiffTolerance;}
     F32  getDiffResult() const { return mDiffResult;}
     F32  getDiffPixelRatio() const { return mDiffPixelRatio;}
@@ -89,7 +93,7 @@ private:
     LLRenderTarget*                         mFrames[2];
     LLRenderTarget*                         mDiff;
 
-    GLuint                                  mQueryObject; //used for glQuery
+    LLGPUQuery                              mQueryObject; //used for glQuery; [Viewer Lab] its own
     F32                                     mDiffResult,  //aggregate results of mDiff.
                                             mDiffTolerance, //pixels are filtered out when R+G+B < mDiffTolerance
                                             mDiffPixelRatio; //ratio of pixels used for comparison against the original mDiff size along one dimension

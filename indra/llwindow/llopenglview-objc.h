@@ -33,7 +33,7 @@
 #import <CoreFoundation/CFNumber.h>
 #include <string>
 
-@interface LLOpenGLView : NSOpenGLView <NSTextInputClient>
+@interface LLOpenGLView : NSView <NSTextInputClient>
 {
     std::string mLastDraggedUrl;
     unsigned int mModifiers;
@@ -42,6 +42,13 @@
     unsigned int mMarkedTextLength;
     bool mMarkedTextAllowed;
     bool mSimulatedRightClick;
+    // [Viewer Lab] The view's GL context (an NSOpenGLContext) and pixel format (an NSOpenGLPixelFormat), retained,
+    // which NSOpenGLView kept. Typed id so this header names no GL type; only the context methods in
+    // llopenglview-objc.mm use them.
+    id mGLContext;
+    id mGLPixelFormat;
+    // [Viewer Lab] The golden hook's backing scale for a view with a CAMetalLayer; 0 is off.
+    float mTestBackingScale;
 }
 - (id) initWithSamples:(NSUInteger)samples;
 - (id) initWithSamples:(NSUInteger)samples andVsync:(BOOL)vsync;
@@ -54,13 +61,32 @@
 // Use this in event of needing to rebuild a context for whatever reason, without needing to assign a new pixel format.
 - (BOOL) rebuildContext;
 
-// rebuildContextWithFormat
-// Destroys and recreates a context with the specified pixel format.
-- (BOOL) rebuildContextWithFormat:(NSOpenGLPixelFormat *)format;
+// [Viewer Lab] clearGLContext
+// Clears the context's drawable and releases the context, as NSOpenGLView's did; removeGLView calls it.
+- (void) clearGLContext;
 
-// These are mostly just for C++ <-> Obj-C interop.  We can manipulate the CGLContext from C++ without reprecussions.
-- (CGLContextObj) getCGLContextObj;
-- (CGLPixelFormatObj*)getCGLPixelFormatObj;
+// [Viewer Lab] createGLContextWithVsync:
+// The view's GL context and pixel format; LLWindowMacOSX::createContext calls it through the bridge's
+// createOpenGLContext when the GL backend creates the device. The Metal backend never calls it.
+- (BOOL) createGLContextWithVsync:(BOOL)vsync;
+
+// [Viewer Lab] setUseMetalLayer:
+// Views made after this call with YES get a CAMetalLayer as their backing layer (makeBackingLayer); the bridge's
+// setOpenGLViewMetalLayer calls it before the window makes its view.
++ (void) setUseMetalLayer:(BOOL)use;
+
+// [Viewer Lab] llConvertSizeToBacking:, llConvertRectToBacking:, llConvertPointToBacking:
+// The viewer's conversions to backing pixels. With a CAMetalLayer they scale by the backing scale with RenderHiDPI
+// (or the test override) and by 1 without it, as GL's surface does; otherwise they are AppKit's convert*ToBacking: methods.
+- (NSSize) llConvertSizeToBacking:(NSSize)size;
+- (NSRect) llConvertRectToBacking:(NSRect)rect;
+- (NSPoint) llConvertPointToBacking:(NSPoint)point;
+
+// [Viewer Lab] setTestBackingScale:
+// The golden hook's backing scale for a view with a CAMetalLayer, in place of the window's (0 is off), for a Mac
+// with only a 1x display; then AppKit's calls on a screen change (viewDidChangeBackingProperties,
+// windowDidChangeScreen:). Main thread. The bridge's setOpenGLViewTestBackingScale calls it.
+- (void) setTestBackingScale:(float)scale;
 
 - (unsigned long) getVramSize;
 
@@ -94,5 +120,8 @@
 + (NSScreen *)currentScreenForMouseLocation;
 
 @end
+
+// [Viewer Lab] LLOpenGLView's context methods whose declarations name GL types.
+#import "llopenglviewcontext-objc.h"
 
 #endif

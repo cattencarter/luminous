@@ -55,6 +55,17 @@ using namespace LL;
 // temporary location of LL GLTF Implementation
 using namespace LL::GLTF;
 
+// [Viewer Lab] Every program reads glTF's three blocks at the render interface's point from its first load, so their first
+// allocate binds them again in no program: declared with declareBlock before the shaders load, in static
+// initialization
+[[maybe_unused]] static const bool sGLTFBlocksDeclared = []()
+{
+    LLShaderUniformBuffer::declareBlock(LLGLSLShader::UB_GLTF_JOINTS);
+    LLShaderUniformBuffer::declareBlock(LLGLSLShader::UB_GLTF_NODES);
+    LLShaderUniformBuffer::declareBlock(LLGLSLShader::UB_GLTF_MATERIALS);
+    return true;
+}();
+
 void GLTFSceneManager::load()
 {
     LLViewerObject* obj = LLSelectMgr::instance().getSelection()->getFirstRootObject();
@@ -689,10 +700,10 @@ void GLTFSceneManager::render(Asset& asset, U8 variant)
 
                 if (!rigged)
                 {
-                    glBindBufferBase(GL_UNIFORM_BUFFER, LLGLSLShader::UB_GLTF_NODES, asset.mNodesUBO);
+                    asset.mNodesUBO.bind(); // [Viewer Lab]
                 }
 
-                glBindBufferBase(GL_UNIFORM_BUFFER, LLGLSLShader::UB_GLTF_MATERIALS, asset.mMaterialsUBO);
+                asset.mMaterialsUBO.bind(); // [Viewer Lab]
 
                 for (U32 i = 0; i < TEXTURE_TYPE_COUNT; ++i)
                 {
@@ -732,7 +743,7 @@ void GLTFSceneManager::render(Asset& asset, U8 variant)
                     LL_PROFILE_ZONE_NAMED_CATEGORY_GLTF("gltfdc - bind skin");
                     llassert(node.mSkin != INVALID_INDEX);
                     Skin& skin = asset.mSkins[node.mSkin];
-                    glBindBufferBase(GL_UNIFORM_BUFFER, LLGLSLShader::UB_GLTF_JOINTS, skin.mUBO);
+                    skin.mUBO.bind(); // [Viewer Lab]
                 }
                 else
                 {
@@ -771,7 +782,9 @@ void GLTFSceneManager::bindTexture(Asset& asset, TextureType texture_type, Textu
 
     if (channel > -1)
     {
-        glActiveTexture(GL_TEXTURE0 + channel);
+        // [Viewer Lab] The binding by image and the sampler setters of the texture GL's active unit holds
+        LLTexUnit* unit = gGL.getTexUnit(channel);
+        unit->activate();
 
         if (info.mIndex != INVALID_INDEX)
         {
@@ -781,33 +794,34 @@ void GLTFSceneManager::bindTexture(Asset& asset, TextureType texture_type, Textu
             if (tex)
             {
                 LL_PROFILE_ZONE_NAMED_CATEGORY_GLTF("gl bind texture");
-                glBindTexture(GL_TEXTURE_2D, tex->getTexName());
+                LLImageGL* image = tex->getGLTexture(); // [Viewer Lab]
+                unit->bindTexture(LLTexUnit::TT_TEXTURE, image, image->getUseMipMaps());
 
                 if (channel != -1 && texture.mSampler != -1)
                 { // set sampler state
                     Sampler& sampler = asset.mSamplers[texture.mSampler];
-                    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, sampler.mWrapS);
-                    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, sampler.mWrapT);
-                    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, sampler.mMagFilter);
+                    LLTexUnit::setActiveTextureWrapST(LLTexUnit::TT_TEXTURE, sampler.mWrapS, sampler.mWrapT); // [Viewer Lab]
+                    LLTexUnit::setActiveTextureMagFilter(LLTexUnit::TT_TEXTURE, sampler.mMagFilter);
 
                     // NOTE: do not set min filter.  Always respect client preference for min filter
                 }
                 else
                 {
                     // set default sampler state
-                    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_REPEAT);
-                    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_REPEAT);
-                    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+                    LLTexUnit::setActiveTextureWrapST(LLTexUnit::TT_TEXTURE, GL_REPEAT, GL_REPEAT); // [Viewer Lab]
+                    LLTexUnit::setActiveTextureMagFilter(LLTexUnit::TT_TEXTURE, GL_LINEAR);
                 }
             }
             else
             {
-                glBindTexture(GL_TEXTURE_2D, fallback->getTexName());
+                LLImageGL* image = fallback->getGLTexture(); // [Viewer Lab]
+                unit->bindTexture(LLTexUnit::TT_TEXTURE, image, image->getUseMipMaps());
             }
         }
         else
         {
-            glBindTexture(GL_TEXTURE_2D, fallback->getTexName());
+            LLImageGL* image = fallback->getGLTexture(); // [Viewer Lab]
+            unit->bindTexture(LLTexUnit::TT_TEXTURE, image, image->getUseMipMaps());
         }
     }
 }
@@ -1032,7 +1046,7 @@ void renderAssetDebug(LLViewerObject* obj, Asset* asset)
             if (gPipeline.hasRenderDebugMask(LLPipeline::RENDER_DEBUG_RAYCAST))
             {
                 gGL.flush();
-                glPolygonMode(GL_FRONT_AND_BACK, GL_LINE);
+                gGL.setPolygonMode(GL_FRONT_AND_BACK, GL_LINE); // [Viewer Lab]
 
                 // convert raycast to node local space
                 vec4 local_start = node.mAssetMatrixInv * start;
@@ -1050,7 +1064,7 @@ void renderAssetDebug(LLViewerObject* obj, Asset* asset)
                 }
 
                 gGL.flush();
-                glPolygonMode(GL_FRONT_AND_BACK, GL_FILL);
+                gGL.setPolygonMode(GL_FRONT_AND_BACK, GL_FILL); // [Viewer Lab]
             }
 #endif
             gGL.popMatrix();
@@ -1183,7 +1197,7 @@ void GLTFSceneManager::renderDebug()
                 Primitive* primitive = &asset->mMeshes[node->mMesh].mPrimitives[primitive_hit];
 
                 gGL.flush();
-                glPolygonMode(GL_FRONT_AND_BACK, GL_LINE);
+                gGL.setPolygonMode(GL_FRONT_AND_BACK, GL_LINE); // [Viewer Lab]
                 gGL.color3f(1, 0, 1);
                 drawBoxOutline(intersection, LLVector4a(0.1f, 0.1f, 0.1f, 0.f));
 
@@ -1193,7 +1207,7 @@ void GLTFSceneManager::renderDebug()
                 drawBoxOutline(listener->mBounds[0], listener->mBounds[1]);
 
                 gGL.flush();
-                glPolygonMode(GL_FRONT_AND_BACK, GL_FILL);
+                gGL.setPolygonMode(GL_FRONT_AND_BACK, GL_FILL); // [Viewer Lab]
                 gGL.popMatrix();
             }
         }

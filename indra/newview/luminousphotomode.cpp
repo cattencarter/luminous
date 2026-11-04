@@ -67,8 +67,14 @@
 #include "llcallbacklist.h"
 #include "lumenfolders.h"
 #include "luminoushdrsnapshot.h"
+#include "luminousmetal.h"
+#include "luminousmetalparams.h"
 #include "llinventoryfunctions.h"
 #include "llinventorysettings.h"
+#include "llrhi.h"
+#include "lltrans.h"
+#include "llpanel.h"
+#include "lltabcontainer.h"
 
 #include <climits>
 #include <set>
@@ -107,6 +113,9 @@ namespace LuminousPhotoMode
         GLuint sLookLut = 0;
         F32 sLookLutSize = 0.f;
         std::string sLookLutName;
+        // The same two tables on Metal: RHI 3D textures, RGBA16F.
+        LLPointer<LL::RHI::Texture> sMcMapfaceLutMetal;
+        LLPointer<LL::RHI::Texture> sLookLutMetal;
         // Bloom's chain: half the frame, a quarter, ... RGB16F, allocated the
         // first time bloom is drawn.
         const S32 BLOOM_LEVELS = 6;
@@ -207,6 +216,12 @@ namespace LuminousPhotoMode
 
         void renderVolumetricLight(LLRenderTarget* hdr_screen)
         {
+            LuminousMetal::PassTargets targets;
+            targets.frame = hdr_screen;
+            if (LuminousMetal::replaces(LuminousMetal::Pass::VolumetricLight, targets))
+            {
+                return;
+            }
             static const char* last = nullptr;
             LLGLSLShader& shader = gLuminousVolumetricLightProgram;
             if (const char* off = skippedBecause(shader, true))
@@ -325,6 +340,14 @@ namespace LuminousPhotoMode
         // False if the shafts are not drawn this frame, and why is logged.
         bool takeSunShaftMask(LLRenderTarget* hdr_screen, LLVector2& sun_uv, F32& fade)
         {
+            if (LuminousMetal::metal())
+            {
+                // The native passes find the sun themselves (fillAirParams);
+                // softening and adding go on when the mask was drawn.
+                LuminousMetal::PassTargets targets;
+                targets.frame = hdr_screen;
+                return LuminousMetal::drawNative(LuminousMetal::Pass::SunShaftMask, targets);
+            }
             static const char* last = nullptr;
             LLGLSLShader& mask = gLuminousSunShaftMaskProgram;
             const char* off = skippedBecause(mask, false);
@@ -366,6 +389,11 @@ namespace LuminousPhotoMode
         // Softens the mask, so the rays soften. Returns the mask to read.
         LLRenderTarget* softenSunShaftMask()
         {
+            LuminousMetal::PassTargets targets;
+            if (LuminousMetal::replaces(LuminousMetal::Pass::SunShaftSoften, targets))
+            {
+                return &sShaftMask; // not read on Metal: the native passes keep their own mask
+            }
             static LLCachedControl<F32> softness(gSavedSettings, "LuminousPhotoSunShaftsSoftness", 0.3f);
             LLGLSLShader& blur = gLuminousSunShaftBlurProgram;
             if (softness() <= 0.f || !blur.isComplete() || !sShaftMaskSoft.isComplete())
@@ -396,6 +424,12 @@ namespace LuminousPhotoMode
         // Second half: the mask blurred toward the sun, added to the frame.
         void addSunShafts(LLRenderTarget* hdr_screen, LLRenderTarget* shaft_mask, const LLVector2& sun_uv, F32 fade)
         {
+            LuminousMetal::PassTargets targets;
+            targets.frame = hdr_screen;
+            if (LuminousMetal::replaces(LuminousMetal::Pass::SunShafts, targets))
+            {
+                return;
+            }
             LL_PROFILE_GPU_ZONE("luminous sun shafts");
 
             static LLCachedControl<F32> strength(gSavedSettings, "LuminousPhotoSunShaftsStrength", 1.f);
@@ -635,6 +669,12 @@ namespace LuminousPhotoMode
 
         void renderProjectorBeams(LLRenderTarget* hdr_screen)
         {
+            LuminousMetal::PassTargets targets;
+            targets.frame = hdr_screen;
+            if (LuminousMetal::replaces(LuminousMetal::Pass::ProjectorBeams, targets))
+            {
+                return;
+            }
             static const char* last = nullptr;
             LLGLSLShader& shader = gLuminousProjectorBeamsProgram;
             const char* off = skippedBecause(shader, false);
@@ -725,12 +765,49 @@ namespace LuminousPhotoMode
         }
     }
 
-    // Photo mode is always on: the live view stays quick by keeping the
-    // costly effects for the rendered picture. Its hooks in Firestorm's
-    // files still ask, so that they stay marked as photo mode's.
+    // Photo mode is always on with the OpenGL renderer: the live view stays
+    // quick by keeping the costly effects for the rendered picture. Its hooks
+    // in Firestorm's files still ask, so that they stay marked as photo
+    // mode's. With the Metal renderer it runs while LuminousMetalPhotoModeDev
+    // is on, each effect by its own switch (LuminousMetal::on): those inside
+    // Firestorm's programs translated with them, Luminous's own passes only
+    // as native passes.
     bool isOn()
     {
-        return true;
+        return LL::RHI::viewerBackend() == LL::RHI::BackendType::GL || LuminousMetal::photoModeOnMetal();
+    }
+
+    bool rendersAvailable()
+    {
+        // Renders read back and average frames with OpenGL's own calls; on
+        // Metal they wait for the render group's native passes.
+        return isOn() && LuminousMetal::on(LuminousMetal::Effect::HDRSnapshot)
+            && LuminousMetal::on(LuminousMetal::Effect::Accumulation);
+    }
+
+    bool rendersAvailableOrSay()
+    {
+        if (rendersAvailable())
+        {
+            return true;
+        }
+        LLNotificationsUtil::add("LuminousPhotoModeNeedsOpenGL", LLSD().with("MESSAGE", needsOpenGLText()));
+        return false;
+    }
+
+    std::string needsOpenGLText()
+    {
+        return LLTrans::getString("LuminousPhotoModeNeedsOpenGL");
+    }
+
+    bool availableOrSay()
+    {
+        if (isOn())
+        {
+            return true;
+        }
+        LLNotificationsUtil::add("LuminousPhotoModeNeedsOpenGL", LLSD().with("MESSAGE", needsOpenGLText()));
+        return false;
     }
 
     namespace
@@ -834,7 +911,7 @@ namespace LuminousPhotoMode
         {
             static LLCachedControl<bool> volumetric(gSavedSettings, "LuminousPhotoVolumetricLightRenderOnly", false);
             static LLCachedControl<bool> beams(gSavedSettings, "LuminousPhotoProjectorBeamsRenderOnly", false);
-            static LLCachedControl<bool> ao(gSavedSettings, "LuminousPhotoAORenderOnly", false);
+            static LLCachedControl<bool> ao(gSavedSettings, "LuminousPhotoAORenderOnly", true);
             static LLCachedControl<bool> dof(gSavedSettings, "LuminousPhotoDepthOfFieldRenderOnly", false);
             static LLCachedControl<bool> enhance(gSavedSettings, "LuminousPhotoDoFRenderOnly", true);
             static LLCachedControl<bool> bloom(gSavedSettings, "LuminousPhotoBloomRenderOnly", true);
@@ -893,7 +970,7 @@ namespace LuminousPhotoMode
     F32 alphaSortStep()
     {
         static LLCachedControl<bool> on(gSavedSettings, "LuminousPhotoAlphaSort", true);
-        if (!isOn() || !on() || gCubeSnapshot || sAccumulationFrames < 2 || sAccumulationFrame < 0)
+        if (!LuminousMetal::on(LuminousMetal::Effect::AlphaSort) || !isOn() || !on() || gCubeSnapshot || sAccumulationFrames < 2 || sAccumulationFrame < 0)
         {
             return -1.f;
         }
@@ -903,7 +980,7 @@ namespace LuminousPhotoMode
     bool alphaSortLive()
     {
         static LLCachedControl<bool> on(gSavedSettings, "LuminousPhotoAlphaSort", true);
-        return isOn() && on() && !gCubeSnapshot && drawnNow(Kept::AlphaSort) && alphaSortStep() < 0.f;
+        return LuminousMetal::on(LuminousMetal::Effect::AlphaSort) && isOn() && on() && !gCubeSnapshot && drawnNow(Kept::AlphaSort) && alphaSortStep() < 0.f;
     }
 
     bool alphaSortFix()
@@ -912,7 +989,7 @@ namespace LuminousPhotoMode
         // every render-only effect: no depth pass and no shader changes, so
         // that render only and off look the same there.
         static LLCachedControl<bool> on(gSavedSettings, "LuminousPhotoAlphaSort", true);
-        return isOn() && on() && drawnNow(Kept::AlphaSort);
+        return LuminousMetal::on(LuminousMetal::Effect::AlphaSort) && isOn() && on() && drawnNow(Kept::AlphaSort);
     }
 
     bool alphaSortFaintAsSecondLife()
@@ -927,7 +1004,7 @@ namespace LuminousPhotoMode
     bool volumetricLight()
     {
         static LLCachedControl<bool> volumetric(gSavedSettings, "LuminousPhotoVolumetricLight", true);
-        return isOn() && volumetric;
+        return isOn() && LuminousMetal::on(LuminousMetal::Effect::VolumetricLight) && volumetric;
     }
 
     bool volumetricLightNow()
@@ -938,7 +1015,7 @@ namespace LuminousPhotoMode
     bool projectorBeams()
     {
         static LLCachedControl<bool> beams(gSavedSettings, "LuminousPhotoProjectorBeams", true);
-        return isOn() && beams;
+        return isOn() && LuminousMetal::on(LuminousMetal::Effect::ProjectorBeams) && beams;
     }
 
     bool projectorBeamsNow()
@@ -949,12 +1026,18 @@ namespace LuminousPhotoMode
     bool vignette()
     {
         static LLCachedControl<bool> vignette(gSavedSettings, "LuminousPhotoVignette", false);
-        return isOn() && vignette;
+        return isOn() && LuminousMetal::on(LuminousMetal::Effect::Vignette) && vignette;
     }
 
     void renderVignette(LLRenderTarget* hdr_screen)
     {
         if (!vignette() || !drawnNow(Kept::Vignette))
+        {
+            return;
+        }
+        LuminousMetal::PassTargets targets;
+        targets.frame = hdr_screen;
+        if (LuminousMetal::replaces(LuminousMetal::Pass::Vignette, targets))
         {
             return;
         }
@@ -971,10 +1054,8 @@ namespace LuminousPhotoMode
 
         LL_PROFILE_GPU_ZONE("luminous vignette");
 
-        static LLCachedControl<F32> amount(gSavedSettings, "LuminousPhotoVignetteAmount", 0.35f);
-        static LLCachedControl<F32> size(gSavedSettings, "LuminousPhotoVignetteSize", 0.75f);
-        static LLCachedControl<F32> softness(gSavedSettings, "LuminousPhotoVignetteSoftness", 0.8f);
-        static LLCachedControl<F32> roundness(gSavedSettings, "LuminousPhotoVignetteRoundness", 1.f);
+        LuminousLensParams params;
+        fillLensParams(params, hdr_screen->getWidth(), hdr_screen->getHeight());
         static LLStaticHashedString s_amount("luminous_vig_amount");
         static LLStaticHashedString s_size("luminous_vig_size");
         static LLStaticHashedString s_softness("luminous_vig_softness");
@@ -989,11 +1070,11 @@ namespace LuminousPhotoMode
         gGL.blendFunc(LLRender::BF_ZERO, LLRender::BF_SOURCE_COLOR);
 
         shader.bind();
-        shader.uniform1f(s_amount, llclamp(amount(), 0.f, 1.f));
-        shader.uniform1f(s_size, llclamp(size(), 0.f, 1.5f));
-        shader.uniform1f(s_softness, llclamp(softness(), 0.f, 2.f));
-        shader.uniform1f(s_roundness, llclamp(roundness(), 0.f, 1.f));
-        shader.uniform1f(s_aspect, (F32)hdr_screen->getWidth() / (F32)llmax(hdr_screen->getHeight(), 1U));
+        shader.uniform1f(s_amount, params.vignetteAmount);
+        shader.uniform1f(s_size, params.vignetteSize);
+        shader.uniform1f(s_softness, params.vignetteSoftness);
+        shader.uniform1f(s_roundness, params.vignetteRoundness);
+        shader.uniform1f(s_aspect, params.aspect);
         bindFrameScale(shader);
         drawScreenTriangle();
         shader.unbind();
@@ -1006,12 +1087,16 @@ namespace LuminousPhotoMode
     bool sunShafts()
     {
         static LLCachedControl<bool> shafts(gSavedSettings, "LuminousPhotoSunShafts", true);
-        return isOn() && shafts;
+        return isOn() && LuminousMetal::on(LuminousMetal::Effect::SunShafts) && shafts;
     }
 
     void allocateBuffers(U32 resX, U32 resY)
     {
-        if (sunShafts())
+        if (!isOn())
+        {
+            return;
+        }
+        if (sunShafts() && LuminousMetal::translatedPasses())
         {
             sShaftMask.allocate(llmax(resX / 2, 1U), llmax(resY / 2, 1U), GL_RGB16F);
             sShaftMaskSoft.allocate(llmax(resX / 2, 1U), llmax(resY / 2, 1U), GL_RGB16F);
@@ -1032,7 +1117,28 @@ namespace LuminousPhotoMode
 
     void allocateNoSpotShadow()
     {
-        if (sNoSpotShadow.getDepth() || !sNoSpotShadow.allocate(1, 1, 0, true))
+        if (!isOn() || sNoSpotShadow.getDepth() || sNoSpotShadow.getRHIDepth())
+        {
+            return;
+        }
+        if (LuminousMetal::metal())
+        {
+            // Metal makes a projector map only when a projector casts into its slot
+            // (LLPipeline::allocateShadowBuffer), so a slot without one reads this, a depth texture
+            // as its shadow sampler wants: a colour texture bound there spoils the sun's light pass.
+            if (!sNoSpotShadow.allocate(1, 1, 0, true))
+            {
+                return;
+            }
+            gGL.getTexUnit(0)->bind(&sNoSpotShadow, true);
+            gGL.getTexUnit(0)->setTextureFilteringOption(LLTexUnit::TFO_ANISOTROPIC);
+            gGL.getTexUnit(0)->setTextureAddressMode(LLTexUnit::TAM_CLAMP);
+            LLTexUnit::setActiveTextureCompare(LLTexUnit::TT_TEXTURE, GL_COMPARE_REF_TO_TEXTURE, GL_LEQUAL);
+            gGL.getTexUnit(0)->unbind(LLTexUnit::TT_TEXTURE);
+            return;
+        }
+        // OpenGL: its comparison is set on the texture by hand
+        if (!LuminousMetal::translatedPasses() || !sNoSpotShadow.allocate(1, 1, 0, true))
         {
             return;
         }
@@ -1048,11 +1154,15 @@ namespace LuminousPhotoMode
 
     LLRenderTarget* noSpotShadow()
     {
-        return sNoSpotShadow.getDepth() ? &sNoSpotShadow : nullptr;
+        return sNoSpotShadow.getDepth() || sNoSpotShadow.getRHIDepth() ? &sNoSpotShadow : nullptr;
     }
 
     void releaseBuffers()
     {
+        if (!isOn())
+        {
+            return; // nothing was allocated
+        }
         sNoSpotShadow.release();
         sShaftMask.release();
         sShaftMaskSoft.release();
@@ -1068,6 +1178,17 @@ namespace LuminousPhotoMode
         {
             glDeleteTextures(1, &sLookLut);
             sLookLut = 0;
+            sLookLutName.clear();
+        }
+        if (sMcMapfaceLutMetal.notNull())
+        {
+            LLTexUnit::releaseTexture(sMcMapfaceLutMetal.get());
+            sMcMapfaceLutMetal = nullptr;
+        }
+        if (sLookLutMetal.notNull())
+        {
+            LLTexUnit::releaseTexture(sLookLutMetal.get());
+            sLookLutMetal = nullptr;
             sLookLutName.clear();
         }
         for (LLRenderTarget& level : sBloom)
@@ -1128,12 +1249,14 @@ namespace LuminousPhotoMode
         sVolumetric.release();
         sBeams.release();
         sGTAOHalf.release();
+        // Metal: the native groups' own textures, sized the same way.
+        LuminousMetal::releaseRenderSizedTargets();
     }
 
     bool bloom()
     {
         static LLCachedControl<bool> on(gSavedSettings, "LuminousPhotoBloom", false);
-        return isOn() && on;
+        return isOn() && LuminousMetal::on(LuminousMetal::Effect::Bloom) && on;
     }
 
     bool bloomNow()
@@ -1144,7 +1267,155 @@ namespace LuminousPhotoMode
     bool chromaticAberration()
     {
         static LLCachedControl<bool> on(gSavedSettings, "LuminousPhotoChromaticAberration", false);
-        return isOn() && on;
+        return isOn() && LuminousMetal::on(LuminousMetal::Effect::ChromaticAberration) && on;
+    }
+
+    void fillLensParams(LuminousLensParams& p, U32 width, U32 height)
+    {
+        p = LuminousLensParams();
+        p.frameSize = simd_make_float2((F32)width, (F32)height);
+        pictureInFrame(p.frameScale, p.pictureAspect);
+        p.aspect = (F32)width / (F32)llmax(height, 1U);
+        p.frame = (F32)llmax(sAccumulationFrame, 0);
+
+        // bloom, and its glow above 0.3
+        static LLCachedControl<F32> bloom_strength(gSavedSettings, "LuminousPhotoBloomStrength", 0.05f);
+        static LLCachedControl<F32> bloom_size(gSavedSettings, "LuminousPhotoBloomSize", 0.6f);
+        p.bloomSize = bloom_size();
+        p.bloomStrength = llclamp((F32)bloom_strength(), 0.f, 0.3f);
+        p.bloomGlow = llclamp(((F32)bloom_strength() - 0.3f) / 0.7f, 0.f, 1.f);
+
+        // clarity: 0 at 0 and while kept for renders
+        static LLCachedControl<F32> clarity(gSavedSettings, "LuminousPhotoClarity", 0.2f);
+        p.clarity = std::fabs(clarity()) >= 0.005f && drawnNow(Kept::Clarity) ? llclamp(clarity(), -1.f, 1.f) : 0.f;
+
+        // halation: as if at 0 while kept for renders; a wider blur toward its top
+        static LLCachedControl<F32> halation_setting(gSavedSettings, "LuminousPhotoHalation", 0.f);
+        const F32 halation = drawnNow(Kept::Halation) ? (F32)halation_setting() : 0.f;
+        p.halation = halation < 0.005f ? 0.f : llclamp(halation, 0.f, 2.f);
+        p.halationReach = 0.35f + 0.2f * llclamp((halation - 0.5f) * 2.f, 0.f, 1.f)
+                        + 0.2f * llclamp(halation - 1.f, 0.f, 1.f);
+
+        // anamorphic streaks
+        static LLCachedControl<F32> streak(gSavedSettings, "LuminousPhotoAnamorphic", 0.f);
+        static LLCachedControl<LLColor4> tint_setting(gSavedSettings, "LuminousPhotoAnamorphicTint", LLColor4(0.55f, 0.75f, 1.f, 1.f));
+        {
+            // The colour chosen, as bright as the classic blue (0.55, 0.75,
+            // 1), so a colour changes the streak's hue, not its strength; at
+            // most four times, for a deep red or blue.
+            const LLColor4 chosen = tint_setting();
+            LLColor3 tint(chosen.mV[VRED], chosen.mV[VGREEN], chosen.mV[VBLUE]);
+            const F32 luma = 0.2126f * tint.mV[VRED] + 0.7152f * tint.mV[VGREEN] + 0.0722f * tint.mV[VBLUE];
+            tint *= luma > 1e-3f ? llmin(0.7246f / luma, 4.f) : 0.f;
+            p.streakTint = simd_make_float4(tint.mV[0], tint.mV[1], tint.mV[2], 0.f);
+            // Stronger at the top: up to four times at 1, little changed
+            // below the middle.
+            const F32 strength = llclamp((F32)streak(), 0.f, 1.f);
+            p.streak = streak() < 0.005f || !drawnNow(Kept::Anamorphic) ? 0.f : strength;
+            p.streakGain = 1.f + 3.f * strength * strength * strength;
+            p.streakErode = llmax(2.5f * (F32)height / 1080.f, 1.f);
+            // Half the streak is a quarter of the picture's width (w / 4 of
+            // the quarter-width target's texels, less a render's margin), the
+            // light falling to e^-4 over it.
+            const U32 w = llmax(width / 4, 1U);
+            p.streakReach = llmax((F32)w * 0.25f / sFrameScale, 1.f);
+            p.streakDecay = expf(-4.f / p.streakReach);
+        }
+
+        // lens flare
+        static LLCachedControl<F32> flare(gSavedSettings, "LuminousPhotoLensFlare", 0.f);
+        static LLCachedControl<F32> ghosts(gSavedSettings, "LuminousPhotoLensFlareGhosts", 1.f);
+        static LLCachedControl<F32> halo(gSavedSettings, "LuminousPhotoLensFlareHalo", 0.5f);
+        static LLCachedControl<F32> star(gSavedSettings, "LuminousPhotoLensFlareStarburst", 0.5f);
+        static LLCachedControl<F32> star_blur_setting(gSavedSettings, "LuminousPhotoLensFlareStarBlur", 0.f);
+        static LLCachedControl<F32> dirt(gSavedSettings, "LuminousPhotoLensFlareDirt", 0.5f);
+        static LLCachedControl<F32> flare_variation(gSavedSettings, "LuminousPhotoLensFlareVariation", 0.f);
+        static LLCachedControl<F32> amplify_setting(gSavedSettings, "LuminousPhotoLensFlareAmplify", 0.f);
+        static LLCachedControl<U32> blades(gSavedSettings, "LuminousPhotoDoFBlades", 0);
+        {
+            // Amplify: dimmer light flares (the threshold from three times
+            // white down to three quarters) and all of it up to three times.
+            const F32 amplify = llclamp((F32)amplify_setting(), 0.f, 1.f);
+            p.flare = flare() < 0.005f || !drawnNow(Kept::LensFlare) ? 0.f : llclamp((F32)flare(), 0.f, 1.f) * (1.f + 2.f * amplify);
+            p.flareThreshold = 3.f * (1.f - 0.75f * amplify);
+            p.flareErode = llmax(2.5f * (F32)height / 1080.f, 1.f); // stars: about two pixels in 1080
+            p.flareGhosts = llclamp((F32)ghosts(), 0.f, 2.f);
+            p.flareHalo = llclamp((F32)halo(), 0.f, 2.f);
+            p.flareStar = llclamp((F32)star(), 0.f, 2.f);
+            // Star blur reads the starburst's light from coarser mip levels
+            const F32 star_blur = star() > 0.f ? llclamp((F32)star_blur_setting(), 0.f, 1.f) : 0.f;
+            p.flareStarBlur = star_blur >= 0.005f ? star_blur : 0.f;
+            p.flareVariation = llclamp((F32)flare_variation(), 0.f, 1.f);
+            p.flareDirt = llclamp((F32)dirt(), 0.f, 2.f);
+            // A lens's spikes: as many as its blades if even, twice as many if
+            // odd; a round aperture (0) is given eight.
+            const U32 b = (U32)blades();
+            const S32 spikes = b < 3 ? 8 : (b % 2 == 0 ? (S32)b : 2 * (S32)b);
+            p.flareLines = spikes / 2;
+            p.flareStarTaps = pictureFrame() ? 32 : 16;
+            p.flareBlades = b < 3 ? 0 : (S32)b;
+            p.flareAngle = 0.3f;
+            p.flareStarLength = 0.35f;
+            LLVector2 sun_uv;
+            F32 sun_fade = 0.f;
+            if (!sunOnScreen(sun_uv, sun_fade))
+            {
+                sun_fade = 0.f;
+            }
+            p.sunUV = simd_make_float2(sun_uv.mV[VX], sun_uv.mV[VY]);
+            p.sunWeight = sun_fade;
+            // The sky's sunlight colour (moonlight at night), brightest
+            // channel 1: the drawn sun's flare is in it.
+            LLColor3 sun_colour(1.f, 0.95f, 0.85f);
+            LLEnvironment& environment = LLEnvironment::instance();
+            if (environment.getCurrentEnvironmentInstance())
+            {
+                if (LLSettingsSky::ptr_t sky = environment.getCurrentSky())
+                {
+                    LLColor3 c = environment.getIsSunUp() ? sky->getSunlightColor() : sky->getMoonlightColor();
+                    const F32 top = llmax(c.mV[0], llmax(c.mV[1], c.mV[2]));
+                    if (top > 1e-4f)
+                    {
+                        sun_colour = c * (1.f / top);
+                    }
+                }
+            }
+            p.sunColour = simd_make_float4(sun_colour.mV[0], sun_colour.mV[1], sun_colour.mV[2], 0.f);
+        }
+
+        // chromatic aberration: pixels at the corners of a 1080-line frame,
+        // scaled with the frame, so a large snapshot fringes as the screen does
+        static LLCachedControl<F32> aberration(gSavedSettings, "LuminousPhotoChromaticAberrationAmount", 2.f);
+        p.aberration = chromaticAberration() && drawnNow(Kept::ChromaticAberration)
+            ? llclamp(aberration(), 0.f, 20.f) * (F32)height / sFrameScale / 1080.f : 0.f;
+
+        // distortion
+        static LLCachedControl<F32> distortion(gSavedSettings, "LuminousPhotoDistortion", 0.f);
+        p.distortion = std::fabs(distortion()) < 0.005f || !drawnNow(Kept::Distortion) ? 0.f : llclamp(distortion(), -1.f, 1.f);
+
+        // glitch
+        static LLCachedControl<F32> glitch(gSavedSettings, "LuminousPhotoGlitch", 0.f);
+        static LLCachedControl<F32> split(gSavedSettings, "LuminousPhotoGlitchSplit", 0.5f);
+        static LLCachedControl<F32> vhs(gSavedSettings, "LuminousPhotoGlitchVHS", 0.5f);
+        static LLCachedControl<F32> waves(gSavedSettings, "LuminousPhotoGlitchWaves", 0.3f);
+        static LLCachedControl<F32> lines(gSavedSettings, "LuminousPhotoGlitchLines", 0.3f);
+        static LLCachedControl<F32> line_size(gSavedSettings, "LuminousPhotoGlitchLineSize", 3.f);
+        static LLCachedControl<F32> glitch_variation(gSavedSettings, "LuminousPhotoGlitchVariation", 0.f);
+        p.glitch = glitch() < 0.005f || !drawnNow(Kept::Glitch) ? 0.f : llclamp((F32)glitch(), 0.f, 1.f);
+        p.glitchParts = simd_make_float4(llclamp((F32)split(), 0.f, 1.f), llclamp((F32)vhs(), 0.f, 1.f),
+                                         llclamp((F32)waves(), 0.f, 1.f), llclamp((F32)lines(), 0.f, 1.f));
+        p.glitchLineSize = llclamp((F32)line_size(), 2.f, 8.f);
+        p.glitchSeed = (F32)ll_round(llclamp((F32)glitch_variation(), 0.f, 1.f) * 100.f);
+
+        // vignette
+        static LLCachedControl<F32> vig_amount(gSavedSettings, "LuminousPhotoVignetteAmount", 0.35f);
+        static LLCachedControl<F32> vig_size(gSavedSettings, "LuminousPhotoVignetteSize", 0.75f);
+        static LLCachedControl<F32> vig_softness(gSavedSettings, "LuminousPhotoVignetteSoftness", 0.8f);
+        static LLCachedControl<F32> vig_roundness(gSavedSettings, "LuminousPhotoVignetteRoundness", 1.f);
+        p.vignetteAmount = vignette() && drawnNow(Kept::Vignette) ? llclamp(vig_amount(), 0.f, 1.f) : 0.f;
+        p.vignetteSize = llclamp(vig_size(), 0.f, 1.5f);
+        p.vignetteSoftness = llclamp(vig_softness(), 0.f, 2.f);
+        p.vignetteRoundness = llclamp(vig_roundness(), 0.f, 1.f);
     }
 
     namespace
@@ -1170,6 +1441,30 @@ namespace LuminousPhotoMode
             LLRenderTarget* frame;
             LLRenderTarget* other;
         };
+
+        // A lens pass's hook: true on Metal, where the native pass drew it
+        // (drew) or nothing does; a native pass that drew the frame anew into
+        // the other target has swapped them.
+        bool lensReplaced(LuminousMetal::Pass pass, LensFrame& lens, bool* drew = nullptr)
+        {
+            if (!LuminousMetal::metal())
+            {
+                return false;
+            }
+            LuminousMetal::PassTargets targets;
+            targets.frame = lens.frame;
+            targets.other = lens.other;
+            const bool drawn = LuminousMetal::drawNative(pass, targets);
+            if (drawn && targets.swapped)
+            {
+                std::swap(lens.frame, lens.other);
+            }
+            if (drew)
+            {
+                *drew = drawn;
+            }
+            return true;
+        }
 
         void beginRewrite(LensFrame& lens, LLGLSLShader& shader)
         {
@@ -1256,12 +1551,16 @@ namespace LuminousPhotoMode
         // surroundings, added, up to two and a half times at 1.
         void renderBloom(LensFrame& lens)
         {
+            if (lensReplaced(LuminousMetal::Pass::Bloom, lens))
+            {
+                return;
+            }
             LLRenderTarget* hdr_screen = lens.frame;
             static const char* last = nullptr;
-            static LLCachedControl<F32> strength(gSavedSettings, "LuminousPhotoBloomStrength", 0.05f);
-            static LLCachedControl<F32> size(gSavedSettings, "LuminousPhotoBloomSize", 0.6f);
+            LuminousLensParams params;
+            fillLensParams(params, hdr_screen->getWidth(), hdr_screen->getHeight());
             LL_PROFILE_GPU_ZONE("luminous bloom");
-            const bool built = blurChain(hdr_screen, size());
+            const bool built = blurChain(hdr_screen, params.bloomSize);
             logState("Bloom", last, built ? "drawing" : "off, its shaders did not build");
             if (!built)
             {
@@ -1277,14 +1576,14 @@ namespace LuminousPhotoMode
             gGL.setColorMask(true, false);
             bindClamped(up, &sBloom[0]);
             up.uniform2f(s_texel, 1.f / (F32)sBloom[0].getWidth(), 1.f / (F32)sBloom[0].getHeight());
-            up.uniform1f(s_weight, llclamp((F32)strength(), 0.f, 0.3f));
+            up.uniform1f(s_weight, params.bloomStrength);
             drawScreenTriangle();
             gGL.setColorMask(true, true);
             hdr_screen->flush();
             up.unbind();
             gGL.setSceneBlendType(LLRender::BT_ALPHA);
 
-            const F32 glow = llclamp(((F32)strength() - 0.3f) / 0.7f, 0.f, 1.f);
+            const F32 glow = params.bloomGlow;
             LLGLSLShader& spill = gLuminousDiffusionProgram;
             if (glow > 0.001f && spill.isComplete())
             {
@@ -1316,6 +1615,10 @@ namespace LuminousPhotoMode
             {
                 return; // kept for renders
             }
+            if (lensReplaced(LuminousMetal::Pass::Clarity, lens))
+            {
+                return;
+            }
             LLGLSLShader& shader = gLuminousClarityProgram;
             if (!shader.isComplete() || !blurChain(lens.frame, 0.5f))
             {
@@ -1333,13 +1636,19 @@ namespace LuminousPhotoMode
             {
                 gGL.getTexUnit(channel)->setTextureAddressMode(LLTexUnit::TAM_CLAMP);
             }
-            shader.uniform1f(s_clarity, llclamp(clarity(), -1.f, 1.f));
+            LuminousLensParams params;
+            fillLensParams(params, lens.frame->getWidth(), lens.frame->getHeight());
+            shader.uniform1f(s_clarity, params.clarity);
             drawScreenTriangle();
             endRewrite(lens, shader);
         }
 
         void renderChromaticAberration(LensFrame& lens)
         {
+            if (lensReplaced(LuminousMetal::Pass::ChromaticAberration, lens))
+            {
+                return;
+            }
             static const char* last = nullptr;
             LLGLSLShader& shader = gLuminousChromaticAberrationProgram;
             logState("Chromatic aberration", last, shader.isComplete() ? "drawing" : "off, its shader did not build");
@@ -1349,17 +1658,16 @@ namespace LuminousPhotoMode
             }
             LL_PROFILE_GPU_ZONE("luminous chromatic aberration");
 
-            static LLCachedControl<F32> amount(gSavedSettings, "LuminousPhotoChromaticAberrationAmount", 2.f);
             static LLStaticHashedString s_amount("luminous_ca_amount");
 
             LLGLDisable blend(GL_BLEND);
             const F32 width = (F32)lens.frame->getWidth();
             const F32 height = (F32)lens.frame->getHeight();
+            LuminousLensParams params;
+            fillLensParams(params, lens.frame->getWidth(), lens.frame->getHeight());
             beginRewrite(lens, shader);
             shader.uniform2f(LLShaderMgr::DEFERRED_SCREEN_RES, width, height);
-            // Pixels at the corners of a 1080-line frame, scaled with the
-            // frame, so a large snapshot fringes as the screen does.
-            shader.uniform1f(s_amount, llclamp(amount(), 0.f, 20.f) * height / sFrameScale / 1080.f);
+            shader.uniform1f(s_amount, params.aberration);
             bindFrameScale(shader);
             drawScreenTriangle();
             endRewrite(lens, shader);
@@ -1382,18 +1690,21 @@ namespace LuminousPhotoMode
         // glow above 0.3, so it is 0 here.
         void renderHalation(LensFrame& lens)
         {
-            static LLCachedControl<F32> halation_setting(gSavedSettings, "LuminousPhotoHalation", 0.f);
-            // Kept for renders, it draws as if at 0 in the live view.
-            const F32 halation = drawnNow(Kept::Halation) ? (F32)halation_setting() : 0.f;
-            if (halation < 0.005f)
+            // Kept for renders, it draws as if at 0 in the live view; a wider
+            // blur toward halation's top, so its glow reaches further past the
+            // edge, and further past 1 (fillLensParams).
+            LuminousLensParams params;
+            fillLensParams(params, lens.frame->getWidth(), lens.frame->getHeight());
+            if (params.halation <= 0.f)
+            {
+                return;
+            }
+            if (lensReplaced(LuminousMetal::Pass::Halation, lens))
             {
                 return;
             }
             LLGLSLShader& shader = gLuminousDiffusionProgram;
-            // a wider blur toward halation's top, so its glow reaches further
-            // past the edge, and further past 1
-            const F32 reach = 0.35f + 0.2f * llclamp((halation - 0.5f) * 2.f, 0.f, 1.f)
-                            + 0.2f * llclamp(halation - 1.f, 0.f, 1.f);
+            const F32 reach = params.halationReach;
 
             if (!shader.isComplete() || !blurChain(lens.frame, reach))
             {
@@ -1407,7 +1718,7 @@ namespace LuminousPhotoMode
             bindBlur(shader);
             shader.bindTexture(LLShaderMgr::EXPOSURE_MAP, &gPipeline.mExposureMap);
             shader.uniform1f(s_diffusion, 0.f);
-            shader.uniform1f(s_halation, llclamp(halation, 0.f, 2.f));
+            shader.uniform1f(s_halation, params.halation);
             drawScreenTriangle();
             endRewrite(lens, shader);
         }
@@ -1416,10 +1727,16 @@ namespace LuminousPhotoMode
         // width, spread along the rows in passes whose taps grow four times
         // apart each time, then added to the frame with bloom's up-filter.
         // luminousStreakF.glsl says why.
-        void renderStreaks(LLRenderTarget* hdr_screen)
+        void renderStreaks(LensFrame& lens)
         {
-            static LLCachedControl<F32> amount(gSavedSettings, "LuminousPhotoAnamorphic", 0.f);
-            if (amount() < 0.005f || !drawnNow(Kept::Anamorphic))
+            LLRenderTarget* hdr_screen = lens.frame;
+            LuminousLensParams params;
+            fillLensParams(params, hdr_screen->getWidth(), hdr_screen->getHeight());
+            if (params.streak <= 0.f)
+            {
+                return;
+            }
+            if (lensReplaced(LuminousMetal::Pass::Anamorphic, lens))
             {
                 return;
             }
@@ -1438,18 +1755,8 @@ namespace LuminousPhotoMode
             static LLStaticHashedString s_weight("luminous_weight");
             static LLStaticHashedString s_tint("luminous_streak_tint");
             static LLStaticHashedString s_gain("luminous_streak_gain");
-            static LLCachedControl<LLColor4> tint_setting(gSavedSettings, "LuminousPhotoAnamorphicTint", LLColor4(0.55f, 0.75f, 1.f, 1.f));
-            // The colour chosen, as bright as the classic blue (0.55, 0.75,
-            // 1), so a colour changes the streak's hue, not its strength; at
-            // most four times, for a deep red or blue.
-            const LLColor4 chosen = tint_setting();
-            LLColor3 tint(chosen.mV[VRED], chosen.mV[VGREEN], chosen.mV[VBLUE]);
-            const F32 luma = 0.2126f * tint.mV[VRED] + 0.7152f * tint.mV[VGREEN] + 0.0722f * tint.mV[VBLUE];
-            tint *= luma > 1e-3f ? llmin(0.7246f / luma, 4.f) : 0.f;
-            // Stronger at the top: up to four times at 1, little changed
-            // below the middle.
-            const F32 strength = llclamp((F32)amount(), 0.f, 1.f);
-            const F32 gain = 1.f + 3.f * strength * strength * strength;
+            // The tint, strength and gain: fillLensParams.
+            const F32 strength = params.streak;
             // A quarter of the width, all of the height: the streak is a
             // thin line, and only blurs along it.
             const U32 w = llmax(hdr_screen->getWidth() / 4, 1U);
@@ -1465,7 +1772,7 @@ namespace LuminousPhotoMode
             // these texels, less a render's margin: the frame is wider than the
             // picture cut from it, and the streak would come out a fifth longer
             // than live), the light falling to e^-4 over it.
-            const F32 reach = llmax((F32)w * 0.25f / sFrameScale, 1.f);
+            const F32 reach = params.streakReach;
             LLRenderTarget* src = &sStreak;
             LLRenderTarget* dst = &sStreak2;
             {
@@ -1478,14 +1785,14 @@ namespace LuminousPhotoMode
                 shader.bindTexture(LLShaderMgr::DEFERRED_DEPTH, &gPipeline.mRT->deferredScreen, true, LLTexUnit::TFO_POINT);
                 shader.uniform2f(LLShaderMgr::DEFERRED_SCREEN_RES, (F32)hdr_screen->getWidth(), (F32)hdr_screen->getHeight());
                 shader.uniform1i(s_pass, 0);
-                shader.uniform1f(s_erode, llmax(2.5f * (F32)h / 1080.f, 1.f));
-                shader.uniform3fv(s_tint, 1, tint.mV);
-                shader.uniform1f(s_gain, gain);
+                shader.uniform1f(s_erode, params.streakErode);
+                shader.uniform3fv(s_tint, 1, (const F32*)&params.streakTint);
+                shader.uniform1f(s_gain, params.streakGain);
                 drawScreenTriangle();
                 sStreak.flush();
                 // spread along the row, the taps 1, 4, 16 ... texels apart
                 shader.uniform1i(s_pass, 1);
-                shader.uniform1f(s_decay, expf(-4.f / reach));
+                shader.uniform1f(s_decay, params.streakDecay);
                 F32 covered = 0.f;
                 for (F32 spacing = 1.f; covered < reach; spacing *= 4.f)
                 {
@@ -1522,8 +1829,9 @@ namespace LuminousPhotoMode
         // luminousFlareF.glsl says how. Half size throughout but the last
         // step: a flare is soft, and a render of 16384 wide needs no full-size
         // copies of it. Off as Luminous ships; subtle at 0.1 to 0.2.
-        void renderLensFlare(LLRenderTarget* hdr_screen)
+        void renderLensFlare(LensFrame& lens)
         {
+            LLRenderTarget* hdr_screen = lens.frame;
             static LLCachedControl<F32> amount(gSavedSettings, "LuminousPhotoLensFlare", 0.f);
             static const char* last = nullptr;
             if (amount() < 0.005f)
@@ -1534,6 +1842,10 @@ namespace LuminousPhotoMode
             if (!drawnNow(Kept::LensFlare))
             {
                 return; // kept for renders
+            }
+            if (lensReplaced(LuminousMetal::Pass::LensFlare, lens))
+            {
+                return;
             }
             LLGLSLShader& bright = gLuminousFlareBrightProgram;
             LLGLSLShader& flare = gLuminousFlareProgram;
@@ -1547,17 +1859,9 @@ namespace LuminousPhotoMode
             logState("Lens flare", last, "drawing");
             LL_PROFILE_GPU_ZONE("luminous lens flare");
 
-            static LLCachedControl<F32> ghosts(gSavedSettings, "LuminousPhotoLensFlareGhosts", 1.f);
-            static LLCachedControl<F32> halo(gSavedSettings, "LuminousPhotoLensFlareHalo", 0.5f);
-            static LLCachedControl<F32> star(gSavedSettings, "LuminousPhotoLensFlareStarburst", 0.5f);
-            static LLCachedControl<F32> star_blur_setting(gSavedSettings, "LuminousPhotoLensFlareStarBlur", 0.f);
-            static LLCachedControl<F32> dirt(gSavedSettings, "LuminousPhotoLensFlareDirt", 0.5f);
-            static LLCachedControl<F32> variation(gSavedSettings, "LuminousPhotoLensFlareVariation", 0.f);
-            static LLCachedControl<F32> amplify_setting(gSavedSettings, "LuminousPhotoLensFlareAmplify", 0.f);
-            // Amplify: dimmer light flares (the threshold from three times
-            // white down to three quarters) and all of it up to three times.
-            const F32 amplify = llclamp((F32)amplify_setting(), 0.f, 1.f);
-            static LLCachedControl<U32> blades(gSavedSettings, "LuminousPhotoDoFBlades", 0);
+            // Every value the passes bind: fillLensParams.
+            LuminousLensParams params;
+            fillLensParams(params, hdr_screen->getWidth(), hdr_screen->getHeight());
             static LLStaticHashedString s_texel("luminous_texel");
             static LLStaticHashedString s_aspect("luminous_aspect");
             static LLStaticHashedString s_ghosts("luminous_flare_ghosts");
@@ -1582,8 +1886,7 @@ namespace LuminousPhotoMode
             const U32 quarter_w = llmax(half_w / 2, 1U);
             const U32 quarter_h = llmax(half_h / 2, 1U);
             // Star blur reads the starburst's light from coarser mip levels
-            const F32 star_blur = star() > 0.f ? llclamp((F32)star_blur_setting(), 0.f, 1.f) : 0.f;
-            const bool mips = star_blur >= 0.005f;
+            const bool mips = params.flareStarBlur > 0.f;
             if (sFlareBright.getWidth() != half_w || sFlareBright.getHeight() != half_h || sFlareMips != mips)
             {
                 // alpha: the brightest, for the starburst
@@ -1593,11 +1896,7 @@ namespace LuminousPhotoMode
                 sFlare.allocate(half_w, half_h, GL_RGB16F);
                 sFlareSoft.allocate(quarter_w, quarter_h, GL_RGB16F);
             }
-            const F32 aspect = (F32)hdr_screen->getWidth() / (F32)llmax(hdr_screen->getHeight(), 1U);
-            // A lens's spikes: as many as its blades if even, twice as many if
-            // odd; a round aperture (0) is given eight.
-            const U32 b = (U32)blades();
-            const S32 spikes = b < 3 ? 8 : (b % 2 == 0 ? (S32)b : 2 * (S32)b);
+            const F32 aspect = params.aspect;
 
             LLGLDisable blend(GL_BLEND);
             gGL.setColorMask(true, true); // the starburst's light is in alpha
@@ -1607,9 +1906,9 @@ namespace LuminousPhotoMode
             bindClamped(bright, hdr_screen);
             bright.bindTexture(LLShaderMgr::EXPOSURE_MAP, &gPipeline.mExposureMap);
             bright.bindTexture(LLShaderMgr::DEFERRED_DEPTH, &gPipeline.mRT->deferredScreen, true, LLTexUnit::TFO_POINT);
-            bright.uniform1f(s_threshold, 3.f * (1.f - 0.75f * amplify));
+            bright.uniform1f(s_threshold, params.flareThreshold);
             static LLStaticHashedString s_erode("luminous_flare_erode");
-            bright.uniform1f(s_erode, llmax(2.5f * (F32)hdr_screen->getHeight() / 1080.f, 1.f)); // stars: about two pixels in 1080
+            bright.uniform1f(s_erode, params.flareErode); // stars: about two pixels in 1080
             drawScreenTriangle();
             bright.unbind();
             sFlareBright.flush();
@@ -1664,44 +1963,24 @@ namespace LuminousPhotoMode
             flare.bindTexture(LLShaderMgr::EXPOSURE_MAP, &gPipeline.mExposureMap);
             flare.uniform1f(s_aspect, aspect);
             bindFrameScale(flare); // laid out in the picture's measure, as live
-            flare.uniform1f(s_ghosts, llclamp((F32)ghosts(), 0.f, 2.f));
-            flare.uniform1f(s_halo, llclamp((F32)halo(), 0.f, 2.f));
-            flare.uniform1f(s_star, llclamp((F32)star(), 0.f, 2.f));
-            flare.uniform1i(s_lines, spikes / 2);
-            flare.uniform1f(s_angle, 0.3f);
-            flare.uniform1f(s_star_len, 0.35f);
+            flare.uniform1f(s_ghosts, params.flareGhosts);
+            flare.uniform1f(s_halo, params.flareHalo);
+            flare.uniform1f(s_star, params.flareStar);
+            flare.uniform1i(s_lines, params.flareLines);
+            flare.uniform1f(s_angle, params.flareAngle);
+            flare.uniform1f(s_star_len, params.flareStarLength);
             // The small lights' spikes, gathered: most of the flare's cost (6 of
             // 9 ms at 5K), so the live view takes half the samples; the sun's,
             // drawn, are the same in both.
-            flare.uniform1i(s_star_taps, pictureFrame() ? 32 : 16);
-            flare.uniform1f(s_star_blur, mips ? star_blur : 0.f);
-            flare.uniform1f(s_variation, llclamp((F32)variation(), 0.f, 1.f));
-            LLVector2 sun_uv;
-            F32 sun_fade = 0.f;
-            if (!sunOnScreen(sun_uv, sun_fade))
-            {
-                sun_fade = 0.f;
-            }
-            flare.uniform2f(s_sun_uv, sun_uv.mV[VX], sun_uv.mV[VY]);
-            flare.uniform1f(s_sun_weight, sun_fade);
-            flare.uniform1i(s_blades, b < 3 ? 0 : (S32)b);
+            flare.uniform1i(s_star_taps, params.flareStarTaps);
+            flare.uniform1f(s_star_blur, params.flareStarBlur);
+            flare.uniform1f(s_variation, params.flareVariation);
+            flare.uniform2f(s_sun_uv, params.sunUV.x, params.sunUV.y);
+            flare.uniform1f(s_sun_weight, params.sunWeight);
+            flare.uniform1i(s_blades, params.flareBlades);
             // The sky's sunlight colour (moonlight at night), brightest
             // channel 1: the drawn sun's flare is in it.
-            LLColor3 sun_colour(1.f, 0.95f, 0.85f);
-            LLEnvironment& environment = LLEnvironment::instance();
-            if (environment.getCurrentEnvironmentInstance())
-            {
-                if (LLSettingsSky::ptr_t sky = environment.getCurrentSky())
-                {
-                    LLColor3 c = environment.getIsSunUp() ? sky->getSunlightColor() : sky->getMoonlightColor();
-                    const F32 top = llmax(c.mV[0], llmax(c.mV[1], c.mV[2]));
-                    if (top > 1e-4f)
-                    {
-                        sun_colour = c * (1.f / top);
-                    }
-                }
-            }
-            flare.uniform3fv(s_sun_colour, 1, sun_colour.mV);
+            flare.uniform3fv(s_sun_colour, 1, (const F32*)&params.sunColour);
             // whether the sun's place is sky
             flare.bindTexture(LLShaderMgr::DEFERRED_DEPTH, &gPipeline.mRT->deferredScreen, true, LLTexUnit::TFO_POINT);
             drawScreenTriangle();
@@ -1722,8 +2001,8 @@ namespace LuminousPhotoMode
             }
             composite.uniform1f(s_aspect, aspect);
             bindFrameScale(composite);
-            composite.uniform1f(s_flare, llclamp((F32)amount(), 0.f, 1.f) * (1.f + 2.f * amplify));
-            composite.uniform1f(s_dirt, llclamp((F32)dirt(), 0.f, 2.f));
+            composite.uniform1f(s_flare, params.flare);
+            composite.uniform1f(s_dirt, params.flareDirt);
             drawScreenTriangle();
             composite.unbind();
             gGL.setColorMask(true, true);
@@ -1734,9 +2013,16 @@ namespace LuminousPhotoMode
         // Lens distortion, last: it moves the picture, not its light.
         void renderDistortion(LensFrame& lens)
         {
-            static LLCachedControl<F32> distortion(gSavedSettings, "LuminousPhotoDistortion", 0.f);
-            if (std::fabs(distortion()) < 0.005f || !drawnNow(Kept::Distortion))
+            LuminousLensParams params;
+            fillLensParams(params, lens.frame->getWidth(), lens.frame->getHeight());
+            if (params.distortion == 0.f)
             {
+                return;
+            }
+            bool drew = false;
+            if (lensReplaced(LuminousMetal::Pass::Distortion, lens, &drew))
+            {
+                sDistortionDrawn = drew ? params.distortion : 0.f; // Second Life's depth of field follows it
                 return;
             }
             LLGLSLShader& shader = gLuminousDistortionProgram;
@@ -1751,25 +2037,24 @@ namespace LuminousPhotoMode
             const F32 height = (F32)lens.frame->getHeight();
             beginRewrite(lens, shader);
             shader.uniform2f(LLShaderMgr::DEFERRED_SCREEN_RES, width, height);
-            shader.uniform1f(s_distortion, llclamp(distortion(), -1.f, 1.f));
+            shader.uniform1f(s_distortion, params.distortion);
             bindFrameScale(shader);
             drawScreenTriangle();
             endRewrite(lens, shader);
-            sDistortionDrawn = llclamp(distortion(), -1.f, 1.f);
+            sDistortionDrawn = params.distortion;
         }
 
         // Glitch, after everything else the lens does: it breaks up the
         // picture the lens has made.
         void renderGlitch(LensFrame& lens)
         {
-            static LLCachedControl<F32> glitch(gSavedSettings, "LuminousPhotoGlitch", 0.f);
-            static LLCachedControl<F32> split(gSavedSettings, "LuminousPhotoGlitchSplit", 0.5f);
-            static LLCachedControl<F32> vhs(gSavedSettings, "LuminousPhotoGlitchVHS", 0.5f);
-            static LLCachedControl<F32> waves(gSavedSettings, "LuminousPhotoGlitchWaves", 0.3f);
-            static LLCachedControl<F32> lines(gSavedSettings, "LuminousPhotoGlitchLines", 0.3f);
-            static LLCachedControl<F32> line_size(gSavedSettings, "LuminousPhotoGlitchLineSize", 3.f);
-            static LLCachedControl<F32> variation(gSavedSettings, "LuminousPhotoGlitchVariation", 0.f);
-            if (glitch() < 0.005f || !drawnNow(Kept::Glitch))
+            LuminousLensParams params;
+            fillLensParams(params, lens.frame->getWidth(), lens.frame->getHeight());
+            if (params.glitch <= 0.f)
+            {
+                return;
+            }
+            if (lensReplaced(LuminousMetal::Pass::Glitch, lens))
             {
                 return;
             }
@@ -1786,11 +2071,10 @@ namespace LuminousPhotoMode
             LLGLDisable blend(GL_BLEND);
             beginRewrite(lens, shader);
             shader.uniform2f(LLShaderMgr::DEFERRED_SCREEN_RES, (F32)lens.frame->getWidth(), (F32)lens.frame->getHeight());
-            shader.uniform1f(s_glitch, llclamp((F32)glitch(), 0.f, 1.f));
-            shader.uniform4f(s_parts, llclamp((F32)split(), 0.f, 1.f), llclamp((F32)vhs(), 0.f, 1.f),
-                             llclamp((F32)waves(), 0.f, 1.f), llclamp((F32)lines(), 0.f, 1.f));
-            shader.uniform1f(s_line_size, llclamp((F32)line_size(), 2.f, 8.f));
-            shader.uniform1f(s_seed, (F32)ll_round(llclamp((F32)variation(), 0.f, 1.f) * 100.f));
+            shader.uniform1f(s_glitch, params.glitch);
+            shader.uniform4f(s_parts, params.glitchParts.x, params.glitchParts.y, params.glitchParts.z, params.glitchParts.w);
+            shader.uniform1f(s_line_size, params.glitchLineSize);
+            shader.uniform1f(s_seed, params.glitchSeed);
             bindFrameScale(shader);
             drawScreenTriangle();
             endRewrite(lens, shader);
@@ -1799,14 +2083,29 @@ namespace LuminousPhotoMode
 
     bool renderPictureFrame(LLRenderTarget* src, LLRenderTarget* dst)
     {
+        if (!isOn() || !LuminousMetal::on(LuminousMetal::Effect::PictureFrame))
+        {
+            return false;
+        }
         if (gSnapshot || gCubeSnapshot || !gPipeline.hasRenderDebugFeatureMask(LLPipeline::RENDER_DEBUG_FEATURE_UI))
         {
             return false;
         }
         F32 frame_scale, picture_aspect;
         pictureInFrame(frame_scale, picture_aspect);
+        if (picture_aspect <= 0.f)
+        {
+            return false;
+        }
+        if (LuminousMetal::metal())
+        {
+            LuminousMetal::PassTargets targets;
+            targets.frame = src;
+            targets.other = dst;
+            return LuminousMetal::drawNative(LuminousMetal::Pass::PictureFrame, targets);
+        }
         LLGLSLShader& shader = gLuminousFrameProgram;
-        if (picture_aspect <= 0.f || !shader.isComplete())
+        if (!shader.isComplete())
         {
             return false;
         }
@@ -1842,8 +2141,8 @@ namespace LuminousPhotoMode
         {
             renderBloom(lens);
         }
-        renderStreaks(lens.frame);
-        renderLensFlare(lens.frame);
+        renderStreaks(lens);
+        renderLensFlare(lens);
         if (chromaticAberration() && drawnNow(Kept::ChromaticAberration))
         {
             renderChromaticAberration(lens);
@@ -1856,7 +2155,7 @@ namespace LuminousPhotoMode
     bool softShadows()
     {
         static LLCachedControl<bool> soft(gSavedSettings, "LuminousPhotoSoftShadows", true);
-        return isOn() && soft;
+        return isOn() && LuminousMetal::on(LuminousMetal::Effect::SoftShadows) && soft;
     }
 
     bool softShadowsNow()
@@ -1867,7 +2166,7 @@ namespace LuminousPhotoMode
     bool contactShadows()
     {
         static LLCachedControl<bool> on(gSavedSettings, "LuminousPhotoContactShadows", true);
-        return isOn() && on && LLPipeline::RenderShadowDetail > 0;
+        return isOn() && LuminousMetal::on(LuminousMetal::Effect::ContactShadows) && on && LLPipeline::RenderShadowDetail > 0;
     }
 
     bool contactShadowsNow()
@@ -1877,28 +2176,31 @@ namespace LuminousPhotoMode
 
     void bindContactShadowUniforms(LLGLSLShader& shader)
     {
+        if (!isOn())
+        {
+            return;
+        }
         static LLStaticHashedString s_length("luminous_contact_length");
         static LLStaticHashedString s_seed("luminous_contact_seed");
         static LLStaticHashedString s_steps("luminous_contact_steps");
-        static LLCachedControl<F32> length(gSavedSettings, "LuminousPhotoContactShadowsLength", 0.3f);
-        static LLCachedControl<F32> strength(gSavedSettings, "LuminousPhotoContactShadowsStrength", 1.f);
         static LLStaticHashedString s_strength("luminous_contact_strength");
-        if (!contactShadowsNow())
+        LuminousScreenParams params;
+        fillScreenParams(params);
+        if (params.contactLength <= 0.f)
         {
             shader.uniform1f(s_length, 0.f);
             return;
         }
-        shader.uniform1f(s_length, llclamp((F32)length(), 0.01f, 2.f));
-        shader.uniform1f(s_strength, llclamp((F32)strength(), 0.f, 1.f));
+        shader.uniform1f(s_length, params.contactLength);
+        shader.uniform1f(s_strength, params.contactStrength);
         // Toward the light that casts the shadows, in eye space -- passed here
         // because Firestorm's sun-shadow pass is never told which is up.
         static LLStaticHashedString s_light("luminous_contact_light");
-        const LLVector4& light = LLEnvironment::instance().getIsSunUp() ? gPipeline.mTransformedSunDir : gPipeline.mTransformedMoonDir;
-        shader.uniform3f(s_light, light.mV[VX], light.mV[VY], light.mV[VZ]);
-        shader.uniform1f(s_seed, (F32)llmax(sAccumulationFrame, 0));
-        shader.uniform1i(s_steps, 24);
+        shader.uniform3f(s_light, params.contactLight.x, params.contactLight.y, params.contactLight.z);
+        shader.uniform1f(s_seed, params.contactSeed);
+        shader.uniform1i(s_steps, params.contactSteps);
         static LLStaticHashedString s_all("luminous_contact_all");
-        shader.uniform1i(s_all, pictureFrame() ? 1 : 0);
+        shader.uniform1i(s_all, params.contactAll);
     }
 
     namespace
@@ -1951,6 +2253,10 @@ namespace LuminousPhotoMode
 
     U32 spotShadowMapLimit()
     {
+        if (!isOn())
+        {
+            return UINT_MAX; // Firestorm's sizing
+        }
         // The two projector maps are square at the frame's width (1.2 GB at
         // twice a 5K window): no larger than the sun's.
         static LLCachedControl<U32> size(gSavedSettings, "LuminousPhotoShadowMapSize", 8192);
@@ -1970,6 +2276,10 @@ namespace LuminousPhotoMode
 
     void bindDither(LLGLSLShader& shader, bool eight_bit)
     {
+        if (!isOn())
+        {
+            return;
+        }
         static LLStaticHashedString s_dither("luminous_dither");
         shader.uniform1f(s_dither, eight_bit ? 1.f / 255.f : 0.f);
     }
@@ -1977,25 +2287,17 @@ namespace LuminousPhotoMode
     namespace
     {
         // Worn photo (luminousWornF.glsl), drawn in the pass that grain is
-        // drawn in: on is whether this pass draws it.
-        void bindWornUniforms(LLGLSLShader& shader, bool on)
+        // drawn in: amount is this pass's (0 when it does not draw it).
+        void bindWornUniforms(LLGLSLShader& shader, F32 amount, const LuminousToneParams& p)
         {
-            static LLCachedControl<F32> worn(gSavedSettings, "LuminousPhotoWorn", 0.f);
-            static LLCachedControl<F32> dust(gSavedSettings, "LuminousPhotoWornDust", 0.5f);
-            static LLCachedControl<F32> scratches(gSavedSettings, "LuminousPhotoWornScratches", 0.4f);
-            static LLCachedControl<F32> stains(gSavedSettings, "LuminousPhotoWornStains", 0.5f);
-            static LLCachedControl<F32> edges(gSavedSettings, "LuminousPhotoWornEdges", 0.5f);
-            static LLCachedControl<F32> paper(gSavedSettings, "LuminousPhotoWornPaper", 0.4f);
-            static LLCachedControl<F32> variation(gSavedSettings, "LuminousPhotoWornVariation", 0.f);
             static LLStaticHashedString s_worn("luminous_worn");
             static LLStaticHashedString s_parts("luminous_worn_parts");
             static LLStaticHashedString s_paper("luminous_worn_paper");
             static LLStaticHashedString s_seed("luminous_worn_seed");
-            shader.uniform1f(s_worn, on && drawnNow(Kept::Worn) ? llclamp((F32)worn(), 0.f, 1.f) : 0.f);
-            shader.uniform4f(s_parts, llclamp((F32)dust(), 0.f, 1.f), llclamp((F32)scratches(), 0.f, 1.f),
-                             llclamp((F32)stains(), 0.f, 1.f), llclamp((F32)edges(), 0.f, 1.f));
-            shader.uniform1f(s_paper, llclamp((F32)paper(), 0.f, 1.f));
-            shader.uniform1f(s_seed, (F32)ll_round(llclamp((F32)variation(), 0.f, 1.f) * 100.f));
+            shader.uniform1f(s_worn, amount);
+            shader.uniform4f(s_parts, p.wornParts.x, p.wornParts.y, p.wornParts.z, p.wornParts.w);
+            shader.uniform1f(s_paper, p.wornPaper);
+            shader.uniform1f(s_seed, p.wornSeed);
             bindFrameScale(shader);
         }
     }
@@ -2003,15 +2305,8 @@ namespace LuminousPhotoMode
     namespace
     {
         // Light leak (tonemapUtilF.glsl), in the tonemap pass's grading.
-        void bindLightLeakUniforms(LLGLSLShader& shader)
+        void bindLightLeakUniforms(LLGLSLShader& shader, const LuminousToneParams& p)
         {
-            static LLCachedControl<F32> leak(gSavedSettings, "LuminousPhotoLightLeak", 0.f);
-            static LLCachedControl<LLColor4> colour_setting(gSavedSettings, "LuminousPhotoLightLeakColour", LLColor4(1.f, 0.2f, 0.06f, 1.f));
-            static LLCachedControl<F32> place(gSavedSettings, "LuminousPhotoLightLeakPlace", 0.f);
-            static LLCachedControl<F32> size(gSavedSettings, "LuminousPhotoLightLeakSize", 0.5f);
-            static LLCachedControl<F32> variation(gSavedSettings, "LuminousPhotoLightLeakVariation", 0.f);
-            static LLCachedControl<F32> hardness(gSavedSettings, "LuminousPhotoLightLeakHardness", 0.4f);
-            static LLCachedControl<F32> rainbow(gSavedSettings, "LuminousPhotoLightLeakRainbow", 0.f);
             static LLStaticHashedString s_hardness("luminous_leak_hardness");
             static LLStaticHashedString s_rainbow("luminous_leak_rainbow");
             static LLStaticHashedString s_leak("luminous_leak");
@@ -2019,30 +2314,29 @@ namespace LuminousPhotoMode
             static LLStaticHashedString s_place("luminous_leak_place");
             static LLStaticHashedString s_size("luminous_leak_size");
             static LLStaticHashedString s_seed("luminous_leak_seed");
-            shader.uniform1f(s_leak, drawnNow(Kept::LightLeak) ? llclamp((F32)leak(), 0.f, 1.f) : 0.f);
-            // the colour's hue, at full brightness: the strength is the slider's
-            LLColor4 c = colour_setting();
-            const F32 top = llmax(c.mV[0], llmax(c.mV[1], c.mV[2]));
-            LLColor3 colour = top > 1e-4f ? LLColor3(c.mV[0] / top, c.mV[1] / top, c.mV[2] / top) : LLColor3(1.f, 0.2f, 0.06f);
-            shader.uniform3fv(s_colour, 1, colour.mV);
-            shader.uniform1f(s_place, llclamp((F32)place(), 0.f, 1.f));
-            shader.uniform1f(s_size, llclamp((F32)size(), 0.f, 1.f));
-            shader.uniform1f(s_hardness, llclamp((F32)hardness(), 0.f, 1.f));
-            shader.uniform1f(s_rainbow, llclamp((F32)rainbow(), 0.f, 1.f));
-            shader.uniform1f(s_seed, (F32)ll_round(llclamp((F32)variation(), 0.f, 1.f) * 100.f));
+            shader.uniform1f(s_leak, p.leak);
+            shader.uniform3fv(s_colour, 1, (const F32*)&p.leakColour);
+            shader.uniform1f(s_place, p.leakPlace);
+            shader.uniform1f(s_size, p.leakSize);
+            shader.uniform1f(s_hardness, p.leakHardness);
+            shader.uniform1f(s_rainbow, p.leakRainbow);
+            shader.uniform1f(s_seed, p.leakSeed);
         }
     }
 
     void bindGrainUniforms(LLGLSLShader& shader)
     {
-        static LLCachedControl<F32> grain(gSavedSettings, "LuminousPhotoGrain", 0.f);
-        static LLCachedControl<F32> grain_size(gSavedSettings, "LuminousPhotoGrainSize", 1.5f);
+        if (!isOn())
+        {
+            return;
+        }
         static LLStaticHashedString s_grain("luminous_look_grain");
         static LLStaticHashedString s_grain_size("luminous_look_grain_size");
-        const bool on = sGrainAfterSharpening && isOn() && !gSnapshotNoPost && drawnNow(Kept::Grain);
-        shader.uniform1f(s_grain, on ? llclamp((F32)grain(), 0.f, 1.f) : 0.f);
-        shader.uniform1f(s_grain_size, llclamp((F32)grain_size(), 1.f, 4.f));
-        bindWornUniforms(shader, sGrainAfterSharpening && isOn() && !gSnapshotNoPost);
+        LuminousToneParams params;
+        fillToneParams(params);
+        shader.uniform1f(s_grain, params.casGrain);
+        shader.uniform1f(s_grain_size, params.grainSize);
+        bindWornUniforms(shader, params.casWorn, params);
     }
 
     namespace
@@ -2059,7 +2353,9 @@ namespace LuminousPhotoMode
         {
             chosen = llmin(chosen, llmax(sSnapshotShadowSize, 1024U)); // a render short of memory
         }
-        return isOn() && (sSnapshotShadows || !lowQualityLive(LiveQuality::Shadows)) ? chosen : 0;
+        // On Metal only for the effects that read photo mode's maps.
+        const bool wanted = LuminousMetal::on(LuminousMetal::Effect::SoftShadows) || LuminousMetal::on(LuminousMetal::Effect::VolumetricLight);
+        return isOn() && wanted && (sSnapshotShadows || !lowQualityLive(LiveQuality::Shadows)) ? chosen : 0;
     }
 
     namespace
@@ -2090,7 +2386,8 @@ namespace LuminousPhotoMode
 
     F32 liveRenderScale()
     {
-        if (!isOn() || sFullResolutionHolds > 0 || sAccumulationFrame >= 0)
+        // On Metal a smaller live view needs the native present to scale it up.
+        if (!isOn() || !LuminousMetal::on(LuminousMetal::Effect::Upscale) || sFullResolutionHolds > 0 || sAccumulationFrame >= 0)
         {
             return 1.f;
         }
@@ -2099,7 +2396,12 @@ namespace LuminousPhotoMode
 
     bool upscaling()
     {
-        return isOn() && gLuminousPresentProgram.isComplete() && gPipeline.mRT == &gPipeline.mMainRT
+        return isOn() && gLuminousPresentProgram.isComplete() && liveViewSmaller();
+    }
+
+    bool liveViewSmaller()
+    {
+        return gPipeline.mRT == &gPipeline.mMainRT
             && (gPipeline.mRT->screen.getWidth() < (U32)gViewerWindow->getWorldViewWidthRaw()
                 || gPipeline.mRT->screen.getHeight() < (U32)gViewerWindow->getWorldViewHeightRaw());
     }
@@ -2165,6 +2467,7 @@ namespace LuminousPhotoMode
     {
         S32 sShaderHolds = 0;
         bool sShaderRebuildAsked = false;
+        bool sBufferRebuildAsked = false;
     }
 
     HoldShaderRebuilds::HoldShaderRebuilds()
@@ -2174,11 +2477,39 @@ namespace LuminousPhotoMode
 
     HoldShaderRebuilds::~HoldShaderRebuilds()
     {
-        if (--sShaderHolds == 0 && sShaderRebuildAsked)
+        if (--sShaderHolds > 0)
+        {
+            return;
+        }
+        if (sBufferRebuildAsked)
+        {
+            sBufferRebuildAsked = false;
+            if (gPipeline.isInit())
+            {
+                gPipeline.releaseGLBuffers();
+                // the GPU finishes what was sent, so the set just released is freed before the next is made
+                if (LL::RHI::Device* device = LL::RHI::viewerDevice())
+                {
+                    device->submitAndWait();
+                }
+                gPipeline.createGLBuffers();
+            }
+        }
+        if (sShaderRebuildAsked)
         {
             sShaderRebuildAsked = false;
             handleSetShaderChanged(LLSD());
         }
+    }
+
+    bool holdBufferRebuild()
+    {
+        if (sShaderHolds > 0 && LuminousMetal::metal())
+        {
+            sBufferRebuildAsked = true;
+            return true;
+        }
+        return false;
     }
 
     bool holdShaderRebuild()
@@ -2294,7 +2625,7 @@ namespace LuminousPhotoMode
         {
             static LLCachedControl<bool> sampled(gSavedSettings, "LuminousSnapshotSampledDoF", true);
             return sampled && sampling() && !LuminousHDRSnapshot::previewing() && LLPipeline::sRenderDeferred && gPipeline.RenderDepthOfField
-                && depthOfField() && gLuminousDepthOfFieldProgram.isComplete()
+                && depthOfField() && (LuminousMetal::metal() || gLuminousDepthOfFieldProgram.isComplete())
                 && sLensFocus > 0.f && sLensAperture > 0.f;
         }
 
@@ -2317,6 +2648,10 @@ namespace LuminousPhotoMode
 
     void bindDistortedDepth(LLGLSLShader& shader, bool after_lens)
     {
+        if (!isOn())
+        {
+            return;
+        }
         static LLStaticHashedString s_distortion("luminous_depth_distortion");
         shader.uniform1f(s_distortion, after_lens ? sDistortionDrawn : 0.f);
         bindFrameScale(shader);
@@ -2366,6 +2701,10 @@ namespace LuminousPhotoMode
 
     void jitterShadowCaster(LLVector3& caster_dir)
     {
+        if (!isOn())
+        {
+            return;
+        }
         if (!shadowsSampled())
         {
             return;
@@ -2414,46 +2753,71 @@ namespace LuminousPhotoMode
         return true;
     }
 
+    namespace
+    {
+        F32 shadowLift()
+        {
+            static LLCachedControl<F32> strength(gSavedSettings, "LuminousPhotoShadowStrength", 1.f);
+            return 1.f - llclamp((F32)strength(), 0.f, 1.f);
+        }
+    }
+
     void bindShadowStrength(LLGLSLShader& shader)
     {
+        if (!isOn())
+        {
+            return;
+        }
         // As a lift, so a shader never given it (0) shades as Firestorm's.
-        static LLCachedControl<F32> strength(gSavedSettings, "LuminousPhotoShadowStrength", 1.f);
         static LLStaticHashedString s_lift("luminous_shadow_lift");
-        shader.uniform1f(s_lift, 1.f - llclamp((F32)strength(), 0.f, 1.f));
+        shader.uniform1f(s_lift, shadowLift());
+    }
+
+    void fillShadowParams(LuminousShadowParams& p)
+    {
+        p = LuminousShadowParams();
+        p.frame = (F32)llmax(sAccumulationFrame, 0);
+        // Kept for renders, the live preview filters the maps as Firestorm does.
+        p.soft = softShadowsNow() ? 1 : 0;
+        p.blockerTaps = fullQuality(LiveQuality::Shadows) ? 32 : 16;
+        p.filterTaps = fullQuality(LiveQuality::Shadows) ? 64 : 32;
+        // The widest penumbra is 64 texels of the chosen maps, and the same
+        // width in metres on smaller maps -- the live view's, or a render's
+        // made smaller for want of memory -- so that shadows on them are no
+        // softer.
+        static LLCachedControl<U32> picture_size(gSavedSettings, "LuminousPhotoShadowMapSize", 8192);
+        p.maxTexels = 64.f;
+        const U32 maps_size = llmax(gPipeline.mRT->shadow[0].getWidth(), gPipeline.mRT->shadow[0].getHeight());
+        if (!gCubeSnapshot && picture_size() > 0 && maps_size > 0)
+        {
+            p.maxTexels = llclamp(64.f * (F32)maps_size / (F32)llmin((U32)picture_size(), 16384U), 2.f, 64.f);
+        }
+        // The sun's apparent radius is 0.2665 degrees; Softness scales it, as
+        // haze or thin cloud widens the sun's light. Sampled across the
+        // frames, the sun's own disc softens the shadows; each frame's filter
+        // only fills the gaps.
+        static LLCachedControl<F32> softness(gSavedSettings, "LuminousPhotoShadowSoftness", 2.5f);
+        static const F32 SUN_TAN_RADIUS = tanf(0.2665f * DEG_TO_RAD);
+        const F32 fill = shadowsSampled() ? fillScale() : 1.f;
+        p.softness = SUN_TAN_RADIUS * llclamp(softness(), 0.f, 20.f) * fill;
+        p.lift = shadowLift();
     }
 
     void bindShadowUniforms(LLGLSLShader& shader)
     {
         bindFrame(shader);
-        // Kept for renders, the live preview filters the maps as Firestorm does.
+        LuminousShadowParams params;
+        fillShadowParams(params);
         static LLStaticHashedString s_soft("luminous_soft_shadows");
-        shader.uniform1i(s_soft, softShadowsNow() ? 1 : 0);
-        // The sun's apparent radius is 0.2665 degrees; Softness scales it, as
-        // haze or thin cloud widens the sun's light.
-        static LLCachedControl<F32> softness(gSavedSettings, "LuminousPhotoShadowSoftness", 2.5f);
         static LLStaticHashedString s_softness("luminous_shadow_softness");
         static LLStaticHashedString s_blocker_taps("luminous_blocker_taps");
         static LLStaticHashedString s_filter_taps("luminous_filter_taps");
-        shader.uniform1i(s_blocker_taps, fullQuality(LiveQuality::Shadows) ? 32 : 16);
-        shader.uniform1i(s_filter_taps, fullQuality(LiveQuality::Shadows) ? 64 : 32);
-        // The widest penumbra is 64 texels of the chosen maps, and the same
-        // width in metres on smaller maps -- the live view's, or a render's
-        // made smaller for want of memory -- so that shadows on them are no
-        // softer.
         static LLStaticHashedString s_max_texels("luminous_max_texels");
-        static LLCachedControl<U32> picture_size(gSavedSettings, "LuminousPhotoShadowMapSize", 8192);
-        F32 max_texels = 64.f;
-        const U32 maps_size = llmax(gPipeline.mRT->shadow[0].getWidth(), gPipeline.mRT->shadow[0].getHeight());
-        if (!gCubeSnapshot && picture_size() > 0 && maps_size > 0)
-        {
-            max_texels = llclamp(64.f * (F32)maps_size / (F32)llmin((U32)picture_size(), 16384U), 2.f, 64.f);
-        }
-        shader.uniform1f(s_max_texels, max_texels);
-        static const F32 SUN_TAN_RADIUS = tanf(0.2665f * DEG_TO_RAD);
-        // Sampled across the frames, the sun's own disc softens the shadows;
-        // each frame's filter only fills the gaps.
-        const F32 fill = shadowsSampled() ? fillScale() : 1.f;
-        shader.uniform1f(s_softness, SUN_TAN_RADIUS * llclamp(softness(), 0.f, 20.f) * fill);
+        shader.uniform1i(s_soft, params.soft);
+        shader.uniform1i(s_blocker_taps, params.blockerTaps);
+        shader.uniform1i(s_filter_taps, params.filterTaps);
+        shader.uniform1f(s_max_texels, params.maxTexels);
+        shader.uniform1f(s_softness, params.softness);
     }
 
     namespace
@@ -2536,6 +2900,100 @@ namespace LuminousPhotoMode
             glTexParameteri(GL_TEXTURE_3D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
             glTexParameteri(GL_TEXTURE_3D, GL_TEXTURE_WRAP_R, GL_CLAMP_TO_EDGE);
             return sMcMapfaceLut;
+        }
+
+        // A 3D table on Metal: an RGBA16F texture of size^3 from RGB floats, red
+        // changing fastest, then green, then blue (GL's order), uploaded one
+        // slice of blue at a time; alpha is 1. Null when there is no device or
+        // the device refused it (it says why).
+        LLPointer<LL::RHI::Texture> makeMetalLut(const std::vector<F32>& rgb, U32 size, const char* name)
+        {
+            static bool release_hooked = false;
+            if (!release_hooked)
+            {
+                // The tables go with the device whatever photo mode's switch says by then, so none outlives it.
+                release_hooked = true;
+                LL::RHI::onViewerDeviceRelease([] {
+                    sMcMapfaceLutMetal = nullptr;
+                    sLookLutMetal = nullptr;
+                    if (!LuminousMetal::translatedPasses())
+                    {
+                        sLookLutName.clear();
+                    }
+                });
+            }
+            LL::RHI::Device* device = LL::RHI::viewerDevice();
+            const size_t slice = size_t(size) * size * 3;
+            if (!device || rgb.size() != slice * size)
+            {
+                return nullptr;
+            }
+            LL::RHI::TextureDesc desc;
+            desc.type = LL::RHI::TextureType::Tex3D;
+            desc.format = LL::RHI::Format::RGBA16Float;
+            desc.width = size;
+            desc.height = size;
+            desc.layers = size;
+            desc.usage = LL::RHI::TEXTURE_SAMPLED;
+            LLPointer<LL::RHI::Texture> texture = device->createTexture(desc, name);
+            if (texture.isNull())
+            {
+                return nullptr;
+            }
+            LL::RHI::PixelLayout layout;
+            layout.components = LL::RHI::PixelLayout::Components::RGB;
+            layout.type = LL::RHI::PixelLayout::Type::F32;
+            for (U32 z = 0; z < size; ++z)
+            {
+                const std::span<const F32> values(rgb.data() + z * slice, slice);
+                device->encoder().uploadTexture(texture.get(), 0, z, { 0, 0, size, size }, layout, std::as_bytes(values));
+            }
+            return texture;
+        }
+
+        // Tony McMapface's table on Metal: the RGB9E5 file unpacked to RGB
+        // floats (each texel a 32-bit word: red in bits 0-8, green 9-17, blue
+        // 18-26, a shared exponent with bias 15 in 27-31).
+        LL::RHI::Texture* mcMapfaceLutMetal()
+        {
+            static bool missing = false; // said once, not tried every frame
+            if (sMcMapfaceLutMetal.notNull() || missing)
+            {
+                return sMcMapfaceLutMetal.get();
+            }
+            const std::string path = gDirUtilp->getExpandedFilename(LL_PATH_APP_SETTINGS, "luminous_tonemap", "tony_mc_mapface.rgb9e5");
+            const size_t texels = 48 * 48 * 48;
+            std::vector<U32> packed(texels);
+            LLFILE* file = LLFile::fopen(path, "rb");
+            const bool read = file && fread(packed.data(), 4, texels, file) == texels;
+            if (file)
+            {
+                fclose(file);
+            }
+            if (!read)
+            {
+                LL_WARNS("LuminousPhotoMode") << "Tony McMapface's table missing: " << path << LL_ENDL;
+                missing = true;
+                return nullptr;
+            }
+            std::vector<F32> rgb(texels * 3);
+            for (size_t i = 0; i < texels; ++i)
+            {
+                const U32 word = packed[i];
+                const F32 scale = ldexpf(1.f, S32(word >> 27) - 15 - 9);
+                rgb[i * 3 + 0] = F32(word & 0x1FF) * scale;
+                rgb[i * 3 + 1] = F32((word >> 9) & 0x1FF) * scale;
+                rgb[i * 3 + 2] = F32((word >> 18) & 0x1FF) * scale;
+            }
+            sMcMapfaceLutMetal = makeMetalLut(rgb, 48, "Tony McMapface's table");
+            missing = sMcMapfaceLutMetal.isNull();
+            return sMcMapfaceLutMetal.get();
+        }
+
+        // Whether Tony McMapface's table is there, loading it the first time.
+        bool hasMcMapfaceLut()
+        {
+            return LuminousMetal::translatedPasses() ? mcMapfaceLut() != 0 : mcMapfaceLutMetal() != nullptr;
         }
 
         std::string lutFolder(bool user)
@@ -2658,6 +3116,59 @@ namespace LuminousPhotoMode
             return sLookLut;
         }
 
+        // The same table on Metal, an RHI 3D texture, loaded when the name changes.
+        LL::RHI::Texture* lookLutMetal(const std::string& name)
+        {
+            if (name == sLookLutName)
+            {
+                return sLookLutMetal.get();
+            }
+            sLookLutName = name;
+            if (sLookLutMetal.notNull())
+            {
+                LLTexUnit::releaseTexture(sLookLutMetal.get());
+                sLookLutMetal = nullptr;
+            }
+            std::vector<F32> rgb;
+            S32 size = 0;
+            std::string error;
+            const std::string path = lutPath(name);
+            if (path.empty() || !readCube(path, rgb, size, error))
+            {
+                LL_WARNS("LuminousPhotoMode") << "Look's table " << name << " not used: " << (path.empty() ? "not found" : error) << LL_ENDL;
+                return nullptr;
+            }
+            sLookLutMetal = makeMetalLut(rgb, (U32)size, "Look's table");
+            if (sLookLutMetal.isNull())
+            {
+                return nullptr;
+            }
+            sLookLutSize = (F32)size;
+            LL_INFOS("LuminousPhotoMode") << "Look's table " << name << ": " << size << "^3" << LL_ENDL;
+            return sLookLutMetal.get();
+        }
+
+        // A table on Metal on a texture channel for a sampler3D: linear, clamped
+        // to the edge on all three axes, no mips; none leaves the channel's 3D
+        // slot empty, which reads (0, 0, 0, 1). The active unit is put back.
+        void bindMetalLut(LLGLSLShader& shader, const LLStaticHashedString& sampler, S32 channel, LL::RHI::Texture* table)
+        {
+            const S32 active = gGL.getCurrentTexUnitIndex();
+            LLTexUnit* unit = gGL.getTexUnit(channel);
+            if (table)
+            {
+                unit->bindTexture(LLTexUnit::TT_TEXTURE_3D, table, false);
+                unit->setTextureAddressMode(LLTexUnit::TAM_CLAMP);
+                unit->setTextureFilteringOption(LLTexUnit::TFO_BILINEAR);
+            }
+            else
+            {
+                unit->unbind(LLTexUnit::TT_TEXTURE_3D);
+            }
+            gGL.getTexUnit(active)->activate();
+            shader.uniform1i(sampler, channel);
+        }
+
         const char* const LOOK_SETTINGS[] = {
             "LuminousPhotoTonemapper", "LuminousPhotoExposure", "LuminousPhotoContrast",
             "LuminousPhotoSaturation", "LuminousPhotoWarmth", "LuminousPhotoTint",
@@ -2707,12 +3218,37 @@ namespace LuminousPhotoMode
 
     bool look()
     {
-        return isOn();
+        return isOn() && LuminousMetal::on(LuminousMetal::Effect::Look);
     }
 
-    void bindLookUniforms(LLGLSLShader& shader)
+    namespace
+    {
+        // The 24 HSL settings, found by name once, not each frame.
+        LLControlVariable* const* hslControls()
+        {
+            static const char* const HSL_RANGES[8] = { "Reds", "Oranges", "Yellows", "Greens", "Aquas", "Blues", "Purples", "Magentas" };
+            static LLControlVariable* hsl_controls[24] = {};
+            static bool hsl_found = false;
+            if (!hsl_found)
+            {
+                static const char* const PARTS[3] = { "Hue", "Sat", "Lum" };
+                for (S32 r = 0; r < 8; ++r)
+                {
+                    for (S32 k = 0; k < 3; ++k)
+                    {
+                        hsl_controls[r * 3 + k] = gSavedSettings.getControl(std::string("LuminousPhotoHSL") + HSL_RANGES[r] + PARTS[k]);
+                    }
+                }
+                hsl_found = true;
+            }
+            return hsl_controls;
+        }
+    }
+
+    void fillToneParams(LuminousToneParams& p)
     {
         static LLCachedControl<S32> tonemapper(gSavedSettings, "LuminousPhotoTonemapper", -1);
+        static LLCachedControl<F32> mix(gSavedSettings, "LuminousPhotoTonemapMix", -1.f);
         static LLCachedControl<F32> ev(gSavedSettings, "LuminousPhotoExposure", 0.f);
         static LLCachedControl<F32> contrast(gSavedSettings, "LuminousPhotoContrast", 1.f);
         static LLCachedControl<F32> saturation(gSavedSettings, "LuminousPhotoSaturation", 1.f);
@@ -2720,25 +3256,12 @@ namespace LuminousPhotoMode
         static LLCachedControl<F32> tint(gSavedSettings, "LuminousPhotoTint", 0.f);
         static LLCachedControl<F32> mono(gSavedSettings, "LuminousPhotoMonochrome", 0.f);
         static LLCachedControl<F32> sepia(gSavedSettings, "LuminousPhotoSepia", 0.f);
-        static LLStaticHashedString s_type("tonemap_type");
-        static LLStaticHashedString s_balance("luminous_look_balance");
-        static LLStaticHashedString s_ev("luminous_look_ev");
-        static LLStaticHashedString s_contrast("luminous_look_contrast");
-        static LLStaticHashedString s_saturation("luminous_look_saturation");
-        static LLStaticHashedString s_mono("luminous_look_mono");
-        static LLStaticHashedString s_tone("luminous_look_tone");
         static LLCachedControl<F32> highlights(gSavedSettings, "LuminousPhotoHighlights", 0.f);
         static LLCachedControl<F32> shadows(gSavedSettings, "LuminousPhotoShadows", 0.f);
         static LLCachedControl<F32> vibrance(gSavedSettings, "LuminousPhotoVibrance", 0.f);
         static LLCachedControl<S32> mono_filter(gSavedSettings, "LuminousPhotoMonochromeFilter", 0);
         static LLCachedControl<F32> grain(gSavedSettings, "LuminousPhotoGrain", 0.f);
         static LLCachedControl<F32> grain_size(gSavedSettings, "LuminousPhotoGrainSize", 1.5f);
-        static LLStaticHashedString s_highlights("luminous_look_highlights");
-        static LLStaticHashedString s_shadows("luminous_look_shadows");
-        static LLStaticHashedString s_vibrance("luminous_look_vibrance");
-        static LLStaticHashedString s_mono_weights("luminous_look_mono_weights");
-        static LLStaticHashedString s_grain("luminous_look_grain");
-        static LLStaticHashedString s_grain_size("luminous_look_grain_size");
         static LLCachedControl<F32> whites(gSavedSettings, "LuminousPhotoWhites", 0.f);
         static LLCachedControl<F32> blacks(gSavedSettings, "LuminousPhotoBlacks", 0.f);
         static LLCachedControl<F32> sh_warm(gSavedSettings, "LuminousPhotoShadowsWarmth", 0.f);
@@ -2747,6 +3270,139 @@ namespace LuminousPhotoMode
         static LLCachedControl<F32> mid_tint(gSavedSettings, "LuminousPhotoMidtonesTint", 0.f);
         static LLCachedControl<F32> hi_warm(gSavedSettings, "LuminousPhotoHighlightsWarmth", 0.f);
         static LLCachedControl<F32> hi_tint(gSavedSettings, "LuminousPhotoHighlightsTint", 0.f);
+        static LLCachedControl<std::string> lut_name(gSavedSettings, "LuminousPhotoLUT", "");
+        static LLCachedControl<F32> lut_strength(gSavedSettings, "LuminousPhotoLUTStrength", 1.f);
+        static LLCachedControl<F32> worn(gSavedSettings, "LuminousPhotoWorn", 0.f);
+        static LLCachedControl<F32> dust(gSavedSettings, "LuminousPhotoWornDust", 0.5f);
+        static LLCachedControl<F32> scratches(gSavedSettings, "LuminousPhotoWornScratches", 0.4f);
+        static LLCachedControl<F32> stains(gSavedSettings, "LuminousPhotoWornStains", 0.5f);
+        static LLCachedControl<F32> edges(gSavedSettings, "LuminousPhotoWornEdges", 0.5f);
+        static LLCachedControl<F32> paper(gSavedSettings, "LuminousPhotoWornPaper", 0.4f);
+        static LLCachedControl<F32> worn_variation(gSavedSettings, "LuminousPhotoWornVariation", 0.f);
+        static LLCachedControl<F32> leak(gSavedSettings, "LuminousPhotoLightLeak", 0.f);
+        static LLCachedControl<LLColor4> leak_colour(gSavedSettings, "LuminousPhotoLightLeakColour", LLColor4(1.f, 0.2f, 0.06f, 1.f));
+        static LLCachedControl<F32> leak_place(gSavedSettings, "LuminousPhotoLightLeakPlace", 0.f);
+        static LLCachedControl<F32> leak_size(gSavedSettings, "LuminousPhotoLightLeakSize", 0.5f);
+        static LLCachedControl<F32> leak_variation(gSavedSettings, "LuminousPhotoLightLeakVariation", 0.f);
+        static LLCachedControl<F32> leak_hardness(gSavedSettings, "LuminousPhotoLightLeakHardness", 0.4f);
+        static LLCachedControl<F32> leak_rainbow(gSavedSettings, "LuminousPhotoLightLeakRainbow", 0.f);
+
+        p = LuminousToneParams();
+        // -1 leaves Firestorm's choice (RenderTonemapType, in Phototools).
+        p.tonemapType = tonemapper() >= 0 ? llmin((S32)tonemapper(), 6) : -1;
+        // How much of the curve: below 0, the sky's own tone mix.
+        p.tonemapMix = mix() >= 0.f ? llclamp(mix(), 0.f, 1.f) : -1.f;
+        p.lookOn = gSnapshotNoPost ? 0 : 1;
+
+        F32 balance[9];
+        whiteBalance(llclamp(warmth(), -1.f, 1.f), llclamp(tint(), -1.f, 1.f), balance);
+        // row-major in balance; by column here, as GL's transposed upload has it
+        for (S32 c = 0; c < 3; ++c)
+        {
+            p.balance.columns[c] = simd_make_float3(balance[0 * 3 + c], balance[1 * 3 + c], balance[2 * 3 + c]);
+        }
+        LLControlVariable* const* hsl = hslControls();
+        for (S32 r = 0; r < 8; ++r)
+        {
+            F32 v[3];
+            for (S32 k = 0; k < 3; ++k)
+            {
+                v[k] = hsl[r * 3 + k] ? llclamp((F32)hsl[r * 3 + k]->getValue().asReal(), -1.f, 1.f) : 0.f;
+            }
+            p.hsl[r] = simd_make_float4(v[0], v[1], v[2], 0.f);
+        }
+        p.ev = powf(2.f, llclamp(ev(), -5.f, 5.f));
+        p.contrast = llclamp(contrast(), 0.25f, 4.f);
+        p.saturation = llclamp(saturation(), 0.f, 3.f);
+        p.mono = llclamp(mono(), 0.f, 1.f);
+        p.sepia = llclamp(sepia(), 0.f, 1.f);
+        p.highlights = llclamp(highlights(), -1.f, 1.f);
+        p.shadows = llclamp(shadows(), -1.f, 1.f);
+        p.vibrance = llclamp(vibrance(), -1.f, 1.f);
+        const F32* weights = MONO_FILTERS[llclamp((S32)mono_filter(), 0, 5)];
+        p.monoWeights = simd_make_float4(weights[0], weights[1], weights[2], 0.f);
+        p.whites = llclamp(whites(), -1.f, 1.f);
+        p.blacks = llclamp(blacks(), -1.f, 1.f);
+        const LLVector3 bal_sh = balanceGains(sh_warm(), sh_tint());
+        const LLVector3 bal_mid = balanceGains(mid_warm(), mid_tint());
+        const LLVector3 bal_hi = balanceGains(hi_warm(), hi_tint());
+        p.balanceShadows = simd_make_float4(bal_sh.mV[0], bal_sh.mV[1], bal_sh.mV[2], 0.f);
+        p.balanceMidtones = simd_make_float4(bal_mid.mV[0], bal_mid.mV[1], bal_mid.mV[2], 0.f);
+        p.balanceHighlights = simd_make_float4(bal_hi.mV[0], bal_hi.mV[1], bal_hi.mV[2], 0.f);
+
+        // The .cube table's strength: 0 without one. The translated tonemap
+        // also gives 0 when the named table did not load.
+        p.lutStrength = lut_name().empty() ? 0.f : llclamp(lut_strength(), 0.f, 1.f);
+        p.lutSize = llmax(sLookLutSize, 2.f);
+
+        // Grain and Worn photo: kept for renders, none live; drawn in the
+        // sharpening pass when one follows the tonemap, else in the tonemap.
+        const bool grain_on = drawnNow(Kept::Grain) && LuminousMetal::on(LuminousMetal::Effect::Grain);
+        const bool worn_on = drawnNow(Kept::Worn) && LuminousMetal::on(LuminousMetal::Effect::Worn);
+        const bool sharpening = sGrainAfterSharpening && isOn() && !gSnapshotNoPost;
+        const F32 grain_amount = llclamp((F32)grain(), 0.f, 1.f);
+        const F32 worn_amount = llclamp((F32)worn(), 0.f, 1.f);
+        p.grain = grain_on && !sGrainAfterSharpening ? grain_amount : 0.f;
+        p.casGrain = grain_on && sharpening ? grain_amount : 0.f;
+        p.grainSize = llclamp(grain_size(), 1.f, 4.f);
+        p.worn = worn_on && !sGrainAfterSharpening ? worn_amount : 0.f;
+        p.casWorn = worn_on && sharpening ? worn_amount : 0.f;
+        p.wornParts = simd_make_float4(llclamp((F32)dust(), 0.f, 1.f), llclamp((F32)scratches(), 0.f, 1.f),
+                                       llclamp((F32)stains(), 0.f, 1.f), llclamp((F32)edges(), 0.f, 1.f));
+        p.wornPaper = llclamp((F32)paper(), 0.f, 1.f);
+        p.wornSeed = (F32)ll_round(llclamp((F32)worn_variation(), 0.f, 1.f) * 100.f);
+
+        // The light leak; its colour's hue at full brightness, the strength
+        // being the slider's.
+        p.leak = drawnNow(Kept::LightLeak) && LuminousMetal::on(LuminousMetal::Effect::LightLeak)
+            ? llclamp((F32)leak(), 0.f, 1.f) : 0.f;
+        const LLColor4 c = leak_colour();
+        const F32 top = llmax(c.mV[0], llmax(c.mV[1], c.mV[2]));
+        const LLColor3 colour = top > 1e-4f ? LLColor3(c.mV[0] / top, c.mV[1] / top, c.mV[2] / top) : LLColor3(1.f, 0.2f, 0.06f);
+        p.leakColour = simd_make_float4(colour.mV[0], colour.mV[1], colour.mV[2], 0.f);
+        p.leakPlace = llclamp((F32)leak_place(), 0.f, 1.f);
+        p.leakSize = llclamp((F32)leak_size(), 0.f, 1.f);
+        p.leakHardness = llclamp((F32)leak_hardness(), 0.f, 1.f);
+        p.leakRainbow = llclamp((F32)leak_rainbow(), 0.f, 1.f);
+        p.leakSeed = (F32)ll_round(llclamp((F32)leak_variation(), 0.f, 1.f) * 100.f);
+
+        pictureInFrame(p.frameScale, p.pictureAspect);
+        p.frame = (F32)llmax(sAccumulationFrame, 0);
+        // The picture's part of the frame, as renderPictureFrame finds it,
+        // for a frame of the world view's shape.
+        const F32 frame_aspect = gViewerWindow ? gViewerWindow->getWorldViewAspectRatio() : 0.f;
+        if (p.pictureAspect > 0.f && frame_aspect > 0.f)
+        {
+            const F32 w = p.pictureAspect < frame_aspect ? p.pictureAspect / frame_aspect : 1.f;
+            const F32 h = p.pictureAspect < frame_aspect ? 1.f : frame_aspect / p.pictureAspect;
+            p.frameRect = simd_make_float4(0.5f - 0.5f * w, 0.5f - 0.5f * h, 0.5f + 0.5f * w, 0.5f + 0.5f * h);
+        }
+        else
+        {
+            p.frameRect = simd_make_float4(0.f, 0.f, 1.f, 1.f);
+        }
+    }
+
+    void bindLookUniforms(LLGLSLShader& shader)
+    {
+        // On OpenGL the tables are bound with OpenGL's own calls; on Metal
+        // they are RHI 3D textures bound through LLTexUnit on the same channels.
+        const bool gl = LuminousMetal::translatedPasses();
+        LuminousToneParams params;
+        fillToneParams(params);
+        static LLStaticHashedString s_type("tonemap_type");
+        static LLStaticHashedString s_balance("luminous_look_balance");
+        static LLStaticHashedString s_ev("luminous_look_ev");
+        static LLStaticHashedString s_contrast("luminous_look_contrast");
+        static LLStaticHashedString s_saturation("luminous_look_saturation");
+        static LLStaticHashedString s_mono("luminous_look_mono");
+        static LLStaticHashedString s_tone("luminous_look_tone");
+        static LLStaticHashedString s_highlights("luminous_look_highlights");
+        static LLStaticHashedString s_shadows("luminous_look_shadows");
+        static LLStaticHashedString s_vibrance("luminous_look_vibrance");
+        static LLStaticHashedString s_mono_weights("luminous_look_mono_weights");
+        static LLStaticHashedString s_grain("luminous_look_grain");
+        static LLStaticHashedString s_grain_size("luminous_look_grain_size");
         static LLStaticHashedString s_whites("luminous_look_whites");
         static LLStaticHashedString s_blacks("luminous_look_blacks");
         static LLStaticHashedString s_bal_sh("luminous_look_balance_shadows");
@@ -2754,31 +3410,34 @@ namespace LuminousPhotoMode
         static LLStaticHashedString s_bal_hi("luminous_look_balance_highlights");
 
         // -1 leaves Firestorm's choice (RenderTonemapType, in Phototools).
-        if (tonemapper() >= 0)
+        if (params.tonemapType >= 0)
         {
             // Tony McMapface without its table would draw black: Neutral instead.
-            S32 type = llmin((S32)tonemapper(), 6);
-            if (type == 6 && !mcMapfaceLut())
+            S32 type = params.tonemapType;
+            if (type == 6 && !hasMcMapfaceLut())
             {
                 type = 0;
             }
             shader.uniform1i(s_type, type);
         }
         // How much of the curve: below 0, the sky's own tone mix.
-        static LLCachedControl<F32> mix(gSavedSettings, "LuminousPhotoTonemapMix", -1.f);
         static LLStaticHashedString s_mix("tonemap_mix");
-        if (mix() >= 0.f)
+        if (params.tonemapMix >= 0.f)
         {
-            shader.uniform1f(s_mix, llclamp(mix(), 0.f, 1.f));
+            shader.uniform1f(s_mix, params.tonemapMix);
         }
         static LLStaticHashedString s_on("luminous_look_on");
-        shader.uniform1i(s_on, gSnapshotNoPost ? 0 : 1);
+        shader.uniform1i(s_on, params.lookOn);
         // Tony McMapface's table, a 3D texture. Firestorm gives texture
         // channels only to the sampler names it knows, so it is bound to the
         // last channel by hand; the tonemap programs' own samplers sit low.
         static LLStaticHashedString s_lut("luminous_tonemap_lut");
         GLint lut_location = shader.getUniformLocation(s_lut);
-        if (lut_location >= 0)
+        if (lut_location >= 0 && !gl)
+        {
+            bindMetalLut(shader, s_lut, 15, mcMapfaceLutMetal());
+        }
+        else if (lut_location >= 0)
         {
             const GLint channel = 15;
             glActiveTexture(GL_TEXTURE0 + channel);
@@ -2788,13 +3447,17 @@ namespace LuminousPhotoMode
         }
         // The .cube table, on channel 14, likewise by hand.
         static LLCachedControl<std::string> lut_name(gSavedSettings, "LuminousPhotoLUT", "");
-        static LLCachedControl<F32> lut_strength(gSavedSettings, "LuminousPhotoLUTStrength", 1.f);
         static LLStaticHashedString s_lut_map("luminous_lut");
         static LLStaticHashedString s_lut_strength("luminous_lut_strength");
         static LLStaticHashedString s_lut_size("luminous_lut_size");
-        GLuint look_lut = lut_name().empty() ? 0 : lookLut(lut_name());
+        GLuint look_lut = lut_name().empty() || !gl ? 0 : lookLut(lut_name());
+        LL::RHI::Texture* look_lut_metal = lut_name().empty() || gl ? nullptr : lookLutMetal(lut_name());
         GLint lut_map = shader.getUniformLocation(s_lut_map);
-        if (lut_map >= 0)
+        if (lut_map >= 0 && !gl)
+        {
+            bindMetalLut(shader, s_lut_map, 14, look_lut_metal);
+        }
+        else if (lut_map >= 0)
         {
             const GLint channel = 14;
             glActiveTexture(GL_TEXTURE0 + channel);
@@ -2802,58 +3465,55 @@ namespace LuminousPhotoMode
             glActiveTexture(GL_TEXTURE0 + gGL.getCurrentTexUnitIndex());
             glUniform1i(lut_map, channel);
         }
-        shader.uniform1f(s_lut_strength, look_lut ? llclamp(lut_strength(), 0.f, 1.f) : 0.f);
+        shader.uniform1f(s_lut_strength, look_lut || look_lut_metal ? params.lutStrength : 0.f);
         shader.uniform1f(s_lut_size, llmax(sLookLutSize, 2.f));
         // HSL by colour range: hue, saturation, lightness for each of eight.
-        static const char* const HSL_RANGES[8] = { "Reds", "Oranges", "Yellows", "Greens", "Aquas", "Blues", "Purples", "Magentas" };
         static LLStaticHashedString s_hsl("luminous_hsl");
-        // The 24 settings found by name once, not each frame.
-        static LLControlVariable* hsl_controls[24] = {};
-        static bool hsl_found = false;
-        if (!hsl_found)
-        {
-            static const char* const PARTS[3] = { "Hue", "Sat", "Lum" };
-            for (S32 r = 0; r < 8; ++r)
-            {
-                for (S32 k = 0; k < 3; ++k)
-                {
-                    hsl_controls[r * 3 + k] = gSavedSettings.getControl(std::string("LuminousPhotoHSL") + HSL_RANGES[r] + PARTS[k]);
-                }
-            }
-            hsl_found = true;
-        }
         F32 hsl[24];
-        for (S32 i = 0; i < 24; ++i)
+        for (S32 r = 0; r < 8; ++r)
         {
-            hsl[i] = hsl_controls[i] ? llclamp((F32)hsl_controls[i]->getValue().asReal(), -1.f, 1.f) : 0.f;
+            hsl[r * 3 + 0] = params.hsl[r].x;
+            hsl[r * 3 + 1] = params.hsl[r].y;
+            hsl[r * 3 + 2] = params.hsl[r].z;
         }
         shader.uniform3fv(s_hsl, 8, hsl);
+        // White balance, row-major as GL is given it with transpose.
         F32 balance[9];
-        whiteBalance(llclamp(warmth(), -1.f, 1.f), llclamp(tint(), -1.f, 1.f), balance);
+        for (S32 r = 0; r < 3; ++r)
+        {
+            for (S32 c = 0; c < 3; ++c)
+            {
+                balance[r * 3 + c] = params.balance.columns[c][r];
+            }
+        }
         GLint location = shader.getUniformLocation(s_balance);
-        if (location >= 0)
+        if (location >= 0 && !gl)
+        {
+            shader.uniformMatrix3fv(s_balance, 1, GL_TRUE, balance); // the facade transposes it for Metal
+        }
+        else if (location >= 0)
         {
             glUniformMatrix3fv(location, 1, GL_TRUE, balance);
         }
-        shader.uniform1f(s_ev, powf(2.f, llclamp(ev(), -5.f, 5.f)));
-        shader.uniform1f(s_contrast, llclamp(contrast(), 0.25f, 4.f));
-        shader.uniform1f(s_saturation, llclamp(saturation(), 0.f, 3.f));
-        shader.uniform1f(s_mono, llclamp(mono(), 0.f, 1.f));
-        shader.uniform1f(s_tone, llclamp(sepia(), 0.f, 1.f));
-        shader.uniform1f(s_highlights, llclamp(highlights(), -1.f, 1.f));
-        shader.uniform1f(s_shadows, llclamp(shadows(), -1.f, 1.f));
-        shader.uniform1f(s_vibrance, llclamp(vibrance(), -1.f, 1.f));
-        shader.uniform3fv(s_mono_weights, 1, MONO_FILTERS[llclamp((S32)mono_filter(), 0, 5)]);
+        shader.uniform1f(s_ev, params.ev);
+        shader.uniform1f(s_contrast, params.contrast);
+        shader.uniform1f(s_saturation, params.saturation);
+        shader.uniform1f(s_mono, params.mono);
+        shader.uniform1f(s_tone, params.sepia);
+        shader.uniform1f(s_highlights, params.highlights);
+        shader.uniform1f(s_shadows, params.shadows);
+        shader.uniform1f(s_vibrance, params.vibrance);
+        shader.uniform3fv(s_mono_weights, 1, (const F32*)&params.monoWeights);
         // kept for renders: none live; after sharpening: in that pass instead
-        shader.uniform1f(s_grain, drawnNow(Kept::Grain) && !sGrainAfterSharpening ? llclamp((F32)grain(), 0.f, 1.f) : 0.f);
-        shader.uniform1f(s_grain_size, llclamp(grain_size(), 1.f, 4.f));
-        bindWornUniforms(shader, !sGrainAfterSharpening);
-        bindLightLeakUniforms(shader);
-        shader.uniform1f(s_whites, llclamp(whites(), -1.f, 1.f));
-        shader.uniform1f(s_blacks, llclamp(blacks(), -1.f, 1.f));
-        shader.uniform3fv(s_bal_sh, 1, balanceGains(sh_warm(), sh_tint()).mV);
-        shader.uniform3fv(s_bal_mid, 1, balanceGains(mid_warm(), mid_tint()).mV);
-        shader.uniform3fv(s_bal_hi, 1, balanceGains(hi_warm(), hi_tint()).mV);
+        shader.uniform1f(s_grain, params.grain);
+        shader.uniform1f(s_grain_size, params.grainSize);
+        bindWornUniforms(shader, params.worn, params);
+        bindLightLeakUniforms(shader, params);
+        shader.uniform1f(s_whites, params.whites);
+        shader.uniform1f(s_blacks, params.blacks);
+        shader.uniform3fv(s_bal_sh, 1, (const F32*)&params.balanceShadows);
+        shader.uniform3fv(s_bal_mid, 1, (const F32*)&params.balanceMidtones);
+        shader.uniform3fv(s_bal_hi, 1, (const F32*)&params.balanceHighlights);
     }
 
     void resetLook()
@@ -4507,7 +5167,7 @@ namespace LuminousPhotoMode
     bool ambientOcclusion()
     {
         static LLCachedControl<bool> ao(gSavedSettings, "LuminousPhotoAO", true);
-        return isOn() && ao;
+        return isOn() && LuminousMetal::on(LuminousMetal::Effect::GTAO) && ao;
     }
 
     F32 aoSoften()
@@ -4528,47 +5188,103 @@ namespace LuminousPhotoMode
         // programs built.
         bool gtaoHalfNow()
         {
+            // On Metal the half-size pass is native or not drawn: GTAO is then
+            // drawn at full size in the sun pass.
             return ambientOcclusionNow() && !fullQuality(LiveQuality::AO) && LLPipeline::RenderDeferredSSAO
-                && !gCubeSnapshot && gLuminousGTAOProgram.isComplete() && gLuminousGTAOUpProgram.isComplete();
+                && !gCubeSnapshot
+                && (LuminousMetal::metal() ? LuminousMetal::passReady(LuminousMetal::Pass::HalfGTAO)
+                                           : gLuminousGTAOProgram.isComplete() && gLuminousGTAOUpProgram.isComplete());
         }
+    }
+
+    void fillScreenParams(LuminousScreenParams& p, U32 half_width, U32 half_height)
+    {
+        p = LuminousScreenParams();
+        p.frame = (F32)llmax(sAccumulationFrame, 0);
+        p.halfSize = simd_make_float2((F32)half_width, (F32)half_height);
+
+        // GTAO: 1 drawn in the sun pass; 2 drawn at half size after it; 3
+        // kept for renders, so the live preview has no ambient occlusion, as
+        // with GTAO off; 0 GTAO off (Linden's, if Firestorm's AO is on by
+        // itself).
+        static LLCachedControl<F32> radius(gSavedSettings, "LuminousPhotoAORadius", 0.395f);
+        static LLCachedControl<F32> strength(gSavedSettings, "LuminousPhotoAOStrength", 1.1f);
+        p.gtao = ambientOcclusionNow() ? (gtaoHalfNow() ? 2 : 1) : (ambientOcclusion() ? 3 : 0);
+        p.aoSlices = 6;
+        p.aoSteps = 8;
+        p.aoRadius = llclamp(radius(), 0.05f, 4.f);
+        p.aoStrength = llclamp(strength(), 0.f, 4.f);
+        p.aoSoften = aoSoften();
+
+        // Ambient occlusion darkens only ambient light, so in a studio lit
+        // by projectors without a sun it shows nothing at all. Not a
+        // camera's way, so an option: the lamps take this share of it. The
+        // sun pass's AO is in the light map's green; Linden's AO is left to
+        // ambient light.
+        static LLCachedControl<F32> share(gSavedSettings, "LuminousPhotoAOLights", 0.f);
+        p.aoLights = LuminousMetal::on(LuminousMetal::Effect::AOLights) && share() > 0.f && LLPipeline::RenderDeferredSSAO
+                     && ambientOcclusionNow() ? llclamp((F32)share(), 0.f, 1.f) : 0.f;
+
+        // Contact shadows: length 0 when not drawn now.
+        if (contactShadowsNow())
+        {
+            static LLCachedControl<F32> length(gSavedSettings, "LuminousPhotoContactShadowsLength", 0.3f);
+            static LLCachedControl<F32> contact_strength(gSavedSettings, "LuminousPhotoContactShadowsStrength", 1.f);
+            p.contactLength = llclamp((F32)length(), 0.01f, 2.f);
+            p.contactStrength = llclamp((F32)contact_strength(), 0.f, 1.f);
+            const LLVector4& light = LLEnvironment::instance().getIsSunUp() ? gPipeline.mTransformedSunDir : gPipeline.mTransformedMoonDir;
+            p.contactLight = simd_make_float4(light.mV[VX], light.mV[VY], light.mV[VZ], 0.f);
+            p.contactSeed = (F32)llmax(sAccumulationFrame, 0);
+            p.contactSteps = 24;
+            p.contactAll = pictureFrame() ? 1 : 0;
+        }
+
+        // Enhanced reflections: kept for renders, the live preview has
+        // Firestorm's; only in pictures, so the steps are a picture's.
+        p.ssr = reflectionsNow() ? 1 : 0;
+        p.ssrSteps = 96;
+        p.ssrSamples = 4;
+        p.ssrScale = liveRenderScale();
     }
 
     void bindAOUniforms(LLGLSLShader& shader)
     {
         bindFrame(shader);
-        // Kept for renders, the live preview has Linden's ambient occlusion;
-        // 2 when GTAO is drawn at half size after the sun pass instead.
+        LuminousScreenParams params;
+        fillScreenParams(params);
         static LLStaticHashedString s_gtao("luminous_gtao");
-        shader.uniform1i(s_gtao, ambientOcclusionNow() ? (gtaoHalfNow() ? 2 : 1) : 0);
-        static LLCachedControl<F32> radius(gSavedSettings, "LuminousPhotoAORadius", 0.395f);
-        static LLCachedControl<F32> strength(gSavedSettings, "LuminousPhotoAOStrength", 1.1f);
         static LLStaticHashedString s_radius("luminous_ao_radius");
         static LLStaticHashedString s_strength("luminous_ao_strength");
         static LLStaticHashedString s_slices("luminous_ao_slices");
         static LLStaticHashedString s_steps("luminous_ao_steps");
-        shader.uniform1i(s_slices, 6);
-        shader.uniform1i(s_steps, 8);
-        shader.uniform1f(s_radius, llclamp(radius(), 0.05f, 4.f));
-        shader.uniform1f(s_strength, llclamp(strength(), 0.f, 4.f));
+        shader.uniform1i(s_gtao, params.gtao);
+        shader.uniform1i(s_slices, params.aoSlices);
+        shader.uniform1i(s_steps, params.aoSteps);
+        shader.uniform1f(s_radius, params.aoRadius);
+        shader.uniform1f(s_strength, params.aoStrength);
     }
 
     void bindAOOnLights(LLGLSLShader& shader)
     {
-        // Ambient occlusion darkens only ambient light, so in a studio lit
-        // by projectors without a sun it shows nothing at all. Not a
-        // camera's way, so an option: the lamps take this share of it. The
-        // sun pass's AO is in the light map's green; Linden's AO (the live
-        // stand-in when GTAO is kept for renders) is left to ambient light.
-        static LLCachedControl<F32> share(gSavedSettings, "LuminousPhotoAOLights", 0.f);
+        if (!isOn())
+        {
+            return;
+        }
         static LLStaticHashedString s_share("luminous_ao_lights");
-        const F32 value = share() > 0.f && LLPipeline::RenderDeferredSSAO && ambientOcclusionNow()
-                              ? llclamp((F32)share(), 0.f, 1.f) : 0.f;
-        shader.uniform1f(s_share, value);
+        LuminousScreenParams params;
+        fillScreenParams(params);
+        shader.uniform1f(s_share, params.aoLights);
     }
 
     void renderHalfGTAO(LLRenderTarget* light_target)
     {
         if (!gtaoHalfNow() || !light_target)
+        {
+            return;
+        }
+        LuminousMetal::PassTargets targets;
+        targets.light = light_target;
+        if (LuminousMetal::replaces(LuminousMetal::Pass::HalfGTAO, targets))
         {
             return;
         }
@@ -4620,7 +5336,7 @@ namespace LuminousPhotoMode
     {
         static LLCachedControl<bool> ssr(gSavedSettings, "LuminousPhotoSSR", true);
         static LLCachedControl<bool> firestorm_ssr(gSavedSettings, "RenderScreenSpaceReflections", false);
-        return isOn() && ssr && firestorm_ssr;
+        return isOn() && LuminousMetal::on(LuminousMetal::Effect::Reflections) && ssr && firestorm_ssr;
     }
 
     bool reflectionsNow()
@@ -4633,24 +5349,26 @@ namespace LuminousPhotoMode
         static LLStaticHashedString s_steps("luminous_ssr_steps");
         static LLStaticHashedString s_samples("luminous_ssr_samples");
         bindFrame(shader);
+        LuminousScreenParams params;
+        fillScreenParams(params);
         // Kept for renders, the live preview has Firestorm's reflections.
         static LLStaticHashedString s_ssr("luminous_ssr");
-        shader.uniform1i(s_ssr, reflectionsNow() ? 1 : 0);
-        shader.uniform1i(s_steps, 96); // only in pictures: they are never live
-        shader.uniform1i(s_samples, 4);
+        shader.uniform1i(s_ssr, params.ssr);
+        shader.uniform1i(s_steps, params.ssrSteps); // only in pictures: they are never live
+        shader.uniform1i(s_samples, params.ssrSamples);
         static LLStaticHashedString s_scale("luminous_ssr_scale");
-        shader.uniform1f(s_scale, liveRenderScale());
+        shader.uniform1f(s_scale, params.ssrScale);
     }
 
     bool depthOfFieldNow()
     {
-        return drawnNow(Kept::DepthOfField);
+        return !isOn() || drawnNow(Kept::DepthOfField); // off, Firestorm's depth of field is drawn as ever
     }
 
     bool depthOfField()
     {
         static LLCachedControl<bool> dof(gSavedSettings, "LuminousPhotoDoF", true);
-        return isOn() && dof;
+        return isOn() && LuminousMetal::on(LuminousMetal::Effect::DepthOfField) && dof;
     }
 
     bool drawsDepthOfField()
@@ -4660,7 +5378,8 @@ namespace LuminousPhotoMode
             return false; // Firestorm's blur, if its depth of field is on and drawn now
         }
         static const char* last = nullptr;
-        bool built = gLuminousDepthOfFieldProgram.isComplete();
+        // On Metal depthOfField() is on only with the native passes ready.
+        bool built = LuminousMetal::metal() || gLuminousDepthOfFieldProgram.isComplete();
         logState("Depth of field", last, built ? "drawing" : "Firestorm's, its shader did not build");
         return built;
     }
@@ -4669,18 +5388,61 @@ namespace LuminousPhotoMode
     {
         if (sDoFSource.getWidth() != width || sDoFSource.getHeight() != height)
         {
-            sDoFSource.allocate(width, height, GL_RGBA16F, false, LLTexUnit::TT_TEXTURE, LLTexUnit::TMG_AUTO);
+            sDoFSource.allocate(width, height, GL_RGBA16F, false, LLTexUnit::TT_TEXTURE,
+                                LuminousMetal::metal() ? LLTexUnit::TMG_NONE : LLTexUnit::TMG_AUTO);
         }
         return &sDoFSource;
     }
 
-    void renderDepthOfField(LLRenderTarget* cof, LLRenderTarget* hdr_screen, F32 max_cof)
+    void fillDoFParams(LuminousDoFParams& p, U32 width, U32 height, F32 max_cof)
     {
-        LL_PROFILE_GPU_ZONE("luminous depth of field");
-
         static LLCachedControl<U32> max_samples(gSavedSettings, "LuminousPhotoDoFSamples", 1024);
         static LLCachedControl<bool> front(gSavedSettings, "LuminousPhotoDoFFront", false);
         static LLCachedControl<U32> blades(gSavedSettings, "LuminousPhotoDoFBlades", 0);
+        p = LuminousDoFParams();
+        p.screenRes = simd_make_float2((F32)width, (F32)height);
+        p.tiles = simd_make_uint2((width + DOF_TILE - 1) / DOF_TILE, (height + DOF_TILE - 1) / DOF_TILE);
+        p.maxCoF = max_cof;
+        // One sample a pixel apart over the largest disc, up to the most
+        // allowed; past that they spread out, and read a coarser mip level to
+        // match. The whole spiral, as a picture takes it.
+        const F32 radius = llmax(max_cof, 1.f);
+        const S32 most = (S32)llclamp((U32)max_samples(), 16U, 4096U);
+        p.samples = llclamp((S32)(F_PI * radius * radius), 16, most);
+        const F32 spacing = radius * sqrtf(F_PI / (F32)p.samples);
+        p.lod = llmax(0.f, logf(spacing) / logf(2.f));
+        // Every pixel may take the whole spiral, live as in a picture: fewer
+        // while the shot is set up would save only about 1 ms a frame on an
+        // M4 Mac.
+        p.budget = p.samples;
+        // A sample lies up to max_cof pixels away and reads a mip level
+        // whose texels, filtered, span up to 2^(lod + 1) pixels round it:
+        // so a blur can reach from this many tiles away.
+        const F32 margin = llmax(max_cof, 0.f) + powf(2.f, ceilf(p.lod) + 1.f) + 1.f;
+        p.reach = (S32)ceilf(margin / (F32)DOF_TILE);
+        p.front = front ? 1.f : 0.f;
+        p.blades = (F32)llmin((U32)blades(), 16U);
+        p.picture = pictureFrame() ? 1 : 0;
+    }
+
+    void renderDepthOfField(LLRenderTarget* cof, LLRenderTarget* hdr_screen, F32 max_cof)
+    {
+        LuminousMetal::PassTargets targets;
+        targets.frame = hdr_screen;
+        targets.cof = cof;
+        targets.maxCoF = max_cof;
+        // On Metal the gather is asked for whether the tiles drew or not, so a native gather works without tiles,
+        // as the gather below does with tile 0. targets.cof is the circle-of-confusion target renderDoF gave, which
+        // need not be sDoFSource with its mip levels: a native gather makes the levels it reads itself.
+        if (LuminousMetal::replaces(LuminousMetal::Pass::DoFTiles, targets))
+        {
+            LuminousMetal::replaces(LuminousMetal::Pass::DoFGather, targets);
+            return;
+        }
+        LL_PROFILE_GPU_ZONE("luminous depth of field");
+
+        LuminousDoFParams params;
+        fillDoFParams(params, cof->getWidth(), cof->getHeight(), max_cof);
         static LLStaticHashedString s_samples("luminous_dof_samples");
         static LLStaticHashedString s_lod("luminous_dof_lod");
         static LLStaticHashedString s_budget("luminous_dof_budget");
@@ -4701,26 +5463,15 @@ namespace LuminousPhotoMode
 
         LLGLDisable blend(GL_BLEND);
 
-        // One sample a pixel apart over the largest disc, up to the most
-        // allowed; past that they spread out, and read a coarser mip level to
-        // match. The whole spiral, as a picture takes it.
-        const F32 radius = llmax(max_cof, 1.f);
-        const S32 most = (S32)llclamp((U32)max_samples(), 16U, 4096U);
-        const S32 samples = llclamp((S32)(F_PI * radius * radius), 16, most);
-        const F32 spacing = radius * sqrtf(F_PI / (F32)samples);
-        const F32 lod = llmax(0.f, logf(spacing) / logf(2.f));
-        // Every pixel may take the whole spiral, live as in a picture: fewer
-        // while the shot is set up would save only about 1 ms a frame on an
-        // M4 Mac.
-        const S32 budget = samples;
+        // The samples, their mip level and the tiles' reach: fillDoFParams.
 
         // The tiles, so that each pixel stops at the last sample a blur near
         // it can reach: in focus, none. Without them, the whole spiral.
         S32 tile = 0;
         if (gLuminousDoFTileProgram.isComplete())
         {
-            const U32 tiles_x = (width + DOF_TILE - 1) / DOF_TILE;
-            const U32 tiles_y = (height + DOF_TILE - 1) / DOF_TILE;
+            const U32 tiles_x = params.tiles.x;
+            const U32 tiles_y = params.tiles.y;
             bool ready = sDoFTiles.getWidth() == tiles_x && sDoFTiles.getHeight() == tiles_y
                          && sDoFReach.getWidth() == tiles_x && sDoFReach.getHeight() == tiles_y;
             if (!ready)
@@ -4736,14 +5487,10 @@ namespace LuminousPhotoMode
             {
                 LLGLSLShader& tiles = gLuminousDoFTileProgram;
                 tiles.bind();
-                tiles.uniform1f(LLShaderMgr::DOF_MAX_COF, max_cof);
-                tiles.uniform1f(s_front, front ? 1.f : 0.f);
+                tiles.uniform1f(LLShaderMgr::DOF_MAX_COF, params.maxCoF);
+                tiles.uniform1f(s_front, params.front);
                 tiles.uniform1i(s_tile, (S32)DOF_TILE);
-                // A sample lies up to max_cof pixels away and reads a mip level
-                // whose texels, filtered, span up to 2^(lod + 1) pixels round it:
-                // so a blur can reach from this many tiles away.
-                const F32 margin = llmax(max_cof, 0.f) + powf(2.f, ceilf(lod) + 1.f) + 1.f;
-                tiles.uniform1i(s_reach, (S32)ceilf(margin / (F32)DOF_TILE));
+                tiles.uniform1i(s_reach, params.reach);
 
                 tiles.uniform1i(s_pass, 0);
                 sDoFTiles.bindTarget();
@@ -4772,19 +5519,274 @@ namespace LuminousPhotoMode
         {
             shader.bindTexture(LLShaderMgr::DEFERRED_LIGHT, &sDoFReach, false, LLTexUnit::TFO_POINT);
         }
-        shader.uniform2f(LLShaderMgr::DEFERRED_SCREEN_RES, (F32)width, (F32)height);
-        shader.uniform1f(LLShaderMgr::DOF_MAX_COF, max_cof);
-        shader.uniform1i(s_samples, samples);
-        shader.uniform1f(s_lod, lod);
-        shader.uniform1i(s_budget, budget);
+        shader.uniform2f(LLShaderMgr::DEFERRED_SCREEN_RES, params.screenRes.x, params.screenRes.y);
+        shader.uniform1f(LLShaderMgr::DOF_MAX_COF, params.maxCoF);
+        shader.uniform1i(s_samples, params.samples);
+        shader.uniform1f(s_lod, params.lod);
+        shader.uniform1i(s_budget, params.budget);
         shader.uniform1i(s_tile, tile);
-        shader.uniform1f(s_front, front ? 1.f : 0.f);
-        shader.uniform1f(s_blades, (F32)llmin((U32)blades(), 16U));
+        shader.uniform1f(s_front, params.front);
+        shader.uniform1f(s_blades, params.blades);
         drawScreenTriangle();
         shader.unbind();
 
         gGL.setColorMask(true, true);
         hdr_screen->flush();
+    }
+
+    void fillAirParams(LuminousAirParams& p, U32 width, U32 height)
+    {
+        // As takeSunShaftMask, softenSunShaftMask, addSunShafts and
+        // renderVolumetricLight compute them, and the projector beams' values
+        // all projectors share; fillAirBeams gives each projector's.
+        static LLCachedControl<F32> radius(gSavedSettings, "LuminousPhotoSunShaftsRadius", 0.6f);
+        static LLCachedControl<F32> softness(gSavedSettings, "LuminousPhotoSunShaftsSoftness", 0.3f);
+        static LLCachedControl<F32> length(gSavedSettings, "LuminousPhotoSunShaftsLength", 0.9f);
+        static LLCachedControl<F32> strength(gSavedSettings, "LuminousPhotoSunShaftsStrength", 1.f);
+        static LLCachedControl<U32> samples(gSavedSettings, "LuminousPhotoVolumetricSamples", 64);
+        static LLCachedControl<F32> density(gSavedSettings, "LuminousPhotoVolumetricDensity", 0.005f);
+        static LLCachedControl<F32> anisotropy(gSavedSettings, "LuminousPhotoVolumetricAnisotropy", 0.6f);
+        static LLCachedControl<F32> distance(gSavedSettings, "LuminousPhotoVolumetricDistance", 128.f);
+        static LLCachedControl<F32> beam_density(gSavedSettings, "LuminousPhotoProjectorBeamsDensity", 0.4f);
+        static LLCachedControl<F32> beam_anisotropy(gSavedSettings, "LuminousPhotoProjectorBeamsAnisotropy", 0.3f);
+        p = LuminousAirParams();
+        LLEnvironment& environment = LLEnvironment::instance();
+        const LLVector4 light = environment.getClampedLightNorm();
+        p.lightNorm = simd_make_float4(light.mV[0], light.mV[1], light.mV[2], 0.f);
+        LLVector2 sun_uv;
+        F32 fade = 0.f;
+        if (!sunOnScreen(sun_uv, fade))
+        {
+            fade = 0.f;
+        }
+        p.sunUV = simd_make_float2(sun_uv.mV[VX], sun_uv.mV[VY]);
+        const F32 scale = liveRenderScale();
+        p.srcTexel = simd_make_float2(scale / (F32)llmax(width, 1U), scale / (F32)llmax(height, 1U));
+        p.shaftFade = fade;
+        p.shaftRadius = llmax(radius(), 0.05f);
+        p.shaftSoftness = llclamp(softness(), 0.f, 1.f) * 4.f * scale;
+        p.shaftLength = llclamp(length(), 0.f, 1.f);
+        p.shaftStrength = llmax(strength(), 0.f) * fade;
+        p.shaftSamples = 96;
+        p.aspect = (F32)width / (F32)llmax(height, 1U);
+        p.volSamples = llclamp((S32)samples(), 4, 512);
+        p.volDensity = llclamp(density(), 0.f, 1.f);
+        p.volAnisotropy = llclamp(anisotropy(), 0.f, 0.95f);
+        p.volDistance = llmax(distance(), 1.f);
+        p.sunUp = environment.getIsSunUp() ? 1 : 0;
+        p.beamSamples = p.volSamples;
+        p.beamDensity = llclamp(beam_density(), 0.f, 4.f);
+        p.beamAnisotropy = llclamp(beam_anisotropy(), 0.f, 0.95f);
+        p.frame = (F32)llmax(sAccumulationFrame, 0);
+
+        // What bindDeferredShader gives the volumetric light and the beams.
+        const glm::mat4 inv_proj = glm::inverse(gGL.getProjectionMatrix());
+        static_assert(sizeof(p.invProj) == sizeof(inv_proj), "four columns of four floats on both sides");
+        memcpy(&p.invProj, glm::value_ptr(inv_proj), sizeof(p.invProj));
+        for (U32 i = 0; i < 6; ++i)
+        {
+            memcpy(&p.shadowMatrix[i], glm::value_ptr(gPipeline.mSunShadowMatrix[i]), sizeof(p.shadowMatrix[i]));
+        }
+        const LLVector4& clip = gPipeline.mSunClipPlanes;
+        p.shadowClip = simd_make_float4(clip.mV[0], clip.mV[1], clip.mV[2], clip.mV[3]);
+        const LLVector4& light_dir = p.sunUp ? gPipeline.mTransformedSunDir : gPipeline.mTransformedMoonDir;
+        p.lightDir = simd_make_float4(light_dir.mV[0], light_dir.mV[1], light_dir.mV[2], 0.f);
+        const F32 bias_error = LLPipeline::RenderShadowBiasError * fabsf(LLViewerCamera::getInstance()->getOrigin().mV[2]) / 3000.f;
+        p.shadowBias = LLPipeline::RenderShadowBias + bias_error;
+        p.spotShadowBias = LLPipeline::RenderSpotShadowBias;
+
+        // calcAtmosphericVarsLinear's sunlit, which depends on the sky alone: the sun's or the moon's
+        // light (bindDeferredShader's, auto-adjusted for a legacy sky), dimmed by the air above as the
+        // sun's height says, linear unless the sky is a classic one, times the sunlight scale.
+        static LLCachedControl<bool> should_auto_adjust(gSavedSettings, "RenderSkyAutoAdjustLegacy", false);
+        static LLCachedControl<F32> auto_adjust_sun_color_scale(gSavedSettings, "RenderSkyAutoAdjustSunColorScale", 1.f);
+        static LLCachedControl<F32> auto_adjust_blue_density_scale(gSavedSettings, "RenderSkyAutoAdjustBlueDensityScale", 1.f);
+        static LLCachedControl<bool> hdr(gSavedSettings, "RenderHDREnabled");
+        static LLCachedControl<F32> sunlight_scale(gSavedSettings, "RenderSkySunlightScale", 1.5f);
+        static LLCachedControl<F32> sunlight_hdr_scale(gSavedSettings, "RenderHDRSkySunlightScale", 1.5f);
+        LLSettingsSky::ptr_t psky = environment.getCurrentSky();
+        LLColor3 sunlit(0.f, 0.f, 0.f);
+        if (psky)
+        {
+            const bool auto_adjust = should_auto_adjust && psky->canAutoAdjust();
+            const bool classic = psky->canAutoAdjust() && !should_auto_adjust;
+            if (p.sunUp)
+            {
+                sunlit = LLColor3(gPipeline.mSunDiffuse.mV);
+                if (auto_adjust)
+                {
+                    sunlit *= auto_adjust_sun_color_scale();
+                }
+            }
+            else
+            {
+                sunlit = LLColor3(gPipeline.mMoonDiffuse.mV);
+            }
+            LLColor3 blue_density = psky->getBlueDensity();
+            if (auto_adjust && psky->getReflectionProbeAmbiance() == 0.f)
+            {
+                blue_density *= auto_adjust_blue_density_scale();
+            }
+            const F32 haze = psky->getHazeDensity() * 0.25f;
+            const F32 depth = psky->getDensityMultiplier() * psky->getMaxY();
+            const F32 above_horizon = 1.f / llmax(1e-6f, light.mV[1]);
+            for (U32 c = 0; c < 3; ++c)
+            {
+                F32 v = sunlit.mV[c] * expf(-(blue_density.mV[c] + haze) * depth * above_horizon);
+                if (!classic)
+                {
+                    v = v <= 0.04045f ? v / 12.92f : powf((v + 0.055f) / 1.055f, 2.4f);
+                }
+                sunlit.mV[c] = v * (hdr ? sunlight_hdr_scale() : sunlight_scale());
+            }
+        }
+        p.sunlit = simd_make_float4(sunlit.mV[0], sunlit.mV[1], sunlit.mV[2], 0.f);
+
+        // When each is drawn at half size, and what stops them (skippedBecause).
+        static LLCachedControl<S32> shadow_detail(gSavedSettings, "RenderShadowDetail", 0);
+        static LLCachedControl<U32> max_beams(gSavedSettings, "LuminousPhotoProjectorBeamsMax", 4);
+        p.liveScale = scale;
+        p.sunShadows = shadow_detail() >= 1 ? 1 : 0;
+        p.spotShadows = shadow_detail() >= 2 ? 1 : 0;
+        p.volHalf = (!fullQuality(LiveQuality::Volumetric) && scale > 0.5f) ? 1 : 0;
+        p.beamsHalf = (!fullQuality(LiveQuality::Beams) && scale > 0.5f) ? 1 : 0;
+        p.shaftsHalf = !fullQuality(LiveQuality::Volumetric) ? 1 : 0;
+        p.noPost = gSnapshotNoPost ? 1 : 0;
+        p.beamsMax = (S32)llclamp((U32)max_beams(), 1U, 16U);
+    }
+
+    U32 fillAirBeams(LuminousAirBeam* beams, LLViewerTexture** textures, U32 max)
+    {
+        static LLCachedControl<U32> max_beams(gSavedSettings, "LuminousPhotoProjectorBeamsMax", 4);
+        static LLCachedControl<S32> shadow_detail(gSavedSettings, "RenderShadowDetail", 0);
+        std::vector<LLDrawable*> projectors;
+        gPipeline.getNearbySpotLights(projectors, llclamp((U32)max_beams(), 1U, llmin(max, 16U)));
+
+        const glm::mat4 modelview = get_current_modelview();
+        const glm::mat4 proj = get_current_projection();
+        U32 count = 0;
+        for (LLDrawable* drawablep : projectors)
+        {
+            if (count >= max)
+            {
+                break;
+            }
+            LLVOVolume* volume = drawablep->getVOVolume();
+            if (!volume)
+            {
+                continue;
+            }
+            // As addProjectorBeam: setupSpotLight's frustum without its re-ranking of the spot shadows.
+            const LLVector3& spot = volume->getSpotLightParams();
+            const F32 fov = spot.mV[0];
+            const F32 focus = spot.mV[1];
+            const LLVector3 pos = drawablep->getPositionAgent();
+            const LLQuaternion quat = volume->getRenderRotation();
+            const LLVector3 scale = volume->getScale();
+
+            LLVector3 at_axis(0, 0, -scale.mV[2] * 0.5f);
+            at_axis *= quat;
+            const LLVector3 np = pos + at_axis;
+            at_axis.normVec();
+            const F32 dist = (scale.mV[1] * 0.5f) / tanf(fov * 0.5f);
+            const LLVector3 origin = np - at_axis * dist;
+
+            LLMatrix4 light_mat(quat, LLVector4(origin, 1.f));
+            const glm::mat4 light_to_agent(glm::make_mat4((F32*)light_mat.mMatrix));
+            const glm::mat4 light_to_screen = modelview * light_to_agent;
+
+            const F32 size = volume->getLightRadius() * 1.5f;
+            const F32 near_clip = dist;
+            const F32 far_clip = size + dist - scale.mV[VZ];
+            const F32 aspect = scale.mV[VX] / scale.mV[VY];
+
+            const glm::mat4 trans(0.5f, 0.0f, 0.0f, 0.0f,
+                                  0.0f, 0.5f, 0.0f, 0.0f,
+                                  0.0f, 0.0f, 0.5f, 0.0f,
+                                  0.5f, 0.5f, 0.5f, 1.0f);
+            const glm::vec3 p1 = mul_mat4_vec3(light_to_screen, glm::vec3(0, 0, -(near_clip + 0.01f)));
+            const glm::vec3 p2 = mul_mat4_vec3(light_to_screen, glm::vec3(0, 0, -(near_clip + 1.f)));
+            const glm::vec3 screen_origin = mul_mat4_vec3(light_to_screen, glm::vec3(0, 0, 0));
+            const glm::vec3 n = glm::normalize(p2 - p1);
+            const glm::mat4 light_proj = glm::perspective(fov, aspect, near_clip, far_clip);
+            const glm::mat4 screen_to_light = trans * light_proj * glm::inverse(light_to_screen);
+            const glm::vec3 center = mul_mat4_vec3(modelview, glm::vec3(pos.mV[VX], pos.mV[VY], pos.mV[VZ]));
+
+            // beamRect, in GL uv: the box round its range projected; all of the frame with a corner
+            // behind the eye, and none of it when its range is off screen.
+            F32 x0 = 1.f, y0 = 1.f, x1 = -1.f, y1 = -1.f;
+            bool whole = false;
+            for (S32 i = 0; i < 8 && !whole; ++i)
+            {
+                const glm::vec4 corner(center.x + ((i & 1) ? size : -size), center.y + ((i & 2) ? size : -size),
+                                       center.z + ((i & 4) ? size : -size), 1.f);
+                const glm::vec4 c = proj * corner;
+                if (c.w <= 0.01f)
+                {
+                    whole = true;
+                    break;
+                }
+                x0 = llmin(x0, c.x / c.w);
+                x1 = llmax(x1, c.x / c.w);
+                y0 = llmin(y0, c.y / c.w);
+                y1 = llmax(y1, c.y / c.w);
+            }
+            simd_float4 rect = simd_make_float4(0.f, 0.f, 1.f, 1.f);
+            if (!whole)
+            {
+                rect = simd_make_float4(llclamp(x0, -1.f, 1.f) * 0.5f + 0.5f, llclamp(y0, -1.f, 1.f) * 0.5f + 0.5f,
+                                        llclamp(x1, -1.f, 1.f) * 0.5f + 0.5f, llclamp(y1, -1.f, 1.f) * 0.5f + 0.5f);
+                if (rect.z <= rect.x || rect.w <= rect.y)
+                {
+                    continue; // off screen
+                }
+            }
+
+            LuminousAirBeam& b = beams[count];
+            b = LuminousAirBeam();
+            static_assert(sizeof(b.projMat) == sizeof(screen_to_light), "four columns of four floats on both sides");
+            memcpy(&b.projMat, glm::value_ptr(screen_to_light), sizeof(b.projMat));
+            const LLColor3 color = volume->getLightLinearColor();
+            b.center = simd_make_float4(center.x, center.y, center.z, size);
+            b.color = simd_make_float4(color.mV[0], color.mV[1], color.mV[2],
+                                       volume->getLightFalloff(LUMINOUS_DEFERRED_LIGHT_FALLOFF));
+            b.projN = simd_make_float4(n.x, n.y, n.z, focus);
+            b.projOrigin = simd_make_float4(screen_origin.x, screen_origin.y, screen_origin.z, far_clip - near_clip);
+            b.rect = rect;
+            b.shadowIdx = -1;
+            b.shadowFade = 1.f;
+            if (shadow_detail() >= 2)
+            {
+                for (U32 i = 0; i < 2; i++)
+                {
+                    if (gPipeline.mShadowSpotLight[i] == drawablep)
+                    {
+                        b.shadowIdx = (S32)i;
+                        b.shadowFade = 1.f - gPipeline.mSpotLightFade[i];
+                    }
+                }
+            }
+            LLViewerTexture* img = volume->getLightTexture();
+            if (!img)
+            {
+                img = LLViewerFetchedTexture::sWhiteImagep;
+            }
+            // A texture not yet fetched has width 0, whose log would make the sample's level NaN or -inf.
+            b.projLod = img && img->getWidth() > 0 ? log2f((F32)img->getWidth()) : 0.f;
+            b.texture = 0;
+            textures[count] = img;
+            ++count;
+        }
+        return count;
+    }
+
+    void fillRenderParams(LuminousRenderParams& p)
+    {
+        p = LuminousRenderParams();
+        p.frame = sAccumulationFrame;
+        p.frames = sAccumulationFrames;
+        p.weight = 1.f / (F32)llmax(sAccumulationFrames, 1);
+        p.frameScale = sFrameScale;
     }
 
     void render(LLRenderTarget* hdr_screen)
@@ -4793,9 +5795,9 @@ namespace LuminousPhotoMode
         F32 fade = 0.f;
         bool shafts = sunShafts() && drawnNow(Kept::SunShafts) && takeSunShaftMask(hdr_screen, sun_uv, fade);
         LLRenderTarget* shaft_mask = shafts ? softenSunShaftMask() : nullptr;
-        if (volumetricLightNow() || projectorBeamsNow())
+        if ((volumetricLightNow() || projectorBeamsNow()) && LuminousMetal::translatedPasses())
         {
-            storeFrameDepth();
+            storeFrameDepth(); // OpenGL's tile memory; Metal's passes store their depth explicitly
         }
         if (volumetricLightNow())
         {
@@ -5105,6 +6107,218 @@ void LLPipeline::getNearbySpotLights(std::vector<LLDrawable*>& lights, U32 max_c
             continue;
         }
         lights.push_back(drawablep);
+    }
+}
+// </Luminous>
+
+// <Luminous> Firestorm's own controls for what the photo sidebar sets, shown
+// while photo mode is off, and with it the sidebar (the Metal renderer).
+// Luminous hides them in Preferences > Graphics and Phototools, since the
+// sidebar sets those values. The list below, one entry per window, and
+// showFirestormControls are all of it. (Linden's advanced graphics window,
+// where Luminous hides them too, is not built in Firestorm.)
+namespace
+{
+    // A control in a column laid out one under the other (XUI's top_pad and
+    // top_delta). It moves `down` pixels, and every control built after it in
+    // the same parent moves `below` pixels, up to `until`, the first control
+    // placed on its own (nullptr: all after it). `height`, when not 0, is its
+    // height again where Luminous closed the row up to 0. The numbers are
+    // Firestorm's layout less Luminous's, so the window looks as Firestorm's.
+    struct FirestormRow
+    {
+        const char* name;
+        S32 down;
+        S32 below;
+        S32 height;
+        const char* until;
+    };
+
+    struct FirestormRows
+    {
+        const char* parent; // the panel the rows are in; nullptr: the window
+        std::vector<FirestormRow> rows;
+    };
+
+    struct FirestormControls
+    {
+        const char* window;
+        std::vector<const char*> tabs;     // tabs of the window's "tabs" to show
+        std::vector<const char*> controls; // controls and panels shown as they are
+        std::vector<FirestormRows> rows;   // closed-up rows to open again
+    };
+
+    const std::vector<FirestormControls>& firestormControls()
+    {
+        static const std::vector<FirestormControls> list = {
+            // Preferences > Graphics (panel_preferences_graphics1.xml): ambient
+            // occlusion, exposure, HDR, glow and its strength, attached lights,
+            // sharpening, tone mapping, and the Depth of Field tab.
+            { "display",
+              { "DOF panel" },
+              { "TonemapTypeText", "TonemapType", "TonemapMix" },
+              {
+                  { "General",
+                    { { "UseSSAO", 1, 17, 16, "Fullscreen Mode" }, // the left column ends there
+                      { "RenderExposure", 2, 17, 15, nullptr } } },
+                  // The Rendering tab is spaced wider than Firestorm's; with
+                  // the four rows back it takes Firestorm's spacing, or its
+                  // last rows would fall off the tab.
+                  { "Rendering",
+                    { { "World Updating", -8, -8, 0, nullptr },
+                      { "WorldPause", -2, -2, 0, nullptr },
+                      { "FSLimitFramerate", -2, -2, 0, nullptr },
+                      { "vsync", -2, -2, 0, nullptr },
+                      { "Texture Rendering", -10, -10, 0, nullptr },
+                      { "FSRestrictMaxTextureSize", -1, -1, 0, nullptr },
+                      { "TextureDetailLabel", -3, -3, 0, nullptr },
+                      { "Miscellaneous Rendering", -10, -10, 0, nullptr },
+                      { "VintageMode", 0, 16, 16, nullptr },
+                      { "RenderAutoMaskAlphaDeferred", -3, -3, 0, nullptr },
+                      { "RenderGlow", 1, 17, 16, nullptr },
+                      // beside Render glow: back up by what Render glow's row moves those after it
+                      { "glow_strength", -16, 0, 16, nullptr },
+                      { "RenderUnloadedAvatars", -3, -3, 0, nullptr },
+                      { "Wireframe", -3, -3, 0, nullptr },
+                      { "Render Attached Lights", 1, 17, 16, nullptr },
+                      { "Render Attached Particles", -3, -3, 0, nullptr },
+                      { "Reduce Draw Distance when VRAM is full", -3, -3, 0, nullptr },
+                      { "ExcludeAnimeshImposterLabel", -4, -4, 0, nullptr },
+                      { "PrecachingDelay", -3, -3, 0, nullptr },
+                      { "ShadowResolution", -5, -5, 0, nullptr },
+                      { "RenderTerrainScale", -5, -5, 0, nullptr },
+                      { "RenderSharpness", 0, 16, 16, nullptr },
+                      { "ReflectionProbeCount", -6, -6, 0, nullptr } } },
+              } },
+            // Phototools (floater_phototools.xml): the Shdw, VFX and Gen tabs,
+            // and in them ambient occlusion, depth of field and HDR tone mapping.
+            { "phototools",
+              { "P_Lighting", "P_DoF_Glow", "P_General" },
+              { "P_Ambient_Occlusion", "P_Amb_Occ_Settings", "P_Scale",
+                "PT_DoF_Glow", "P_DoF_Settings", "P_Zoom",
+                "P_Tone_Settings", "P_Tone_Settings_2", "P_Tone_Settings_3" },
+              {} },
+        };
+        return list;
+    }
+
+    void openFirestormRows(LLView* parent, const std::vector<FirestormRow>& rows)
+    {
+        // The parent's controls in the order the XML built them: each was laid
+        // out from the one before it.
+        std::vector<LLView*> built;
+        for (auto it = parent->getChildList()->rbegin(); it != parent->getChildList()->rend(); ++it)
+        {
+            if ((*it)->getFromXUI())
+            {
+                built.push_back(*it);
+            }
+        }
+        auto index_of = [&built](const char* name)
+        {
+            size_t i = 0;
+            while (i < built.size() && built[i]->getName() != name)
+            {
+                ++i;
+            }
+            return i;
+        };
+
+        for (const FirestormRow& row : rows)
+        {
+            const size_t at = index_of(row.name);
+            if (at == built.size())
+            {
+                LL_WARNS("LuminousPhotoMode") << "Firestorm's control " << row.name << " is not in " << parent->getName()
+                                              << LL_ENDL;
+                continue;
+            }
+            const size_t end = row.until ? index_of(row.until) : built.size();
+            built[at]->translate(0, -row.down);
+            for (size_t i = at + 1; i < end; ++i)
+            {
+                built[i]->translate(0, -row.below);
+            }
+        }
+
+        for (const FirestormRow& row : rows)
+        {
+            const size_t at = index_of(row.name);
+            if (!row.height || at == built.size())
+            {
+                continue;
+            }
+            LLView* view = built[at];
+            LLRect rect = view->getRect();
+            rect.mBottom = rect.mTop - row.height;
+            view->setShape(rect);
+            // A slider's parts were laid out at the closed-up height of 0.
+            for (LLView* part : *view->getChildList())
+            {
+                const LLRect part_rect = part->getRect();
+                if (part_rect.getHeight() == 0)
+                {
+                    part->setShape(LLRect(part_rect.mLeft, row.height, part_rect.mRight, 0));
+                }
+            }
+            view->setVisible(true);
+        }
+    }
+}
+
+namespace LuminousPhotoMode
+{
+    void showFirestormControls(LLPanel* window, const std::string& which)
+    {
+        if (isOn() || !window)
+        {
+            return;
+        }
+        for (const FirestormControls& controls : firestormControls())
+        {
+            if (which != controls.window)
+            {
+                continue;
+            }
+            if (!controls.tabs.empty())
+            {
+                LLTabContainer* tabs = window->findChild<LLTabContainer>("tabs");
+                for (const char* name : controls.tabs)
+                {
+                    if (LLPanel* tab = tabs ? tabs->getPanelByName(name) : nullptr)
+                    {
+                        tabs->setTabVisibility(tab, true);
+                    }
+                    else
+                    {
+                        LL_WARNS("LuminousPhotoMode") << "Firestorm's tab " << name << " is not in " << which << LL_ENDL;
+                    }
+                }
+            }
+            for (const char* name : controls.controls)
+            {
+                if (LLView* view = window->findChild<LLView>(name))
+                {
+                    view->setVisible(true);
+                }
+                else
+                {
+                    LL_WARNS("LuminousPhotoMode") << "Firestorm's control " << name << " is not in " << which << LL_ENDL;
+                }
+            }
+            for (const FirestormRows& rows : controls.rows)
+            {
+                if (LLView* parent = rows.parent ? window->findChild<LLView>(rows.parent) : window)
+                {
+                    openFirestormRows(parent, rows.rows);
+                }
+                else
+                {
+                    LL_WARNS("LuminousPhotoMode") << "Firestorm's panel " << rows.parent << " is not in " << which << LL_ENDL;
+                }
+            }
+            LL_INFOS("LuminousPhotoMode") << "Photo mode is off: Firestorm's own controls shown in " << which << LL_ENDL;
+        }
     }
 }
 // </Luminous>

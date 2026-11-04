@@ -113,6 +113,7 @@
 #include "llglheaders.h"
 #include "llinventoryobserver.h"
 #include "fscommon.h"
+#include <atomic>
 
 LLViewerObject* getSelectedParentObject(LLViewerObject *object) ;
 //
@@ -6852,6 +6853,12 @@ void LLSelectMgr::renderSilhouettes(bool for_hud)
 
     auto renderMeshSelection_f = [fogCfx, wireframe_selection](LLSelectNode* node, LLViewerObject* objectp, LLColor4 hlColor)
     {
+        // [Viewer Lab] Coverage marker, once per session
+        static std::atomic<bool> sReached{ false };
+        if (!sReached.exchange(true))
+        {
+            LL_INFOS("RHI") << "Facade site reached: llselectmgr.cpp:renderSilhouettes (mesh)" << LL_ENDL;
+        }
         LLGLSLShader* shader = LLGLSLShader::sCurBoundShaderPtr;
 
         if (shader)
@@ -6896,7 +6903,7 @@ void LLSelectMgr::renderSilhouettes(bool for_hud)
             }
         }
 
-        glPolygonMode(GL_FRONT_AND_BACK, GL_LINE);
+        gGL.setPolygonMode(GL_FRONT_AND_BACK, GL_LINE); // [Viewer Lab]
 
         S32 num_tes = llmin((S32)objectp->getNumTEs(), (S32)objectp->getNumFaces()); // avatars have TEs but no faces
         for (S32 te = 0; te < num_tes; ++te)
@@ -6911,7 +6918,7 @@ void LLSelectMgr::renderSilhouettes(bool for_hud)
         gGL.popMatrix();
 
         gGL.setLineWidth(1.f); // <FS> Line width OGL core profile fix by Rye Mutt
-        glPolygonMode(GL_FRONT_AND_BACK, GL_FILL);
+        gGL.setPolygonMode(GL_FRONT_AND_BACK, GL_FILL); // [Viewer Lab]
 
         if (shader)
         {

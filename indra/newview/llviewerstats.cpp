@@ -927,12 +927,15 @@ void send_viewer_stats(bool include_preferences)
     body["DisplayNamesShowUsername"] = gSavedSettings.getBOOL("NameTagShowUsernames");
 
     // Preferences
-    if (include_preferences)
-    {
-        bool diffs_only = true; // only log preferences that differ from default
-        body["preferences"]["settings"] = gSavedSettings.asLLSD(diffs_only);
-        body["preferences"]["settings_per_account"] = gSavedPerAccountSettings.asLLSD(diffs_only);
-    }
+    // [Viewer Lab] The non-default settings are never sent, on any path (quit, early quit or
+    // suspend), as in Firestorm, Lumen and Luminous. The parameter stays so callers match upstream.
+    (void)include_preferences;
+    //if (include_preferences)
+    //{
+    //    bool diffs_only = true; // only log preferences that differ from default
+    //    body["preferences"]["settings"] = gSavedSettings.asLLSD(diffs_only);
+    //    body["preferences"]["settings_per_account"] = gSavedPerAccountSettings.asLLSD(diffs_only);
+    //}
 
     body["MinimalSkin"] = false;
 

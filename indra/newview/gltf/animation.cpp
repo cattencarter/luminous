@@ -393,10 +393,7 @@ const Animation& Animation::operator=(const Value& src)
 
 Skin::~Skin()
 {
-    if (mUBO)
-    {
-        glDeleteBuffers(1, &mUBO);
-    }
+    // [Viewer Lab] mUBO lets go of the buffer when the last copy of this skin goes
 }
 
 void Skin::uploadMatrixPalette(Asset& asset)
@@ -405,11 +402,6 @@ void Skin::uploadMatrixPalette(Asset& asset)
     LL_PROFILE_ZONE_SCOPED_CATEGORY_GLTF;
 
     U32 max_joints = LLSkinningUtil::getMaxGLTFJointCount();
-
-    if (mUBO == 0)
-    {
-        glGenBuffers(1, &mUBO);
-    }
 
     size_t joint_count = llmin<size_t>(max_joints, mJoints.size());
 
@@ -452,9 +444,8 @@ void Skin::uploadMatrixPalette(Asset& asset)
         mp[idx + 11] = m[14];
     }
 
-    glBindBuffer(GL_UNIFORM_BUFFER, mUBO);
-    glBufferData(GL_UNIFORM_BUFFER, glmp.size() * sizeof(F32), glmp.data(), GL_STREAM_DRAW);
-    glBindBuffer(GL_UNIFORM_BUFFER, 0);
+    // [Viewer Lab] through the uniform buffer facade, the block declared in gltfscenemanager.cpp
+    mUBO.upload(LLGLSLShader::UB_GLTF_JOINTS, glmp.data(), U32(glmp.size() * sizeof(F32)));
 }
 
 bool Skin::prep(Asset& asset)

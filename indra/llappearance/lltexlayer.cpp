@@ -30,6 +30,7 @@
 
 #include "llavatarappearance.h"
 #include "llcrc.h"
+#include "llimagegl.h"
 #include "llimagej2c.h"
 #include "llimagetga.h"
 #include "lldir.h"
@@ -39,9 +40,12 @@
 #include "../llui/llui.h"
 #include "llwearable.h"
 #include "llwearabledata.h"
+#include "llrendertarget.h"
 #include "llvertexbuffer.h"
 #include "llviewervisualparam.h"
 #include "llfasttimer.h"
+
+#include <atomic>
 
 //#include "../tools/imdebug/imdebug.h"
 #include "llrendertarget.h"
@@ -1296,6 +1300,14 @@ bool LLTexLayer::blendAlphaTexture(S32 x, S32 y, S32 width, S32 height)
     addAlphaMask(data, originX, originY, width, height, bound_target);
 }
 
+// [Viewer Lab] renderMorphMasks' bind of texture 0 on its driver workaround's branch without a target (only
+// llappearanceutility passes none); unbind would bind the white texture. bindTexture with no texture makes
+// bindManual(TT_TEXTURE, 0)'s GL and tells the encoder the unit holds nothing
+static void bind_raw_texture_zero()
+{
+    gGL.getTexUnit(0)->bindTexture(LLTexUnit::TT_TEXTURE, static_cast<LL::RHI::Texture*>(nullptr));
+}
+
 void LLTexLayer::renderMorphMasks(S32 x, S32 y, S32 width, S32 height, const LLColor4 &layer_color, LLRenderTarget* bound_target, bool force_render)
 {
     if (!force_render && !hasMorph())
@@ -1442,7 +1454,7 @@ void LLTexLayer::renderMorphMasks(S32 x, S32 y, S32 width, S32 height, const LLC
 
             if (!skip_readback)
             {
-                if (gGLManager.mIsIntel)
+                if (LLGPUReadback::targetsReadThroughTextures()) // [Viewer Lab] decided by a GL backend function
                 { // work-around for broken intel drivers which cannot do glReadPixels on an RGBA FBO
                     // returning only the alpha portion without locking up downstream
 
@@ -1486,7 +1498,7 @@ void LLTexLayer::renderMorphMasks(S32 x, S32 y, S32 width, S32 height, const LLC
                         }
                         // </FS>ND>
 
-                        gGL.getTexUnit(0)->bindManual(LLTexUnit::TT_TEXTURE, 0);
+                        bind_raw_texture_zero();
                     }
 
                     // <FS:ND> Check invariants and allocate memory
@@ -1507,31 +1519,30 @@ void LLTexLayer::renderMorphMasks(S32 x, S32 y, S32 width, S32 height, const LLC
                         return;
                     }
 
-                    glGetTexImage(LLTexUnit::getInternalType(LLTexUnit::TT_TEXTURE), 0, GL_RGBA, GL_UNSIGNED_BYTE, temp);
-                    GLenum error = glGetError();
-                    if (error != GL_NO_ERROR)
+                    // [Viewer Lab] Coverage marker, once per session
+                    static std::atomic<bool> sReached{ false };
+                    if (!sReached.exchange(true))
+                    {
+                        LL_INFOS("RHI") << "Transfer site reached: morph mask texture" << LL_ENDL;
+                    }
+                    // [Viewer Lab] Through the readback facade's tested helper, the bound target's texture or the raw
+                    // name; it writes the alpha only when it read without a GL error
+                    U32 error = GL_NO_ERROR;
+                    const bool read = LLGPUReadback::readTextureAlpha(bound_target ? bound_target->getRHITexture() : nullptr,
+                                                bound_target ? S32(bound_target->getWidth()) : 0,
+                                                bound_target ? S32(bound_target->getHeight()) : 0, temp,
+                                                size_t(textureW) * size_t(textureH) * 4,
+                                                alpha_data, pixels, error);
+                    if (!read || error != GL_NO_ERROR) // [Viewer Lab] off GL nothing read is as a GL error
                     {
                         LL_INFOS("Morph") << "GL Error while reading back morph texture. Error code: " << error << LL_ENDL;
-                    }
-                    else
-                    {
-                        U8* alpha_cursor = alpha_data;
-                        U8* pixel = temp;
-                        // <FS:ND> Copy out data. Buffer can be bigger than alpha_cursor, so need to skip pixel
-                        //for (int i = 0; i < pixels; i++)
-                        //{
-                        //    *alpha_cursor++ = pixel[3];
-                        //    pixel += 4;
-                        //}
-                        for (int i = 0; i < height; ++i)
+                        if (!read)
                         {
-                            for (int j = 0; j < width; ++j)
-                            {
-                                *alpha_cursor++ = pixel[3];
-                                pixel += 4;
-                            }
+                            // [Viewer Lab] Off GL nothing was read: no mask rather than an unwritten one, as the nSight
+                            // path below; on GL read is always true, so GL's error case is as upstream
+                            ll_aligned_free_32(alpha_data);
+                            alpha_data = nullptr;
                         }
-                        // </FS:ND>
                     }
 
                     gGL.getTexUnit(0)->disable();
@@ -1549,12 +1560,43 @@ void LLTexLayer::renderMorphMasks(S32 x, S32 y, S32 width, S32 height, const LLC
                         LL_ERRS() << "Failed to allocate temporary memory for morph texture: " << (S32)(mem_size * TEMP_BYTES_PER_PIXEL) << LL_ENDL;
                         return;
                     }
-                    glReadPixels(x, y, width, height, GL_RGBA, GL_UNSIGNED_BYTE, temp_data);
-                    for (size_t pixel = 0; pixel < pixels; pixel++) {
-                        alpha_data[pixel] = temp_data[(pixel * TEMP_BYTES_PER_PIXEL) + 3];
+                    // [Viewer Lab] Coverage marker, once per session
+                    static std::atomic<bool> sReached{ false };
+                    if (!sReached.exchange(true))
+                    {
+                        LL_INFOS("RHI") << "Transfer site reached: morph mask pixels" << LL_ENDL;
+                    }
+                    // [Viewer Lab] Through the readback facade
+                    if (!LLGPUReadback::readPixels(x, y, width, height, GL_RGBA, GL_UNSIGNED_BYTE, temp_data,
+                                                   mem_size * TEMP_BYTES_PER_PIXEL))
+                    {
+                        // [Viewer Lab] Off GL nothing was read: logged as the texture path's GL error
+                        LL_INFOS("Morph") << "Morph mask pixels were not read back" << LL_ENDL;
+                        // [Viewer Lab] No mask rather than an unwritten one, as the nSight path below
+                        ll_aligned_free_32(alpha_data);
+                        alpha_data = nullptr;
+                    }
+                    else
+                    {
+                        for (size_t pixel = 0; pixel < pixels; pixel++) {
+                            alpha_data[pixel] = temp_data[(pixel * TEMP_BYTES_PER_PIXEL) + 3];
+                        }
                     }
                     ll_aligned_free_32(temp_data);
                 }
+                // [Viewer Lab] The mask's checksum for the morph masks' A/B (level2.py --debug-tag Morph): FNV-1a 64 of
+                // the width * height alpha bytes, computed only when the Morph tag logs at DEBUG
+                LL_DEBUGS("Morph") << "morph mask " << getUUID() << " " << width << "x" << height << " checksum "
+                                   << [&]()
+                                      {
+                                          U64 hash = 14695981039346656037ULL;
+                                          for (size_t i = 0; alpha_data && i < size_t(width) * size_t(height); ++i)
+                                          {
+                                              hash = (hash ^ alpha_data[i]) * 1099511628211ULL;
+                                          }
+                                          return hash;
+                                      }()
+                                   << LL_ENDL;
             }
             else
             {

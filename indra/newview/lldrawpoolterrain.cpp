@@ -47,9 +47,11 @@
 #include "llworld.h"
 #include "pipeline.h"
 #include "llviewershadermgr.h"
+#include "llfeaturemanager.h" // [Viewer Lab] hardwareCapped
 #include "llrender.h"
 #include "llenvironment.h"
 #include "llsettingsvo.h"
+#include <atomic>
 
 const F32 DETAIL_SCALE = 1.f/16.f;
 int DebugDetailMap = 0;
@@ -78,6 +80,8 @@ LLDrawPoolTerrain::LLDrawPoolTerrain(LLViewerTexture *texturep) :
     sPBRDetailScale = 1.f/RenderTerrainPBRScale;
     sPBRDetailMode = RenderTerrainPBRDetail();
     // </FS:PP>
+    // [Viewer Lab] Capped as the terrain programs on Metal (LLViewerShaderMgr); unchanged on GL
+    sPBRDetailMode = (S32)LLFeatureManager::getInstance()->hardwareCapped("RenderTerrainPBRDetail", (F32)sPBRDetailMode);
     mAlphaRampImagep = LLViewerTextureManager::getFetchedTexture(IMG_ALPHA_GRAD);
 
 
@@ -119,6 +123,8 @@ void LLDrawPoolTerrain::prerender()
 {
     static LLCachedControl<S32> render_terrain_pbr_detail(gSavedSettings, "RenderTerrainPBRDetail");
     sPBRDetailMode = render_terrain_pbr_detail;
+    // [Viewer Lab] Capped as the terrain programs on Metal (LLViewerShaderMgr); unchanged on GL
+    sPBRDetailMode = (S32)LLFeatureManager::getInstance()->hardwareCapped("RenderTerrainPBRDetail", (F32)sPBRDetailMode);
 }
 
 void LLDrawPoolTerrain::boostTerrainDetailTextures()
@@ -641,6 +647,12 @@ void LLDrawPoolTerrain::renderFullShaderPBR(bool use_local_materials)
 
 void LLDrawPoolTerrain::hilightParcelOwners()
 {
+    // [Viewer Lab] Coverage marker, once per session
+    static std::atomic<bool> sReached{ false };
+    if (!sReached.exchange(true))
+    {
+        LL_INFOS("RHI") << "Facade site reached: lldrawpoolterrain.cpp:hilightParcelOwners" << LL_ENDL;
+    }
     { //use fullbright shader for highlighting
         LLGLSLShader* old_shader = sShader;
         sShader->unbind();
@@ -648,7 +660,7 @@ void LLDrawPoolTerrain::hilightParcelOwners()
         sShader->bind();
         gGL.diffuseColor4f(1, 1, 1, 1);
         LLGLEnable polyOffset(GL_POLYGON_OFFSET_FILL);
-        glPolygonOffset(-1.0f, -1.0f);
+        gGL.setPolygonOffset(-1.0f, -1.0f); // [Viewer Lab]
         renderOwnership();
         sShader = old_shader;
         sShader->bind();

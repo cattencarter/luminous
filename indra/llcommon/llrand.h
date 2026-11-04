@@ -72,6 +72,12 @@ S32 LL_COMMON_API ll_rand(S32 val);
 F32 LL_COMMON_API ll_frand();
 
 /**
+ *@brief [Viewer Lab] Golden-image tests: restarts this thread's generator with a fixed seed, and
+ * gives it to every thread that draws its first number later.
+ */
+void LL_COMMON_API ll_seed_rand(U32 seed);
+
+/**
  *@brief Generate a float from [0, val) or (val, 0].
  */
 F32 LL_COMMON_API ll_frand(F32 val);

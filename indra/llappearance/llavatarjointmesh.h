@@ -36,6 +36,7 @@ class LLDrawable;
 class LLFace;
 class LLCharacter;
 class LLTexLayerSet;
+class LLImageGL; // [Viewer Lab]
 
 typedef enum e_avatar_render_pass
 {
@@ -67,7 +68,7 @@ protected:
     F32                         mShiny;         // shiny value
     LLPointer<LLGLTexture>      mTexture;       // ptr to a global texture
     LLTexLayerSet*              mLayerSet;      // ptr to a layer set owned by the avatar
-    U32                         mTestImageName;     // handle to a temporary texture for previewing uploads
+    LLImageGL*                  mTestImage;         // [Viewer Lab] a temporary texture for previewing uploads, not owned
     LLPolyMesh*                 mMesh;          // ptr to a global polymesh
     bool                        mCullBackFaces; // true by default
     LLFace*                     mFace;          // ptr to a face w/ AGP copy of mesh
@@ -106,7 +107,7 @@ public:
 
     bool hasGLTexture() const;
 
-    void setTestTexture( U32 name ) { mTestImageName = name; }
+    void setTestTexture( LLImageGL* image ) { mTestImage = image; } // [Viewer Lab] the image, not its GL name
 
     // Sets layer set responsible for a dynamic shape texture (takes precedence over normal texture)
     void setLayerSet( LLTexLayerSet* layer_set );

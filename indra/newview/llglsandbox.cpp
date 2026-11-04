@@ -36,6 +36,7 @@
 #include "llgl.h"
 #include "llrender.h"
 #include "llglheaders.h"
+#include "llrhi.h"
 #include "llparcel.h"
 #include "llui.h"
 
@@ -945,19 +946,19 @@ struct ShaderProfileHelper
     }
 };
 
-// This helper class is used to ensure that each generateTextures() call
-// is matched by a corresponding deleteTextures() call. It also handles
-// the bindManual() calls using those textures.
+// This helper class is used to ensure that each texture createTextureNames()
+// makes is released by a corresponding releaseTexture() call. It also handles
+// the bindTexture() calls using those textures.
 class TextureHolder
 {
 public:
-    TextureHolder(U32 unit, U32 size) :
+    // [Viewer Lab] count device textures of res x res, their names from one generateTextures(count) as before
+    TextureHolder(U32 unit, U32 count, U32 res) :
         texUnit(gGL.getTexUnit(unit)),
-        source(size)            // preallocate vector
+        mRes(res)
     {
-        // takes (count, pointer)
-        // &vector[0] gets pointer to contiguous array
-        LLImageGL::generateTextures(static_cast<S32>(source.size()), &source[0]);
+        LLImageGL::createTextureNames(mTextures, count, LLTexUnit::TT_TEXTURE, GL_RGBA, GL_RGBA, GL_UNSIGNED_BYTE, res, res,
+                                      LL::RHI::TEXTURE_SAMPLED, true);
     }
 
     ~TextureHolder()
@@ -967,25 +968,38 @@ public:
         {
                 texUnit->unbind(LLTexUnit::TT_TEXTURE);
         }
-        // ensure that we delete these textures regardless of how we exit
-        LLImageGL::deleteTextures(static_cast<S32>(source.size()), &source[0]);
+        // ensure that we release these textures regardless of how we exit, in index order
+        for (LLPointer<LL::RHI::Texture>& texture : mTextures)
+        {
+            LLTexUnit::releaseTexture(texture.get());
+            texture = nullptr;
+        }
     }
 
     bool bind(U32 index)
     {
         if (texUnit) // should always be there with dummy (-1), but just in case
         {
-            return texUnit->bindManual(LLTexUnit::TT_TEXTURE, source[index]);
+            return index < mTextures.size() && texUnit->bindTexture(LLTexUnit::TT_TEXTURE, mTextures[index].get());
         }
         return false;
+    }
+
+    // [Viewer Lab] level 0's pixels for the texture bind(index) bound, as setManualImage gave them
+    void specify(U32 index, const U8* pixels)
+    {
+        LLImageGL::specifyTexture(mTextures[index].get(), 0, GL_RGBA, mRes, mRes, GL_RGBA, GL_UNSIGNED_BYTE, pixels);
     }
 
 private:
     // capture which LLTexUnit we're going to use
     LLTexUnit* texUnit;
 
+    // the textures' width and height
+    U32 mRes;
+
     // use std::vector for implicit resource management
-    std::vector<U32> source;
+    std::vector<LLPointer<LL::RHI::Texture>> mTextures;
 };
 
 class ShaderBinder
@@ -1045,12 +1059,15 @@ F32 shader_timer_benchmark(std::vector<LLRenderTarget> & dest, TextureHolder & t
 //-----------------------------------------------------------------------------
 F32 gpu_benchmark()
 {
-    if (gGLManager.mGLVersion < 3.3f)
+    // [Viewer Lab] the device's timer queries, GL 3.3's, and its benchmarkTimers: as timerQueries on both
+    // backends, since the GL and Metal benchmarks give the same class
+    const LL::RHI::Device* device = LL::RHI::viewerDevice();
+    if (!device || !device->capabilities().benchmarkTimers || !LLGPUQuery::supported(GL_TIME_ELAPSED))
     { // don't bother benchmarking venerable drivers which don't support accurate timing anyway
         return -1.f;
     }
 
-    if (gBenchmarkProgram.mProgramObject == 0)
+    if (!gBenchmarkProgram.isComplete()) // [Viewer Lab] on GL mProgramObject == 0
     {
         LLViewerShaderMgr::instance()->initAttribsAndUniforms();
 
@@ -1060,6 +1077,7 @@ F32 gpu_benchmark()
         gBenchmarkProgram.mShaderFiles.push_back(std::make_pair("interface/benchmarkV.glsl", GL_VERTEX_SHADER));
         gBenchmarkProgram.mShaderFiles.push_back(std::make_pair("interface/benchmarkF.glsl", GL_FRAGMENT_SHADER));
         gBenchmarkProgram.mShaderLevel = 1;
+        gBenchmarkProgram.mLoginScreen = true; // [Viewer Lab] needed at the login screen
         if (!gBenchmarkProgram.createShader())
         {
             return -1.f;
@@ -1084,7 +1102,7 @@ F32 gpu_benchmark()
     const F32 time_limit = 30.f;
 
     std::vector<LLRenderTarget> dest(count);
-    TextureHolder texHolder(0, count);
+    TextureHolder texHolder(0, count, res);
     std::vector<F32> results;
 
     //build a random texture
@@ -1122,7 +1140,7 @@ F32 gpu_benchmark()
             delete[] pixels;
             return -1.f;
         }
-        LLImageGL::setManualImage(GL_TEXTURE_2D, 0, GL_RGBA, res,res,GL_RGBA, GL_UNSIGNED_BYTE, pixels);
+        texHolder.specify(i, pixels);
         // disable mipmaps and use point filtering to cause cache misses
         gGL.getTexUnit(0)->setHasMipMaps(false);
         gGL.getTexUnit(0)->setTextureFilteringOption(LLTexUnit::TFO_POINT);

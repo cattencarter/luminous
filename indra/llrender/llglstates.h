@@ -42,6 +42,15 @@ public:
 
     void checkState();
 
+    // [Viewer Lab] The depth test, writes and function LLGLDepthTest last set, read only and with no GL, for the render
+    // interface's depth states
+    static void getState(GLboolean& enabled, GLboolean& write, GLenum& func)
+    {
+        enabled = sDepthEnabled;
+        write = sWriteEnabled;
+        func = sDepthFunc;
+    }
+
     GLboolean mPrevDepthEnabled;
     GLenum mPrevDepthFunc;
     GLboolean mPrevWriteEnabled;

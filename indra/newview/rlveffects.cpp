@@ -339,11 +339,9 @@ void RlvSphereEffect::renderPass(LLGLSLShader* pShader, const LLShaderEffectPara
     }
     else
     {
-        gGLViewport[0] = gViewerWindow->getWorldViewRectRaw().mLeft;
-        gGLViewport[1] = gViewerWindow->getWorldViewRectRaw().mBottom;
-        gGLViewport[2] = gViewerWindow->getWorldViewRectRaw().getWidth();
-        gGLViewport[3] = gViewerWindow->getWorldViewRectRaw().getHeight();
-        glViewport(gGLViewport[0], gGLViewport[1], gGLViewport[2], gGLViewport[3]);
+        // [Viewer Lab] also gGLViewport
+        const LLRect world_view = gViewerWindow->getWorldViewRectRaw();
+        gGL.setWindowViewport(world_view.mLeft, world_view.mBottom, world_view.getWidth(), world_view.getHeight());
     }
     RLV_ASSERT_DBG(pParams->m_pSrcBuffer);
 

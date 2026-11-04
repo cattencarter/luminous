@@ -41,6 +41,7 @@
 #include "llfile.h"
 #include "quickprefs.h"
 #include "llperfstats.h"
+#include "luminousphotomode.h" // <Luminous/>
 
 LLPresetsManager::LLPresetsManager()
     // <FS:Ansariel> Graphic preset controls independent from XUI
@@ -527,6 +528,7 @@ void LLPresetsManager::loadPreset(const std::string& subdirectory, std::string n
     bool appearance_camera_movement = gSavedSettings.getBOOL("AppearanceCameraMovement");
     bool edit_camera_movement = gSavedSettings.getBOOL("EditCameraMovement");
 
+    LuminousPhotoMode::HoldShaderRebuilds hold_shaders; // <Luminous/> the preset's settings rebuild the shaders once
     mIsLoadingPreset = true; // <FS:Ansariel> Graphic preset controls independent from XUI
     mIgnoreChangedSignal = true;
     if(gSavedSettings.loadFromFile(full_path, false, true) > 0)

@@ -37,11 +37,58 @@
 
 #include "llrender.h"
 #include "llglslshader.h"
+#include "llrhi.h"
+#include "llrhigl.h" // [Viewer Lab] GLNames
 
 #include "llglheaders.h"
 
 namespace {
     const U16 RESOLUTION = 64;
+}
+
+// [Viewer Lab] LLCubeMap's GL backend function below does nothing when GL is not the backend chosen at startup,
+// as llimagegl.cpp's gl_is_backend.
+static bool gl_is_backend()
+{
+    return LL::RHI::viewerBackend() == LL::RHI::BackendType::GL;
+}
+
+// [Viewer Lab] initEnvironmentMap's glEnable(GL_TEXTURE_CUBE_MAP_SEAMLESS), verbatim (LLRender::init enables it too);
+// nothing when GL is not the backend
+static void gl_enable_seamless_cube_map()
+{
+    if (!gl_is_backend())
+    {
+        LL_GL_GATED("llcubemap:gl_enable_seamless_cube_map");
+        return;
+    }
+    glEnable(GL_TEXTURE_CUBE_MAP_SEAMLESS);
+}
+
+// [Viewer Lab] The formats LLImageGL::createGLTexture gives an image of 1 to 4 components without an explicit format,
+// for the description of the cube's texture
+static void cube_formats(U32 components, S32& intformat, U32& pixformat)
+{
+    switch (components)
+    {
+    case 1:
+        intformat = GL_LUMINANCE8;
+        pixformat = GL_LUMINANCE;
+        break;
+    case 2:
+        intformat = GL_LUMINANCE8_ALPHA8;
+        pixformat = GL_LUMINANCE_ALPHA;
+        break;
+    case 3:
+        intformat = GL_RGB8;
+        pixformat = GL_RGB;
+        break;
+    case 4:
+    default:
+        intformat = GL_RGBA8;
+        pixformat = GL_RGBA;
+        break;
+    }
 }
 
 bool LLCubeMap::sUseCubeMaps = true;
@@ -72,10 +119,6 @@ void LLCubeMap::initGL()
         // Not initialized, do stuff.
         if (mImages[0].isNull())
         {
-            U32 texname = 0;
-
-            LLImageGL::generateTextures(1, &texname);
-
             for (int i = 0; i < 6; i++)
             {
                 mImages[i] = new LLImageGL(RESOLUTION, RESOLUTION, 4, false);
@@ -86,12 +129,23 @@ void LLCubeMap::initGL()
             #endif
                 mImages[i]->setTarget(mTargets[i], LLTexUnit::TT_CUBE_MAP);
                 mRawImages[i] = new LLImageRaw(RESOLUTION, RESOLUTION, 4);
-                if (!mImages[i]->createGLTexture(0, mRawImages[i], texname))
+                // [Viewer Lab] One Cube texture of the viewer's render device for the six faces through LLImageGL, on
+                // today's one name from its pool; each face's uploads go to its layer
+                if (i == 0)
+                {
+                    mImages[0]->createOwnTexture(LLTexUnit::TT_CUBE_MAP, GL_RGBA8, GL_RGBA, GL_UNSIGNED_BYTE,
+                                                 LL::RHI::TEXTURE_SAMPLED, 1);
+                }
+                else
+                {
+                    mImages[i]->shareTexture(*mImages[0]);
+                }
+                if (!mImages[i]->createGLTexture(0, mRawImages[i], getGLName())) // [Viewer Lab]
                 {
                     LL_WARNS() << "Failed to create GL texture for environment cubemap face " << i << LL_ENDL;
                 }
 
-                gGL.getTexUnit(0)->bindManual(LLTexUnit::TT_CUBE_MAP, texname);
+                gl_bind_raw_name(gGL.getTexUnit(0), LLTexUnit::TT_CUBE_MAP, getGLName(), false); // [Viewer Lab]
                 mImages[i]->setAddressMode(LLTexUnit::TAM_CLAMP);
                 stop_glerror();
             }
@@ -175,14 +229,16 @@ void LLCubeMap::init(const std::vector<LLPointer<LLImageRaw> >& rawimages)
 
 void LLCubeMap::initReflectionMap(U32 resolution, U32 components)
 {
-    U32 texname = 0;
-
-    LLImageGL::generateTextures(1, &texname);
-
     mImages[0] = new LLImageGL(resolution, resolution, components, true);
-    mImages[0]->setTexName(texname);
+    // [Viewer Lab] A Cube texture of the viewer's render device with a full mip chain through LLImageGL, on today's one
+    // name from its pool
+    S32 intformat = 0;
+    U32 pixformat = 0;
+    cube_formats(components, intformat, pixformat);
+    mImages[0]->createOwnTexture(LLTexUnit::TT_CUBE_MAP, intformat, pixformat, GL_UNSIGNED_BYTE, LL::RHI::TEXTURE_SAMPLED,
+                                 LL::RHI::fullMipCount(resolution, resolution));
     mImages[0]->setTarget(mTargets[0], LLTexUnit::TT_CUBE_MAP);
-    gGL.getTexUnit(0)->bindManual(LLTexUnit::TT_CUBE_MAP, texname);
+    gl_bind_raw_name(gGL.getTexUnit(0), LLTexUnit::TT_CUBE_MAP, getGLName(), false); // [Viewer Lab]
     mImages[0]->setAddressMode(LLTexUnit::TAM_CLAMP);
 }
 
@@ -190,12 +246,12 @@ void LLCubeMap::initEnvironmentMap(const std::vector<LLPointer<LLImageRaw> >& ra
 {
     llassert(rawimages.size() == 6);
 
-    U32 texname = 0;
-
-    LLImageGL::generateTextures(1, &texname);
-
     U32 resolution = rawimages[0]->getWidth();
     U32 components = rawimages[0]->getComponents();
+    // [Viewer Lab] The formats the faces' createGLTexture gives them, for the cube's description
+    S32 intformat = 0;
+    U32 pixformat = 0;
+    cube_formats(components, intformat, pixformat);
 
     for (int i = 0; i < 6; i++)
     {
@@ -206,12 +262,23 @@ void LLCubeMap::initEnvironmentMap(const std::vector<LLPointer<LLImageRaw> >& ra
         mImages[i] = new LLImageGL(resolution, resolution, components, true);
         mImages[i]->setTarget(mTargets[i], LLTexUnit::TT_CUBE_MAP);
         mRawImages[i] = rawimages[i];
-        if (!mImages[i]->createGLTexture(0, mRawImages[i], texname))
+        // [Viewer Lab] One Cube texture of the viewer's render device with a full mip chain for the six faces through
+        // LLImageGL, on today's one name from its pool; each face's uploads go to its layer
+        if (i == 0)
+        {
+            mImages[0]->createOwnTexture(LLTexUnit::TT_CUBE_MAP, intformat, pixformat, GL_UNSIGNED_BYTE,
+                                         LL::RHI::TEXTURE_SAMPLED, LL::RHI::fullMipCount(resolution, resolution));
+        }
+        else
+        {
+            mImages[i]->shareTexture(*mImages[0]);
+        }
+        if (!mImages[i]->createGLTexture(0, mRawImages[i], getGLName())) // [Viewer Lab]
         {
             LL_WARNS() << "Failed to create GL texture for environment cubemap face " << i << LL_ENDL;
         }
 
-        gGL.getTexUnit(0)->bindManual(LLTexUnit::TT_CUBE_MAP, texname);
+        gl_bind_raw_name(gGL.getTexUnit(0), LLTexUnit::TT_CUBE_MAP, getGLName(), false); // [Viewer Lab]
         mImages[i]->setAddressMode(LLTexUnit::TAM_CLAMP);
         stop_glerror();
 
@@ -220,8 +287,8 @@ void LLCubeMap::initEnvironmentMap(const std::vector<LLPointer<LLImageRaw> >& ra
     enableTexture(0);
     bind();
     mImages[0]->setFilteringOption(LLTexUnit::TFO_ANISOTROPIC);
-    glEnable(GL_TEXTURE_CUBE_MAP_SEAMLESS);
-    glGenerateMipmap(GL_TEXTURE_CUBE_MAP);
+    gl_enable_seamless_cube_map(); // [Viewer Lab]
+    LLImageGL::generateMipmaps(mImages[0]->getRHITexture(), GL_TEXTURE_CUBE_MAP); // [Viewer Lab]
     gGL.getTexUnit(0)->disable();
     disable();
 }
@@ -237,7 +304,7 @@ void LLCubeMap::generateMipMaps()
     mImages[0]->setFilteringOption(LLTexUnit::TFO_BILINEAR);
     {
         LL_PROFILE_ZONE_NAMED_CATEGORY_TEXTURE("cmgmm - glGenerateMipmap");
-        glGenerateMipmap(GL_TEXTURE_CUBE_MAP);
+        LLImageGL::generateMipmaps(mImages[0]->getRHITexture(), GL_TEXTURE_CUBE_MAP); // [Viewer Lab]
     }
     gGL.getTexUnit(0)->disable();
     disable();
@@ -245,7 +312,7 @@ void LLCubeMap::generateMipMaps()
 
 GLuint LLCubeMap::getGLName()
 {
-    return mImages[0]->getTexName();
+    return LL::RHI::GLNames::of(mImages[0].get()); // [Viewer Lab]
 }
 
 void LLCubeMap::bind()

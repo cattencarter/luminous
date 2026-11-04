@@ -30,6 +30,7 @@
 
 #include "llfloater.h"
 #include "llframetimer.h"
+#include "llrhi.h"
 
 class LLRenderTarget;
 
@@ -265,7 +266,7 @@ private:
     bool mPreview = false;     // a preview: Render instead of Share, and closed without asking
     bool mStopAsked = false;
 
-    U32 mTexture = 0;
+    LLPointer<LL::RHI::Texture> mTexture; // [Viewer Lab] a texture of the viewer's render device
     S32 mWidth = 0;
     S32 mHeight = 0;
     F32 mScale = 0.f;          // UI units per picture pixel; 0 until shown

@@ -72,6 +72,7 @@
 #include "llvosurfacepatch.h"
 #include "llvowlsky.h"
 #include "llrender.h"
+#include "llrhi.h" // [Viewer Lab] the surface follows RenderVSyncEnable
 #include "llnavigationbar.h"
 #include "llnotificationsutil.h"
 #include "llfloaterpreference.h"
@@ -125,6 +126,7 @@
 #include "luminoushdrsnapshot.h" // <Luminous/>
 #include "luminousbenchmark.h" // <Luminous/>
 #include "luminousoptimise.h" // <Luminous/>
+#include "luminousmetal.h" // <Luminous/>
 
 // Third party library includes
 #include <boost/algorithm/string.hpp>
@@ -326,8 +328,11 @@ bool handleRenderTransparentWaterChanged(const LLSD& newvalue)
     if (gPipeline.isInit())
     {
         gPipeline.updateRenderTransparentWater();
-        gPipeline.releaseGLBuffers();
-        gPipeline.createGLBuffers();
+        if (!LuminousPhotoMode::holdBufferRebuild()) // <Luminous/> settings set together: once, at the end
+        {
+            gPipeline.releaseGLBuffers();
+            gPipeline.createGLBuffers();
+        }
         LLViewerShaderMgr::instance()->setShaders();
     }
     LLWorld::getInstance()->updateWaterObjects();
@@ -351,8 +356,11 @@ static bool handleReleaseGLBufferChanged(const LLSD& newvalue)
 {
     if (gPipeline.isInit())
     {
-        gPipeline.releaseGLBuffers();
-        gPipeline.createGLBuffers();
+        if (!LuminousPhotoMode::holdBufferRebuild()) // <Luminous/> settings set together: once, at the end
+        {
+            gPipeline.releaseGLBuffers();
+            gPipeline.createGLBuffers();
+        }
     }
     return true;
 }
@@ -399,6 +407,12 @@ static bool handleVSyncChanged(const LLSD& newvalue)
     if (gViewerWindow && gViewerWindow->getWindow())
     {
         gViewerWindow->getWindow()->toggleVSync(newvalue.asBoolean());
+        // [Viewer Lab] The render interface's surface follows the setting: the layer's displaySyncEnabled on Metal,
+        // nothing on GL, where the window sets the swap interval
+        if (LL::RHI::Device* device = LL::RHI::viewerDevice(); device && device->surface())
+        {
+            device->surface()->setVSync(newvalue.asBoolean());
+        }
 
         if (newvalue.asBoolean())
         {
@@ -592,8 +606,11 @@ static bool handleReflectionProbeDetailChanged(const LLSD& newvalue)
         LLPipeline::refreshCachedSettings();
         gPipeline.mReflectionMapManager.reset();
         gPipeline.mHeroProbeManager.reset();
-        gPipeline.releaseGLBuffers();
-        gPipeline.createGLBuffers();
+        if (!LuminousPhotoMode::holdBufferRebuild()) // <Luminous/> settings set together: once, at the end
+        {
+            gPipeline.releaseGLBuffers();
+            gPipeline.createGLBuffers();
+        }
         LLViewerShaderMgr::instance()->setShaders();
     }
     return true;
@@ -622,8 +639,11 @@ static bool handleHeroProbeResolutionChanged(const LLSD &newvalue)
     {
         LLPipeline::refreshCachedSettings();
         gPipeline.mHeroProbeManager.reset();
-        gPipeline.releaseGLBuffers();
-        gPipeline.createGLBuffers();
+        if (!LuminousPhotoMode::holdBufferRebuild()) // <Luminous/> settings set together: once, at the end
+        {
+            gPipeline.releaseGLBuffers();
+            gPipeline.createGLBuffers();
+        }
     }
     return true;
 }
@@ -639,6 +659,20 @@ static bool handleRenderResolutionDivisorChanged(const LLSD&)
     gResizeScreenTexture = true;
     return true;
 }
+
+// <Luminous> A photo mode switch of the Metal renderer: its buffers and
+// shaders made again, as the effect's own setting does. Nothing on OpenGL,
+// where these settings change nothing.
+static bool handleLuminousMetalChanged(const LLSD& newvalue)
+{
+    if (!LuminousMetal::metal())
+    {
+        return true;
+    }
+    gResizeScreenTexture = true; // the live view's scale follows the native present
+    return handleReleaseGLBufferChanged(newvalue) && handleSetShaderChanged(newvalue);
+}
+// </Luminous>
 
 static bool handleDebugViewsChanged(const LLSD& newvalue)
 {
@@ -1292,13 +1326,15 @@ LLPointer<LLControlVariable> setting_get_control(LLControlGroup& group, const st
     return cntrl_ptr;
 }
 
-void setting_setup_signal_listener(LLControlGroup& group, const std::string& setting, std::function<void(const LLSD& newvalue)> callback)
+// <Luminous> Returns the connection, for the HDR switches' listeners (sHDRListeners)
+boost::signals2::connection setting_setup_signal_listener(LLControlGroup& group, const std::string& setting, std::function<void(const LLSD& newvalue)> callback)
 {
-    setting_get_control(group, setting)->getSignal()->connect([callback](LLControlVariable* control, const LLSD& new_val, const LLSD& old_val)
+    return setting_get_control(group, setting)->getSignal()->connect([callback](LLControlVariable* control, const LLSD& new_val, const LLSD& old_val)
     {
         callback(new_val);
     });
 }
+// </Luminous>
 
 void setting_setup_signal_listener(LLControlGroup& group, const std::string& setting, std::function<void()> callback)
 {
@@ -1308,17 +1344,34 @@ void setting_setup_signal_listener(LLControlGroup& group, const std::string& set
     });
 }
 
-void settings_setup_listeners()
+// <Luminous> The listeners of the HDR switches, connected by settings_setup_listeners, blocked while
+// settings_force_photo_mode_hdr sets the switches
+static boost::signals2::connection sHDRListeners[3];
+
+// HDR stays on while photo mode is on: photo mode draws its light and lens in the HDR part of the frame, so with it
+// off they would all go; its switches are hidden in Phototools and the preferences. With photo mode off (Metal while
+// LuminousMetal::photoModeOnMetal() is false) Firestorm's switches are shown and HDR keeps what they saved. Whether
+// photo mode is on depends on the backend, so this runs once the backend is chosen, before the window, and sets the
+// switches only while LuminousPhotoMode::isOn(). The switches' listeners are blocked meanwhile, so a saved "off" just
+// becomes on, without the shader and buffer rebuilds a change asks for.
+void settings_force_photo_mode_hdr()
 {
-    LL_PROFILE_ZONE_SCOPED;
-    // <Luminous> HDR stays on: photo mode, always on, draws its light and lens
-    // in the HDR part of the frame, so with it off they would all go. Before
-    // the listeners, so a saved "off" just becomes on; its switches are
-    // hidden in Phototools and the preferences.
+    if (!LuminousPhotoMode::isOn())
+    {
+        return;
+    }
+    boost::signals2::shared_connection_block emissive_block(sHDRListeners[0]);
+    boost::signals2::shared_connection_block vintage_block(sHDRListeners[1]);
+    boost::signals2::shared_connection_block hdr_block(sHDRListeners[2]);
     gSavedSettings.setBOOL("RenderDisableVintageMode", true);
     gSavedSettings.setBOOL("RenderHDREnabled", true);
     gSavedSettings.setBOOL("RenderEnableEmissiveBuffer", true);
-    // </Luminous>
+}
+// </Luminous>
+
+void settings_setup_listeners()
+{
+    LL_PROFILE_ZONE_SCOPED;
     setting_setup_signal_listener(gSavedSettings, "FirstPersonAvatarVisible", handleRenderAvatarMouselookChanged);
     setting_setup_signal_listener(gSavedSettings, "RenderFarClip", handleRenderFarClipChanged);
     setting_setup_signal_listener(gSavedSettings, "RenderTerrainScale", handleTerrainScaleChanged);
@@ -1366,12 +1419,24 @@ void settings_setup_listeners()
     LuminousOptimise::init(); // <Luminous/> the Mac's settings and the Optimise window
     setting_setup_signal_listener(gSavedSettings, "LuminousPhotoSunShafts", handleReleaseGLBufferChanged);
     setting_setup_signal_listener(gSavedSettings, "LuminousPhotoSunShafts", handleSetShaderChanged);
+    // On Metal, every effect's switch: those in Second Life's programs change
+    // their global defines, the others what is allocated and drawn.
+    setting_setup_signal_listener(gSavedSettings, "LuminousMetalPhotoModeDev", handleLuminousMetalChanged);
+    for (const char* effect : { "SunShafts", "VolumetricLight", "ProjectorBeams", "SoftShadows", "ContactShadows", "GTAO",
+                                "AOLights", "Reflections", "DepthOfField", "Bloom", "Clarity", "Halation", "Anamorphic",
+                                "LensFlare", "ChromaticAberration", "Distortion", "Glitch", "Vignette", "Look", "Grain",
+                                "Worn", "LightLeak", "PictureFrame", "Upscale", "AlphaSort", "Accumulation", "HDRSnapshot" })
+    {
+        setting_setup_signal_listener(gSavedSettings, std::string("LuminousMetal") + effect, handleLuminousMetalChanged);
+    }
     // </Luminous>
     setting_setup_signal_listener(gSavedSettings, "RenderGlowResolutionPow", handleReleaseGLBufferChanged);
     setting_setup_signal_listener(gSavedSettings, "RenderGlowHDR", handleReleaseGLBufferChanged);
-    setting_setup_signal_listener(gSavedSettings, "RenderEnableEmissiveBuffer", handleEnableEmissiveChanged);
-    setting_setup_signal_listener(gSavedSettings, "RenderDisableVintageMode", handleDisableVintageMode);
-    setting_setup_signal_listener(gSavedSettings, "RenderHDREnabled", handleEnableHDR);
+    // <Luminous> kept, for settings_force_photo_mode_hdr
+    sHDRListeners[0] = setting_setup_signal_listener(gSavedSettings, "RenderEnableEmissiveBuffer", handleEnableEmissiveChanged);
+    sHDRListeners[1] = setting_setup_signal_listener(gSavedSettings, "RenderDisableVintageMode", handleDisableVintageMode);
+    sHDRListeners[2] = setting_setup_signal_listener(gSavedSettings, "RenderHDREnabled", handleEnableHDR);
+    // </Luminous>
     setting_setup_signal_listener(gSavedSettings, "RenderGlowNoise", handleSetShaderChanged);
     setting_setup_signal_listener(gSavedSettings, "RenderGammaFull", handleSetShaderChanged);
     setting_setup_signal_listener(gSavedSettings, "FSOverrideVRAMDetection", handleOverrideVRAMDetectionChanged); // <FS:Beq/> Override VRAM detection support

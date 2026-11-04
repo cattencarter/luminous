@@ -70,6 +70,12 @@ S32     LLDrawPoolAvatar::sShadowPass = -1;
 S32 LLDrawPoolAvatar::sDiffuseChannel = 0;
 F32 LLDrawPoolAvatar::sMinimumAlpha = 0.2f;
 
+// [Viewer Lab] A test-only flag: only the golden hook (llgoldentest.cpp) sets it, around its
+// LLPipeline::profileAvatar calls on the own avatar, which never becomes fully loaded on the local test region, so that
+// renderAvatars draws that avatar instead of the debug sphere while it is timed. It is read only in the sphere's branch
+// and false otherwise, so users' frames, on GL and on Metal, are unchanged.
+bool gGoldenDrawUnloadedSelf = false;
+
 static bool is_deferred_render = false;
 static bool is_post_deferred_render = false;
 
@@ -798,7 +804,8 @@ void LLDrawPoolAvatar::renderAvatars(LLVOAvatar* single_avatar, S32 pass)
 {
     LL_PROFILE_ZONE_NAMED_CATEGORY_AVATAR("check fully_loaded");
 // </FS:Beq>
-    if (!single_avatar && !avatarp->isFullyLoaded() )
+    // [Viewer Lab] Not for the own avatar while the golden hook times it (gGoldenDrawUnloadedSelf, test-only)
+    if (!single_avatar && !avatarp->isFullyLoaded() && !(gGoldenDrawUnloadedSelf && avatarp->isSelf()))
     {
         LL_PROFILE_ZONE_NAMED_CATEGORY_AVATAR("avatar not loaded"); // <FS:Beq/> Tracy markup
         if (pass==0 && (!gPipeline.hasRenderType(LLPipeline::RENDER_TYPE_PARTICLES) || LLViewerPartSim::getMaxPartCount() <= 0))

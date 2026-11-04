@@ -1058,6 +1058,11 @@ void LLViewerObjectList::update(LLAgent &agent)
     // update global timer
     F32 last_time = gFrameTimeSeconds;
     U64Microseconds time = totalTime();              // this will become the new gFrameTime when the update is done
+    if (LLFrameTimer::hasFixedFrameStep())
+    {
+        // [Viewer Lab] Golden-image tests: the frame time steps as LLFrameTimer's does.
+        time = U64Microseconds(LLFrameTimer::getTotalTime());
+    }
     // Time _can_ go backwards, for example if the user changes the system clock.
     // It doesn't cause any fatal problems (just some oddness with stats), so we shouldn't assert here.
 //  llassert(time > gFrameTime);

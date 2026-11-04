@@ -1,0 +1,28 @@
+{
+  "libraries": [
+    {
+      "name": "dof",
+      "files": [
+        "luminous/common/spd.metal",
+        "luminous/dof/dof.metal"
+      ],
+      "defines": {},
+      "compute": [
+        { "function": "luminous_spd_downsample", "threadsPerThreadgroup": [256, 1, 1] },
+        { "function": "luminous_dof_tiles", "threadsPerThreadgroup": [16, 16, 1] },
+        { "function": "luminous_dof_rows", "threadsPerThreadgroup": [8, 8, 1] },
+        { "function": "luminous_dof_classify", "threadsPerThreadgroup": [8, 8, 1] },
+        { "function": "luminous_dof_coarse", "threadsPerThreadgroup": [256, 1, 1] }
+      ],
+      "render": [
+        {
+          "vertex": "luminous_fullscreen_vs",
+          "fragment": "luminous_dof_composite_fs",
+          "colorFormats": ["RGBA16Float"],
+          "depthFormat": "",
+          "blend": "none"
+        }
+      ]
+    }
+  ]
+}

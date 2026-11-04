@@ -35,6 +35,7 @@
 #include <algorithm>
 #include <boost/filesystem.hpp>
 #include <boost/regex.hpp>
+#include <atomic>
 
 #include "llagent.h"
 #include "llagentcamera.h"
@@ -57,6 +58,17 @@
 #include "llxmltree.h"
 #include "llslurl.h"
 #include "llrender.h"
+#include "llrhi.h"
+#include "llrhimetal.h" // [Viewer Lab] LL_RHI_METAL, setMetalTranslator
+#if LL_RHI_METAL
+#include "llrhimsl.h"       // [Viewer Lab] MSL::DiskCache's translate, registered on the Metal path only
+#include "llwindowmacosx.h" // [Viewer Lab] the CGL query
+#include "llsdserialize.h"  // [Viewer Lab] the CGL store
+#include "llsdutil.h"       // [Viewer Lab] llsd_equals for the store's key
+#include <dlfcn.h>          // [Viewer Lab] dlsym for the raw-GL trap of test runs
+#include <mach-o/loader.h>  // [Viewer Lab] the executable's LC_UUID for the store's key
+#include <uuid/uuid.h>
+#endif
 
 #include "stringize.h"
 
@@ -103,6 +115,7 @@
 #include "lldrawpoolbump.h"
 #include "lldrawpoolwater.h"
 #include "llmaniptranslate.h"
+#include "fsmaniptranslatejoint.h"
 #include "llface.h"
 #include "llfeaturemanager.h"
 #include "llfilepicker.h"
@@ -191,6 +204,7 @@
 #include "pipeline.h"
 #include "luminousphotomode.h" // <Luminous/>
 #include "luminoushdrsnapshot.h" // <Luminous/>
+#include "luminousmetal.h" // <Luminous/>
 #include "llappviewer.h"
 #include "llviewerdisplay.h"
 #include "llspatialpartition.h"
@@ -872,9 +886,18 @@ public:
             S32 x_raw = (S32)llround(coord.mX * gViewerWindow->getWindowWidthRaw() / (F32) gViewerWindow->getWindowWidthScaled());
             S32 y_raw = (S32)llround(coord.mY * gViewerWindow->getWindowHeightRaw() / (F32) gViewerWindow->getWindowHeightScaled());
 
-            glReadPixels(x_raw, y_raw, 1, 1, GL_RGBA, GL_UNSIGNED_BYTE, color);
-            addText(xpos, ypos, llformat("Pixel <%1d, %1d> R:%1d G:%1d B:%1d A:%1d", x_raw, y_raw, color[0], color[1], color[2], color[3]));
-            ypos += y_inc;
+            // [Viewer Lab] Coverage marker, once per session
+            static std::atomic<bool> sReached{ false };
+            if (!sReached.exchange(true))
+            {
+                LL_INFOS("RHI") << "Transfer site reached: LLDebugText colour" << LL_ENDL;
+            }
+            // [Viewer Lab] Off GL a read that did not reach the encoder reads nothing, so no line
+            if (LLGPUReadback::readPixels(x_raw, y_raw, 1, 1, GL_RGBA, GL_UNSIGNED_BYTE, color, sizeof(color)))
+            {
+                addText(xpos, ypos, llformat("Pixel <%1d, %1d> R:%1d G:%1d B:%1d A:%1d", x_raw, y_raw, color[0], color[1], color[2], color[3]));
+                ypos += y_inc;
+            }
         }
 
         // <FS:PP> FIRE-29880: Movelock
@@ -1963,6 +1986,290 @@ std::string LLViewerWindow::translateString(const char* tag,
     return LLTrans::getString( std::string(tag), args_copy);
 }
 
+namespace
+{
+#if LL_RHI_METAL
+    // [Viewer Lab] The CGL store: GL's values from the CGL query, kept in the user settings folder (which
+    // LL's own viewer shares and never reads this file from) under a key of the store's format, the viewer build, the
+    // macOS version and build, the Mac's memory and the Metal device's name, so the query runs only at the first Metal
+    // start after a new viewer build, macOS, memory size or GPU.
+    const char* const GL_STORE_FILE = "metal_gl_query.xml";
+
+    // [Viewer Lab] The Metal translator's disk cache hits and misses, counted on the threads that translate
+    // and logged when the device goes.
+    std::atomic<U32> sMetalShaderCacheHits{ 0 };
+    std::atomic<U32> sMetalShaderCacheMisses{ 0 };
+
+    /// The viewer build for the store's key: the channel and version, and the executable's LC_UUID, which the linker
+    /// derives from the binary's content, so a build with other code queries once even when its version has not moved
+    /// (the version's build number is set when the build is configured).
+    std::string viewer_build_identity()
+    {
+        std::string identity = LLVersionInfo::instance().getChannelAndVersion();
+        Dl_info     info     = {};
+        if (!dladdr(reinterpret_cast<const void*>(&viewer_build_identity), &info) || !info.dli_fbase)
+        {
+            return identity;
+        }
+        const auto* header = static_cast<const mach_header_64*>(info.dli_fbase);
+        if (header->magic != MH_MAGIC_64)
+        {
+            return identity;
+        }
+        const char* command = reinterpret_cast<const char*>(header + 1);
+        for (uint32_t i = 0; i < header->ncmds; ++i)
+        {
+            const auto* load = reinterpret_cast<const load_command*>(command);
+            if (load->cmd == LC_UUID)
+            {
+                uuid_string_t text = {};
+                uuid_unparse_upper(reinterpret_cast<const uuid_command*>(load)->uuid, text);
+                return identity + " " + text;
+            }
+            command += load->cmdsize;
+        }
+        return identity;
+    }
+
+    /// Sets gGLManager from the store when its key is this Mac's; false (and nothing set) otherwise.
+    bool use_stored_gl_values(const std::string& path, const LLSD& key)
+    {
+        if (!LLFile::isfile(path))
+        {
+            return false;
+        }
+        LLSD         stored;
+        llifstream   file(path.c_str(), std::ios::in | std::ios::binary);
+        const S32    parsed = file.is_open() ? LLSDSerialize::fromXML(stored, file) : LLSDParser::PARSE_FAILURE;
+        if (parsed == LLSDParser::PARSE_FAILURE || !stored.isMap())
+        {
+            LL_WARNS("RHI") << "The stored GL values in " << path << " could not be read; CGL query" << LL_ENDL;
+            return false;
+        }
+        if (!llsd_equals(stored["key"], key))
+        {
+            LL_INFOS("RHI") << "The stored GL values are for another viewer build, macOS, memory size or GPU (" << stored["key"]
+                            << "); CGL query" << LL_ENDL;
+            return false;
+        }
+        if (!gGLManager.fromStoredLLSD(stored["values"]))
+        {
+            LL_WARNS("RHI") << "The stored GL values in " << path << " are incomplete; CGL query" << LL_ENDL;
+            return false;
+        }
+        LL_INFOS("RHI") << "stored GL values used (" << path << ")" << LL_ENDL;
+        return true;
+    }
+
+    /// Writes the query's values with the key; a failure only costs the next start a query.
+    void store_gl_values(const std::string& path, const LLSD& key)
+    {
+        LLSD stored = LLSD::emptyMap();
+        stored["key"] = key;
+        stored["values"] = gGLManager.toStoredLLSD();
+        llofstream file(path.c_str(), std::ios::out | std::ios::binary | std::ios::trunc);
+        if (file.is_open())
+        {
+            LLSDSerialize::toPrettyXML(stored, file);
+            file.close();
+        }
+        if (!file.good())
+        {
+            LL_WARNS("RHI") << "The GL values could not be stored in " << path << LL_ENDL;
+            return;
+        }
+        LL_INFOS("RHI") << "GL values stored in " << path << LL_ENDL;
+    }
+
+    /// [Viewer Lab] MetalFrameCapture: a non-empty value asks the Metal device to capture the frame after
+    /// the one it is recording, and the setting goes back to "" unsaved, so nothing keeps the path and the same path can
+    /// be asked for again; the empty value of that reset is ignored. Not the device's next frame: the device's first
+    /// frame runs from its creation through the first main-loop frame, so the whole start-up, and a capture of it left
+    /// no document; a value from --set therefore captures the second main-loop frame. A value
+    /// from --set is asked for before the device is made, so the device makes only full render pipeline states, which
+    /// Metal needs to capture it; a later value captures only when the device has specialized none.
+    void apply_metal_frame_capture(LLControlVariable* control, const LLSD& value)
+    {
+        const std::string path = value.asString();
+        if (path.empty())
+        {
+            return;
+        }
+        LL::RHI::setMetalFrameCapture(path, LL::RHI::MetalFrameCaptureStart::AfterCurrentFrame);
+        LL_INFOS("RHI") << "Metal frame capture asked for, from the frame after the current one: " << path << LL_ENDL;
+        control->setValue(LLSD(""), false);
+    }
+#endif
+
+    // [Viewer Lab] The viewer's render interface device on the window's GL context, made
+    // right after the window; on GL the device has the window make its context when the window has
+    // not made it yet. A failure stops the viewer as a failed gGL.init does, unless the
+    // window has shown its own failure dialog and closed itself: then the viewer ends as it does
+    // for a window that could not be created.
+    void create_viewer_device(LLWindow* window)
+    {
+        LL::RHI::DeviceCreateInfo info;
+        info.backend.type = LL::RHI::viewerBackend();
+#if LL_RHI_METAL
+        // [Viewer Lab] Before the Metal device: GL's values from the CGL store when its key is
+        // this Mac's, with no CGL call at all, else from a CGL query on a temporary context, released before the
+        // device exists, and then stored; then the raw-GL trap of test runs; then the translator the Metal backend's
+        // programs need, here and nowhere else in the viewer (test.sh checks it); then the view's layer, so getSize
+        // already follows its scale. The GL path runs none of it.
+        const bool      metal      = info.backend.type == LL::RHI::BackendType::Metal;
+        LLWindowMacOSX* mac_window = metal ? dynamic_cast<LLWindowMacOSX*>(window) : nullptr;
+        bool            capture_asked = false; // [Viewer Lab] MetalFrameCapture had a value before the Metal device
+        if (metal)
+        {
+            if (!mac_window)
+            {
+                LL_ERRS("RHI") << "The Metal backend needs the macOS window" << LL_ENDL;
+            }
+            const std::string store = gDirUtilp->getExpandedFilename(LL_PATH_USER_SETTINGS, GL_STORE_FILE);
+            const LLSD        key   = LLGLManager::storeKey(viewer_build_identity(), gMetalGPUName);
+            if (!use_stored_gl_values(store, key))
+            {
+                mac_window->queryGLManager();
+                store_gl_values(store, key);
+            }
+            // [Viewer Lab] The raw-GL trap: test runs insert libll_gl_trap.dylib (tests/gltrap) with
+            // DYLD_INSERT_LIBRARIES, and from here on any gl* or CGL call in the process aborts it. Armed as soon as
+            // GL's values exist, so the CGL query never meets it and the trap now covers the layer, getSize and the
+            // surface's creation; the GL fallback below disarms it first. Without the library
+            // dlsym finds nothing and nothing happens.
+            if (auto arm_trap = reinterpret_cast<void (*)()>(dlsym(RTLD_DEFAULT, "ll_gl_trap_arm")))
+            {
+                arm_trap();
+                LL_INFOS("RHI") << "raw GL trap armed" << LL_ENDL;
+            }
+            // [Viewer Lab] Through the disk cache: translations that succeeded are kept in the
+            // cache folder's metal_shader_cache, keyed by the units' files, sources and classes, the tools' versions,
+            // and this Mac's Metal GPU and viewer build (no stale translation from an earlier developer build whose
+            // TRANSLATION_VERSION was not raised); the GPU workarounds are defines in the source text. The cache is
+            // a folder of its own, one generation (GPU and build) inside it, the other generations' folders
+            // removed when the cache is made; Clear Cache removes it (LLAppViewer::purgeCache), and GL's purges of its
+            // shader_cache (the version purge, the mirror hack #3331) do not reach it. Both made here on the main thread
+            // and never destroyed, so no order of static destruction can matter to the translator; the pool's threads
+            // stop in ~MetalDevice (shutdownGL), and fastQuit's _exit runs no destructor.
+            static const std::string& capabilities = *new std::string(gMetalGPUName + " / " + viewer_build_identity());
+            static const auto* const cache = new LL::RHI::MSL::DiskCache(
+                gDirUtilp->getExpandedFilename(LL_PATH_CACHE, "metal_shader_cache"), capabilities);
+            LL::RHI::setMetalTranslator(
+                [](const LL::RHI::MSL::Program& program, const LL::RHI::MSL::Options& options)
+                {
+                    bool hit = false;
+                    LL::RHI::MSL::Result result = cache->translate(program, options, capabilities, &hit);
+                    (hit ? sMetalShaderCacheHits : sMetalShaderCacheMisses).fetch_add(1, std::memory_order_relaxed);
+                    return result;
+                });
+            LL_INFOS("RHI") << "Metal translator registered" << LL_ENDL;
+            // [Viewer Lab] MetalFrameCapture, read on the Metal path only: a value from --set is asked for
+            // before the device, which then makes only full render pipeline states (Metal refuses to capture a device
+            // that has specialized one); later values come through the setting's signal once the device exists.
+            LLControlVariable* capture = gSavedSettings.getControl("MetalFrameCapture");
+            capture_asked              = !capture->getValue().asString().empty();
+            apply_metal_frame_capture(capture, capture->getValue());
+            mac_window->makeViewLayer();
+        }
+#endif
+        LLCoordWindow size;
+        window->getSize(&size);
+        info.window.window = window->getNativeView(); // [Viewer Lab] the view for the Metal surface; GL ignores it
+        info.width = U32(llmax(size.mX, 0));
+        info.height = U32(llmax(size.mY, 0));
+        LL::RHI::Device* device = LL::RHI::createViewerDevice(info);
+#if LL_RHI_METAL
+        if (metal && device && gMetalUIDev && gSavedSettings.getU32("RenderMetalUIDevInjectRefusal") == 2)
+        {
+            // [Viewer Lab] Test only: the Metal device fails after the window, once it has existed, so the
+            // surface's teardown on the layer runs before the GL fallback.
+            LL::RHI::releaseViewerDevice();
+            device = nullptr;
+        }
+        if (metal && device && !gMetalUIDev && LL::RHI::metalTestFault() == "device-after-window")
+        {
+            // [Viewer Lab] Test runs only: the same failure after the window in a normal start.
+            LL::RHI::releaseViewerDevice();
+            device = nullptr;
+        }
+        const bool metal_device = metal && device;
+        if (metal_device)
+        {
+            // [Viewer Lab] The render context exists with the query's values, and the layer follows RenderVSyncEnable.
+            gGLManager.initForDevice(device->capabilities());
+            if (LL::RHI::Surface* surface = device->surface())
+            {
+                surface->setVSync(gSavedSettings.getBOOL("RenderVSyncEnable"));
+            }
+            // [Viewer Lab] MetalFrameCapture's later values, on a Metal device only; the value from --set
+            // was asked for before the device.
+            gSavedSettings.getControl("MetalFrameCapture")
+                ->getSignal()
+                ->connect([](LLControlVariable* control, const LLSD& value, const LLSD&)
+                          { apply_metal_frame_capture(control, value); });
+        }
+        else if (metal && !gMetalUIDev)
+        {
+            // [Viewer Lab] A normal start: the dialog, and the viewer closes;
+            // MetalSessionOpen stays set, so the next start is GL with the notice. Only the dev mode below falls back to
+            // GL in the same process (its injected failure tests it).
+            LL_WARNS("RHI") << "Render backend: the Metal device failed after the window" << LL_ENDL;
+            stop_for_metal_device_failure("MetalCouldNotStart");
+        }
+        else if (metal)
+        {
+            // [Viewer Lab] GL's device makes GL calls, so the raw-GL trap goes off first; without the
+            // library nothing happens.
+            if (auto disarm_trap = reinterpret_cast<void (*)()>(dlsym(RTLD_DEFAULT, "ll_gl_trap_disarm")))
+            {
+                disarm_trap();
+                LL_INFOS("RHI") << "raw GL trap disarmed: GL fallback" << LL_ENDL;
+            }
+            // [Viewer Lab] The dev mode only: GL on the same view (the world stays off): mInited is
+            // false after the query, so the GL device has the window make its context, whose setView: replaces the
+            // CAMetalLayer; the view's Metal code then goes inert. A GL failure after that ends below, as on GL.
+            LL_WARNS("RHI") << "Metal UI dev mode: the Metal device failed after the window; GL" << LL_ENDL;
+            if (capture_asked)
+            {
+                LL::RHI::setMetalFrameCapture(""); // [Viewer Lab] no Metal device takes the request now
+            }
+            LL::RHI::setViewerBackend(LL::RHI::BackendType::GL);
+            info.backend.type = LL::RHI::BackendType::GL;
+            device            = LL::RHI::createViewerDevice(info);
+        }
+        if (gMetalUIDev && !metal_device && (capture_asked || !gSavedSettings.getString("MetalFrameCapture").empty()))
+        {
+            // [Viewer Lab] The dev mode on GL (injected refusal or fallback); a normal GL start never gets here.
+            LL_INFOS("RHI") << "frame capture needs the Metal backend" << LL_ENDL;
+        }
+#endif
+        if (!device)
+        {
+#if LL_DARWIN
+            if (!window->getVisible())
+            {
+                // [Viewer Lab] On macOS the window has shown its own failure dialog and closed itself
+                // (setupFailure); getVisible() there is the
+                // same test as the protected isValid() that createWindow makes. So end as the
+                // constructor does when createWindow fails; fastQuit does not return.
+                LLSplashScreen::update(LLTrans::getString("StartupRequireDriverUpdate"));
+
+                LL_WARNS("Window") << "Failed to create window, to be shutting Down, be sure your graphics driver is updated." << LL_ENDL ;
+
+                ms_sleep(5000) ; //wait for 5 seconds.
+
+                LLSplashScreen::update(LLTrans::getString("ShuttingDown"));
+                LL_WARNS("Window") << "Unable to create window, be sure screen is set at 32-bit color in Control Panels->Display->Settings"
+                        << LL_ENDL;
+                LLAppViewer::instance()->fastQuit(1);
+            }
+#endif
+            LLError::LLUserWarningMsg::show(LLTrans::getString("MBVideoDrvErr"));
+            LL_ERRS("RHI") << "The render interface's device could not be created" << LL_ENDL;
+        }
+    }
+}
+
 //
 // Classes
 //
@@ -2056,11 +2363,18 @@ LLViewerWindow::LLViewerWindow(const Params& p)
 #endif
         LLAppViewer::instance()->fastQuit(1);
     }
-    else if (!LLViewerShaderMgr::sInitialized)
+    else
     {
-        //immediately initialize shaders
-        LLViewerShaderMgr::sInitialized = true;
-        LLViewerShaderMgr::instance()->setShaders();
+        if (!gHeadlessClient)
+        {
+            create_viewer_device(mWindow); // [Viewer Lab] the headless window has no GL context
+        }
+        if (!LLViewerShaderMgr::sInitialized)
+        {
+            //immediately initialize shaders
+            LLViewerShaderMgr::sInitialized = true;
+            LLViewerShaderMgr::instance()->setShaders();
+        }
     }
 
     if (!LLAppViewer::instance()->restoreErrorTrap())
@@ -2150,9 +2464,22 @@ LLViewerWindow::LLViewerWindow(const Params& p)
         gSavedSettings.setU32("RenderQualityPerformance", 0);
     }
 
+    // [Viewer Lab] On Metal no saved or default setting above the feature table's
+    // texture-unit lists reaches the shaders, also when no graphics level was applied above (a settings file that
+    // names this machine); later changes above them are refused. Nothing on GL.
+    LLFeatureManager::getInstance()->applyHardwareCaps();
+
     // Init the image list.  Must happen after GL is initialized and before the images that
     // LLViewerWindow needs are requested, as well as before LLViewerMedia starts updating images.
-    LLImageGL::initClass(mWindow, LLViewerTexture::MAX_GL_IMAGE_CATEGORY, false, gSavedSettings.getBOOL("RenderGLMultiThreadedTextures"), gSavedSettings.getBOOL("RenderGLMultiThreadedMedia"));
+    // [Viewer Lab] The load threads: on GL Linden's two settings as before; on Metal also Metal's own two,
+    // on by default, which nothing else reads, so Metal's default never reaches GL's saved values.
+    LL::RHI::UploadThreadSettings upload_settings;
+    upload_settings.renderGLTextures = gSavedSettings.getBOOL("RenderGLMultiThreadedTextures");
+    upload_settings.renderGLMedia    = gSavedSettings.getBOOL("RenderGLMultiThreadedMedia");
+    upload_settings.metalTextures    = gSavedSettings.getBOOL("MetalMultiThreadedTextures");
+    upload_settings.metalMedia       = gSavedSettings.getBOOL("MetalMultiThreadedMedia");
+    const LL::RHI::UploadThreads upload_threads = LL::RHI::uploadThreads(LL::RHI::viewerBackend(), upload_settings);
+    LLImageGL::initClass(mWindow, LLViewerTexture::MAX_GL_IMAGE_CATEGORY, false, upload_threads.textures, upload_threads.media);
     gTextureList.init();
     LLViewerTextureManager::init() ;
     gBumpImageList.init();
@@ -2650,6 +2977,125 @@ void LLViewerWindow::shutdownViews()
     gHUDView = NULL;
 }
 
+#if LL_RHI_METAL
+namespace
+{
+    // [Viewer Lab] The first world frame on Metal and the longest world frame since, for the one
+    // MetalCompileStall line. A world frame is one display() past STATE_PRECACHE's gate; the first one's time is its
+    // display() call, each later one's the time since the previous world frame's end (the main loop's gap, in which the
+    // network is not pumped: OpenSim drops a client after 60 s without its packets). Main thread only.
+    F64 sFirstWorldFrameStart = 0.0; // 0 before the first world frame on Metal
+    F64 sLastWorldFrameEnd = 0.0;
+    F64 sFirstWorldFrameMs = -1.0;   // below 0 until the first world frame has ended
+    F64 sLongestWorldFrameMs = 0.0;
+    double sFirstWorldFrameLoad[3] = { -1.0, -1.0, -1.0 }; // getloadavg at its end
+    LL::RHI::MetalCompileStats sFirstWorldFrameStats;      // the counts at its end (the design's snapshot)
+    bool sNotMetal = false;
+    bool sCompileStallLineWritten = false;
+
+    void write_metal_compile_stall_line(const char* when)
+    {
+        sCompileStallLineWritten = true;
+        LL_INFOS("MetalCompileStall") << "the first world frame on Metal (P3-04c), written " << when << ": first world frame "
+                                      << llformat("%.1f", sFirstWorldFrameMs) << " ms, longest world frame "
+                                      << llformat("%.1f", sLongestWorldFrameMs) << " ms; load "
+                                      << llformat("%.2f %.2f %.2f", sFirstWorldFrameLoad[0], sFirstWorldFrameLoad[1],
+                                                  sFirstWorldFrameLoad[2])
+                                      << " at the first world frame's end; at its end, "
+                                      << LL::RHI::metalCompileStallText(sFirstWorldFrameStats) << LL_ENDL;
+    }
+}
+#endif
+
+// [Viewer Lab] display() calls it past STATE_PRECACHE's gate, at the start of each world frame; it notes the
+// first one's start on Metal. Nothing on GL.
+void metal_world_frame_begin()
+{
+#if LL_RHI_METAL
+    if (sFirstWorldFrameStart != 0.0 || sNotMetal)
+    {
+        return;
+    }
+    LL::RHI::Device* device = LL::RHI::viewerDevice();
+    if (!device || device->backend() != LL::RHI::BackendType::Metal)
+    {
+        sNotMetal = device != nullptr;
+        return;
+    }
+    sFirstWorldFrameStart = LLTimer::getTotalSeconds();
+#endif
+}
+
+// [Viewer Lab] display() calls it at a world frame's end, after display_stats. The first world frame on Metal
+// takes the snapshot of the compile counts and the load; the MetalCompileStall line is written at once when a world
+// frame, or one wait in the snapshot, reached METAL_COMPILE_STALL_US (the session may be dropped right after), and
+// otherwise 30 s after STATE_STARTED (log_metal_compile_stats). Once only. Nothing on GL.
+void metal_world_frame_end()
+{
+#if LL_RHI_METAL
+    if (sFirstWorldFrameStart == 0.0 || sCompileStallLineWritten)
+    {
+        return;
+    }
+    LL::RHI::Device* device = LL::RHI::viewerDevice();
+    if (!device)
+    {
+        return;
+    }
+    const F64 now = LLTimer::getTotalSeconds();
+    const bool first = sFirstWorldFrameMs < 0.0;
+    const F64 ms = (now - (first ? sFirstWorldFrameStart : sLastWorldFrameEnd)) * 1000.0;
+    sLastWorldFrameEnd = now;
+    sLongestWorldFrameMs = llmax(sLongestWorldFrameMs, ms);
+    if (first)
+    {
+        sFirstWorldFrameMs = ms;
+        sFirstWorldFrameStats = LL::RHI::metalCompileStats(*device);
+        if (getloadavg(sFirstWorldFrameLoad, 3) != 3)
+        {
+            sFirstWorldFrameLoad[0] = sFirstWorldFrameLoad[1] = sFirstWorldFrameLoad[2] = -1.0;
+        }
+    }
+    if (ms >= LL::RHI::METAL_COMPILE_STALL_US / 1000.0)
+    {
+        write_metal_compile_stall_line(first ? "at once: the first world frame stalled" : "at once: a world frame stalled");
+    }
+    else if (first && LL::RHI::metalCompileStalled(sFirstWorldFrameStats))
+    {
+        write_metal_compile_stall_line("at once: one wait stalled");
+    }
+#endif
+}
+
+// [Viewer Lab] The Metal device's compilations and the translator's disk cache so far, in one line:
+// llstartup.cpp calls it 30 s after STATE_STARTED, so a session without the golden hook (Aditi) gives the counts
+// too. Then the MetalCompileStall line, unless a stall wrote it.
+// Nothing on GL.
+void log_metal_compile_stats()
+{
+#if LL_RHI_METAL
+    LL::RHI::Device* device = LL::RHI::viewerDevice();
+    if (!device || device->backend() != LL::RHI::BackendType::Metal)
+    {
+        return;
+    }
+    const LL::RHI::MetalCompileStats stats = LL::RHI::metalCompileStats(*device);
+    LL_INFOS("RHI") << "metal compiles 30 s after STATE_STARTED: pipeline states " << stats.unspecialized
+                    << " unspecialized, " << stats.specialized << " specialized, " << stats.full << " full, "
+                    << stats.alphaVariants << " alpha variants, " << stats.refused << " refused, " << stats.cached
+                    << " cached; E14 alone " << stats.e14Unspecialized << " unspecialized; "
+                    << stats.callerTranslations << " translations on the caller; waits ms: translation "
+                    << stats.callerTranslationUs / 1000.0 << ", program " << stats.programWaitUs / 1000.0
+                    << ", pipeline " << stats.pipelineWaitUs / 1000.0 << ", point " << stats.pointWaitUs / 1000.0
+                    << "; disk cache " << sMetalShaderCacheHits.load() << " hits, " << sMetalShaderCacheMisses.load()
+                    << " misses" << LL_ENDL;
+    if (!sCompileStallLineWritten && sFirstWorldFrameMs >= 0.0)
+    {
+        write_metal_compile_stall_line("30 s after STATE_STARTED");
+    }
+#endif
+}
+
 void LLViewerWindow::shutdownGL()
 {
     //--------------------------------------------------------
@@ -2695,6 +3141,18 @@ void LLViewerWindow::shutdownGL()
     SUBSYSTEM_CLEANUP(LLVertexBuffer);
 
     LL_INFOS() << "LLVertexBuffer cleaned." << LL_ENDL ;
+
+    // [Viewer Lab] The render interface's device goes last, after every facade object and while
+    // the window's GL context still exists.
+#if LL_RHI_METAL
+    if (const U32 translations = sMetalShaderCacheHits.load() + sMetalShaderCacheMisses.load())
+    {
+        // [Viewer Lab] The Metal translator's disk cache over the session; the GL path translates nothing.
+        LL_INFOS("RHI") << "metal shader cache: " << sMetalShaderCacheHits.load() << " hits, "
+                        << sMetalShaderCacheMisses.load() << " misses of " << translations << LL_ENDL;
+    }
+#endif
+    LL::RHI::releaseViewerDevice();
 }
 
 // shutdownViews() and shutdownGL() need to be called first
@@ -2767,6 +3225,12 @@ void LLViewerWindow::reshape(S32 width, S32 height)
         // update our window rectangle
         mWindowRectRaw.mRight = mWindowRectRaw.mLeft + width;
         mWindowRectRaw.mTop = mWindowRectRaw.mBottom + height;
+
+        // [Viewer Lab] The render interface's surface follows the window.
+        if (LL::RHI::Device* device = LL::RHI::viewerDevice(); device && device->surface())
+        {
+            device->surface()->resize(U32(llmax(width, 0)), U32(llmax(height, 0)));
+        }
 
         //glViewport(0, 0, width, height );
 
@@ -4571,8 +5035,8 @@ const float offset_factor = -3.0;
 void renderMeshBaseHullPhysics(LLVOVolume* volume, U32 data_mask, LLColor4& color, LLColor4& line_color)
 {
             LLGLEnable offset(GL_POLYGON_OFFSET_FILL);
-            glPolygonMode(GL_FRONT_AND_BACK, GL_FILL);
-            glPolygonOffset(offset_factor, offset_units);
+            gGL.setPolygonMode(GL_FRONT_AND_BACK, GL_FILL);
+            gGL.setPolygonOffset(offset_factor, offset_units);
             gGL.diffuseColor4fv(color.mV);
             renderMeshBaseHullWithOutline(volume, data_mask, color, line_color);
 }
@@ -4581,8 +5045,8 @@ void renderMeshBaseHullPhysics(LLVOVolume* volume, U32 data_mask, LLColor4& colo
 void renderHullPhysics(LLModel::PhysicsMesh& mesh, const LLColor4& color, const LLColor4& line_color)
 {
     LLGLEnable offset(GL_POLYGON_OFFSET_FILL);
-    glPolygonMode(GL_FRONT_AND_BACK, GL_FILL);
-    glPolygonOffset(offset_factor, offset_units);
+    gGL.setPolygonMode(GL_FRONT_AND_BACK, GL_FILL);
+    gGL.setPolygonOffset(offset_factor, offset_units);
     render_hull_with_outline(mesh, color, line_color);
 }
 
@@ -4611,16 +5075,16 @@ void renderMeshPhysicsTriangles(const LLColor4& color, const LLColor4& line_colo
         {
             {
                 LLGLEnable offset(GL_POLYGON_OFFSET_FILL);
-                glPolygonOffset(offset_factor, offset_units);
+                gGL.setPolygonOffset(offset_factor, offset_units);
                 gGL.diffuseColor4fv(color.mV);
                 //decomp has physics mesh, render that mesh
-                glPolygonMode(GL_FRONT_AND_BACK, GL_FILL);
+                gGL.setPolygonMode(GL_FRONT_AND_BACK, GL_FILL);
                 LLVertexBuffer::drawArrays(LLRender::TRIANGLES, decomp->mPhysicsShapeMesh.mPositions);
             }
             {
                 LLGLEnable offset(GL_POLYGON_OFFSET_LINE);
-                glPolygonMode(GL_FRONT_AND_BACK, GL_LINE);
-                glPolygonOffset(offset_factor, offset_units);
+                gGL.setPolygonMode(GL_FRONT_AND_BACK, GL_LINE);
+                gGL.setPolygonOffset(offset_factor, offset_units);
                 gGL.diffuseColor4fv(line_color.mV);
                 LLVertexBuffer::drawArrays(LLRender::TRIANGLES, decomp->mPhysicsShapeMesh.mPositions);
             }
@@ -4629,11 +5093,11 @@ void renderMeshPhysicsTriangles(const LLColor4& color, const LLColor4& line_colo
         {
             gGL.flush();
             {
-                glPolygonMode(GL_FRONT_AND_BACK, GL_FILL);
+                gGL.setPolygonMode(GL_FRONT_AND_BACK, GL_FILL);
                 gGL.diffuseColor4fv(color.mV);
                 //decomp has physics mesh, render that mesh
                 LLVertexBuffer::drawArrays(LLRender::TRIANGLES, decomp->mPhysicsShapeMesh.mPositions);
-                glPolygonMode(GL_FRONT_AND_BACK, GL_LINE);
+                gGL.setPolygonMode(GL_FRONT_AND_BACK, GL_LINE);
                 gGL.diffuseColor4fv(line_color.mV);
                 LLVertexBuffer::drawArrays(LLRender::TRIANGLES, decomp->mPhysicsShapeMesh.mPositions);
             }
@@ -4647,16 +5111,16 @@ void renderMeshPhysicsTriangles(const LLColor4& color, const LLColor4& line_colo
         {
             gGL.diffuseColor4fv(color.mV);
             LLGLEnable offset(GL_POLYGON_OFFSET_FILL);
-            glPolygonMode(GL_FRONT_AND_BACK, GL_FILL);
-            glPolygonOffset(offset_factor, offset_units);
+            gGL.setPolygonMode(GL_FRONT_AND_BACK, GL_FILL);
+            gGL.setPolygonOffset(offset_factor, offset_units);
             gGL.setLineWidth(1.f); // <FS> Line width OGL core profile fix by Rye Mutt
             LLVertexBuffer::drawArrays(LLRender::TRIANGLES, decomp->mPhysicsShapeMesh.mPositions);
         }
         {
             gGL.diffuseColor4fv(line_color.mV);
             LLGLEnable offset(GL_POLYGON_OFFSET_LINE);
-            glPolygonMode(GL_FRONT_AND_BACK, GL_LINE);
-            glPolygonOffset(offset_factor, offset_units);
+            gGL.setPolygonMode(GL_FRONT_AND_BACK, GL_LINE);
+            gGL.setPolygonOffset(offset_factor, offset_units);
             gGL.setLineWidth(3.f); // <FS> Line width OGL core profile fix by Rye Mutt
             LLVertexBuffer::drawArrays(LLRender::TRIANGLES, decomp->mPhysicsShapeMesh.mPositions);
         }
@@ -4665,11 +5129,11 @@ void renderMeshPhysicsTriangles(const LLColor4& color, const LLColor4& line_colo
     {
         gGL.flush();
         {
-            glPolygonMode(GL_FRONT_AND_BACK, GL_FILL);
+            gGL.setPolygonMode(GL_FRONT_AND_BACK, GL_FILL);
             gGL.diffuseColor4fv(color.mV);
             //decomp has physics mesh, render that mesh
             LLVertexBuffer::drawArrays(LLRender::TRIANGLES, decomp->mPhysicsShapeMesh.mPositions);
-            glPolygonMode(GL_FRONT_AND_BACK, GL_LINE);
+            gGL.setPolygonMode(GL_FRONT_AND_BACK, GL_LINE);
             gGL.diffuseColor4fv(line_color.mV);
             gGL.setLineWidth(3.f); // <FS> Line width OGL core profile fix by Rye Mutt
             LLVertexBuffer::drawArrays(LLRender::TRIANGLES, decomp->mPhysicsShapeMesh.mPositions);
@@ -4677,7 +5141,7 @@ void renderMeshPhysicsTriangles(const LLColor4& color, const LLColor4& line_colo
     }
 
     gGL.setLineWidth(1.f); // <FS> Line width OGL core profile fix by Rye Mutt
-    glPolygonMode(GL_FRONT_AND_BACK, GL_FILL);
+    gGL.setPolygonMode(GL_FRONT_AND_BACK, GL_FILL);
     gGL.popMatrix();
 
     //restore the previous shader
@@ -4793,7 +5257,7 @@ void renderNonMeshHullPhysics(LLVOVolume* vovolume, LLVolume* volume, LLColor4 c
         //render hull
         // TODO: (BEQ) Find out why is this not a call to render_hull? it probably could be if the data is in the right form
 
-        glPolygonMode(GL_FRONT_AND_BACK, GL_LINE);
+        gGL.setPolygonMode(GL_FRONT_AND_BACK, GL_LINE);
 
         gGL.diffuseColor4fv(line_color.mV);
         LLVertexBuffer::unbind();
@@ -4803,7 +5267,7 @@ void renderNonMeshHullPhysics(LLVOVolume* vovolume, LLVolume* volume, LLColor4 c
         LLVertexBuffer::drawElements(LLRender::TRIANGLES, phys_volume->mHullPoints, NULL, phys_volume->mNumHullIndices, phys_volume->mHullIndices);
 
         gGL.diffuseColor4fv(color.mV);
-        glPolygonMode(GL_FRONT_AND_BACK, GL_FILL);
+        gGL.setPolygonMode(GL_FRONT_AND_BACK, GL_FILL);
         LLVertexBuffer::drawElements(LLRender::TRIANGLES, phys_volume->mHullPoints, NULL, phys_volume->mNumHullIndices, phys_volume->mHullIndices);
     }
     else
@@ -4987,8 +5451,8 @@ void renderOnePhysicsShape(LLViewerObject* objectp)
     else if (physicsShapeType == LLPhysicsShapeBuilderUtil::PhysicsShapeSpecification::BOX)
     {
         LLGLEnable offset(GL_POLYGON_OFFSET_FILL);
-        glPolygonMode(GL_FRONT_AND_BACK, GL_FILL);
-        glPolygonOffset(offset_factor, offset_units);
+        gGL.setPolygonMode(GL_FRONT_AND_BACK, GL_FILL);
+        gGL.setPolygonOffset(offset_factor, offset_units);
         LLVector3 center = physics_spec.getCenter();
         LLVector3 scale = physics_spec.getScale();
         LLVector3 vscale = vovolume->getScale()*2.f;
@@ -5000,8 +5464,8 @@ void renderOnePhysicsShape(LLViewerObject* objectp)
     else if (physicsShapeType == LLPhysicsShapeBuilderUtil::PhysicsShapeSpecification::SPHERE)
     {
         LLGLEnable offset(GL_POLYGON_OFFSET_FILL);
-        glPolygonMode(GL_FRONT_AND_BACK, GL_FILL);
-        glPolygonOffset(offset_factor, offset_units);
+        gGL.setPolygonMode(GL_FRONT_AND_BACK, GL_FILL);
+        gGL.setPolygonOffset(offset_factor, offset_units);
 
         LLVolumeParams volume_params;
         volume_params.setType(LL_PCODE_PROFILE_CIRCLE_HALF, LL_PCODE_PATH_CIRCLE);
@@ -5018,8 +5482,8 @@ void renderOnePhysicsShape(LLViewerObject* objectp)
     else if (physicsShapeType == LLPhysicsShapeBuilderUtil::PhysicsShapeSpecification::CYLINDER)
     {
         LLGLEnable offset(GL_POLYGON_OFFSET_FILL);
-        glPolygonMode(GL_FRONT_AND_BACK, GL_FILL);
-        glPolygonOffset(offset_factor, offset_units);
+        gGL.setPolygonMode(GL_FRONT_AND_BACK, GL_FILL);
+        gGL.setPolygonOffset(offset_factor, offset_units);
 
         LLVolumeParams volume_params;
         volume_params.setType(LL_PCODE_PROFILE_CIRCLE, LL_PCODE_PATH_LINE);
@@ -5042,11 +5506,11 @@ void renderOnePhysicsShape(LLViewerObject* objectp)
         LLVolume* phys_volume = LLPrimitive::sVolumeManager->refVolume(volume_params, detail);
 
         // TODO: (BEQ) We ought to be able to use a common draw call here too?
-        glPolygonOffset(offset_factor, offset_units);
+        gGL.setPolygonOffset(offset_factor, offset_units);
 
         {
             LLGLEnable offset(GL_POLYGON_OFFSET_LINE);
-            glPolygonMode(GL_FRONT_AND_BACK, GL_LINE);
+            gGL.setPolygonMode(GL_FRONT_AND_BACK, GL_LINE);
 
             gGL.diffuseColor4fv(line_color.mV);
             pushVerts(phys_volume); // draw the outlines
@@ -5054,7 +5518,7 @@ void renderOnePhysicsShape(LLViewerObject* objectp)
         {
             LLGLEnable offset(GL_POLYGON_OFFSET_FILL);
             gGL.diffuseColor4fv(color.mV);
-            glPolygonMode(GL_FRONT_AND_BACK, GL_FILL);
+            gGL.setPolygonMode(GL_FRONT_AND_BACK, GL_FILL);
             pushVerts(phys_volume); // draw the filled boxes
         }
         LLPrimitive::sVolumeManager->unrefVolume(phys_volume);
@@ -5084,11 +5548,11 @@ void renderOnePhysicsShape(LLViewerObject* objectp)
             //glPolygonMode(GL_FRONT_AND_BACK, GL_FILL);
             //glDrawElements(GL_TRIANGLES, phys_volume->mNumHullIndices, GL_UNSIGNED_SHORT, phys_volume->mHullIndices);
             gGL.diffuseColor4fv(line_color.mV);
-            glPolygonMode(GL_FRONT_AND_BACK, GL_LINE);
+            gGL.setPolygonMode(GL_FRONT_AND_BACK, GL_LINE);
             LLVertexBuffer::drawElements(LLRender::TRIANGLES, phys_volume->mHullPoints, NULL, phys_volume->mNumHullIndices, phys_volume->mHullIndices);
 
             gGL.diffuseColor4fv(color.mV);
-            glPolygonMode(GL_FRONT_AND_BACK, GL_FILL);
+            gGL.setPolygonMode(GL_FRONT_AND_BACK, GL_FILL);
             LLVertexBuffer::drawElements(LLRender::TRIANGLES, phys_volume->mHullPoints, NULL, phys_volume->mNumHullIndices, phys_volume->mHullIndices);
             // </FS:Ansariel>
         }
@@ -5195,7 +5659,7 @@ void LLViewerWindow::renderSelections( bool for_gl_pick, bool pick_parcel_walls,
                     gDebugProgram.bind();
                 }
                 gGL.getTexUnit(0)->unbind(LLTexUnit::TT_TEXTURE); // no textures needed
-                glClearColor(0, 0, 0, 0); // bg black
+                LLRenderTarget::setClearColor(0, 0, 0, 0); // bg black [Viewer Lab] through the facade
                 gGL.setColorMask(true, true); // write color and alpha info
                 gGL.color4f(1.f, 1.f, 1.f, 0.5);
                 gGL.matrixMode(LLRender::MM_MODELVIEW);
@@ -5280,9 +5744,9 @@ void LLViewerWindow::renderSelections( bool for_gl_pick, bool pick_parcel_walls,
                         gSphere.render();
 
                         // Render Inside
-                        glCullFace(GL_FRONT);
+                        gGL.setCullFace(GL_FRONT); // [Viewer Lab]
                         gSphere.render();
-                        glCullFace(GL_BACK);
+                        gGL.setCullFace(GL_BACK); // [Viewer Lab]
 
                         gGL.popMatrix();
                     }
@@ -6176,6 +6640,7 @@ bool LLViewerWindow::thumbnailSnapshot(LLImageRaw *raw, S32 preview_width, S32 p
 bool LLViewerWindow::rawSnapshot(LLImageRaw *raw, S32 image_width, S32 image_height,
     bool keep_window_aspect, bool is_texture, bool show_ui, bool show_hud, bool do_rebuild, bool no_post, bool show_balance, LLSnapshotModel::ESnapshotLayerType type, S32 max_size)
 {
+    bool delivered = true; // [Viewer Lab] whether every row was read; off GL a read can deliver nothing
     if (!raw)
     {
         return false;
@@ -6195,7 +6660,8 @@ bool LLViewerWindow::rawSnapshot(LLImageRaw *raw, S32 image_width, S32 image_hei
     gSnapshotNoPost = no_post;
     gDisplaySwapBuffers = false;
 
-    glClear(GL_DEPTH_BUFFER_BIT | GL_COLOR_BUFFER_BIT); // stencil buffer is deprecated | GL_STENCIL_BUFFER_BIT);
+    // [Viewer Lab] Through LLRenderTarget's clear
+    LLRenderTarget::clearCurrent(GL_DEPTH_BUFFER_BIT | GL_COLOR_BUFFER_BIT); // stencil buffer is deprecated | GL_STENCIL_BUFFER_BIT);
     setCursor(UI_CURSOR_WAIT);
 
     // Hide all the UI widgets first and draw a frame
@@ -6252,10 +6718,19 @@ bool LLViewerWindow::rawSnapshot(LLImageRaw *raw, S32 image_width, S32 image_hei
     F32 original_fov = LLViewerCamera::getInstance()->getView();
 
     LLRenderTarget scratch_space;
+    // <Luminous> a resize of the targets the world view's change asked for, held while they are at the picture's size
+    bool luminous_resize_held = false;
+    // </Luminous>
 
     // Lambda to restore deferred if needed when finished or in the case of early return
     auto restore_deferred = [&]()
     {
+        // <Luminous> asked for again, for the frames after the snapshot
+        if (luminous_resize_held)
+        {
+            gResizeScreenTexture = true;
+        }
+        // </Luminous>
         if (reset_deferred)
         {
             mWorldViewRectRaw = window_rect;
@@ -6285,6 +6760,10 @@ bool LLViewerWindow::rawSnapshot(LLImageRaw *raw, S32 image_width, S32 image_hei
             //U32 color_fmt = type == LLSnapshotModel::SNAPSHOT_TYPE_DEPTH ? GL_DEPTH_COMPONENT : GL_RGBA;
             U32 color_fmt = (type == LLSnapshotModel::SNAPSHOT_TYPE_DEPTH || type == LLSnapshotModel::SNAPSHOT_TYPE_DEPTH24) ? GL_DEPTH_COMPONENT : GL_RGBA;
             // </FS:Ansariel>
+            // <Luminous> On Metal a colour picture's depth only serves the final pass that draws into it (no UI, no
+            // HUD here): memoryless, 4 bytes a pixel less (300 MB at twice a 5K window with the margin)
+            scratch_space.setMemorylessDepth(LuminousMetal::metal() && type == LLSnapshotModel::SNAPSHOT_TYPE_COLOR && !show_hud);
+            // </Luminous>
             if (scratch_space.allocate(image_width, image_height, color_fmt, true))
             {
                 original_width = gPipeline.mRT->deferredScreen.getWidth();
@@ -6293,6 +6772,16 @@ bool LLViewerWindow::rawSnapshot(LLImageRaw *raw, S32 image_width, S32 image_hei
                 if (gPipeline.allocateScreenBuffer(image_width, image_height))
                 {
                     luminous_reallocated = true; // <Luminous/>
+                    // <Luminous> The targets were just made at the picture's size. On Metal a resize still asked
+                    // for (the world view changed above) would release them in display() and make them again at the
+                    // same size, both sets living until the frame's end: 3 GB more at twice a 5K window. It is held,
+                    // and asked for again when the snapshot is done.
+                    if (gResizeScreenTexture && LuminousMetal::metal())
+                    {
+                        luminous_resize_held = true;
+                        gResizeScreenTexture = false;
+                    }
+                    // </Luminous>
                     // <Luminous> In one of Luminous's renders, what this
                     // gave back -- the live view's targets, drawn, and the
                     // shadow maps the render replaced -- is deleted now, not
@@ -6418,6 +6907,22 @@ bool LLViewerWindow::rawSnapshot(LLImageRaw *raw, S32 image_width, S32 image_hei
     }
     // </Luminous>
 
+    { // [Viewer Lab] Coverage marker, once per session and kind, chosen by type before the loops
+        static std::atomic<bool> sColourReached{ false };
+        static std::atomic<bool> sDepthReached{ false };
+        const bool depth = type == LLSnapshotModel::SNAPSHOT_TYPE_DEPTH || type == LLSnapshotModel::SNAPSHOT_TYPE_DEPTH24;
+        if (!(depth ? sDepthReached : sColourReached).exchange(true))
+        {
+            LL_INFOS("RHI") << "Transfer site reached: " << (depth ? "rawSnapshot depth" : "rawSnapshot colour") << LL_ENDL;
+        }
+    }
+
+    // <Luminous> on Metal, a frame of one of Luminous's renders whose eight
+    // bits are never used is not read: the frame is waited for instead, so
+    // the render still goes frame by frame (LuminousHDRSnapshot::frameReadSkipped)
+    bool luminous_read_skipped = false;
+    // </Luminous>
+
     // Subimages are in fact partial rendering of the final view. This happens when the final view is bigger than the screen.
     // In most common cases, scale_factor is 1 and there's no more than 1 iteration on x and y
     for (int subimage_y = 0; subimage_y < scale_factor; ++subimage_y)
@@ -6452,93 +6957,100 @@ bool LLViewerWindow::rawSnapshot(LLImageRaw *raw, S32 image_width, S32 image_hei
                     swap();
                 }
 
-                for (U32 out_y = 0; out_y < read_height ; out_y++)
+                // [Viewer Lab] The tile's rows through the readback facade, waited for once a tile:
+                // readFramebufferRows makes GL's glReadPixels row by row in this order, and another backend sends the
+                // tile's reads once instead of once a row. The watchdog is pinged around the tile.
+                LLAppViewer::instance()->pingMainloopTimeout("LLViewerWindow::rawSnapshot");
+                // <Luminous>
+                if (type == LLSnapshotModel::SNAPSHOT_TYPE_COLOR && LuminousHDRSnapshot::frameReadSkipped())
+                {
+                    luminous_read_skipped = true;
+                    if (LL::RHI::Device* device = LL::RHI::viewerDevice())
+                    {
+                        device->submitAndWait();
+                    }
+                }
+                else
+                // </Luminous>
+                // disable use of glReadPixels when doing nVidia nSight graphics debugging
+                if (!LLRender::sNsightDebugSupport)
                 {
                     S32 output_buffer_offset = (
-                                                (out_y * (raw->getWidth())) // ...plus iterated y...
-                                                + (window_width * subimage_x) // ...plus subimage start in x...
+                                                (window_width * subimage_x) // ...plus subimage start in x...
                                                 + (raw->getWidth() * window_height * subimage_y) // ...plus subimage start in y...
                                                 - output_buffer_offset_x // ...minus buffer padding x...
                                                 - (output_buffer_offset_y * (raw->getWidth()))  // ...minus buffer padding y...
                                                 ) * raw->getComponents();
-
-                    // Ping the watchdog thread every 100 lines to keep us alive (arbitrary number, feel free to change)
-                    if (out_y % 100 == 0)
+                    const size_t output_row_stride = size_t(raw->getWidth()) * raw->getComponents(); // ...plus iterated y
+                    // [Viewer Lab] This snapshot's own reads, unlike its frames' readbacks
+                    LLGPUReadback::OwnReads own_reads;
+                    if (type == LLSnapshotModel::SNAPSHOT_TYPE_COLOR)
                     {
-                        LLAppViewer::instance()->pingMainloopTimeout("LLViewerWindow::rawSnapshot");
+                        if (!LLGPUReadback::readFramebufferRows(
+                                 subimage_x_offset, subimage_y_offset,
+                                 read_width, read_height,
+                                 GL_RGB, GL_UNSIGNED_BYTE,
+                                 raw->getData() + output_buffer_offset, output_row_stride, size_t(read_width) * 3
+                                 ))
+                        {
+                            delivered = false;
+                        }
                     }
-                    // disable use of glReadPixels when doing nVidia nSight graphics debugging
-                    if (!LLRender::sNsightDebugSupport)
+                    else // LLSnapshotModel::SNAPSHOT_TYPE_DEPTH and SNAPSHOT_TYPE_DEPTH24
                     {
-                        if (type == LLSnapshotModel::SNAPSHOT_TYPE_COLOR)
+                        // [Viewer Lab] The tile's depth rows in one buffer, converted after the tile's wait
+                        std::vector<F32> depth_tile_buffer(size_t(read_width) * read_height); // need to store floating point values
+                        if (!LLGPUReadback::readFramebufferRows(
+                                     subimage_x_offset, subimage_y_offset,
+                                     read_width, read_height,
+                                     GL_DEPTH_COMPONENT, GL_FLOAT,
+                                     depth_tile_buffer.data(),
+                                     size_t(read_width) * sizeof(F32), size_t(read_width) * sizeof(F32)
+                                     ))
                         {
-                            glReadPixels(
-                                     subimage_x_offset, out_y + subimage_y_offset,
-                                     read_width, 1,
-                                     GL_RGB, GL_UNSIGNED_BYTE,
-                                     raw->getData() + output_buffer_offset
-                                     );
+                            delivered = false;
                         }
-                        // <FS:Ansariel> FIRE-15667: 24bit depth maps
-                        else if (type == LLSnapshotModel::SNAPSHOT_TYPE_DEPTH24)
-                        {
-                            LLPointer<LLImageRaw> depth_line_buffer = new LLImageRaw(read_width, 1, sizeof(GLfloat)); // need to store floating point values
-                            glReadPixels(
-                                         subimage_x_offset, out_y + subimage_y_offset,
-                                         read_width, 1,
-                                         GL_DEPTH_COMPONENT, GL_FLOAT,
-                                         depth_line_buffer->getData()// current output pixel is beginning of buffer...
-                                         );
 
+                        for (U32 out_y = 0; out_y < read_height ; out_y++)
+                        {
+                            U8* output_line = raw->getData() + output_buffer_offset + out_y * output_row_stride;
                             for (S32 i = 0; i < (S32)read_width; i++)
                             {
-                                F32 depth_float = *(F32*)(depth_line_buffer->getData() + (i * sizeof(F32)));
+                                F32 depth_float = depth_tile_buffer[size_t(out_y) * read_width + i];
 
                                 F32 linear_depth_float = 1.f / (depth_conversion_factor_1 - (depth_float * depth_conversion_factor_2));
-                                U32 RGB24 = F32_to_U32(linear_depth_float, LLViewerCamera::getInstance()->getNear(), LLViewerCamera::getInstance()->getFar());
-                                //A max value of 16777215 for RGB24 evaluates to black when it shold be white.  The clamp assures that the divisions do not somehow become >=256.
-                                U8 depth_byteR = (U8)(llclamp(llfloor(RGB24 / 65536.f), 0, 255));
-                                U8 depth_byteG = (U8)(llclamp(llfloor((RGB24 - depth_byteR * 65536) / 256.f), 0, 255));
-                                U8 depth_byteB = (U8)(llclamp((RGB24 - depth_byteR * 65536 - depth_byteG * 256), 0u, 255u));
-                                // write converted scanline out to result image
-                                *(raw->getData() + output_buffer_offset + (i * raw->getComponents())) = depth_byteR;
-                                *(raw->getData() + output_buffer_offset + (i * raw->getComponents()) + 1) = depth_byteG;
-                                *(raw->getData() + output_buffer_offset + (i * raw->getComponents()) + 2) = depth_byteB;
-                                for (S32 j = 3; j < raw->getComponents(); j++)
+                                // <FS:Ansariel> FIRE-15667: 24bit depth maps
+                                if (type == LLSnapshotModel::SNAPSHOT_TYPE_DEPTH24)
                                 {
-                                    *(raw->getData() + output_buffer_offset + (i * raw->getComponents()) + j) = depth_byteR;
+                                    U32 RGB24 = F32_to_U32(linear_depth_float, LLViewerCamera::getInstance()->getNear(), LLViewerCamera::getInstance()->getFar());
+                                    //A max value of 16777215 for RGB24 evaluates to black when it shold be white.  The clamp assures that the divisions do not somehow become >=256.
+                                    U8 depth_byteR = (U8)(llclamp(llfloor(RGB24 / 65536.f), 0, 255));
+                                    U8 depth_byteG = (U8)(llclamp(llfloor((RGB24 - depth_byteR * 65536) / 256.f), 0, 255));
+                                    U8 depth_byteB = (U8)(llclamp((RGB24 - depth_byteR * 65536 - depth_byteG * 256), 0u, 255u));
+                                    // write converted scanline out to result image
+                                    *(output_line + (i * raw->getComponents())) = depth_byteR;
+                                    *(output_line + (i * raw->getComponents()) + 1) = depth_byteG;
+                                    *(output_line + (i * raw->getComponents()) + 2) = depth_byteB;
+                                    for (S32 j = 3; j < raw->getComponents(); j++)
+                                    {
+                                        *(output_line + (i * raw->getComponents()) + j) = depth_byteR;
+                                    }
                                 }
-                            }
-                        }
-                        // </FS:Ansariel>
-                        else // LLSnapshotModel::SNAPSHOT_TYPE_DEPTH
-                        {
-                            // <FS> Fix buffer creation using the wrong type
-                            //LLPointer<LLImageRaw> depth_line_buffer = new LLImageRaw(read_width, 1, sizeof(GL_FLOAT)); // need to store floating point values
-                            LLPointer<LLImageRaw> depth_line_buffer = new LLImageRaw(read_width, 1, sizeof(GLfloat)); // need to store floating point values
-                            // </FS>
-                            glReadPixels(
-                                         subimage_x_offset, out_y + subimage_y_offset,
-                                         read_width, 1,
-                                         GL_DEPTH_COMPONENT, GL_FLOAT,
-                                         depth_line_buffer->getData()// current output pixel is beginning of buffer...
-                                         );
-
-                            for (S32 i = 0; i < (S32)read_width; i++)
-                            {
-                                F32 depth_float = *(F32*)(depth_line_buffer->getData() + (i * sizeof(F32)));
-
-                                F32 linear_depth_float = 1.f / (depth_conversion_factor_1 - (depth_float * depth_conversion_factor_2));
-                                U8 depth_byte = F32_to_U8(linear_depth_float, LLViewerCamera::getInstance()->getNear(), LLViewerCamera::getInstance()->getFar());
-                                // write converted scanline out to result image
-                                for (S32 j = 0; j < raw->getComponents(); j++)
+                                else
+                                // </FS:Ansariel>
                                 {
-                                    *(raw->getData() + output_buffer_offset + (i * raw->getComponents()) + j) = depth_byte;
+                                    U8 depth_byte = F32_to_U8(linear_depth_float, LLViewerCamera::getInstance()->getNear(), LLViewerCamera::getInstance()->getFar());
+                                    // write converted scanline out to result image
+                                    for (S32 j = 0; j < raw->getComponents(); j++)
+                                    {
+                                        *(output_line + (i * raw->getComponents()) + j) = depth_byte;
+                                    }
                                 }
                             }
                         }
                     }
                 }
+                LLAppViewer::instance()->pingMainloopTimeout("LLViewerWindow::rawSnapshot");
             }
             output_buffer_offset_x += subimage_x_offset;
             stop_glerror();
@@ -6573,6 +7085,10 @@ bool LLViewerWindow::rawSnapshot(LLImageRaw *raw, S32 image_width, S32 image_hei
 
     bool ret = true ;
     // Resize image
+    if (luminous_read_skipped) // <Luminous/> nothing was read: nothing to scale
+    {
+    }
+    else
     if(llabs(image_width - image_buffer_x) > 4 || llabs(image_height - image_buffer_y) > 4)
     {
         ret = raw->scale( image_width, image_height );
@@ -6602,7 +7118,7 @@ bool LLViewerWindow::rawSnapshot(LLImageRaw *raw, S32 image_width, S32 image_hei
     }
     setBalanceVisible(true);
 
-    return ret;
+    return ret && delivered; // [Viewer Lab]
 }
 
 bool LLViewerWindow::simpleSnapshot(LLImageRaw* raw, S32 image_width, S32 image_height, const int num_render_passes)
@@ -6610,7 +7126,8 @@ bool LLViewerWindow::simpleSnapshot(LLImageRaw* raw, S32 image_width, S32 image_
     LL_PROFILE_ZONE_SCOPED_CATEGORY_APP;
     gDisplaySwapBuffers = false;
 
-    glClear(GL_DEPTH_BUFFER_BIT | GL_COLOR_BUFFER_BIT); // stencil buffer is deprecated | GL_STENCIL_BUFFER_BIT);
+    // [Viewer Lab] Through LLRenderTarget's clear
+    LLRenderTarget::clearCurrent(GL_DEPTH_BUFFER_BIT | GL_COLOR_BUFFER_BIT); // stencil buffer is deprecated | GL_STENCIL_BUFFER_BIT);
     setCursor(UI_CURSOR_WAIT);
 
     bool prev_draw_ui = gPipeline.hasRenderDebugFeatureMask(LLPipeline::RENDER_DEBUG_FEATURE_UI);
@@ -6681,13 +7198,26 @@ bool LLViewerWindow::simpleSnapshot(LLImageRaw* raw, S32 image_width, S32 image_
 
     LLImageDataSharedLock lock(raw);
 
-    glReadPixels(
-        0, 0,
-        image_width,
-        image_height,
-        GL_RGB, GL_UNSIGNED_BYTE,
-        raw->getData()
-    );
+    // [Viewer Lab] Coverage marker, once per session
+    static std::atomic<bool> sReached{ false };
+    if (!sReached.exchange(true))
+    {
+        LL_INFOS("RHI") << "Transfer site reached: simpleSnapshot" << LL_ENDL;
+    }
+    // [Viewer Lab] Through the readback facade
+    // [Viewer Lab] Off GL a read that did not reach the encoder reads nothing: false at the end
+    // [Viewer Lab] This snapshot's own read, unlike its frame's readbacks
+    bool delivered = false;
+    {
+        LLGPUReadback::OwnReads own_reads;
+        delivered = LLGPUReadback::readPixels(
+            0, 0,
+            image_width,
+            image_height,
+            GL_RGB, GL_UNSIGNED_BYTE,
+            raw->getData(), size_t(raw->getDataSize())
+        );
+    }
     stop_glerror();
 
     gDisplaySwapBuffers = false;
@@ -6714,7 +7244,7 @@ bool LLViewerWindow::simpleSnapshot(LLImageRaw* raw, S32 image_width, S32 image_
     scratch_space.release();
     gPipeline.allocateScreenBuffer(original_width, original_height);
 
-    return true;
+    return delivered; // [Viewer Lab]
 }
 
 void display_cube_face();
@@ -6760,7 +7290,7 @@ bool LLViewerWindow::cubeSnapshot(const LLVector3& origin, LLCubeMapArray* cubea
 
     gPipeline.pushRenderTypeMask();
 
-    glClear(GL_DEPTH_BUFFER_BIT | GL_COLOR_BUFFER_BIT); // stencil buffer is deprecated | GL_STENCIL_BUFFER_BIT);
+    LLRenderTarget::clearCurrent(GL_DEPTH_BUFFER_BIT | GL_COLOR_BUFFER_BIT); // stencil buffer is deprecated | GL_STENCIL_BUFFER_BIT); [Viewer Lab]
 
     U32 dynamic_render_types[] = {
         LLPipeline::RENDER_TYPE_AVATAR,
@@ -6977,11 +7507,9 @@ void LLViewerWindow::setup2DRender()
 
 void LLViewerWindow::setup2DViewport(S32 x_offset, S32 y_offset)
 {
-    gGLViewport[0] = mWindowRectRaw.mLeft + x_offset;
-    gGLViewport[1] = mWindowRectRaw.mBottom + y_offset;
-    gGLViewport[2] = mWindowRectRaw.getWidth();
-    gGLViewport[3] = mWindowRectRaw.getHeight();
-    glViewport(gGLViewport[0], gGLViewport[1], gGLViewport[2], gGLViewport[3]);
+    // [Viewer Lab] also gGLViewport
+    gGL.setWindowViewport(mWindowRectRaw.mLeft + x_offset, mWindowRectRaw.mBottom + y_offset, mWindowRectRaw.getWidth(),
+                          mWindowRectRaw.getHeight());
 }
 
 
@@ -6995,11 +7523,9 @@ void LLViewerWindow::setup3DRender()
 void LLViewerWindow::setup3DViewport(S32 x_offset, S32 y_offset)
 {
     LL_PROFILE_ZONE_SCOPED_CATEGORY_UI;
-    gGLViewport[0] = mWorldViewRectRaw.mLeft + x_offset;
-    gGLViewport[1] = mWorldViewRectRaw.mBottom + y_offset;
-    gGLViewport[2] = mWorldViewRectRaw.getWidth();
-    gGLViewport[3] = mWorldViewRectRaw.getHeight();
-    glViewport(gGLViewport[0], gGLViewport[1], gGLViewport[2], gGLViewport[3]);
+    // [Viewer Lab] also gGLViewport
+    gGL.setWindowViewport(mWorldViewRectRaw.mLeft + x_offset, mWorldViewRectRaw.mBottom + y_offset, mWorldViewRectRaw.getWidth(),
+                          mWorldViewRectRaw.getHeight());
 }
 
 void LLViewerWindow::revealIntroPanel()
@@ -7152,6 +7678,16 @@ void LLViewerWindow::stopGL()
     {
         LL_INFOS() << "Shutting down GL..." << LL_ENDL;
 
+        // [Viewer Lab] The render interface's device lives as long as the window's GL context,
+        // which neither stopGL nor restoreGL destroys; only shutdownGL releases it. A path
+        // that destroys the context in between must release the device before that and
+        // create it again afterwards, in the constructor's order. The GPU finishes the device's
+        // work here, before the facades destroy their GL objects.
+        if (LL::RHI::Device* device = LL::RHI::viewerDevice())
+        {
+            device->submitAndWait();
+        }
+
         // Pause texture decode threads (will get unpaused during main loop)
         LLAppViewer::getTextureCache()->pause();
         LLAppViewer::getTextureFetch()->pause();
@@ -7160,6 +7696,8 @@ void LLViewerWindow::stopGL()
         stop_glerror();
 
         LLManipTranslate::destroyGL() ;
+        // The joint manipulator's grid is a render-device texture too: released here, before the device goes
+        FSManipTranslateJoint::destroyGL();
         stop_glerror();
 
         gBumpImageList.destroyGL();
@@ -7221,6 +7759,16 @@ void LLViewerWindow::restoreGL(const std::string& progress_message)
     {
         LL_INFOS() << "Restoring GL..." << LL_ENDL;
         gGLManager.mIsDisabled = false;
+
+        // [Viewer Lab] The render interface's device lives as long as the window's GL context,
+        // which neither stopGL nor restoreGL destroys; only shutdownGL releases it. A path
+        // that destroys the context in between must release the device before that and
+        // create it again afterwards, in the constructor's order. Its surface takes the window's
+        // size again.
+        if (LL::RHI::Device* device = LL::RHI::viewerDevice(); device && device->surface())
+        {
+            device->surface()->resize(U32(llmax(getWindowWidthRaw(), 0)), U32(llmax(getWindowHeightRaw(), 0)));
+        }
 
         initGLDefaults();
         LLGLState::restoreGL();

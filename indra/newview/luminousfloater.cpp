@@ -59,6 +59,7 @@
 #include "llsliderctrl.h"
 #include "llviewercamera.h"
 #include "luminousphotomode.h"
+#include "luminousmetal.h"
 #include "llagent.h"
 #include "llagentbenefits.h"
 #include "llagentui.h"
@@ -86,6 +87,7 @@
 #include "luminoushdrsnapshot.h"
 #include "lldirpicker.h"
 #include "llrendertarget.h"
+#include "llrhi.h"
 #include "llmodaldialog.h"
 #include "llvertexbuffer.h"
 #include "pipeline.h"
@@ -112,6 +114,7 @@ namespace
         const char* render_only;  // nullptr: off and live only, or off and render only (always_render)
         bool always_render = false; // never live: off or in the rendered picture only
         const char* needs = nullptr; // a Firestorm switch it builds on: on and off with it
+        const char* turns_on = nullptr; // a Firestorm switch it builds on: turned on with it, left alone when it goes off
     };
     const EffectMode EFFECT_MODES[] = {
         { "volumetric_mode",   "LuminousPhotoVolumetricLight",     nullptr, nullptr, 0.f, "LuminousPhotoVolumetricLightRenderOnly" },
@@ -124,7 +127,9 @@ namespace
         { "contact_mode",      "LuminousPhotoContactShadows",      nullptr, nullptr, 0.f, "LuminousPhotoContactShadowsRenderOnly" },
         // Off or render only, never live: at the live view's sample counts
         // they look rougher than in the picture.
-        { "ssr_mode",          "LuminousPhotoSSR",                 nullptr, nullptr, 0.f, nullptr, true },
+        // They build on Second Life's screen-space reflections, which their
+        // button turns on; turning them off leaves Second Life's on.
+        { "ssr_mode",          "LuminousPhotoSSR",                 nullptr, nullptr, 0.f, nullptr, true, nullptr, "RenderScreenSpaceReflections" },
         // off or only in the render: live, worn alpha is sorted only by
         // distance, which can show the scalp through hair at a parting
         { "alpha_sort_mode",   "LuminousPhotoAlphaSort",           nullptr, nullptr, 0.f, nullptr, true },
@@ -151,6 +156,10 @@ namespace
     bool effectOn(const EffectMode& effect)
     {
         if (effect.needs && !gSavedSettings.getBOOL(effect.needs))
+        {
+            return false;
+        }
+        if (effect.turns_on && !gSavedSettings.getBOOL(effect.turns_on))
         {
             return false;
         }
@@ -426,18 +435,23 @@ public:
         }
         static LLUIColor label_colour = LLUIColorTable::instance().getColor("ButtonLabelColor");
         static LLUIColor open_colour = LLUIColorTable::instance().getColor("ButtonLabelSelectedColor");
+        static LLUIColor disabled_colour = LLUIColorTable::instance().getColor("ButtonLabelDisabledColor");
+        // With photo mode off the tabs are greyed and open nothing; the
+        // tooltip says why.
+        const bool enabled = LuminousPhotoMode::isOn();
         const S32 open = mOwner->isFolded() ? -1 : tabs->getCurrentPanelIndex();
         for (S32 i = 0; i < (S32)mRects.size(); ++i)
         {
             const LLRect& r = mRects[i];
-            LLUIImagePtr image = LLUI::getUIImage(i == open ? "PushButton_Selected"
+            LLUIImagePtr image = LLUI::getUIImage(!enabled ? "PushButton_Disabled"
+                                                  : i == open ? "PushButton_Selected"
                                                   : (i == mHover ? "PushButton_Over" : "PushButton_Off"));
             if (image)
             {
                 image->draw(r);
             }
             LLPanel* panel = tabs->getPanelByIndex(i);
-            const LLColor4 colour = i == open ? open_colour.get() : label_colour.get();
+            const LLColor4 colour = !enabled ? disabled_colour.get() : i == open ? open_colour.get() : label_colour.get();
             if (const char* icon = iconOf(panel))
             {
                 if (LLUIImagePtr image = LLUI::getUIImage(icon))
@@ -455,7 +469,7 @@ public:
     bool handleMouseDown(S32 x, S32 y, MASK mask) override
     {
         S32 item;
-        if (itemAt(x, y, item))
+        if (LuminousPhotoMode::isOn() && itemAt(x, y, item))
         {
             make_ui_sound("UISndClick");
             mOwner->onSideTab(item);
@@ -466,7 +480,7 @@ public:
     bool handleHover(S32 x, S32 y, MASK mask) override
     {
         S32 item;
-        mHover = itemAt(x, y, item) ? item : -2;
+        mHover = LuminousPhotoMode::isOn() && itemAt(x, y, item) ? item : -2;
         getWindow()->setCursor(UI_CURSOR_ARROW);
         return true;
     }
@@ -484,7 +498,11 @@ public:
             return false;
         }
         std::string tip;
-        if (LLTabContainer* tabs = mOwner->tabs())
+        if (!LuminousPhotoMode::isOn())
+        {
+            tip = LuminousPhotoMode::needsOpenGLText();
+        }
+        else if (LLTabContainer* tabs = mOwner->tabs())
         {
             LLPanel* panel = tabs->getPanelByIndex(item);
             const std::string hint = mOwner->tabHint(panel);
@@ -742,6 +760,7 @@ bool LuminousFloater::postBuild()
 
 void LuminousFloater::setFolded(bool folded)
 {
+    folded = folded || !LuminousPhotoMode::isOn(); // with photo mode off only the column shows, greyed
     mFolded = folded;
     gSavedSettings.setBOOL("LuminousSidebarFolded", folded);
     if (mBox)
@@ -753,7 +772,7 @@ void LuminousFloater::setFolded(bool folded)
 
 void LuminousFloater::onSideTab(S32 index)
 {
-    if (!mTabs)
+    if (!mTabs || !LuminousPhotoMode::isOn())
     {
         return;
     }
@@ -1166,17 +1185,42 @@ void LuminousFloater::refreshLogSliders()
     }
 }
 
+namespace
+{
+    // An effect's rows show when it can be switched on and off on this renderer. On OpenGL every
+    // effect can; on Metal alpha sorting shows while LuminousMetalAlphaSort is set (as it is by default).
+    bool alphaSortOffered()
+    {
+        static LLCachedControl<U32> on_metal(gSavedSettings, "LuminousMetalAlphaSort", 1);
+        return !LuminousMetal::metal() || on_metal() != 0;
+    }
+
+    const char* const ALPHA_SORT_ROW = "alpha_sort_lp";
+    const char* const ALPHA_SORT_OPTIONS_ROW = "alpha_sort_options_lp";
+}
+
 void LuminousFloater::refreshOptions()
 {
+    const bool alpha_sort = alphaSortOffered();
     for (const auto& option : OPTIONS)
     {
         LLLayoutPanel* panel = findChild<LLLayoutPanel>(option.second);
-        const bool shown = gSavedSettings.getBOOL(option.first);
+        bool shown = gSavedSettings.getBOOL(option.first);
+        if (!alpha_sort && std::string(option.second) == ALPHA_SORT_OPTIONS_ROW)
+        {
+            shown = false;
+        }
         if (panel && panel->getVisible() != shown)
         {
             panel->setVisible(shown);
             fitTabs();
         }
+    }
+    LLLayoutPanel* alpha_sort_row = findChild<LLLayoutPanel>(ALPHA_SORT_ROW);
+    if (alpha_sort_row && alpha_sort_row->getVisible() != alpha_sort)
+    {
+        alpha_sort_row->setVisible(alpha_sort);
+        fitTabs();
     }
 }
 
@@ -1740,6 +1784,10 @@ void LuminousFloater::onEffectMode(size_t index)
         if (effect.needs)
         {
             gSavedSettings.setBOOL(effect.needs, turn_on);
+        }
+        if (effect.turns_on && turn_on)
+        {
+            gSavedSettings.setBOOL(effect.turns_on, true);
         }
     }
     if (effect.render_only)
@@ -2509,6 +2557,38 @@ namespace
         {
             return;
         }
+        if (!LuminousPhotoMode::isOn())
+        {
+            return; // drawn only during a render, which photo mode makes
+        }
+        if (!LuminousMetal::translatedPasses())
+        {
+            // Metal: the back buffer's own pass of the target stack, cleared
+            // to black with its depth, the interface drawn into it and the
+            // frame presented, as display_startup draws. Between a render's
+            // frames rawSnapshot has unbound its targets; with one still
+            // bound, the back buffer is not the stack's, and nothing is drawn.
+            gGL.flush();
+            if (LLRenderTarget::getCurrentBoundTarget())
+            {
+                return;
+            }
+            LLRenderTarget::setClearColor(0.f, 0.f, 0.f, 0.f);
+            LLRenderTarget::clearCurrent(GL_DEPTH_BUFFER_BIT | GL_COLOR_BUFFER_BIT);
+            {
+                LLGLSUIDefault gls_ui;
+                gViewerWindow->setup2DRender();
+                gViewerWindow->draw();
+                gGL.flush();
+            }
+            LLVertexBuffer::unbind();
+            if (LL::RHI::Device* device = LL::RHI::viewerDevice(); device && device->surface())
+            {
+                device->surface()->present();
+            }
+            gViewerWindow->getWindow()->swapBuffers();
+            return;
+        }
         gGL.flush();
         glBindFramebuffer(GL_FRAMEBUFFER, 0);
         glClear(GL_DEPTH_BUFFER_BIT | GL_COLOR_BUFFER_BIT);
@@ -2969,8 +3049,9 @@ void LuminousPictureView::release()
 {
     if (mTexture)
     {
-        glDeleteTextures(1, &mTexture);
-        mTexture = 0;
+        // [Viewer Lab] the encoder lets go of it first, then its name goes to LLImageGL's deletion lists
+        LLTexUnit::releaseTexture(mTexture.get());
+        mTexture = nullptr;
     }
     mWidth = mHeight = 0;
 }
@@ -3019,21 +3100,33 @@ void LuminousPictureView::setPicture(const LLPointer<LLImageRaw>& picture)
             image = rgb;
         }
     }
-    mWidth = image->getWidth();
-    mHeight = image->getHeight();
+    const S32 width = image->getWidth();
+    const S32 height = image->getHeight();
     const bool alpha = image->getComponents() == 4;
+    const S32 intformat = alpha ? GL_RGBA8 : GL_RGB8;
+    const U32 pixformat = alpha ? GL_RGBA : GL_RGB;
     // A texture of its own: any size, with mip levels so the whole picture
-    // shrinks cleanly; bottom row first, as images are.
-    glGenTextures(1, &mTexture);
-    gGL.getTexUnit(0)->bindManual(LLTexUnit::TT_TEXTURE, mTexture, true);
-    glPixelStorei(GL_UNPACK_ALIGNMENT, 1); // the viewer relies on 1 (LLRender::init)
-    glTexImage2D(GL_TEXTURE_2D, 0, alpha ? GL_RGBA8 : GL_RGB8, mWidth, mHeight, 0, alpha ? GL_RGBA : GL_RGB,
-                 GL_UNSIGNED_BYTE, image->getData());
-    glGenerateMipmap(GL_TEXTURE_2D);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR_MIPMAP_LINEAR);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+    // shrinks cleanly; bottom row first, as images are. Uncompressed, and
+    // the unpack alignment of 1 the viewer keeps (LLRender::init).
+    U32 levels = 1;
+    for (S32 side = llmax(width, height); side > 1; side >>= 1)
+    {
+        ++levels;
+    }
+    std::vector<LLPointer<LL::RHI::Texture>> textures;
+    if (!LLImageGL::createTextureNames(textures, 1, LLTexUnit::TT_TEXTURE, intformat, pixformat, GL_UNSIGNED_BYTE, width,
+                                       height, LL::RHI::TEXTURE_SAMPLED, false, levels))
+    {
+        return;
+    }
+    mTexture = textures[0];
+    mWidth = width;
+    mHeight = height;
+    gGL.getTexUnit(0)->bindTexture(LLTexUnit::TT_TEXTURE, mTexture.get(), true);
+    LLImageGL::specifyTexture(mTexture.get(), 0, intformat, width, height, pixformat, GL_UNSIGNED_BYTE, image->getData(), false);
+    LLImageGL::generateMipmaps(mTexture.get(), GL_TEXTURE_2D);
+    gGL.getTexUnit(0)->setTextureFilteringOption(LLTexUnit::TFO_TRILINEAR);
+    gGL.getTexUnit(0)->setTextureAddressMode(LLTexUnit::TAM_CLAMP);
     gGL.getTexUnit(0)->unbind(LLTexUnit::TT_TEXTURE);
 }
 
@@ -3230,9 +3323,11 @@ void LuminousPictureView::draw()
         const F32 top = bottom + (F32)mHeight * mScale;
         {
             LLLocalClipRect clip(getLocalRect()); // zoomed in, all of the overlay
-            gGL.getTexUnit(0)->bindManual(LLTexUnit::TT_TEXTURE, mTexture, true);
-            // past 100%, the pixels themselves, as an editor shows them
-            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, mScale > fullScale() * 1.01f ? GL_NEAREST : GL_LINEAR);
+            gGL.getTexUnit(0)->bindTexture(LLTexUnit::TT_TEXTURE, mTexture.get(), true);
+            // past 100%, the pixels themselves, as an editor shows them (only magnified then, so the
+            // minifying filter does not matter)
+            gGL.getTexUnit(0)->setTextureFilteringOption(mScale > fullScale() * 1.01f ? LLTexUnit::TFO_POINT
+                                                                                      : LLTexUnit::TFO_TRILINEAR);
             gGL.color4f(1.f, 1.f, 1.f, 1.f);
             gGL.begin(LLRender::TRIANGLES);
             gGL.texCoord2f(0.f, 0.f); gGL.vertex2f(left, bottom);

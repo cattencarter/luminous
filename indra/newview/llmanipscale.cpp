@@ -61,6 +61,7 @@
 #include "llvoavatar.h"
 #include "llmeshrepository.h"
 #include "lltrans.h"
+#include <atomic>
 
 const F32 MAX_MANIP_SELECT_DISTANCE_SQUARED = 11.f * 11.f;
 const F32 SNAP_GUIDE_SCREEN_OFFSET = 0.05f;
@@ -309,17 +310,23 @@ void LLManipScale::render()
 
             {
                 LLGLEnable poly_offset(GL_POLYGON_OFFSET_FILL);
-                glPolygonOffset( -2.f, -2.f);
+                gGL.setPolygonOffset(-2.f, -2.f); // [Viewer Lab]
 
                 renderCorners( bbox );
                 renderFaces( bbox );
+                // [Viewer Lab] Coverage marker, once per session
+                static std::atomic<bool> sReached{ false };
+                if (!sReached.exchange(true))
+                {
+                    LL_INFOS("RHI") << "Facade site reached: llmanipscale.cpp:render (offset)" << LL_ENDL;
+                }
 
                 if (mManipPart != LL_NO_PART)
                 {
                     renderGuidelinesPart( bbox );
                 }
 
-                glPolygonOffset( 0.f, 0.f);
+                gGL.setPolygonOffset(0.f, 0.f); // [Viewer Lab]
             }
         }
         gGL.popMatrix();

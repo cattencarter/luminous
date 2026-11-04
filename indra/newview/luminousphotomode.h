@@ -38,6 +38,7 @@
 #include <vector>
 
 class LLGLSLShader;
+class LLPanel;
 class LLRenderTarget;
 
 /**
@@ -51,9 +52,28 @@ class LLRenderTarget;
  */
 namespace LuminousPhotoMode
 {
-    /// Always true; asked so that photo mode's hooks in Firestorm's files
-    /// stay marked as such.
+    /// True with the OpenGL renderer; with Metal while LuminousMetalPhotoModeDev
+    /// is on, each effect then by its own switch (LuminousMetal::on). Asked so
+    /// that photo mode's hooks in Firestorm's files stay marked as such. Off,
+    /// every feature below is off, and nothing of photo mode is drawn,
+    /// allocated or bound.
     bool isOn();
+    /// Renders (accumulated frames, read back as light): with OpenGL always,
+    /// with Metal once the render group's native passes are on.
+    bool rendersAvailable();
+    /// rendersAvailable(); when not, the notice that a render needs OpenGL.
+    bool rendersAvailableOrSay();
+    /// What the sidebar and the ways into a render say when photo mode is off.
+    std::string needsOpenGLText();
+    /// isOn(); when off, a notice that photo mode needs OpenGL first. For the
+    /// commands that start a render.
+    bool availableOrSay();
+    /// While photo mode is off, and with it the sidebar: shows Firestorm's own
+    /// controls for what the sidebar sets, which Luminous hides in `which` --
+    /// "display" (Preferences > Graphics) or "phototools". Called from each
+    /// one's postBuild; does nothing while photo mode is on. The lists are in
+    /// luminousphotomode.cpp, at its end.
+    void showFirestormControls(LLPanel* window, const std::string& which);
 
     /// A feature is wanted: photo mode is on and so is the feature. Each
     /// decides whether its shaders are built (and buffers allocated), so the
@@ -244,6 +264,9 @@ namespace LuminousPhotoMode
     F32 chosenLiveScale();
     /// The present pass scales a smaller frame up to the window.
     bool upscaling();
+    /// The main targets are smaller than the world view: the live view is
+    /// rendered at a smaller scale and must be scaled up when presented.
+    bool liveViewSmaller();
     /// Held while a snapshot renders, so that it renders at full resolution:
     /// the first hold puts the main targets back to full size (and asks for
     /// one warm-up frame, takeWarmUp, so that reflections have a full-size
@@ -304,6 +327,11 @@ namespace LuminousPhotoMode
     };
     /// True while held: the rebuild asked for is noted, for the hold's end.
     bool holdShaderRebuild();
+    /// On Metal, true while held: the pipeline's buffers asked to be made again (releaseGLBuffers and
+    /// createGLBuffers) are made again once, as the hold ends, before the shaders. Metal gives each set of targets
+    /// its memory at once and keeps the sets it replaces until the frame ends, so a change of graphics level,
+    /// whose settings each made them again, held eight sets at once (7-10 GB at a 5K window). False on OpenGL.
+    bool holdBufferRebuild();
 
     bool holdExposure(); ///< a frame after the first of an accumulated render: keep the exposure
     void setAccumulationFrame(S32 frame); ///< -1 when no snapshot is being accumulated
@@ -364,7 +392,7 @@ namespace LuminousPhotoMode
     /// contrast, saturation, white balance, black and white and sepia on the
     /// exposed scene-linear frame, and a choice of tonemapper -- Firestorm's
     /// two, AgX, AgX Punchy, Hable's filmic. At its defaults it changes
-    /// nothing. Always on in photo mode; the define is set by isOn().
+    /// nothing. Always on in photo mode with OpenGL; with Metal by its switch.
     bool look();
     /// Called from LLPipeline::tonemap, after Firestorm's own uniforms.
     void bindLookUniforms(LLGLSLShader& shader);

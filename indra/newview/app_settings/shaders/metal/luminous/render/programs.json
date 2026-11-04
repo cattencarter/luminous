@@ -1,0 +1,44 @@
+{
+  "libraries": [
+    {
+      "name": "render",
+      "files": [
+        "luminous/render/render.metal"
+      ],
+      "defines": {},
+      "compute": [
+        { "function": "luminous_render_resolve", "threadsPerThreadgroup": [16, 16, 1] }
+      ],
+      "render": [
+        {
+          "vertex": "luminous_fullscreen_vs",
+          "fragment": "luminous_average_add_fs",
+          "colorFormats": ["RGBA16Float"],
+          "depthFormat": "",
+          "blend": "none"
+        },
+        {
+          "vertex": "luminous_fullscreen_vs",
+          "fragment": "luminous_average_add_fs",
+          "colorFormats": ["RGBA32Float"],
+          "depthFormat": "",
+          "blend": "none"
+        },
+        {
+          "vertex": "luminous_fullscreen_vs",
+          "fragment": "luminous_average_last_fs",
+          "colorFormats": ["RGBA16Float", "RGBA16Float"],
+          "depthFormat": "",
+          "blend": "none"
+        },
+        {
+          "vertex": "luminous_fullscreen_vs",
+          "fragment": "luminous_average_last_fs",
+          "colorFormats": ["RGBA32Float", "RGBA16Float"],
+          "depthFormat": "",
+          "blend": "none"
+        }
+      ]
+    }
+  ]
+}

@@ -32,6 +32,12 @@
 #include "v4math.h"
 #include "llquaternion.h"
 
+// [Viewer Lab]
+namespace LL::RHI
+{
+    class Texture;
+}
+
 class LLManipTranslate : public LLManip
 {
 public:
@@ -50,7 +56,7 @@ public:
     LLManipTranslate( LLToolComposite* composite );
     virtual ~LLManipTranslate();
 
-    static  U32     getGridTexName() ;
+    static  LL::RHI::Texture* getGridTexture(); // [Viewer Lab] the grid's texture, or null
     static  void    destroyGL();
     static  void    restoreGL();
     virtual bool    handleMouseDown(S32 x, S32 y, MASK mask);

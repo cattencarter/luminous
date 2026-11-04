@@ -32,6 +32,13 @@
 #include "llgl.h"
 #include "llrender.h"
 
+// [Viewer Lab]
+namespace LL::RHI
+{
+    class Texture;
+    struct RenderPassDesc;
+}
+
 /*
  Wrapper around OpenGL framebuffer objects for use in render-to-texture
 
@@ -71,6 +78,11 @@ public:
 
     LLRenderTarget();
     ~LLRenderTarget();
+
+    // [Viewer Lab] Defined in llrendertarget.cpp, where the render interface's texture is complete: std::vector<LLRenderTarget>::resize
+    // copies elements (llreflectionmapmanager.cpp, llheroprobemanager.cpp). A copy shares the GL names and the textures.
+    LLRenderTarget(const LLRenderTarget& other);
+    LLRenderTarget& operator=(const LLRenderTarget& other);
 
     //allocate resources for rendering
     //must be called before use
@@ -116,6 +128,11 @@ public:
     //share depth buffer with provided render target
     void shareDepthBuffer(LLRenderTarget& target);
 
+    // <Luminous> On a device with memoryless textures (Metal), the depth allocate() makes from now on lives only while
+    // a pass draws into it (TEXTURE_MEMORYLESS): for a depth that is never sampled, read back or shared, and whose
+    // contents nothing needs past a pass break. Elsewhere the depth is made as always.
+    void setMemorylessDepth(bool memoryless) { mMemorylessDepth = memoryless; }
+
     //free any allocated resources
     //safe to call redundantly
     // asserts that this target is not currently bound or present in the RT stack
@@ -127,6 +144,25 @@ public:
     //  and restores previous binding on flush() (maintains a stack of Render Targets)
     //  Asserts that this target is not currently bound in the stack
     void bindTarget();
+
+    // [Viewer Lab] How the pass of a bound target uses its depth
+    enum eDepthAccess
+    {
+        DEPTH_READ_WRITE,
+        DEPTH_READ_ONLY
+    };
+
+    // [Viewer Lab] bindTarget with the depth read-only: the pass samples the depth it tests against (the deferred lights,
+    // renderDeferredLighting), so depth writes and depth clears must stay off, which the render interface refuses on every
+    // backend (EncoderTracker). GL's calls are bindTarget()'s. The target keeps its access while bound, until
+    // setDepthAccess changes it, also when a nested target's flush binds it again.
+    void bindTarget(eDepthAccess depth_access);
+
+    // [Viewer Lab] The depth access of the bound target's pass from here on, as bindTarget(eDepthAccess) sets it at the bind:
+    // for a bind whose first part samples the depth it tests against and whose later part writes depth (renderDeferredLighting).
+    // No GL call; with the viewer's device the stack's pass ends and begins again over the same attachments, loaded,
+    // when the access changes. Asserts that this target is the bound one.
+    void setDepthAccess(eDepthAccess depth_access);
 
     //clear render targer, clears depth buffer if present,
     //uses scissor rect if in copy-to-texture mode
@@ -149,7 +185,25 @@ public:
 
     U32 getDepth(void) const { return mDepth; }
 
+    // [Viewer Lab] The texture of the viewer's render device whose GL name getTexture(attachment) gives, or null when that name
+    // is raw (made without the device, or the caller's through setColorAttachment) or there is no such attachment. Used by
+    // the tests and the stack's passes.
+    LL::RHI::Texture* getRHITexture(U32 attachment = 0) const;
+
+    // [Viewer Lab] The same for getDepth(); null for a target that only shares another's depth.
+    LL::RHI::Texture* getRHIDepth() const;
+
     void bindTexture(U32 index, S32 channel, LLTexUnit::eTextureFilterOptions filter_options = LLTexUnit::TFO_BILINEAR);
+
+    // [Viewer Lab] Copies the window's back buffer from (0, 0) at this target's size into its colour attachment 0, which
+    // the caller has bound on the active unit: GL reads framebuffer 0 (GL_READ_FRAMEBUFFER 0, glCopyTexSubImage2D), and
+    // afterwards GL_READ_FRAMEBUFFER and GL_DRAW_FRAMEBUFFER are 0 and GL_FRAMEBUFFER is sCurFBO, as LLSceneMonitor's
+    // calls left them. Through LLGPUCopy::fromFramebuffer with the viewer's device: the source is the device surface's
+    // back buffer; without a surface the destination is null too (the copy counts untracked), because fromFramebuffer
+    // would read the bound target's attachment for a null source while GL reads framebuffer 0. A target larger than the
+    // surface's back buffer gets the overlap (GL defined only the overlap; the target's pixels outside it keep their
+    // contents). No stack pass begins or ends here. Returns whether it copied, as fromFramebuffer reports it. Main thread.
+    bool copyFromBackBuffer();
 
     //flush rendering operations
     //must be called when rendering is complete
@@ -164,10 +218,70 @@ public:
     //one renderable attachment (i.e. color buffer, depth buffer).
     bool isComplete() const;
 
+    // [Viewer Lab] Whether the target has a framebuffer: GL's own, or none where its passes are only the viewer's device's
+    // (GL is not the backend). On GL it is mFBO != 0.
+    bool hasFramebuffer() const { return mFBO != 0 || mPassOnly; }
+
+    // [Viewer Lab] Whether the target has a depth of its own: a GL name, or a texture of the viewer's device without one
+    // (GL is not the backend). On GL it is mDepth != 0, since the device's textures have GL names.
+    bool ownsDepth() const { return mDepth != 0 || mRHIDepth.notNull(); }
+
     // Returns true if this RenderTarget is bound somewhere in the stack
     bool isBoundInStack() const;
 
     static LLRenderTarget* getCurrentBoundTarget() { return sBoundTarget; }
+
+    // [Viewer Lab] For the render interface's GL backend (llrhigl.cpp), main thread: true while LLRenderTarget sends a
+    // call of its stack (a pass's begin, end or clear, or a target's mipmaps) to the viewer's device; the GL backend
+    // then only tracks the call, because LLRenderTarget's GL backend functions make the GL calls themselves. A static,
+    // not thread_local; its scope puts the previous value back, so it nests. A GL backend switch, part of its contract
+    // with llrender (llrhigl.cpp).
+    static bool makesOwnGL();
+
+    // [Viewer Lab] Main thread: begins the pass of the stack's current level when none is open on the viewer's device in
+    // this frame: the bound target's, loaded, or the window's back buffer's when no target is bound and the device has a
+    // surface. True when a stack pass is open then. Code that records into the current pass calls it first, also before
+    // binding through the encoder.
+    static bool beginStackPass();
+
+    // [Viewer Lab] Main thread: ends the stack's open pass without changing what is bound, for code that records passes of
+    // its own (level 1's interface scenes); the next switch or beginStackPass begins it again.
+    static void endStackPass();
+
+    // [Viewer Lab] Main thread: the stack's pass open on the viewer's device in this frame, as it was when it began (its
+    // textures, depth, read-only flag, Load and Store, stack), and true; false when none is open (no device, off the main
+    // thread, ended by the frame or by endStackPass, no surface under no target, or a bound target whose attachments are
+    // not all textures of the device). The textures are held by the encoder while the pass is open; the caller's
+    // description holds its own references. For the tests, level 1 and code that records into the current pass.
+    static bool currentPass(LL::RHI::RenderPassDesc& pass);
+
+    // [Viewer Lab] This target's pass as the stack begins it: the colour attachments it draws into (all, or setDrawBuffers'
+    // first ones) and its own or shared depth as textures of the viewer's device, the depth read-only when bindTarget made
+    // it so, Load and Store, stack; false when one of them has no such texture.
+    bool describePass(LL::RHI::RenderPassDesc& pass) const;
+
+    // [Viewer Lab] The status GL gives the framebuffer bound on target (GL_FRAMEBUFFER, GL_DRAW_FRAMEBUFFER or
+    // GL_READ_FRAMEBUFFER): GL_FRAMEBUFFER_COMPLETE or GL's reason it is not, in GL's enums, the facades' language.
+    // It always asks; check_framebuffer_status asks only with gDebugGL. GL_FRAMEBUFFER_COMPLETE when GL is not the
+    // backend. For the owners of glCheckFramebufferStatus's call sites, such as pipeline.cpp's
+    // validate_framebuffer_object.
+    static U32 framebufferStatus(U32 target = GL_FRAMEBUFFER);
+
+    // [Viewer Lab] glClearColor for every later clear of a target or of the window's back buffer, as glClearColor sets it,
+    // for the owners of glClearColor's call sites.
+    static void setClearColor(F32 red, F32 green, F32 blue, F32 alpha);
+
+    // [Viewer Lab] glClear(mask) of the current target, the bound one or else the window's back buffer, through
+    // Encoder::clear in the stack's pass; mask in GL's bits (colour and depth; the interface has no stencil); GL's clear
+    // colour and depth, the scissor, colour mask and depth write mask apply as for glClear. For the owners of glClear's
+    // call sites.
+    static void clearCurrent(U32 mask);
+
+    // [Viewer Lab] glDrawBuffers(count, buffers) for the bound target, in GL's enums: buffers are GL_COLOR_ATTACHMENT0 + i
+    // in order (the interface's passes draw into their first attachments); the target draws into them until it is bound
+    // again; with the viewer's device the stack's pass breaks into one over those attachments and the depth, loaded. For
+    // the owners of glDrawBuffers' call sites, pipeline.cpp's impostors.
+    static void setDrawBuffers(S32 count, const U32* buffers);
 
     // *HACK
     void swapFBORefs(LLRenderTarget& other);
@@ -180,14 +294,29 @@ protected:
     std::vector<U32> mTex;
     std::vector<U32> mInternalFormat;
     U32 mFBO;
+    // [Viewer Lab] True where allocate or setColorAttachment made no framebuffer because GL is not the backend, and the
+    // viewer's device has the target's passes; always false on GL
+    bool mPassOnly = false;
     LLRenderTarget* mPreviousRT = nullptr;
 
     U32 mDepth;
     bool mUseDepth;
+    bool mMemorylessDepth = false; // <Luminous/>
     LLTexUnit::eTextureMipGeneration mGenerateMipMaps;
     U32 mMipLevels;
 
     LLTexUnit::eTextureType mUsage;
+
+    // [Viewer Lab] The textures of the viewer's render device behind mTex, one per entry and null where the name is raw, and
+    // behind mDepth. mTex and mDepth are their GL names (LL::RHI::GLNames::of), the GL backend's state.
+    std::vector<LLPointer<LL::RHI::Texture>> mRHITextures;
+    LLPointer<LL::RHI::Texture> mRHIDepth;
+
+    // [Viewer Lab] The bound pass's depth access, and how many of mTex it draws into (all until setDrawBuffers).
+    // They hold only while the target is bound or below the bound target in the stack: bindTarget sets both, so the
+    // default copies take them along and swapFBORefs, whose targets are unbound, leaves them.
+    eDepthAccess mDepthAccess = DEPTH_READ_WRITE;
+    U32 mDrawCount = U32_MAX;
 };
 
 #endif

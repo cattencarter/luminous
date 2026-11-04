@@ -30,6 +30,8 @@
 #include "llshadermgr.h"
 #include "llmaterial.h"
 
+#include <functional>
+
 #define LL_DEFERRED_MULTI_LIGHT_COUNT 16
 
 class LLViewerShaderMgr: public LLShaderMgr
@@ -64,6 +66,29 @@ public:
     bool loadShadersAvatar();
     bool loadShadersWater();
     bool loadShadersInterface();
+
+    /// [Viewer Lab] Main thread, any time: publishes the programs a backend has finished, applies the changes that waited
+    /// for them, and takes the outcome of every group none of whose programs is still pending; false when a group failed
+    /// in this call
+    bool settlePublications();
+    /// [Viewer Lab] change(program) at once, unless the program is still pending; then once it is not. The change gets the
+    /// program, so it captures nothing
+    void afterPublication(LLGLSLShader& program, std::function<void(LLGLSLShader&)> change);
+    U32 failedGroups() const { return mFailedGroups; } ///< [Viewer Lab] for the golden hook
+    /// [Viewer Lab] publications of pending programs by the settles in this load, a retry's again, for the golden hook
+    U32 latePublications() const { return mLatePublications; }
+    /// [Viewer Lab] The frame's trigger's test: something waits for a settle. Inline, since display() and
+    /// display_startup() ask it every frame; on GL it is false outside golden's delayed run
+    bool hasPendingPublications() const
+    {
+        return LLGLSLShader::pendingPrograms() != 0 || !mPendingOutcomes.empty() || !mPendingChanges.empty();
+    }
+    /// [Viewer Lab] The frame's trigger: settlePublications() before the frame draws, counted for the golden
+    /// hook by frame (display() calls display_startup() at the login screen, and idle_startup calls it more often)
+    void settleForFrame();
+    U32 frameSettles() const { return mFrameSettles; }           ///< [Viewer Lab] frames whose trigger settled
+    U32 framePublications() const { return mFramePublications; } ///< [Viewer Lab] the latePublications() those made
+    U32 lastSettleFrame() const { return mLastSettleFrame; }     ///< [Viewer Lab] LLFrameTimer's frame of the last one
 
     std::vector<S32> mShaderLevel;
     S32 mMaxAvatarShaderLevel;
@@ -135,6 +160,45 @@ public:
 private:
     // the list of shaders we need to propagate parameters to.
     std::vector<LLGLSLShader *> mShaderList;
+
+    void writeShaderManifest(bool loaded); // [Viewer Lab]
+
+    // [Viewer Lab] The outcomes of a load whose programs a backend still compiles when createShader returns, which is never
+    // so on GL
+    struct PendingOutcome
+    {
+        S32 mGroup;                           ///< the EShaderClass whose loader registered it
+        std::vector<LLGLSLShader*> mPrograms; ///< in the order the loader made them
+        /// Gets the first program that is not complete, or null when every program is complete. With null nothing failed
+        /// (perhaps after a retry at a lower level): it takes no consequence and returns true. It returns false only when
+        /// the load failed. It runs after the loader has returned, so it captures only by value.
+        std::function<bool(LLGLSLShader* failed)> mDecide;
+    };
+    struct PendingChange
+    {
+        LLGLSLShader* mProgram;
+        std::function<void(LLGLSLShader&)> mChange;
+    };
+    std::vector<PendingOutcome> mPendingOutcomes;
+    std::vector<PendingChange> mPendingChanges;
+    U32 mFailedGroups = 0; ///< bits by EShaderClass: groups of this load that failed at or after their own settle
+    U32 mLatePublications = 0;
+    // [Viewer Lab] the frame's trigger's counts, for the process, as LLGLSLShader::bindPublications
+    U32 mFrameSettles = 0;
+    U32 mFramePublications = 0;
+    U32 mLastSettleFrame = U32_MAX; ///< none yet
+
+    /// kept only while one of them is pending
+    void deferOutcome(S32 group, std::vector<LLGLSLShader*> programs, std::function<bool(LLGLSLShader*)> decide);
+    bool settleGroup(S32 group);
+    bool settle(S32 group);
+    void applyChanges(); ///< settle's step (2)
+    void failure(S32 group, bool own);
+    void finishBefore(S32 group);
+    bool failedBefore(S32 group) const;
+    bool earlierFailed(S32 group); ///< finishBefore, then failedBefore
+    void lateFailure(S32 group);
+    bool loadFailed() const { return mFailedGroups != 0; }
 
 }; //LLViewerShaderMgr
 

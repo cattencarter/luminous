@@ -65,6 +65,12 @@ public:
     // at some other times as well
     static void updateFrameTime();
 
+    // [Viewer Lab] Golden-image tests (indra/newview/llgoldentest.cpp): every update advances the
+    // frame time by exactly this many seconds instead of following the wall clock; 0, the
+    // default, follows the wall clock.
+    static void setFixedFrameStep(F64 seconds);
+    static bool hasFixedFrameStep()                 { return sFixedFrameStep != 0; }
+
     // Call this method once, and only once, per frame to update the current frame count.
     static void updateFrameCount()                  { sFrameCount++; }
 
@@ -128,6 +134,10 @@ protected:
 
     // Total number of frames elapsed in application
     static S32 sFrameCount;
+
+    // [Viewer Lab] The fixed step in microseconds, or 0, and the wall clock at the last update.
+    static U64 sFixedFrameStep;
+    static U64 sFrameWallTime;
 
     //
     // Member data

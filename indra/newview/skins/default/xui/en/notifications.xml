@@ -1471,6 +1471,18 @@ You need an account to enter [CURRENT_GRID]. Would you like to create one now?
 You need to enter either the Username or both the First and Last name of your avatar into the Username field, then login again.
   </notification>
   
+  <!-- [Viewer Lab] The login refusal of the Metal UI development mode (English only, no ignore option) -->
+  <notification
+   icon="alert.tga"
+   name="MetalUIDevLoginOff"
+   type="alert">
+   <tag>fail</tag>
+Login is off in the Metal UI development mode (--metal-ui-dev). Quit and start without the flag to log in.
+    <usetemplate
+     name="okbutton"
+     yestext="OK"/>
+  </notification>
+
   <notification
    icon="alertmodal.tga"
    name="InvalidGrid"
@@ -3904,6 +3916,18 @@ Display settings have been set to safe levels because you have specified the -sa
 Display settings have been set to recommended levels because your graphics card changed
 from &apos;[LAST_GPU]&apos;
 to &apos;[THIS_GPU]&apos;
+  </notification>
+
+  <!-- [Viewer Lab] The start after a Metal session that did not end normally is on OpenGL (English only, no
+       ignore option) -->
+  <notification
+   icon="alertmodal.tga"
+   name="MetalFellBackToOpenGL"
+   type="alertmodal">
+Metal graphics did not end normally last time, so the viewer is using OpenGL. You can choose Metal again in Preferences &gt; Graphics.
+    <usetemplate
+     name="okbutton"
+     yestext="OK"/>
   </notification>
 
   <notification
@@ -15564,6 +15588,16 @@ This build has no help pages of its own.
      name="okcancelbuttons"
      notext="Later"
      yestext="Download"/>
+  </notification>
+  <!-- A render asked for with the Metal renderer, where photo mode is off
+       (LuminousPhotoMode::availableOrSay); the text is the string
+       LuminousPhotoModeNeedsOpenGL. -->
+  <notification
+   icon="notifytip.tga"
+   name="LuminousPhotoModeNeedsOpenGL"
+   type="notifytip">
+    <unique/>
+[MESSAGE]
   </notification>
   <!-- The snapshot window takes one quick picture; the sidebar's Render
        draws all of Luminous (llfloatersnapshot.cpp, onOpen). -->

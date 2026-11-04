@@ -1820,9 +1820,9 @@
 		 follows="top|left"
 		 layout="topleft"
 		 label="VFX">
-			<!-- <Luminous> No HDR Tone Mapping Settings: HDR is always on, and the
-			     tonemapper and its strength are on the Luminous window's Tone tab.
-			     </Luminous> -->
+			<!-- <Luminous> HDR Tone Mapping Settings are hidden, at the end: HDR is
+			     always on, and the tonemapper and its strength are on the Luminous
+			     window's Tone tab. </Luminous> -->
 			<panel
 			 name="P_Glow_Settings"
 			 follows="top|left"
@@ -2538,6 +2538,157 @@
 					<button.commit_callback
 					 function="ResetControl"
 					 parameter="CameraDoFResScale"/>
+				</button>
+			</panel>
+			<!-- <Luminous> Firestorm's HDR Tone Mapping Settings, hidden, below
+			     Depth of Field: with photo mode on HDR is always on, and the
+			     tonemapper and its strength are on the Luminous window's Tone tab.
+			     Shown from code while photo mode is off. </Luminous> -->
+			<panel
+			 name="P_Tone_Settings"
+			 visible="false"
+			 follows="top|left"
+			 layout="topleft"
+			 top_pad="3"
+			 left="0"
+			 width="288"
+			 height="22"
+			 bg_alpha_color="HighlightPanelBackground"
+			 border_visible="true"
+			 border_thickness="1"
+			 background_visible="true">
+				<text
+				 name="T_Tone_Settings"
+				 follows="left|top"
+				 layout="topleft"
+				 left="7"
+				 font="SansSerif"
+				 height="17"
+				 width="280">
+					HDR Tone Mapping Settings
+				</text>
+			</panel>
+
+			<panel
+			 name="P_Tone_Settings_2"
+			 visible="false"
+			 follows="top|left"
+			 layout="topleft"
+			 top_pad="1"
+			 left="3"
+			 right="-3"
+			 height="25"
+			 border_visible="true"
+			 background_visible="true">
+
+				<check_box
+				 control_name="RenderDisableVintageMode"
+				 height="16"
+				 label="Enable HDR and Emissive"
+				 layout="topleft"
+				 left="3"
+				 name="Disable_Vintage_Mode"
+				 tool_tip="Enables High Dynamic Range (HDR) and emissive effects, enhancing color vibrancy, dynamic lighting, and the glow from emissive materials. This setting improves the overall realism of lighting in scenes, especially with PBR (Physically Based Rendering) textured objects. Disabling this option reverts to a 'vintage' lighting mode with less contrast and glow, and it also removes emissive light from PBR-textured objects, making them appear flat or less illuminated."
+				 top_pad="6"
+				 width="240">
+				</check_box>
+			</panel>
+
+			<panel
+			 name="P_Tone_Settings_3"
+			 visible="false"
+			 follows="top|left"
+			 layout="topleft"
+			 top_pad="1"
+			 left="3"
+			 right="-3"
+			 height="50"
+			 border_visible="true"
+			 background_visible="true">
+
+				<text
+				 name="T_Tonemap_Type"
+				 follows="left|top"
+				 height="15"
+				 left="5" 
+				 tool_tip="Controls the algorithm used for High Dynamic Range (HDR) tone mapping, which affects how bright and dark areas are balanced. Khronos Neutral provides a natural, neutral look with less contrast and minimal color manipulation, maintaining the original lighting as intended. ACES (Academy Color Encoding System) is designed to mimic film-like dynamic range, offering richer colors, higher contrast, and more cinematic highlights. Changing this setting may alter overall brightness and color balance, depending on the scene."
+				 top_pad="7"
+				 width="162"
+				 layout="topleft">
+					HDR Tonemap Type
+				</text>
+				<combo_box
+				 control_name="RenderTonemapType"
+				 enabled_control="VertexShaderEnable"
+				 height="20"
+				 layout="topleft"
+				 left_pad="0"
+				 top_delta="-3"
+				 follows="left|top"
+				 name="CB_Tonemap_Type"
+				 right="-5">
+					<combo_box.item
+					 label="Khronos Neutral"
+					 name="0"
+					 value="0"/>
+					<combo_box.item
+					 label="ACES"
+					 name="1"
+					 value="1"/>
+					<combo_box.commit_callback
+					 function="Quickprefs.ShaderChanged"/>
+				</combo_box>
+				<text
+				 name="T_Tonemap_Type"
+				 follows="top|left"
+				 layout="topleft"
+				 left="5"
+				 tool_tip="Blends between the selected HDR tonemapping style and raw linear lighting. A value of 1.0 applies the full effect of the chosen tonemap (either Khronos Neutral or ACES). A value of 0.0 disables tonemapping, showing raw linear lighting without post-processing adjustments. Adjust this slider to fine-tune the balance between natural realism and cinematic contrast. Higher values emphasize the tonemapping effect, while lower values produce a flatter, unprocessed look."
+				 top_pad="5"
+				 width="70">
+					Tone Mix
+				</text>
+				<slider_bar
+				 name="SB_Tonemap_Type"
+				 can_edit_text="true"
+				 control_name="RenderTonemapMix"
+				 follows="left|right"
+				 height="16"
+				 decimal_digits="2"
+				 increment="0.05"
+				 layout="topleft"
+				 left_pad="0"
+				 min_val="0"
+				 max_val="1"
+				 top_delta="0"
+				 width="127"/>
+				<spinner
+				 name="S_Tonemap_Type"
+				 can_edit_text="true"
+				 control_name="RenderTonemapMix"
+				 top_delta="-3"
+				 label_width="0"
+				 left_pad="0"
+				 decimal_digits="3"
+				 follows="top|left"
+				 max_val="1"
+				 min_val="0"
+				 width="53"
+				 increment="0.001"
+				 border_visible="false"/>
+				<button
+				 follows="left|top"
+				 name="Reset_Tonemap_Type"
+				 height="22"
+				 label="D"
+				 layout="topleft"
+				 left_pad="0"
+				 top_delta="0"
+				 width="20"
+				 tool_tip="Reset to the default value.">
+					<button.commit_callback
+					 function="ResetControl"
+					 parameter="RenderTonemapMix"/>
 				</button>
 			</panel>
 		</panel>

@@ -140,7 +140,7 @@ LLAvatarJointMesh::LLAvatarJointMesh()
     :
     mTexture( NULL ),
     mLayerSet( NULL ),
-    mTestImageName( 0 ),
+    mTestImage( nullptr ), // [Viewer Lab]
     mFaceIndexCount(0)
 {
 
@@ -254,7 +254,8 @@ void LLAvatarJointMesh::setTexture( LLGLTexture *texture )
 
 bool LLAvatarJointMesh::hasGLTexture() const
 {
-    return mTexture.notNull() && mTexture->hasGLTexture();
+    // [Viewer Lab] A texture on any backend, despite the name
+    return mTexture.notNull() && mTexture->hasTexture();
 }
 
 //--------------------------------------------------------------------

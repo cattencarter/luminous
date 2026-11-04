@@ -483,14 +483,14 @@ void LLFloaterImagePreview::draw()
 
             if(mImagep.notNull())
             {
-                gGL.getTexUnit(0)->bindManual(LLTexUnit::TT_TEXTURE, mImagep->getTexName());
+                gGL.getTexUnit(0)->bindTexture(LLTexUnit::TT_TEXTURE, mImagep->getGLTexture()); // [Viewer Lab] by the image
             }
             else
             {
                 mImagep = LLViewerTextureManager::getLocalTexture(mRawImagep.get(), false) ;
 
                 gGL.getTexUnit(0)->unbind(mImagep->getTarget()) ;
-                gGL.getTexUnit(0)->bindManual(LLTexUnit::TT_TEXTURE, mImagep->getTexName());
+                gGL.getTexUnit(0)->bindTexture(LLTexUnit::TT_TEXTURE, mImagep->getGLTexture()); // [Viewer Lab] by the image
                 stop_glerror();
 
                 gGL.getTexUnit(0)->setTextureFilteringOption(LLTexUnit::TFO_BILINEAR);
@@ -498,8 +498,8 @@ void LLFloaterImagePreview::draw()
                 gGL.getTexUnit(0)->setTextureAddressMode(LLTexUnit::TAM_CLAMP);
                 if (mAvatarPreview)
                 {
-                    mAvatarPreview->setTexture(mImagep->getTexName());
-                    mSculptedPreview->setTexture(mImagep->getTexName());
+                    mAvatarPreview->setTexture(mImagep->getGLTexture());   // [Viewer Lab] the image, not its GL name
+                    mSculptedPreview->setTexture(mImagep->getGLTexture()); // [Viewer Lab] the image, not its GL name
                 }
             }
 
@@ -893,7 +893,6 @@ LLImagePreviewAvatar::LLImagePreviewAvatar(S32 width, S32 height) : LLViewerDyna
     mDummyAvatar = (LLVOAvatar*)gObjectList.createObjectViewer(LL_PCODE_LEGACY_AVATAR, gAgent.getRegion(), LLViewerObject::CO_FLAG_UI_AVATAR);
     mDummyAvatar->mSpecialRenderMode = 2;
 
-    mTextureName = 0;
 }
 
 
@@ -914,7 +913,7 @@ void LLImagePreviewAvatar::setPreviewTarget(const std::string& joint_name, const
     // clear out existing test mesh
     if (mTargetMesh)
     {
-        mTargetMesh->setTestTexture(0);
+        mTargetMesh->setTestTexture(nullptr); // [Viewer Lab]
     }
 
     if (male)
@@ -932,7 +931,10 @@ void LLImagePreviewAvatar::setPreviewTarget(const std::string& joint_name, const
     mDummyAvatar->mRoot->setVisible(false, true);
 
     mTargetMesh = dynamic_cast<LLViewerJointMesh*>(mDummyAvatar->mRoot->findJoint(mesh_name));
-    mTargetMesh->setTestTexture(mTextureName);
+    // [Viewer Lab] The image itself, which drawShape binds; an image without a texture (its creation failed) gives null, so
+    // drawShape takes the layer set's branch as GL's name 0 does
+    const bool has_texture = mTexture.notNull() && mTexture->hasTexture(); // any backend
+    mTargetMesh->setTestTexture(has_texture ? mTexture.get() : nullptr);
     mTargetMesh->setVisible(true, false);
     mCameraDistance = distance;
     mCameraZoom = 1.f;
@@ -952,7 +954,7 @@ void LLImagePreviewAvatar::clearPreviewTexture(const std::string& mesh_name)
         // clear out existing test mesh
         if (mesh)
         {
-            mesh->setTestTexture(0);
+            mesh->setTestTexture(nullptr); // [Viewer Lab]
         }
     }
 }
@@ -1076,7 +1078,6 @@ LLImagePreviewSculpted::LLImagePreviewSculpted(S32 width, S32 height) : LLViewer
     mCameraYaw = 0.f;
     mCameraPitch = 0.f;
     mCameraZoom = 1.f;
-    mTextureName = 0;
 
     LLVolumeParams volume_params;
     volume_params.setType(LL_PCODE_PROFILE_CIRCLE, LL_PCODE_PATH_CIRCLE);
@@ -1193,7 +1194,7 @@ bool LLImagePreviewSculpted::render()
     gGL.matrixMode(LLRender::MM_MODELVIEW);
     gGL.popMatrix();
 
-    glClear(GL_DEPTH_BUFFER_BIT);
+    LLRenderTarget::clearCurrent(GL_DEPTH_BUFFER_BIT); // [Viewer Lab]
 
     LLVector3 target_pos(0, 0, 0);
 

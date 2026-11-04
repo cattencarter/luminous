@@ -49,6 +49,7 @@
 #include "llgl.h"
 #include "llglheaders.h"
 #include "llgltfmateriallist.h"
+#include "llgoldentest.h"
 #include "llhudmanager.h"
 #include "llimagepng.h"
 #include "llmachineid.h"
@@ -57,6 +58,7 @@
 #include "llperfstats.h"
 #include "llpostprocess.h"
 #include "llrender.h"
+#include "llrhi.h" // [Viewer Lab] the device's surface at each swap
 #include "llscenemonitor.h"
 #include "llsdjson.h"
 #include "llselectmgr.h"
@@ -86,6 +88,7 @@
 #include "llvograss.h"
 #include "llworld.h"
 #include "pipeline.h"
+#include "luminousmetal.h" // <Luminous/>
 
 #include <boost/json.hpp>
 // [RLVa:KB] - Checked: 2011-05-22 (RLVa-1.3.1a)
@@ -158,6 +161,33 @@ void render_disconnected_background();
 void getProfileStatsContext(boost::json::object& stats);
 std::string getProfileStatsFilename();
 
+// [Viewer Lab] The window's swaps so far, which the golden hook compares with the device's frames and the surface's
+// presents
+static U64 sWindowSwaps = 0;
+
+U64 display_window_swaps()
+{
+    return sWindowSwaps;
+}
+
+// [Viewer Lab] The first world frame on Metal and the longest since, for the MetalCompileStall line; in
+// llviewerwindow.cpp
+void metal_world_frame_begin();
+void metal_world_frame_end();
+
+// [Viewer Lab] One present per swap: the render interface's surface presents the frame (on Metal the flip pass into
+// the layer's drawable, at the frame boundary; nothing on GL, where the window swaps), then the window swaps. Used at
+// the three swap sites.
+static void swap_window_buffers(LLWindow* window)
+{
+    if (LL::RHI::Device* device = LL::RHI::viewerDevice(); device && device->surface())
+    {
+        device->surface()->present();
+    }
+    window->swapBuffers();
+    ++sWindowSwaps;
+}
+
 void display_startup()
 {
     if (   !gViewerWindow
@@ -169,6 +199,12 @@ void display_startup()
         return;
     }
 
+    // [Viewer Lab] the frame's trigger before the login screen's draws, as at the top of display()
+    if (LLViewerShaderMgr::sInitialized && LLViewerShaderMgr::instance()->hasPendingPublications())
+    {
+        LLViewerShaderMgr::instance()->settleForFrame();
+    }
+
     gPipeline.updateGL();
 
     // Written as branch to appease GCC which doesn't like different
@@ -176,7 +212,7 @@ void display_startup()
     //
     if (!LLViewerFetchedTexture::sWhiteImagep.isNull())
     {
-    LLTexUnit::sWhiteTexture = LLViewerFetchedTexture::sWhiteImagep->getTexName();
+    LLTexUnit::setWhiteImage(LLViewerFetchedTexture::sWhiteImagep->getGLTexture()); // [Viewer Lab]
     }
 
     LLGLSDefault gls_default;
@@ -197,7 +233,7 @@ void display_startup()
 
     LLGLState::checkStates();
 
-    glClear(GL_DEPTH_BUFFER_BIT | GL_COLOR_BUFFER_BIT); // | GL_STENCIL_BUFFER_BIT);
+    LLRenderTarget::clearCurrent(GL_DEPTH_BUFFER_BIT | GL_COLOR_BUFFER_BIT); // | GL_STENCIL_BUFFER_BIT); [Viewer Lab]
     LLGLSUIDefault gls_ui;
     gPipeline.disableLights();
 
@@ -211,10 +247,12 @@ void display_startup()
 
     LLGLState::checkStates();
 
-    if (gViewerWindow && gViewerWindow->getWindow())
-    gViewerWindow->getWindow()->swapBuffers();
+    LLGoldenTest::beforeStartupSwap(); // [Viewer Lab] nothing without --golden
 
-    glClear(GL_DEPTH_BUFFER_BIT);
+    if (gViewerWindow && gViewerWindow->getWindow())
+        swap_window_buffers(gViewerWindow->getWindow()); // [Viewer Lab]
+
+    LLRenderTarget::clearCurrent(GL_DEPTH_BUFFER_BIT); // [Viewer Lab]
 }
 
 void display_update_camera()
@@ -491,13 +529,22 @@ void display(bool rebuild, F32 zoom_factor, int subfield, bool for_snapshot)
 
     LLViewerCamera& camera = LLViewerCamera::instance(); // <FS:Ansariel> Factor out calls to getInstance
 
+    // [Viewer Lab] The main thread's trigger: while a program, an outcome or a change waits, the shader
+    // manager settles before the frame draws, also before the resize frame's early return, which draws too. One inlined
+    // test per frame, false on GL outside golden's delayed run. display_cube_face has no trigger of its own: its binds
+    // publish their programs (waitForUniforms), and an outcome still pending waits for the next frame's trigger.
+    if (LLViewerShaderMgr::sInitialized && LLViewerShaderMgr::instance()->hasPendingPublications())
+    {
+        LLViewerShaderMgr::instance()->settleForFrame();
+    }
+
     if (gWindowResized)
     { //skip render on frames where window has been resized
         LL_DEBUGS("Window") << "Resizing window" << LL_ENDL;
         LL_PROFILE_ZONE_NAMED_CATEGORY_DISPLAY("Resize Window");
         gGL.flush();
-        glClear(GL_COLOR_BUFFER_BIT);
-        gViewerWindow->getWindow()->swapBuffers();
+        LLRenderTarget::clearCurrent(GL_COLOR_BUFFER_BIT); // [Viewer Lab]
+        swap_window_buffers(gViewerWindow->getWindow());   // [Viewer Lab]
         LLPipeline::refreshCachedSettings();
         gPipeline.resizeScreenTexture();
         gResizeScreenTexture = false;
@@ -512,6 +559,7 @@ void display(bool rebuild, F32 zoom_factor, int subfield, bool for_snapshot)
     }
 
     gSnapshot = for_snapshot;
+    LuminousMetal::beginFrame(); // <Luminous/> photo mode's native passes: a new frame (nothing on OpenGL)
 
     if (LLPipeline::sRenderDeferred)
     { //hack to make sky show up in deferred snapshots
@@ -636,6 +684,10 @@ void display(bool rebuild, F32 zoom_factor, int subfield, bool for_snapshot)
         LLAppViewer::instance()->pingMainloopTimeout("Display:Startup");
         display_startup();
         return;
+    }
+    if (!for_snapshot)
+    {
+        metal_world_frame_begin(); // [Viewer Lab] nothing on GL
     }
 
 
@@ -828,7 +880,7 @@ void display(bool rebuild, F32 zoom_factor, int subfield, bool for_snapshot)
         if (LLViewerDynamicTexture::updateAllInstances())
         {
             gGL.setColorMask(true, true);
-            glClear(GL_DEPTH_BUFFER_BIT);
+            LLRenderTarget::clearCurrent(GL_DEPTH_BUFFER_BIT); // [Viewer Lab]
         }
     }
 
@@ -897,7 +949,7 @@ void display(bool rebuild, F32 zoom_factor, int subfield, bool for_snapshot)
         LLDrawable::incrementVisible();
 
         LLSpatialGroup::sNoDelete = true;
-        LLTexUnit::sWhiteTexture = LLViewerFetchedTexture::sWhiteImagep->getTexName();
+        LLTexUnit::setWhiteImage(LLViewerFetchedTexture::sWhiteImagep->getGLTexture()); // [Viewer Lab]
 
         S32 occlusion = LLPipeline::sUseOcclusion;
         if (gDepthDirty)
@@ -927,7 +979,7 @@ void display(bool rebuild, F32 zoom_factor, int subfield, bool for_snapshot)
             }
 
             gGL.setColorMask(true, true);
-            glClearColor(0.f, 0.f, 0.f, 0.f);
+            LLRenderTarget::setClearColor(0.f, 0.f, 0.f, 0.f); // [Viewer Lab]
 
             LLGLState::checkStates();
 
@@ -945,7 +997,7 @@ void display(bool rebuild, F32 zoom_factor, int subfield, bool for_snapshot)
 
                 glm::mat4 proj = get_current_projection();
                 glm::mat4 mod = get_current_modelview();
-                glViewport(0,0,512,512);
+                gGL.setViewport(0,0,512,512); // [Viewer Lab]
 
                 LLVOAvatar::updateImpostors();
 
@@ -959,7 +1011,7 @@ void display(bool rebuild, F32 zoom_factor, int subfield, bool for_snapshot)
 
                 LLGLState::checkStates();
             }
-            glClear(GL_DEPTH_BUFFER_BIT);
+            LLRenderTarget::clearCurrent(GL_DEPTH_BUFFER_BIT); // [Viewer Lab]
         }
 
         //////////////////////////////////////
@@ -1041,8 +1093,8 @@ void display(bool rebuild, F32 zoom_factor, int subfield, bool for_snapshot)
 
         if(gUseWireframe)
         {
-            glClearColor(0.5f, 0.5f, 0.5f, 0.f);
-            glClear(GL_COLOR_BUFFER_BIT);
+            LLRenderTarget::setClearColor(0.5f, 0.5f, 0.5f, 0.f); // [Viewer Lab]
+            LLRenderTarget::clearCurrent(GL_COLOR_BUFFER_BIT); // [Viewer Lab]
         }
 
         LLAppViewer::instance()->pingMainloopTimeout("Display:RenderStart");
@@ -1102,11 +1154,11 @@ void display(bool rebuild, F32 zoom_factor, int subfield, bool for_snapshot)
         if (gUseWireframe)
         {
             constexpr F32 g = 0.5f;
-            glClearColor(g, g, g, 1.f);
+            LLRenderTarget::setClearColor(g, g, g, 1.f); // [Viewer Lab]
         }
         else
         {
-            glClearColor(1, 0, 1, 1);
+            LLRenderTarget::setClearColor(1, 0, 1, 1); // [Viewer Lab]
         }
         gPipeline.mRT->deferredScreen.clear();
 
@@ -1193,6 +1245,10 @@ void display(bool rebuild, F32 zoom_factor, int subfield, bool for_snapshot)
     stop_glerror();
 
     display_stats();
+    if (!for_snapshot)
+    {
+        metal_world_frame_end(); // [Viewer Lab] nothing on GL
+    }
 
     LLAppViewer::instance()->pingMainloopTimeout("Display:Done");
 
@@ -1340,10 +1396,10 @@ void display_cube_face()
 
     gGL.setColorMask(true, true);
 
-    glClearColor(0.f, 0.f, 0.f, 0.f);
+    LLRenderTarget::setClearColor(0.f, 0.f, 0.f, 0.f); // [Viewer Lab]
     gPipeline.generateSunShadow(*LLViewerCamera::getInstance());
 
-    glClear(GL_DEPTH_BUFFER_BIT); // | GL_STENCIL_BUFFER_BIT);
+    LLRenderTarget::clearCurrent(GL_DEPTH_BUFFER_BIT); // | GL_STENCIL_BUFFER_BIT); [Viewer Lab]
 
     {
         LLViewerCamera::sCurCameraID = LLViewerCamera::CAMERA_WORLD;
@@ -1372,11 +1428,11 @@ void display_cube_face()
     gPipeline.mRT->deferredScreen.bindTarget();
     if (gUseWireframe)
     {
-        glClearColor(0.5f, 0.5f, 0.5f, 1.f);
+        LLRenderTarget::setClearColor(0.5f, 0.5f, 0.5f, 1.f); // [Viewer Lab]
     }
     else
     {
-        glClearColor(1.f, 0.f, 1.f, 1.f);
+        LLRenderTarget::setClearColor(1.f, 0.f, 1.f, 1.f); // [Viewer Lab]
     }
     gPipeline.mRT->deferredScreen.clear();
 
@@ -1716,7 +1772,8 @@ void swap()
     LL_PROFILE_GPU_ZONE("swap");
     if (gDisplaySwapBuffers)
     {
-        gViewerWindow->getWindow()->swapBuffers();
+        LLGoldenTest::beforeSwap(); // [Viewer Lab] nothing without --golden
+        swap_window_buffers(gViewerWindow->getWindow()); // [Viewer Lab]
     }
     gDisplaySwapBuffers = true;
 }
@@ -1804,9 +1861,9 @@ static void renderChatRangeSphere(const LLVector3& center, F32 radius, const LLC
         gGL.pushMatrix();
         {
             gGL.scalef(radius, radius, radius);
-            glCullFace(GL_FRONT);
+            gGL.setCullFace(GL_FRONT);
             gSphere.render();
-            glCullFace(GL_BACK);
+            gGL.setCullFace(GL_BACK);
             gSphere.render();
         }
         gGL.popMatrix();
@@ -1905,7 +1962,7 @@ void render_ui_2d()
     // Render 2D UI elements that overlay the world (no z compare)
 
     //  Disable wireframe mode below here, as this is HUD/menus
-    glPolygonMode(GL_FRONT_AND_BACK, GL_FILL);
+    gGL.setPolygonMode(GL_FRONT_AND_BACK, GL_FILL); // [Viewer Lab]
 
     //  Menu overlays, HUD, etc
     gViewerWindow->setup2DRender();
@@ -1988,7 +2045,7 @@ void render_ui_2d()
 
                 LLRect clip_rect(last_rect);
 
-                glClear(GL_COLOR_BUFFER_BIT);
+                LLRenderTarget::clearCurrent(GL_COLOR_BUFFER_BIT); // [Viewer Lab]
 
                 gViewerWindow->draw();
             }

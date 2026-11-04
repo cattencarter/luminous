@@ -110,6 +110,8 @@ public:
     bool loadFeatureTables();
 
     EGPUClass getGPUClass()             { return mGPUClass; }
+    // [Viewer Lab] Golden-image tests lock the class the benchmark would set (llgoldentest.cpp).
+    void setGPUClass(EGPUClass gpu_class) { mGPUClass = gpu_class; }
     std::string& getGPUString()         { return mGPUString; }
 
     // get the measured GPU memory bandwidth in GB/sec
@@ -153,8 +155,25 @@ public:
 
     LLSD getRecommendedSettingsMap();
 
+    // [Viewer Lab] On Metal the feature table's TexUnit<n>orLess lists cap their
+    // settings whatever the graphics level (LL::RHI::hardwareSettingCaps), because a program above the argument
+    // tables' samplers fails there; on GL there are no such caps and nothing below changes anything.
+    // The caps for the viewer's device now, worked out once per device; empty on GL and before the device exists.
+    const std::map<std::string, F32>& hardwareCaps() const;
+    // A value of a setting held to its cap (unchanged without one).
+    F32 hardwareCapped(const std::string& name, F32 value) const;
+    // At startup, after the window's graphics level (later levels, --graphicslevel and the golden hook, are masked by
+    // the same lists) and before the pipeline builds shaders (LLViewerWindow): lowers each saved or default value
+    // above its cap to the cap as an unsaved value (the settings file keeps the user's value), one INFO line each,
+    // and from then on refuses a new value above the cap (the settings' validate signal, one WARN line each), so
+    // Preferences, graphics presets and Debug Settings cannot raise it.
+    void applyHardwareCaps();
+
 protected:
     bool loadGPUClass();
+    // [Viewer Lab] The texture units the TexUnit<n>orLess lists judge the device by
+    // (LL::RHI::featureTableTextureUnits).
+    S32 featureTableTextureUnits() const;
 
     bool parseFeatureTable(std::string filename);
     ///< @returns true is file parsed correctly, false if not
@@ -172,6 +191,9 @@ protected:
     std::string mGPUString;
     bool        mGPUSupported;
     bool        mSkipProfiling = false;
+    std::set<std::string> mHardwareCapGuards; // [Viewer Lab] The settings whose validate signal refuses above the cap
+    mutable std::map<std::string, F32> mHardwareCaps; // [Viewer Lab] hardwareCaps() for mHardwareCapsDevice
+    mutable const void* mHardwareCapsDevice = nullptr;
 };
 
 inline

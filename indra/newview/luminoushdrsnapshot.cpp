@@ -45,6 +45,7 @@
 #include "llimagepng.h"
 #include "llnotificationsutil.h"
 #include "llrendertarget.h"
+#include "llrhimetal.h"
 #include "lluictrl.h"
 #include "llviewercontrol.h"
 #include "llviewermenufile.h"
@@ -52,6 +53,8 @@
 #include "llviewershadermgr.h"
 #include "llviewerwindow.h"
 #include "luminousphotomode.h"
+#include "luminousmetal.h"
+#include "luminousmetalrender.h"
 #include "luminousfloater.h"
 #include "llmotioncontroller.h"
 #include "llcharacter.h"
@@ -119,6 +122,29 @@ namespace LuminousHDRSnapshot
         // by one.
         bool averageFrame(LLRenderTarget* hdr_screen)
         {
+            if (LuminousMetal::metal())
+            {
+                // The render group's native pass adds the frame into the same
+                // float target, of the same format as below, and writes the
+                // sum back into the frame in the last.
+                const U32 w = hdr_screen->getWidth();
+                const U32 h = hdr_screen->getHeight();
+                if (sAverageTarget.getWidth() != w || sAverageTarget.getHeight() != h)
+                {
+                    sAverageTarget.release();
+                    static LLCachedControl<bool> float32(gSavedSettings, "LuminousSnapshotAverageFloat32", false);
+                    const U32 format = eightBit(sFormat) && !float32() ? GL_RGBA16F : GL_RGBA32F;
+                    if (!sAverageTarget.allocate(w, h, format))
+                    {
+                        sAverageTarget.release();
+                        return false;
+                    }
+                }
+                LuminousMetal::PassTargets targets;
+                targets.frame = hdr_screen;
+                targets.other = &sAverageTarget;
+                return LuminousMetal::drawNative(LuminousMetal::Pass::AverageFrames, targets);
+            }
             LLGLSLShader& shader = gLuminousAverageProgram;
             if (!shader.isComplete())
             {
@@ -489,6 +515,24 @@ namespace LuminousHDRSnapshot
         }
 
         F32 sExposure = 1.f;
+
+        // Metal: while a render's frames are drawn (frameReadSkipped), and the
+        // sizes its frames are read into the picture at (captureMetal).
+        bool sRendering = false;
+        struct PictureSizes
+        {
+            U32 render_w = 0;
+            U32 render_h = 0;
+            U32 picture_w = 0;
+            U32 picture_h = 0;
+            U32 out_w = 0;
+            U32 out_h = 0;
+            U32 margin_y = 0;
+        };
+        PictureSizes sPictureSizes;
+        // Metal: the exposure's part the CPU knows -- RenderExposure and the
+        // Look's -- which the metered exposure, read with the frame, multiplies.
+        F32 sExposureScale = 1.f;
 
         // Set while a render from the Render image button is saved into a
         // temporary file: an eight-bit copy of it to show over the viewer,
@@ -968,6 +1012,10 @@ namespace LuminousHDRSnapshot
 
         void save(EFormat format, const LLSD& param, EShow show = SAVE_ONLY)
         {
+            if (!LuminousPhotoMode::rendersAvailableOrSay())
+            {
+                return;
+            }
             std::string path = param.asString();
             if (!path.empty())
             {
@@ -998,8 +1046,127 @@ namespace LuminousHDRSnapshot
         }
     }
 
+    namespace
+    {
+        // capture() on Metal: the same steps, the frame read by the render
+        // group's native pass (HDRCapture) into the picture's size and read
+        // back asynchronously; takeAndSave waits for the reads after the
+        // frames (LuminousMetalRender::takePicture).
+        void captureMetal(LLRenderTarget* hdr_screen)
+        {
+            if (sAverage && !LuminousPhotoMode::warmingUp())
+            {
+                if (!averageFrame(hdr_screen))
+                {
+                    LL_WARNS("LuminousHDRSnapshot") << "Frames not averaged as light from frame " << sAverageFrame
+                                                    << ": no " << hdr_screen->getWidth() << "x" << hdr_screen->getHeight()
+                                                    << " float target" << LL_ENDL;
+                    sAverage = false;
+                }
+                else if (sAverageFrame < sAverageFrames - 1)
+                {
+                    return; // only the last frame, the average, is the picture
+                }
+            }
+            if (!sArmed || LuminousPhotoMode::warmingUp())
+            {
+                return;
+            }
+            sCaptureError.clear();
+
+            // The exposure's part the CPU knows; the metered value multiplies
+            // it on the GPU for the light, and comes back with the frame.
+            static LLCachedControl<F32> exposure(gSavedSettings, "RenderExposure", 1.f);
+            sExposureScale = llclamp(exposure(), 0.5f, 4.f);
+            if (LuminousPhotoMode::look())
+            {
+                static LLCachedControl<F32> look_ev(gSavedSettings, "LuminousPhotoExposure", 0.f);
+                sExposureScale *= powf(2.f, llclamp(look_ev(), -5.f, 5.f));
+            }
+
+            // The finished picture for TIFF: Firestorm's tonemap into a 32-bit
+            // float target, the averaging target itself when frames were
+            // averaged, as on OpenGL.
+            LLRenderTarget finished;
+            LLRenderTarget* source = hdr_screen;
+            if (sFormat != EXR)
+            {
+                source = &finished;
+                if (sAverage && sAverageTarget.getWidth() == hdr_screen->getWidth() && sAverageTarget.getHeight() == hdr_screen->getHeight())
+                {
+                    source = &sAverageTarget;
+                }
+                else if (!finished.allocate(hdr_screen->getWidth(), hdr_screen->getHeight(), GL_RGBA32F))
+                {
+                    sCaptureError = "could not make a 16-bit target";
+                    return;
+                }
+                gPipeline.tonemap(hdr_screen, source, true);
+            }
+
+            // The frame as takeAndSave checks it after the frames; one of
+            // another size is not read.
+            const PictureSizes& z = sPictureSizes;
+            const U32 frame_w = source->getWidth();
+            const U32 frame_h = source->getHeight();
+            sFrame.width = frame_w;
+            sFrame.height = frame_h;
+            if (z.margin_y > 0 ? (frame_w < z.picture_w || frame_h < z.picture_h || frame_w > z.render_w + 64)
+                               : (frame_w != z.render_w || frame_h != z.render_h))
+            {
+                finished.release();
+                return;
+            }
+            LuminousMetalRender::Read read;
+            if (z.margin_y > 0)
+            {
+                // the picture from the frame's middle, then as it is or reduced
+                read.cutX = (frame_w - z.picture_w) / 2;
+                read.cutY = (frame_h - z.picture_h) / 2;
+                read.cutWidth = z.picture_w;
+                read.cutHeight = z.picture_h;
+                read.renderWidth = (F32)z.picture_w;
+                read.renderHeight = (F32)z.picture_h;
+            }
+            else
+            {
+                read.cutWidth = frame_w;
+                read.cutHeight = frame_h;
+                read.renderWidth = (F32)z.render_w;
+                read.renderHeight = (F32)z.render_h;
+            }
+            read.width = z.out_w;
+            read.height = z.out_h;
+            read.light = sFormat == EXR;
+            read.scale = sExposureScale;
+            LuminousMetalRender::setRead(read);
+            LuminousMetal::PassTargets targets;
+            targets.frame = source;
+            if (LuminousMetal::drawNative(LuminousMetal::Pass::HDRCapture, targets))
+            {
+                ++sFrameCount;
+            }
+            else
+            {
+                sCaptureError = "could not read the frame";
+            }
+            finished.release();
+        }
+    }
+
     void capture(LLRenderTarget* hdr_screen, LLRenderTarget* exposure_map)
     {
+        if (!LuminousPhotoMode::isOn())
+        {
+            return; // no render to capture for: photo mode is off
+        }
+        // On Metal the render group's native passes average and read back the
+        // frames; the reads below are OpenGL's own calls.
+        if (LuminousMetal::metal())
+        {
+            captureMetal(hdr_screen);
+            return;
+        }
         if (sAverage && !LuminousPhotoMode::warmingUp())
         {
             if (!averageFrame(hdr_screen))
@@ -1170,8 +1337,11 @@ namespace LuminousHDRSnapshot
             U32 h = 0;
             pictureSize((F32)llclamp(scale > 0 ? scale : (U32)scale_setting(), 1U, 2U), w, h);
             const bool eight_bit = format_setting() != 1 && format_setting() != 2; // not TIFF or EXR
-            const F64 bytes_a_pixel = llclamp((F64)bytes_setting(), 60.0, 300.0) + (eight_bit ? 0.0 : 20.0);
-            S64 need = (S64)((F64)w * h * bytes_a_pixel) + (256LL << 20);
+            // TIFF and EXR: on OpenGL 20 bytes a pixel for the floats read
+            // back; on Metal the render group's reads, counted (readBytes).
+            const F64 bytes_a_pixel = llclamp((F64)bytes_setting(), 60.0, 300.0) + (eight_bit || LuminousMetal::metal() ? 0.0 : 20.0);
+            S64 need = (S64)((F64)w * h * bytes_a_pixel) + (256LL << 20)
+                     + (S64)LuminousMetalRender::readBytes(w, h, eight_bit, format_setting() == 2);
             if (shadow_detail() > 0 && LuminousPhotoMode::isOn()) // the sun's four, less the live view's they replace
             {
                 const S64 shadow = llmin((S64)shadow_setting(), 4096LL);
@@ -1322,6 +1492,11 @@ namespace LuminousHDRSnapshot
 
     bool takeAndSave(EFormat format, const std::string& path, std::string& error)
     {
+        if (!LuminousPhotoMode::rendersAvailable())
+        {
+            error = LuminousPhotoMode::needsOpenGLText();
+            return false;
+        }
         // The window's size, in pixels, or twice it.
         static LLCachedControl<U32> scale_setting(gSavedSettings, "LuminousSnapshotScale", 1);
         const U32 asked_scale = sPreview || sWindowSizeOnly ? 1U : llclamp((U32)scale_setting(), 1U, 2U); // what fits may be less (below)
@@ -1400,7 +1575,11 @@ namespace LuminousHDRSnapshot
         static LLCachedControl<U32> shadow_setting(gSavedSettings, "LuminousPhotoShadowMapSize", 8192);
         static LLCachedControl<S32> shadow_detail(gSavedSettings, "RenderShadowDetail", 2);
         static LLCachedControl<F32> bytes_setting(gSavedSettings, "LuminousRenderBytesPerPixel", 140.f);
-        const F64 bytes_a_pixel = llclamp((F64)bytes_setting(), 60.0, 300.0) + (eightBit(format) ? 0.0 : 20.0);
+        // On Metal the reads of TIFF and EXR are counted from what they make
+        // instead of the 20 measured on OpenGL (need_bytes); the rest of the
+        // render's native targets are in the learnt bytes a pixel, which
+        // measure the whole footprint, the GPU's memory included.
+        const F64 bytes_a_pixel = llclamp((F64)bytes_setting(), 60.0, 300.0) + (eightBit(format) || LuminousMetal::metal() ? 0.0 : 20.0);
         const U32 full_shadow = llclamp((U32)shadow_setting(), 1024U, llmax(most, 1024U));
         const U32 small_shadow = llmin(full_shadow, 4096U);
         static LLCachedControl<F32> shadow_scale(gSavedSettings, "RenderShadowResolutionScale", 1.f);
@@ -1429,7 +1608,8 @@ namespace LuminousHDRSnapshot
         };
         auto need_bytes = [&](const Sizes& z, U32 shadow) -> U64
         {
-            const S64 need = (S64)((F64)z.render_w * z.render_h * bytes_a_pixel) + (256LL << 20) + shadow_bytes(z, shadow);
+            const S64 need = (S64)((F64)z.render_w * z.render_h * bytes_a_pixel) + (256LL << 20) + shadow_bytes(z, shadow)
+                           + (S64)LuminousMetalRender::readBytes(z.out_w, z.out_h, eightBit(format), format == EXR);
             return (U64)llmax(need, (S64)(256LL << 20));
         };
         struct Option
@@ -1601,6 +1781,15 @@ namespace LuminousHDRSnapshot
         sCaptureError.clear();
         sFormat = format;
         sArmed = !eightBit(format);
+        // Metal: the sizes the frames are read into the picture at, and the
+        // render group's reads from an earlier render let go; this render's go
+        // when it returns, however it ends.
+        sPictureSizes = { render_w, render_h, picture_w, picture_h, out_w, out_h, margin_y };
+        LuminousMetalRender::beginRender();
+        struct EndMetalRender
+        {
+            ~EndMetalRender() { LuminousMetalRender::endRender(); }
+        } end_metal_render;
         LLPointer<LLImageRaw> raw = new LLImageRaw;
         raw->enableOverSize(); // past 256 MB, as Firestorm's high-res snapshot
         std::vector<F32> png_sum;
@@ -1620,8 +1809,12 @@ namespace LuminousHDRSnapshot
         // What that and the full resolution gave back -- the live view's
         // maps and targets, drawn -- deleted now, not after the first frame:
         // the main loop that would delete it waits for the render. No
-        // texture unit may still think one of them bound.
-        LLImageGL::flushDeletedTextures();
+        // texture unit may still think one of them bound. Metal's textures
+        // go through its frame lifecycle, once the GPU is done with them.
+        if (!LuminousMetal::metal())
+        {
+            LLImageGL::flushDeletedTextures();
+        }
         for (U32 unit = 0; unit < LL_NUM_TEXTURE_LAYERS; ++unit)
         {
             gGL.getTexUnit(unit)->unbind(LLTexUnit::TT_TEXTURE);
@@ -1644,8 +1837,10 @@ namespace LuminousHDRSnapshot
         // Averaged on the GPU as light, EXR too; with the setting off, EXR
         // reads every frame back as floats and sums them here.
         static LLCachedControl<bool> as_light(gSavedSettings, "LuminousSnapshotAverageAsLight", true);
-        sAverage = as_light && frames > 1 && gLuminousAverageProgram.isComplete();
+        sAverage = as_light && frames > 1
+            && (LuminousMetal::metal() ? LuminousMetal::on(LuminousMetal::Effect::Accumulation) : gLuminousAverageProgram.isComplete());
         sAverageFrames = frames;
+        sRendering = true; // Metal: frames whose eight bits are never read skip rawSnapshot's read
         // Everything the frames change, put back once they are done, on
         // every way out -- an exception from inside a frame included, which
         // is caught further out (whenSharp) by code that knows none of this.
@@ -1668,6 +1863,7 @@ namespace LuminousHDRSnapshot
                 camera->setViewNoBroadcast(view);
                 sArmed = false;
                 sAverage = false;
+                sRendering = false;
                 sShapedRender = false;
                 sAverageTarget.release();
                 // the effects' own targets, sized to the render: those drawn
@@ -1680,7 +1876,10 @@ namespace LuminousHDRSnapshot
                 }
                 // Given back now, before the picture is encoded, as after
                 // each frame: no unit may still think one of them bound.
-                LLImageGL::flushDeletedTextures();
+                if (!LuminousMetal::metal())
+                {
+                    LLImageGL::flushDeletedTextures();
+                }
                 for (U32 unit = 0; unit < LL_NUM_TEXTURE_LAYERS; ++unit)
                 {
                     gGL.getTexUnit(unit)->unbind(LLTexUnit::TT_TEXTURE);
@@ -1769,8 +1968,12 @@ namespace LuminousHDRSnapshot
             // would delete it, does not run until the render is done. The
             // read-back has waited for the GPU, so none of it is in use.
             // No texture unit may still think one of them bound: a name
-            // deleted now can come back for a new texture next frame.
-            LLImageGL::flushDeletedTextures();
+            // deleted now can come back for a new texture next frame. On
+            // Metal the frame lifecycle frees them once the GPU is done.
+            if (!LuminousMetal::metal())
+            {
+                LLImageGL::flushDeletedTextures();
+            }
             for (U32 unit = 0; unit < LL_NUM_TEXTURE_LAYERS; ++unit)
             {
                 gGL.getTexUnit(unit)->unbind(LLTexUnit::TT_TEXTURE);
@@ -1779,6 +1982,17 @@ namespace LuminousHDRSnapshot
             LLAppViewer::instance()->pingMainloopTimeout("LuminousHDRSnapshot");
         }
         peak_footprint = llmax(peak_footprint, footprintBytes());
+#if LL_RHI_METAL
+        // Metal: what the device holds after the frames, its largest groups first, on one line
+        if (LL::RHI::Device* device = LL::RHI::viewerDevice())
+        {
+            const std::string census = LL::RHI::metalMemoryCensus(*device, 40);
+            if (!census.empty())
+            {
+                LL_INFOS("LuminousRenderMemory") << "After the frames: " << census << LL_ENDL;
+            }
+        }
+#endif
         LL_INFOS("LuminousHDRSnapshot") << "Frames at " << render_w << "x" << render_h << ": the viewer at most "
                                         << peak_footprint / (1024 * 1024) << " MB of " << memory_limit / (1024 * 1024)
                                         << " MB allowed" << LL_ENDL;
@@ -1798,7 +2012,9 @@ namespace LuminousHDRSnapshot
                 && chosen.scale > 1.01f)
             {
                 const F64 cost = ((F64)(peak_footprint - footprint_now) - (F64)render_shadow_bytes) / (F64)pixels
-                                 - (eightBit(format) ? 0.0 : 20.0);
+                                 - (LuminousMetal::metal()
+                                        ? (F64)LuminousMetalRender::readBytes(out_w, out_h, eightBit(format), format == EXR) / (F64)pixels
+                                        : (eightBit(format) ? 0.0 : 20.0));
                 const F32 learnt = (F32)llclamp(cost * 1.15, 70.0, 220.0);
                 gSavedSettings.setF32("LuminousRenderBytesPerPixel", learnt);
                 LL_INFOS("LuminousHDRSnapshot") << "This render cost about " << (S32)ll_round(cost) << " bytes a pixel above the scene; "
@@ -1919,7 +2135,9 @@ namespace LuminousHDRSnapshot
             error = sCaptureError;
             return false;
         }
-        if (!rendered || sFrame.rgb.empty())
+        // On Metal the frames are read by the render group: sFrame keeps only
+        // the size read (captureMetal).
+        if (!rendered || (LuminousMetal::metal() ? sFrame.width == 0 : sFrame.rgb.empty()))
         {
             error = "the frame was not rendered";
             return false;
@@ -1936,7 +2154,7 @@ namespace LuminousHDRSnapshot
             return false;
         }
 
-        if (sFrameCount > 1)
+        if (sFrameCount > 1 && !LuminousMetal::metal())
         {
             const F32 scale = 1.f / (F32)sFrameCount;
             for (F32& v : sFrame.rgb)
@@ -1945,6 +2163,23 @@ namespace LuminousHDRSnapshot
             }
         }
         std::vector<F32> picture;
+        // What the picture's values are multiplied by when written and shown:
+        // the render's exposure for the light, read back as it was drawn on
+        // OpenGL; on Metal the light comes back at its exposure already.
+        F32 picture_scale = sExposure;
+        if (LuminousMetal::metal())
+        {
+            // The frames were cut and reduced to the picture on the GPU, top
+            // row first, and averaged here as their reads came in.
+            F32 metered = 1.f;
+            if (!LuminousMetalRender::takePicture(picture, out_w, out_h, metered, error))
+            {
+                return false;
+            }
+            sExposure = sExposureScale * metered;
+            picture_scale = format == EXR ? 1.f : sExposure;
+        }
+        else
         try
         {
             if (margin_y > 0)
@@ -2007,7 +2242,7 @@ namespace LuminousHDRSnapshot
                         F32 v = src[i];
                         if (format == EXR)
                         {
-                            v = llclamp(v * sExposure, 0.f, 1.f);
+                            v = llclamp(v * picture_scale, 0.f, 1.f);
                             v = v <= 0.0031308f ? v * 12.92f : 1.055f * powf(v, 1.f / 2.4f) - 0.055f;
                         }
                         dst[i] = (U8)ll_round(llclamp(v, 0.f, 1.f) * 255.f);
@@ -2021,7 +2256,7 @@ namespace LuminousHDRSnapshot
         {
             LuminousPictureView::setProgress(1.f, "Saving...", true);
         }
-        const bool written = format == EXR ? writeEXR(path, out_w, out_h, picture, sExposure)
+        const bool written = format == EXR ? writeEXR(path, out_w, out_h, picture, picture_scale)
                                            : writeTIFF16(path, out_w, out_h, picture);
         if (!written)
         {
@@ -2178,6 +2413,15 @@ namespace LuminousHDRSnapshot
         return sShapedRender;
     }
 
+    bool frameReadSkipped()
+    {
+        if (!LuminousMetal::metal() || !sRendering)
+        {
+            return false;
+        }
+        return !eightBit(sFormat) || (sAverage && sAverageFrame < sAverageFrames - 1);
+    }
+
     F32 pictureAspect()
     {
         // as takeAndSave sizes the picture
@@ -2194,6 +2438,10 @@ namespace LuminousHDRSnapshot
 
     void renderPreview()
     {
+        if (!LuminousPhotoMode::rendersAvailableOrSay())
+        {
+            return;
+        }
         if (sWaiting)
         {
             report("A snapshot is already being taken.");
@@ -2216,6 +2464,10 @@ namespace LuminousHDRSnapshot
 
     void renderImage()
     {
+        if (!LuminousPhotoMode::rendersAvailableOrSay())
+        {
+            return;
+        }
         static LLCachedControl<U32> format(gSavedSettings, "LuminousSnapshotFormat", 0);
         static LLCachedControl<bool> to_disk(gSavedSettings, "LuminousRenderToDisk", false);
         // The setting's values, which are not in the menu's order.

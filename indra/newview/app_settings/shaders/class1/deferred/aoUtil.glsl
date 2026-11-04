@@ -90,7 +90,7 @@ uniform float luminous_ao_radius;   // metres
 uniform float luminous_ao_strength; // a power on the result; 1 as computed
 uniform float luminous_frame;       // an accumulated snapshot's frame, for fresh noise each; 0 otherwise
 
-uniform int luminous_gtao;       // 1 draws GTAO; 2 GTAO drawn at half size elsewhere; 0 Linden's, live when GTAO is kept for renders
+uniform int luminous_gtao;       // 1 draws GTAO; 2 GTAO drawn at half size elsewhere; 3 none (GTAO kept for renders, live); 0 Linden's
 uniform int luminous_ao_slices; // 6
 uniform int luminous_ao_steps;  // 8
 const float LUMINOUS_PI = 3.14159265;
@@ -240,7 +240,7 @@ float calcAmbientOcclusion(vec4 pos, vec3 norm, vec2 pos_screen)
 {
     // 2: GTAO drawn at half size live (luminousGTAOF), multiplied into the
     // light map after this pass; 1: GTAO here; 0: Linden's.
-    if (luminous_gtao == 2)
+    if (luminous_gtao >= 2)
     {
         return 1.0;
     }

@@ -155,7 +155,6 @@ struct LocalTextureData
 // Static Data
 //-----------------------------------------------------------------------------
 S32Bytes LLVOAvatarSelf::sScratchTexBytes(0);
-std::map< LLGLenum, LLGLuint*> LLVOAvatarSelf::sScratchTexNames;
 
 
 /*********************************************************************************
@@ -2272,7 +2271,7 @@ void LLVOAvatarSelf::getLocalTextureByteCount(S32* gl_bytes) const
                 {
                     S32 bytes = (S32)image_gl->getWidth() * image_gl->getHeight() * image_gl->getComponents();
 
-                    if (image_gl->hasGLTexture())
+                    if (image_gl->hasTexture()) // [Viewer Lab] any backend
                     {
                         *gl_bytes += bytes;
                     }
@@ -2559,7 +2558,7 @@ bool LLVOAvatarSelf::getHasMissingParts() const
 
             // Check for the case that texture is defined but not sufficiently loaded to display anything.
             const LLViewerTexture* baked_img = getImage( texture_data.mTextureIndex, 0 );
-            if (!baked_img || !baked_img->hasGLTexture())
+            if (!baked_img || !baked_img->hasTexture()) // [Viewer Lab] any backend
             {
                 if (do_warn)
                 {
@@ -3474,19 +3473,12 @@ bool LLVOAvatarSelf::needsRenderBeam()
 // static
 void LLVOAvatarSelf::deleteScratchTextures()
 {
-    for(std::map< LLGLenum, LLGLuint*>::iterator it = sScratchTexNames.begin(), end_it = sScratchTexNames.end();
-        it != end_it;
-        ++it)
-    {
-        LLImageGL::deleteTextures(1, (U32 *)it->second );
-        stop_glerror();
-    }
-
+    // [Viewer Lab] sScratchTexNames, its loop of deleteTextures and its delete_and_clear are gone: nothing in the viewer
+    // ever filled the map, so the loop never ran
     if( sScratchTexBytes.value() )
     {
         LL_DEBUGS() << "Clearing Scratch Textures " << (S32Kilobytes)sScratchTexBytes << LL_ENDL;
 
-        delete_and_clear(sScratchTexNames);
         sScratchTexBytes = S32Bytes(0);
     }
 }

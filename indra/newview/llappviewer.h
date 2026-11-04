@@ -172,6 +172,7 @@ public:
     virtual void forceErrorLLErrorMsg();
     virtual void forceErrorBreakpoint();
     virtual void forceErrorBadMemoryAccess();
+    virtual void forceErrorImageAllocationFailure(); // <FS:Beq/> [FIRE-36494] Small memory allocation fail bugsplat reporting improvement
     virtual void forceErrorInfiniteLoop();
     virtual void forceErrorSoftwareException();
     virtual void forceErrorOSSpecificException();
@@ -404,7 +405,7 @@ private:
     // </FS:Zi>
 
     // <FS:ND> For Windows, purging the cache can take an extraordinary amount of time. Rename the cache dir and purge it using another thread.
-    virtual void startCachePurge() {}
+    virtual void startCachePurge(const std::string& strCacheDir) {}
     void startCefCachePurge(); // <FS:TJ/> Purge this in another thread to prevent very slow startup times
 };
 
@@ -463,5 +464,27 @@ extern bool gPeriodicSlowFrame;
 extern bool gDoDisconnect;
 
 extern bool gSimulateMemLeak;
+
+// [Viewer Lab] The Metal UI development mode (--metal-ui-dev): RenderMetalUIDev latched once in
+// LLAppViewer::init before the window, and never read again, so a later change of the setting cannot open
+// the world. The world is off in the mode (llstartup.cpp, llpanellogin.cpp).
+extern bool gMetalUIDev;
+// [Viewer Lab] The Metal device's name from the startup check (BackendChoice::gpuName), for the CGL store's key in
+// create_viewer_device; empty on GL.
+extern std::string gMetalGPUName;
+// [Viewer Lab] This start is GL because the last Metal session did not end normally: STATE_FIRST shows
+// MetalFellBackToOpenGL once.
+extern bool gMetalFellBack;
+// [Viewer Lab] A Metal device that cannot start or go on, or a shader group that
+// fails on Metal: logs the string's text, shows it in a dialog (not in a test run
+// with an injected fault, nor in a golden run) and ends the viewer with fastQuit(1). MetalSessionOpen stays saved, so
+// the next start is GL with MetalFellBackToOpenGL; without the marker (the Metal UI dev mode, a second instance) the
+// text is "<string_name>NoFallback", which promises nothing. Main thread; does not return.
+void stop_for_metal_device_failure(const std::string& string_name);
+
+// [Viewer Lab] Saves gSavedSettings to the user's settings file (ClientSettingsFile, values that differ from the
+// defaults). A second instance first takes the MetalSessionOpen the file has now, so it never writes back the value it
+// read at its start, which a Metal session that ended since may have cleared.
+void save_user_settings();
 
 #endif // LL_LLAPPVIEWER_H

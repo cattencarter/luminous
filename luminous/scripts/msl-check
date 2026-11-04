@@ -1,0 +1,21 @@
+#!/bin/sh
+# Compiles Luminous's hand-written MSL offline with the system's runtime Metal compiler (no GPU work):
+# every library and pipeline of every programs.json under indra/newview/app_settings/shaders/metal, or
+# of the manifests given, and every *shared.h under its luminous folder. Needs no Metal Toolchain.
+#
+#   luminous/scripts/msl-check [programs.json ...]
+#
+# Exit 0 when everything compiles, 1 when something failed, 2 when the check cannot run.
+
+set -e
+here=$(cd "$(dirname "$0")" && pwd)
+repo=$(cd "$here/../.." && pwd)
+root="$repo/indra/newview/app_settings/shaders/metal"
+work=$(mktemp -d "${TMPDIR:-/tmp}/msl-check.XXXXXX")
+trap 'rm -rf "$work"' EXIT
+
+xcrun clang++ -std=c++20 -fobjc-arc -O1 -framework Metal -framework Foundation \
+    -I "$repo/indra/llrender" -o "$work/msl-check" "$here/msl-check.mm" || exit 2
+
+set +e
+"$work/msl-check" "$root" "$@"

@@ -195,7 +195,9 @@ namespace
         return cores <= 10 ? Tier::Base : (cores <= 20 ? Tier::Pro : Tier::Max);
     }
 
-    void setUp()
+    // tell: the message that says what was set; without it the settings are
+    // only written (photo mode off, where none of them shows yet).
+    void setUp(bool tell = true)
     {
         const std::string chip = chipName();
         const S32 cores = graphicsCores();
@@ -255,7 +257,10 @@ namespace
                    "are not affected: renders always try for full resolution, and draw every effect at full quality."
                    "\n\nChange any of it in the sidebar; Settings > Optimise my settings measures what this Mac "
                    "can do where you are.";
-        LLNotificationsUtil::add("GenericAlert", LLSD().with("MESSAGE", message));
+        if (tell)
+        {
+            LLNotificationsUtil::add("GenericAlert", LLSD().with("MESSAGE", message));
+        }
     }
 
     // --- the slow-view watch -----------------------------------------------
@@ -277,9 +282,9 @@ namespace
 
     bool watch(Watch& w)
     {
-        if (sOfferedThisSession)
+        if (sOfferedThisSession || !LuminousPhotoMode::isOn())
         {
-            return true; // once a session: the watch ends
+            return true; // once a session, and never with photo mode off: the watch ends
         }
         if (LLStartUp::getStartupState() < STATE_STARTED)
         {
@@ -362,7 +367,7 @@ namespace LuminousOptimise
         {
             return;
         }
-        setUp();
+        setUp(LuminousPhotoMode::isOn());
     }
 
     void init()
@@ -439,6 +444,10 @@ bool LuminousOptimiseFloater::cameraMoved() const
 
 void LuminousOptimiseFloater::onMeasure()
 {
+    if (!LuminousPhotoMode::availableOrSay())
+    {
+        return; // it measures photo mode's effects
+    }
     if (sMeasuring || LuminousBenchmark::running())
     {
         return;

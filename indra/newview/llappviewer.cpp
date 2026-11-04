@@ -46,6 +46,7 @@
 #include "llagentlanguage.h"
 #include "llagentui.h"
 #include "llagentwearables.h"
+#include "llimage.h" // <FS:Beq/> [FIRE-36494] Image allocation failure telemetry
 #include "lldirpicker.h"
 #include "llfloaterimcontainer.h"
 #include "llimprocessing.h"
@@ -134,6 +135,9 @@
 #include "lllocalbitmaps.h"
 #include "llperfstats.h"
 #include "llgltfmateriallist.h"
+#include "llgoldentest.h"
+#include "llrhi.h"
+#include "llrhimetal.h" // [Viewer Lab] metalTestFault
 
 // Linden library includes
 #include "llavatarnamecache.h"
@@ -410,6 +414,10 @@ bool gLogoutInProgress = false;
 
 bool gSimulateMemLeak = false;
 bool gDoDisconnect = false;
+
+bool gMetalUIDev = false; // [Viewer Lab] latched in LLAppViewer::init
+std::string gMetalGPUName;  // [Viewer Lab] the startup check's Metal device name
+bool gMetalFellBack = false; // [Viewer Lab] this start is GL because the last Metal session did not end normally
 
 // We don't want anyone, especially threads working on the graphics pipeline,
 // to have to block due to this WorkQueue being full.
@@ -861,6 +869,145 @@ public:
     }
 };
 
+// [Viewer Lab] The Metal UI development mode (--metal-ui-dev): latches RenderMetalUIDev into
+// gMetalUIDev once, before the window and before the first save of the settings. In the mode every save
+// of gSavedSettings goes to a file of its own, which is written and never read, so nothing the session
+// derives (GPU class, RenderInitError, UI scale and the rest) reaches the next normal start. The mode
+// is a test flag only: the backend comes from choose_render_backend, as in a normal start
+// (run-local.sh --metal-ui-dev passes --backend metal). Without the flag nothing here runs: no redirect.
+static void latch_metal_ui_dev()
+{
+    gMetalUIDev = gSavedSettings.getBOOL("RenderMetalUIDev");
+    if (!gMetalUIDev)
+    {
+        return;
+    }
+
+    // Unsaved values (llcontrol.cpp), so neither reaches a settings file.
+    const std::string settings_file = gSavedSettings.getString("ClientSettingsFile");
+    const std::string dev_file      = gDirUtilp->getExpandedFilename(LL_PATH_USER_SETTINGS, "settings_metal_ui_dev.xml");
+    gSavedSettings.getControl("ClientSettingsFile")->setValue(dev_file, false);
+    LL_INFOS("AppInit") << "Metal UI dev mode: settings are saved to " << dev_file << ", not " << settings_file << LL_ENDL;
+    gSavedSettings.getControl("SkipBenchmark")->setValue(true, false);
+}
+
+// [Viewer Lab] MetalSessionOpen was set by this session; cleanup clears it while the session still runs on
+// Metal.
+static bool sMetalSessionMarked = false;
+
+// A process that did not set MetalSessionOpen takes the value the file has now, so it never writes back the value it
+// read at its start, which a Metal session that ended since may have cleared. Only a second instance can hold such a
+// value: a first instance that did not set the marker runs while no other session can change it.
+static void keep_stored_metal_session_marker()
+{
+    if (sMetalSessionMarked || !LLAppViewer::instance()->isSecondInstance())
+    {
+        return;
+    }
+    // Saved with nondefault_only, so a file without the key holds false; a file that cannot be read leaves the value.
+    llifstream file(gSavedSettings.getString("ClientSettingsFile").c_str(), std::ios::binary);
+    LLSD stored;
+    if (file.is_open() && LLSDParser::PARSE_FAILURE != LLSDSerialize::fromXML(stored, file))
+    {
+        gSavedSettings.setBOOL("MetalSessionOpen", stored["MetalSessionOpen"]["Value"].asBoolean());
+    }
+}
+
+void save_user_settings()
+{
+    keep_stored_metal_session_marker();
+    gSavedSettings.saveToFile(gSavedSettings.getString("ClientSettingsFile"), true);
+}
+
+// [Viewer Lab] The normal backend choice, before the window: --backend for this start
+// (GraphicsBackendThisStart, never saved), else GraphicsBackend. A saved Metal whose last session did not end
+// normally (MetalSessionOpen still set) gives GL, sets GraphicsBackend to OpenGL and has STATE_FIRST say so once.
+// Asked for Metal, the start sets and saves the marker before the startup check makes its Metal device,
+// so a crash from there on is recorded; a refusing check clears it again. A refusal that needs no device sets none.
+// The Metal UI dev mode and a second instance neither read nor write the marker. On GL with no marker nothing is saved, logged or checked.
+static void choose_render_backend()
+{
+    LL::RHI::BackendRequestFacts facts;
+    facts.saved            = gSavedSettings.getString("GraphicsBackend");
+    facts.commandLine      = gSavedSettings.getString("GraphicsBackendThisStart");
+    facts.markerApplies    = !gMetalUIDev && !LLAppViewer::instance()->isSecondInstance();
+    facts.metalSessionOpen = facts.markerApplies && gSavedSettings.getBOOL("MetalSessionOpen");
+    const LL::RHI::BackendRequest request = LL::RHI::resolveBackendRequest(facts);
+    // <Luminous> OpenGL without a Metal attempt: photo mode's HDR switches on, before the settings are saved below
+    if (request.type != LL::RHI::BackendType::Metal)
+    {
+        settings_force_photo_mode_hdr();
+    }
+    // </Luminous>
+    if (request.fellBack)
+    {
+        gMetalFellBack = true;
+        gSavedSettings.setString("GraphicsBackend", "OpenGL");
+        // The Metal session's own mark of a crash in its initialization must not drop GL to level 0
+        // (LLViewerWindow's DisplaySettingsNoShaders).
+        gSavedSettings.setBOOL("RenderInitError", false);
+    }
+    if (request.clearMarker)
+    {
+        gSavedSettings.setBOOL("MetalSessionOpen", false);
+        save_user_settings();
+    }
+    if (request.type != LL::RHI::BackendType::Metal)
+    {
+        if (gMetalUIDev)
+        {
+            LL_INFOS("AppInit") << "Metal UI dev mode: backend GL (Metal not asked for)" << LL_ENDL;
+        }
+        return;
+    }
+
+    // A refusal that needs no Metal device (a build without Metal, which also covers an x86_64 or Rosetta process, or
+    // macOS older than 26) is known now, so no marker is set or saved for it; the startup check below writes its WARN
+    // line.
+    if (request.setMarker && LL::RHI::metalSelectable(LLOSInfo::instance().mMajorVer))
+    {
+        gSavedSettings.setBOOL("MetalSessionOpen", true);
+        save_user_settings();
+        sMetalSessionMarked = true;
+    }
+    LL::RHI::BackendChoice choice;
+    if (gMetalUIDev && gSavedSettings.getU32("RenderMetalUIDevInjectRefusal") == 1)
+    {
+        // Test only: the dev mode's injected refusal, with the check's WARN line.
+        choice.reason = "injected refusal (test)";
+        LL_WARNS("RHI") << "Render backend: GL, because " << choice.reason << LL_ENDL;
+    }
+    else
+    {
+        choice = LL::RHI::chooseBackend(LL::RHI::BackendType::Metal);
+    }
+    // <Luminous> Metal refused, so OpenGL: photo mode's HDR switches on, before the settings are saved below
+    if (choice.type != LL::RHI::BackendType::Metal)
+    {
+        settings_force_photo_mode_hdr();
+    }
+    // </Luminous>
+    if (choice.type != LL::RHI::BackendType::Metal && sMetalSessionMarked)
+    {
+        gSavedSettings.setBOOL("MetalSessionOpen", false);
+        save_user_settings();
+        sMetalSessionMarked = false;
+    }
+    LL::RHI::setViewerBackend(choice.type);
+    // <Luminous> Metal: photo mode's HDR switches on while photo mode runs on Metal (isOn() reads the backend just set)
+    if (choice.type == LL::RHI::BackendType::Metal)
+    {
+        settings_force_photo_mode_hdr();
+    }
+    // </Luminous>
+    gMetalGPUName = choice.gpuName;
+    if (gMetalUIDev)
+    {
+        LL_INFOS("AppInit") << "Metal UI dev mode: backend " << (choice.type == LL::RHI::BackendType::Metal ? "Metal" : "GL")
+                            << " (" << (choice.reason.empty() ? std::string("the startup check passed") : choice.reason)
+                            << ")" << LL_ENDL;
+    }
+}
 
 bool LLAppViewer::init()
 {
@@ -1205,6 +1352,9 @@ bool LLAppViewer::init()
     // Initialize event recorder
     LLViewerEventRecorder::createInstance();
     LLWatchdog::createInstance();
+
+    latch_metal_ui_dev(); // [Viewer Lab] before the window and the first settings save
+    choose_render_backend(); // [Viewer Lab] the normal choice, before the window
 
     //
     // Initialize the window
@@ -1577,7 +1727,47 @@ bool LLAppViewer::frame()
         }
     }
 
+    // [Viewer Lab] The frame's device frame has ended (doFrame's ViewerFrame); a device that cannot go on stops the
+    // viewer (stop_for_metal_device_failure). GL never loses its device.
+    LL::RHI::Device* device = LL::RHI::viewerDevice();
+    if (device && device->deviceLost())
+    {
+        stop_for_metal_device_failure("MetalGPUStoppedResponding");
+    }
+
     return ret;
+}
+
+// [Viewer Lab] The text in the log and a dialog, then the viewer closes as a
+// window that could not be created closes it (fastQuit). With an injected test fault no one is there to answer, so the
+// dialog is only logged; in a golden run too (GoldenTestConfig set), whose scripts wait for the
+// viewer and would otherwise wait for a box no one closes until their timeout. MetalSessionOpen is not cleared, so the next start is GL with MetalFellBackToOpenGL. Only a
+// session that set the marker can promise that: the Metal UI dev mode and a second instance neither read nor write it,
+// so they get the same text without the promise ("<name>NoFallback").
+void stop_for_metal_device_failure(const std::string& string_name)
+{
+    const std::string text = LLTrans::getString(sMetalSessionMarked ? string_name : string_name + "NoFallback");
+#if LL_RHI_METAL
+    const std::string fault = LL::RHI::metalTestFault();
+    if (LL::RHI::Device* device = LL::RHI::viewerDevice())
+    {
+        LL::RHI::metalWriteFailureLines(*device); // [Viewer Lab] the device's held failure lines first
+    }
+#else
+    const std::string fault;
+#endif
+    const bool golden =
+        gSavedSettings.controlExists("GoldenTestConfig") && !gSavedSettings.getString("GoldenTestConfig").empty();
+    LL_WARNS("RHI") << "Metal device failure, the viewer closes: " << text
+                    << (!fault.empty() ? " (test fault " + fault + ": the dialog is not shown)"
+                                       : golden ? std::string(" (golden run: the dialog is not shown)") : std::string())
+                    << LL_ENDL;
+    if (fault.empty() && !golden)
+    {
+        LLAppViewer::instance()->pauseMainloopTimeout();
+        OSMessageBox(text, LLStringUtil::null, OSMB_OK);
+    }
+    LLAppViewer::instance()->fastQuit(1);
 }
 
 bool LLAppViewer::doFrame()
@@ -1591,6 +1781,7 @@ bool LLAppViewer::doFrame()
 #endif
 
     LL_RECORD_BLOCK_TIME(FTM_FRAME);
+    LL::RHI::ViewerFrame viewer_frame; // [Viewer Lab] one frame of the render device per main-loop frame
     LL_PROFILE_GPU_ZONE("Frame");
     {
     // and now adjust the visuals from previous frame.
@@ -2064,6 +2255,9 @@ bool LLAppViewer::cleanup()
     velopack_cleanup();
 #endif
 
+    // [Viewer Lab] The shader class lines of a session that never reached STATE_STARTED
+    LLGLSLShader::writeClassLines();
+
     //ditch LLVOAvatarSelf instance
     gAgentAvatarp = NULL;
 
@@ -2159,7 +2353,7 @@ bool LLAppViewer::cleanup()
         LL_INFOS() << "First time: Saved per-account settings to " <<
                 per_account_settings_file << LL_ENDL;
     }
-    gSavedSettings.saveToFile(gSavedSettings.getString("ClientSettingsFile"), true);
+    save_user_settings(); // [Viewer Lab] keeps the stored MetalSessionOpen in a second instance
     // /FIRE-4871
     // <FS:Zi> Backup Settings
     }
@@ -2356,11 +2550,18 @@ bool LLAppViewer::cleanup()
 
     AOEngine::deleteSingleton();
 
+    // [Viewer Lab] The Metal session ends normally here: the marker it set goes with this save. After the
+    // in-process GL fallback the viewer runs on GL, so the marker stays and the next start is GL with the notice.
+    if (LL::RHI::clearsMetalSessionAtQuit(sMetalSessionMarked, LL::RHI::viewerBackend()))
+    {
+        gSavedSettings.setBOOL("MetalSessionOpen", false);
+    }
+
     // Must do this after all panels have been deleted because panels that have persistent rects
     // save their rects on delete.
     if(mSaveSettingsOnExit)     // <FS:Zi> Backup Settings
     {
-        gSavedSettings.saveToFile(gSavedSettings.getString("ClientSettingsFile"), true);
+        save_user_settings(); // [Viewer Lab] keeps the stored MetalSessionOpen in a second instance
 
     LLUIColorTable::instance().saveUserSettings();
 
@@ -3882,6 +4083,18 @@ bool LLAppViewer::initWindow()
 
     LL_INFOS("AppInit") << "gViewerwindow created." << LL_ENDL;
 
+#if LL_DARWIN
+    // [Viewer Lab] The title names the backend the viewer runs on, e.g.
+    // "Second Life (Metal)": the constructor has made the device, and the dev mode's GL fallback there has set the
+    // backend to GL. The headless window keeps its title. The 255 above is Windows' limit; macOS has none.
+    if (LLWindowMacOSX* mac_window = dynamic_cast<LLWindowMacOSX*>(gViewerWindow->getWindow()))
+    {
+        gWindowTitle = LL::RHI::windowTitleWithBackend(gWindowTitle, LL::RHI::viewerBackend());
+        mac_window->setNativeTitle(gWindowTitle);
+        LL_INFOS("AppInit") << "Window title: " << gWindowTitle << LL_ENDL;
+    }
+#endif
+
     // Need to load feature table before cheking to start watchdog.
     bool use_watchdog = false;
     S32 watchdog_enabled_setting = gSavedSettings.getS32("WatchdogEnabled");
@@ -3978,9 +4191,22 @@ bool LLAppViewer::initWindow()
         gSavedSettings.setU32("RenderQualityPerformance", *mForceGraphicsLevel);
     }
 
+    LLGoldenTest::init(); // [Viewer Lab] nothing without --golden
+
     // Set this flag in case we crash while initializing GL
     gSavedSettings.setBOOL("RenderInitError", true);
-    gSavedSettings.saveToFile( gSavedSettings.getString("ClientSettingsFile"), true );
+    save_user_settings(); // [Viewer Lab] keeps the stored MetalSessionOpen in a second instance
+
+    // [Viewer Lab] Test only: RenderMetalUIDevInjectRefusal 3 crashes the Metal UI dev mode on Metal
+    // here, with RenderInitError saved (to the dev mode's own file), as a driver crash in GL's initialization would:
+    // a SIGSEGV with no alert (LL_ERRS would first show a modal message box). gMetalUIDev comes first, so a normal
+    // start makes no settings lookup.
+    if (gMetalUIDev && LL::RHI::viewerBackend() == LL::RHI::BackendType::Metal &&
+        gSavedSettings.getU32("RenderMetalUIDevInjectRefusal") == 3)
+    {
+        LL_WARNS("RHI") << "Metal UI dev mode: injected crash (test)" << LL_ENDL;
+        LLAppViewer::instance()->forceErrorBadMemoryAccess();
+    }
 
     gPipeline.init();
     LL_INFOS("AppInit") << "gPipeline Initialized" << LL_ENDL;
@@ -3989,7 +4215,7 @@ bool LLAppViewer::initWindow()
     gViewerWindow->initGLDefaults();
 
     gSavedSettings.setBOOL("RenderInitError", false);
-    gSavedSettings.saveToFile( gSavedSettings.getString("ClientSettingsFile"), true );
+    save_user_settings(); // [Viewer Lab] keeps the stored MetalSessionOpen in a second instance
 
     // If we have a startup crash, it's usually near GL initialization, so simulate that.
     if (gCrashOnStartup)
@@ -4203,8 +4429,8 @@ LLSD LLAppViewer::getViewerInfo() const
     info["CONCURRENCY"] = LLSD::Integer(std::thread::hardware_concurrency());    // <FS:Beq> Add hardware concurrency to info
     // Moved hack adjustment to Windows memory size into llsys.cpp
     info["OS_VERSION"] = LLOSInfo::instance().getOSString();
-    info["GRAPHICS_CARD_VENDOR"] = ll_safe_string((const char*)(glGetString(GL_VENDOR)));
-    info["GRAPHICS_CARD"] = ll_safe_string((const char*)(glGetString(GL_RENDERER)));
+    info["GRAPHICS_CARD_VENDOR"] = gGLManager.getGLString(GL_VENDOR); // [Viewer Lab] GL's string, from llrender
+    info["GRAPHICS_CARD"] = gGLManager.getGLString(GL_RENDERER);
     info["GRAPHICS_CARD_MEMORY"] = LLSD::Integer(gGLManager.mVRAM);
     info["GRAPHICS_CARD_MEMORY_DETECTED"] = gGLManager.mVRAMDetected; // <FS:Beq/> allow detected hardware to be overridden.
 
@@ -4249,7 +4475,7 @@ LLSD LLAppViewer::getViewerInfo() const
 // [RLVa:KB] - Checked: 2010-04-18 (RLVa-1.2.0)
     info["RLV_VERSION"] = (rlv_handler_t::isEnabled()) ? RlvStrings::getVersionAbout() : LLTrans::getString("RLVaStatusDisabled");
 // [/RLVa:KB]
-    info["OPENGL_VERSION"] = ll_safe_string((const char*)(glGetString(GL_VERSION)));
+    info["OPENGL_VERSION"] = gGLManager.getGLString(GL_VERSION); // [Viewer Lab] GL's string, from llrender
     info["LIBCURL_VERSION"] = LLCore::LLHttp::getCURLVersion();
     // Settings
     // <FS:Beq> gViewerWindow can be null on shutdown. Crashes if bugsplatt uses the info
@@ -4497,6 +4723,11 @@ std::string LLAppViewer::getViewerInfoString(bool default_string) const
         support << "\n" << LLTrans::getString("AboutDriver", args, default_string);
     }
     support << "\n" << LLTrans::getString("AboutOGL", args, default_string);
+    if (LL::RHI::viewerBackend() == LL::RHI::BackendType::Metal)
+    {
+        // Which backend runs, also after a silent fallback to GL; no new info key leaves the viewer
+        support << "\n" << LLTrans::getString("AboutGraphicsMetal", args, default_string);
+    }
     //support << "\n\n" << LLTrans::getString("AboutSettings", args, default_string); // <FS> Custom sysinfo
 #if LL_DARWIN
     support << "\n" << LLTrans::getString("AboutOSXHiDPI", args, default_string);
@@ -5397,6 +5628,7 @@ bool LLAppViewer::initCache()
     const uintmax_t disk_cache_size = disk_cache_mb * 1024ULL * 1024ULL;
     // </FS:Ansariel>
     const bool enable_cache_debug_info = gSavedSettings.getBOOL("EnableDiskCacheDebugInfo");
+    std::string cache_purge_path; // <FS:TJ/> Background cache purge the correct path
 
     bool texture_cache_mismatch = false;
     bool remove_vfs_files = false;
@@ -5451,6 +5683,7 @@ bool LLAppViewer::initCache()
         {
             LL_INFOS("AppCache") << "Cache location changed, cache needs purging" << LL_ENDL;
             gDirUtilp->setCacheDir(gSavedSettings.getString("CacheLocation"));
+            cache_purge_path = gDirUtilp->getExpandedFilename(LL_PATH_CACHE, ""); // <FS:TJ/> Background cache purge the correct path
             purgeCache(); // purge old cache
             gDirUtilp->deleteDirAndContents(gDirUtilp->getExpandedFilename(LL_PATH_CACHE, cache_dir_name));
             gSavedSettings.setString("CacheLocation", new_cache_location);
@@ -5466,6 +5699,13 @@ bool LLAppViewer::initCache()
         gSavedSettings.setString("NewCacheLocation", "");
         gSavedSettings.setString("NewCacheLocationTopFolder", "");
     }
+
+    // <FS:TJ> Background cache purge the correct path
+    if (cache_purge_path.empty())
+    {
+        cache_purge_path = gDirUtilp->getExpandedFilename(LL_PATH_CACHE, "");
+    }
+    // </FS:TJ>
 
     // <FS:Ansariel> Sound cache
     if (!gDirUtilp->setSoundCacheDir(gSavedSettings.getString("FSSoundCacheLocation")))
@@ -5536,7 +5776,7 @@ bool LLAppViewer::initCache()
     // </FS:Ansariel>
 
     // <FS:ND> For Windows, purging the cache can take an extraordinary amount of time. Rename the cache dir and purge it using another thread.
-    startCachePurge();
+    startCachePurge(cache_purge_path);
     // </FS:ND>
 
     LLSplashScreen::update(LLTrans::getString("StartupInitializingTextureCache"));
@@ -5685,6 +5925,8 @@ void LLAppViewer::purgeCache()
     LLAppViewer::getTextureCache()->purgeCache(LL_PATH_CACHE);
     LLVOCache::getInstance()->removeCache(LL_PATH_CACHE);
     LLViewerShaderMgr::instance()->clearShaderCache();
+    // [Viewer Lab] The Metal translations' disk cache, a folder of its own
+    gDirUtilp->deleteDirAndContents(gDirUtilp->getExpandedFilename(LL_PATH_CACHE, "metal_shader_cache"));
     purgeCefStaleCaches();
     gDirUtilp->deleteFilesInDir(gDirUtilp->getExpandedFilename(LL_PATH_CACHE, ""), "*");
 }
@@ -6239,7 +6481,9 @@ void LLAppViewer::idle()
     // updateUI() needs to be called even in case viewer disconected
     // since related notification still needs handling and allows
     // opening chat.
+    LLGoldenTest::beforeUI(); // [Viewer Lab] nothing without --golden
     gViewerWindow->updateUI();
+    LLGoldenTest::afterUI(); // [Viewer Lab] nothing without --golden
 
     if (gDisconnected)
     {
@@ -7018,6 +7262,16 @@ void LLAppViewer::forceErrorBadMemoryAccess()
     return;
 }
 
+// <FS:Beq> [FIRE-36494] Force a deliberate LLImageBase allocation failure
+void LLAppViewer::forceErrorImageAllocationFailure()
+{
+    LL_WARNS() << "Forcing a deliberate LLImageBase allocation failure" << LL_ENDL;
+    LLImageBase::forceNextAllocationFailureForTesting();
+    LLPointer<LLImageRaw> image_raw = new LLImageRaw(127, 127, 4);
+    llassert(!image_raw->getData());
+}
+// </FS:Beq>
+
 void LLAppViewer::forceErrorInfiniteLoop()
 {
     LL_WARNS() << "Forcing a deliberate infinite loop" << LL_ENDL;
@@ -7053,7 +7307,7 @@ void LLAppViewer::forceErrorOSSpecificException()
 void LLAppViewer::forceErrorDriverCrash()
 {
     LL_WARNS() << "Forcing a deliberate driver crash" << LL_ENDL;
-    glDeleteTextures(1, NULL);
+    force_gl_driver_crash(); // [Viewer Lab] the GL call is in llrender
 }
 
 // <FS:Ansariel> Wrongly merged back in by LL

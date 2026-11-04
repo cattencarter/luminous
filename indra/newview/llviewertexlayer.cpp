@@ -623,7 +623,12 @@ void LLViewerTexLayerSetBuffer::doUpload(LLRenderTarget* bound_target)
 
     // Get the COLOR information from our texture
     U8* baked_color_data = new U8[ mFullWidth * mFullHeight * 4 ];
-    glReadPixels(mOrigin.mX, mOrigin.mY, mFullWidth, mFullHeight, GL_RGBA, GL_UNSIGNED_BYTE, baked_color_data );
+    // [Viewer Lab] through the readback, which reads the bound target on every renderer
+    if (!LLGPUReadback::readPixels(mOrigin.mX, mOrigin.mY, mFullWidth, mFullHeight, GL_RGBA, GL_UNSIGNED_BYTE, baked_color_data,
+                                   (size_t)mFullWidth * mFullHeight * 4))
+    {
+        LL_WARNS("Avatar") << "The baked colour of " << layer_set->getBodyRegionName() << " was not read back" << LL_ENDL;
+    }
     stop_glerror();
 
     // Get the MASK information from our texture

@@ -41,6 +41,7 @@
 #include "llviewerregion.h"
 #include "llviewershadermgr.h"
 #include "llviewertexture.h"
+#include <atomic>
 
 // static
 bool LLTerrainPaintMap::bakeHeightNoiseIntoPBRPaintMapRGB(const LLViewerRegion& region, LLViewerTexture& tex)
@@ -85,11 +86,17 @@ bool LLTerrainPaintMap::bakeHeightNoiseIntoPBRPaintMapRGB(const LLViewerRegion& 
         LL_WARNS() << "Failed to allocate render target" << LL_ENDL;
         return false;
     }
+    // [Viewer Lab] Coverage marker, once per session
+    static std::atomic<bool> sReached{ false };
+    if (!sReached.exchange(true))
+    {
+        LL_INFOS("RHI") << "Facade site reached: llterrainpaintmap.cpp:bakeHeightNoiseIntoPBRPaintMapRGB" << LL_ENDL;
+    }
     gGL.getTexUnit(0)->disable();
     stop_glerror();
 
     scratch_target.bindTarget();
-    glClearColor(0, 0, 0, 0);
+    LLRenderTarget::setClearColor(0.f, 0.f, 0.f, 0.f); // [Viewer Lab]
     scratch_target.clear();
 
     // Render terrain heightmap to paint map via shader
@@ -109,7 +116,8 @@ bool LLTerrainPaintMap::bakeHeightNoiseIntoPBRPaintMapRGB(const LLViewerRegion& 
     camera.lookAt(camera_origin, region_center, LLVector3::y_axis);
     camera.setAspect(F32(scratch_target.getWidth()) / F32(scratch_target.getHeight()));
     const LLRect texture_rect(0, scratch_target.getHeight(), scratch_target.getWidth(), 0);
-    glViewport(texture_rect.mLeft, texture_rect.mBottom, texture_rect.getWidth(), texture_rect.getHeight());
+    // [Viewer Lab] the scratch target's viewport through the facade; its flush returns to gGLViewport as before
+    gGL.setViewport(texture_rect.mLeft, texture_rect.mBottom, texture_rect.getWidth(), texture_rect.getHeight());
     // Manually get modelview matrix from camera orientation.
     glm::mat4 modelview(glm::make_mat4((GLfloat *) OGL_TO_CFR_ROTATION));
     GLfloat ogl_matrix[16];
@@ -275,7 +283,8 @@ bool LLTerrainPaintMap::bakeHeightNoiseIntoPBRPaintMapRGB(const LLViewerRegion& 
     {
         LL_WARNS() << "Failed to copy framebuffer to paintmap" << LL_ENDL;
     }
-    glGenerateMipmap(GL_TEXTURE_2D);
+    // [Viewer Lab] the paint map's levels through the facade, on the texture setSubImageFromFrameBuffer left bound
+    LLImageGL::generateMipmaps(tex.getGLTexture()->getRHITexture(), GL_TEXTURE_2D);
     stop_glerror();
 
     scratch_target.flush();

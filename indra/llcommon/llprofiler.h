@@ -233,16 +233,28 @@ namespace LLProfiler
     // </FS:Ansariel>
 #endif // LL_PROFILER
 
+// [Viewer Lab] GPU zones are also debug groups on the viewer's render device, in developer builds
+// and in builds with Tracy, and cost nothing in release builds. ::LLGPUZone comes
+// from llrender's llgl.h, as TracyGpuZone comes through llglheaders.h. Every expansion ends in ';',
+// because some call sites have none.
+#if LL_PROFILER_CONFIGURATION >= LL_PROFILER_CONFIG_TRACY || !LL_RELEASE_FOR_DOWNLOAD
+#define LL_PROFILER_GPU_DEBUG_GROUPS 1
+#define LL_PROFILE_GPU_GROUP(name)          ::LLGPUZone LL_GLUE_TOKENS(ll_gpu_zone_, __LINE__)(name);
+#else
+#define LL_PROFILER_GPU_DEBUG_GROUPS 0
+#define LL_PROFILE_GPU_GROUP(name)          (void)(name);
+#endif
+
 #if LL_PROFILER_ENABLE_TRACY_OPENGL
-#define LL_PROFILE_GPU_ZONE(name)         TracyGpuZone(name);
-#define LL_PROFILE_GPU_ZONEC(name,color)  TracyGpuZoneC(name,color);
+#define LL_PROFILE_GPU_ZONE(name)         TracyGpuZone(name); LL_PROFILE_GPU_GROUP(name)
+#define LL_PROFILE_GPU_ZONEC(name,color)  TracyGpuZoneC(name,color); LL_PROFILE_GPU_GROUP(name)
 #define LL_PROFILER_GPU_COLLECT           TracyGpuCollect;
 #define LL_PROFILER_GPU_CONTEXT           TracyGpuContext;
 #define LL_PROFILER_GPU_CONTEXT_NS(name, size)           TracyGpuContext;TracyGpuContextName(name,size);
 #define LL_PROFILER_GPU_CONTEXT_NAMED     TracyGpuContextName
 #else
-#define LL_PROFILE_GPU_ZONE(name)           (void)name;
-#define LL_PROFILE_GPU_ZONEC(name,color)    (void)name;(void)color;
+#define LL_PROFILE_GPU_ZONE(name)           LL_PROFILE_GPU_GROUP(name)
+#define LL_PROFILE_GPU_ZONEC(name,color)    LL_PROFILE_GPU_GROUP(name) (void)(color);
 #define LL_PROFILER_GPU_COLLECT
 #define LL_PROFILER_GPU_CONTEXT
 #define LL_PROFILER_GPU_CONTEXT_NAMED(name) (void)name;
@@ -258,7 +270,8 @@ namespace LLProfiler
 #endif
 
 #if LL_PROFILER_ENABLE_RENDER_DOC
-#define LL_LABEL_OBJECT_GL(type, name, length, label) glObjectLabel(type, name, length, label);
+// [Viewer Lab] The GL call is in llrender's GL backend (llgl.cpp)
+#define LL_LABEL_OBJECT_GL(type, name, length, label) ll_label_object_gl(type, name, length, label);
 #else
 #define LL_LABEL_OBJECT_GL(type, name, length, label)
 #endif

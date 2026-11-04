@@ -184,7 +184,7 @@ bool traceScreenRay(vec3 position, vec3 reflection, out vec4 hitColor, out float
     return hit;
 }
 
-uniform vec3 POISSON3D_SAMPLES[128] = vec3[128](
+const vec3 POISSON3D_SAMPLES[128] = vec3[128](
     vec3(0.5433144, 0.1122154, 0.2501391),
     vec3(0.6575254, 0.721409, 0.16286),
     vec3(0.02888453, 0.05170321, 0.7573566),

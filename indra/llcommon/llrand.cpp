@@ -27,6 +27,8 @@
 #include "linden_common.h"
 
 #include "llrand.h"
+
+#include <atomic>
 #include "lluuid.h"
 
 /**
@@ -58,9 +60,20 @@
  * to restore uniform distribution.
  */
 
+namespace {
+    // [Viewer Lab] The fixed seed of golden-image tests (ll_seed_rand), or 0.
+    std::atomic<U32> sFixedSeed{ 0 };
+
+    U32 ll_initial_seed()
+    {
+        const U32 fixed = sFixedSeed.load();
+        return fixed ? fixed : LLUUID::getRandomSeed();
+    }
+}
+
 // gRandomGenerator is a stateful static object, which is therefore not
 // inherently thread-safe.
-static thread_local LLRandLagFib2281 gRandomGenerator(LLUUID::getRandomSeed());
+static thread_local LLRandLagFib2281 gRandomGenerator(ll_initial_seed());
 
 // no default implementation, only specific F64 and F32 specializations
 template <typename REAL>
@@ -105,6 +118,13 @@ F64 ll_drand()
 inline F32 ll_internal_random_float()
 {
     return ll_internal_random<F32>();
+}
+
+// [Viewer Lab]
+void ll_seed_rand(U32 seed)
+{
+    sFixedSeed = seed;
+    gRandomGenerator.seed(seed);
 }
 
 F32 ll_frand()

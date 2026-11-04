@@ -33,6 +33,8 @@ void display_startup();
 void display_cleanup();
 
 void display(bool rebuild = true, F32 zoom_factor = 1.f, int subfield = 0, bool for_snapshot = false);
+// [Viewer Lab] The window's swaps so far: display_startup's, the resize frame's and swap()'s
+U64 display_window_swaps();
 
 extern bool gDisplaySwapBuffers;
 extern bool gDepthDirty;

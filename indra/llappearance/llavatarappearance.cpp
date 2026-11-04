@@ -183,7 +183,7 @@ LLAvatarAppearance::LLAvatarAppearance(LLWearableData* wearable_data) :
         mBakedTextureDatas[i].mTexLayerSet = NULL;
         mBakedTextureDatas[i].mIsLoaded = false;
         mBakedTextureDatas[i].mIsUsed = false;
-        mBakedTextureDatas[i].mMaskTexName = 0;
+        mBakedTextureDatas[i].mMaskTexture = nullptr; // [Viewer Lab]
         mBakedTextureDatas[i].mTextureIndex = sAvatarDictionary->bakedToLocalTextureIndex((LLAvatarAppearanceDefines::EBakedTextureIndex)i);
     }
 }

@@ -113,7 +113,9 @@ if (DARWIN)
     llkeyboardmacosx.h
     llwindowmacosx.h
     llwindowmacosx-objc.h
+    llwindowmacosxcontext-objc.h # [Viewer Lab]
     llopenglview-objc.h
+    llopenglviewcontext-objc.h # [Viewer Lab]
     llappdelegate-objc.h
     )
 

@@ -32,6 +32,7 @@
 
 #include "quickprefs.h"
 #include "lltabcontainer.h" // <Luminous/>
+#include "luminousphotomode.h" // <Luminous/>
 
 #include "fscommon.h"
 #include "llagent.h"
@@ -649,6 +650,7 @@ bool FloaterQuickPrefs::postBuild()
                 }
             }
         }
+        LuminousPhotoMode::showFirestormControls(this, "phototools"); // while photo mode is off
     }
     // </Luminous>
 

@@ -90,6 +90,44 @@
       <string>ConnectAsGod</string>
     </map>
 
+    <key>golden</key>
+    <map>
+      <key>desc</key>
+      <string>[Viewer Lab] Run a golden-image test with the given config file (tests/golden/README.md).</string>
+      <key>count</key>
+      <integer>1</integer>
+      <key>map-to</key>
+      <string>GoldenTestConfig</string>
+    </map>
+
+    <key>shadermanifest</key>
+    <map>
+      <key>desc</key>
+      <string>[Viewer Lab] Write a manifest of the shader programs and their assembled sources to the given folder.</string>
+      <key>count</key>
+      <integer>1</integer>
+      <key>map-to</key>
+      <string>ShaderManifestFolder</string>
+    </map>
+
+    <key>backend</key>
+    <map>
+      <key>desc</key>
+      <string>[Viewer Lab] The graphics backend for this start only: metal or opengl. Not saved; without it the GraphicsBackend setting decides.</string>
+      <key>count</key>
+      <integer>1</integer>
+      <key>map-to</key>
+      <string>GraphicsBackendThisStart</string>
+    </map>
+
+    <key>metal-ui-dev</key>
+    <map>
+      <key>desc</key>
+      <string>[Viewer Lab] Metal UI development mode (development and test only): login is off and settings are saved to their own file; the backend comes from --backend.</string>
+      <key>map-to</key>
+      <string>RenderMetalUIDev</string>
+    </map>
+
     <key>graphicslevel</key>
     <map>
       <key>desc</key>

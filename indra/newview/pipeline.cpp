@@ -45,6 +45,7 @@
 #include "llui.h"
 #include "llglheaders.h"
 #include "llrender.h"
+#include "llrhi.h"
 #include "llstartup.h"
 #include "llwindow.h"   // swapBuffers()
 
@@ -64,6 +65,7 @@
 #include "llface.h"
 #include "llfeaturemanager.h"
 #include "llfloatertelehub.h"
+#include "llgoldentest.h"
 #include "llfloaterreg.h"
 #include "llhudmanager.h"
 #include "llhudnametag.h"
@@ -136,6 +138,7 @@
 #include "luminousphotomode.h" // <Luminous/>
 #include "luminousfloater.h" // <Luminous/> the render overlay's still
 #include "luminoushdrsnapshot.h" // <Luminous/>
+#include "luminousmetal.h" // <Luminous/>
 #ifndef LL_WINDOWS
 #define A_GCC 1
 #pragma GCC diagnostic ignored "-Wunused-function"
@@ -326,6 +329,26 @@ S32     LLPipeline::sCompiles = 0;
 bool    LLPipeline::sPickAvatar = true;
 bool    LLPipeline::sDynamicLOD = true;
 bool    LLPipeline::sShowHUDAttachments = true;
+LLPipeline::ReadOnlySiteCounts LLPipeline::sReadOnlySites[LLPipeline::RO_SITE_COUNT]; // [Viewer Lab]
+
+namespace
+{
+    // [Viewer Lab] A read-only depth site's counts at its start, then the draws since added to the site's counts, or to
+    // RO_PROBE_FACES' on a probe face
+    LLPipeline::ReadOnlySiteCounts read_only_site_start()
+    {
+        const LLVertexBuffer::DrawCounts counts = LLVertexBuffer::drawCounts();
+        return { counts.encoded, counts.drawsInReadOnlyPass };
+    }
+
+    void read_only_site_end(LLPipeline::ReadOnlySite site, const LLPipeline::ReadOnlySiteCounts& start)
+    {
+        const LLVertexBuffer::DrawCounts counts = LLVertexBuffer::drawCounts();
+        LLPipeline::ReadOnlySiteCounts& total = LLPipeline::sReadOnlySites[gCubeSnapshot ? LLPipeline::RO_PROBE_FACES : site];
+        total.encoded += counts.encoded - start.encoded;
+        total.readOnly += counts.drawsInReadOnlyPass - start.readOnly;
+    }
+}
 bool    LLPipeline::sRenderMOAPBeacons = false;
 bool    LLPipeline::sRenderPhysicalBeacons = true;
 bool    LLPipeline::sRenderScriptedBeacons = false;
@@ -434,10 +457,6 @@ LLPipeline::LLPipeline() :
     mLightMask(0),
     mLightMovingMask(0)
 {
-    mNoiseMap = 0;
-    mTrueNoiseMap = 0;
-    mLightFunc = 0;
-
     for(U32 i = 0; i < 8; i++)
     {
         mHWLightColors[i] = LLColor4::black;
@@ -766,6 +785,14 @@ void LLPipeline::cleanup()
 
     releaseGLBuffers();
 
+    // [Viewer Lab] The SMAA sample map is never released, as upstream never deleted its GL name: kept, so GL keeps the
+    // name and no render interface object goes in static destruction
+    if (mSMAASampleMap.notNull())
+    {
+        mSMAASampleMap->ref();
+        mSMAASampleMap = nullptr;
+    }
+
     mFaceSelectImagep = NULL;
 
     mMovedList.clear();
@@ -794,12 +821,6 @@ void LLPipeline::destroyGL()
     resetDrawOrders();
 
     releaseGLBuffers();
-
-    if (mMeshDirtyQueryObject)
-    {
-        glDeleteQueries(1, &mMeshDirtyQueryObject);
-        mMeshDirtyQueryObject = 0;
-    }
 }
 
 void LLPipeline::requestResizeScreenTexture()
@@ -1001,7 +1022,11 @@ bool LLPipeline::allocateScreenBufferInternal(U32 resX, U32 resY)
     bool ssao = RenderDeferredSSAO;
 
     //allocate deferred rendering color buffers
-    const U32 luminous_depth = mRT->deferredScreen.getDepth(); // <Luminous/>
+    // <Luminous> The depth before: its GL name, or on Metal (no GL names) the device texture itself,
+    // held so that a new depth cannot take its place in memory and compare equal.
+    const U32 luminous_depth = mRT->deferredScreen.getDepth();
+    const LLPointer<LL::RHI::Texture> luminous_rhi_depth = mRT->deferredScreen.getRHIDepth();
+    // </Luminous>
     if (!mRT->deferredScreen.allocate(resX, resY, GL_RGBA, true)) return false;
     if (!addDeferredAttachments(mRT->deferredScreen)) return false;
 
@@ -1013,10 +1038,13 @@ bool LLPipeline::allocateScreenBufferInternal(U32 resX, U32 resY)
     // hold two HDR frames, the old one queued for deletion. Kept, it is
     // filtered and wrapped as a new one would be, since passes leave it
     // clamped.
-    if (luminous_depth != 0 && mRT->deferredScreen.getDepth() == luminous_depth && mRT->screen.getNumTextures() == 1
+    const bool luminous_same_depth = luminous_depth != 0
+        ? mRT->deferredScreen.getDepth() == luminous_depth
+        : luminous_rhi_depth.notNull() && mRT->deferredScreen.getRHIDepth() == luminous_rhi_depth.get();
+    if (luminous_same_depth && mRT->screen.getNumTextures() == 1
         && mRT->screen.getWidth() == resX && mRT->screen.getHeight() == resY)
     {
-        gGL.getTexUnit(0)->bindManual(mRT->screen.getUsage(), mRT->screen.getTexture());
+        gGL.getTexUnit(0)->bindTexture(mRT->screen.getUsage(), mRT->screen.getRHITexture()); // [Viewer Lab] bindManual's GL by the device texture
         gGL.getTexUnit(0)->setTextureFilteringOption(LLTexUnit::TFO_BILINEAR);
         gGL.getTexUnit(0)->setTextureAddressMode(LLTexUnit::TAM_MIRROR);
         gGL.getTexUnit(0)->unbind(mRT->screen.getUsage());
@@ -1081,9 +1109,13 @@ bool LLPipeline::allocateScreenBufferInternal(U32 resX, U32 resY)
         if(RenderScreenSpaceReflections)
         {
             LL_PROFILE_ZONE_NAMED_CATEGORY_DISPLAY("SSRBuffer"); // <FS:Beq/> improve Tracy scoping 
-            // <Luminous> photo mode's reflections read it blurred, from mip levels
+            // <Luminous> mip levels for photo mode's reflections: on OpenGL made as it is flushed; on Metal the
+            // reflections read a chain made by compute (LuminousMetal::sceneMipChain).
+            // On Metal with its own levels too, which that chain is made into (TMG_MANUAL: no copy of level 0).
             mSceneMap.allocate(resX, resY, screenFormat, true, LLTexUnit::TT_TEXTURE,
-                               LuminousPhotoMode::reflections() ? LLTexUnit::TMG_AUTO : LLTexUnit::TMG_NONE);
+                               !LuminousPhotoMode::reflections() ? LLTexUnit::TMG_NONE
+                               : LuminousMetal::metal()          ? LLTexUnit::TMG_MANUAL
+                                                                 : LLTexUnit::TMG_AUTO);
         }
         else
         {
@@ -1100,6 +1132,9 @@ bool LLPipeline::allocateScreenBufferInternal(U32 resX, U32 resY)
         // Why do we do this? Because it saves us some janky logic in the exclusion shader when we generate the mask.
         // Regardless, this should always only be an R8 texture unless we choose to start having multiple kinds of exclusion that 8 bits can't handle.
         // - Geenz 2025-02-06
+        // <Luminous> its depth only orders the water planes while the mask is drawn, and is never read: memoryless on Metal
+        mWaterExclusionMask.setMemorylessDepth(LuminousMetal::metal());
+        // </Luminous>
         bool success = mWaterExclusionMask.allocate(resX, resY, GL_R8, true);
 
         assert(success);
@@ -1133,6 +1168,28 @@ bool LLPipeline::allocateScreenBufferInternal(U32 resX, U32 resY)
 
 // must be even to avoid a stripe in the horizontal shadow blur
 inline U32 BlurHappySize(U32 x, F32 scale) { return U32( x * scale + 16.0f) & ~0xF; }
+
+// <Luminous> On Metal, which gives a texture its memory when it is made, a projector map is made only once a
+// projector casts shadows into its slot (LLPipeline::generateSunShadow), at the size allocateShadowBuffer chose;
+// a slot without its map reads photo mode's 1 x 1 map (bindShadowMaps). OpenGL makes both maps as before.
+namespace
+{
+    U32 sLuminousSpotShadowSize = 0; // the projector maps' side; 0 while they are not wanted
+
+    bool luminous_spot_maps_on_demand()
+    {
+        return LuminousMetal::metal();
+    }
+
+    void luminous_set_up_spot_map(LLRenderTarget& map)
+    {
+        gGL.getTexUnit(0)->bind(&map, true);
+        gGL.getTexUnit(0)->setTextureFilteringOption(LLTexUnit::TFO_ANISOTROPIC);
+        gGL.getTexUnit(0)->setTextureAddressMode(LLTexUnit::TAM_CLAMP);
+        LLTexUnit::setActiveTextureCompare(LLTexUnit::TT_TEXTURE, GL_COMPARE_REF_TO_TEXTURE, GL_LEQUAL);
+    }
+}
+// </Luminous>
 
 bool LLPipeline::allocateShadowBuffer(U32 resX, U32 resY)
 {
@@ -1189,8 +1246,16 @@ bool LLPipeline::allocateShadowBuffer(U32 resX, U32 resY)
         { //allocate two spot shadow maps
             U32 spot_shadow_map_width = width;
             U32 spot_shadow_map_height = height;
+            sLuminousSpotShadowSize = width; // <Luminous/>
             for (U32 i = 0; i < 2; i++)
             {
+                // <Luminous> on Metal only a slot a projector holds; the others are made when one comes
+                if (luminous_spot_maps_on_demand() && mShadowSpotLight[i].isNull())
+                {
+                    mSpotShadow[i].release();
+                    continue;
+                }
+                // </Luminous>
                 if (!mSpotShadow[i].allocate(spot_shadow_map_width, spot_shadow_map_height, 0, true))
                 {
                     return false;
@@ -1199,6 +1264,7 @@ bool LLPipeline::allocateShadowBuffer(U32 resX, U32 resY)
         }
         else
         {
+            sLuminousSpotShadowSize = 0; // <Luminous/>
             releaseSpotShadowTargets();
         }
     }
@@ -1217,8 +1283,8 @@ bool LLPipeline::allocateShadowBuffer(U32 resX, U32 resY)
                 gGL.getTexUnit(0)->setTextureAddressMode(LLTexUnit::TAM_CLAMP);
 
                 // <Luminous> photo mode's soft shadows compare the depths themselves
-                glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_COMPARE_MODE, LuminousPhotoMode::softShadows() ? GL_NONE : GL_COMPARE_R_TO_TEXTURE);
-                glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_COMPARE_FUNC, GL_LEQUAL);
+                LLTexUnit::setActiveTextureCompare(LLTexUnit::TT_TEXTURE,
+                    LuminousPhotoMode::softShadows() ? GL_NONE : GL_COMPARE_REF_TO_TEXTURE, GL_LEQUAL); // [Viewer Lab]
             }
         }
     }
@@ -1228,14 +1294,13 @@ bool LLPipeline::allocateShadowBuffer(U32 resX, U32 resY)
         for (U32 i = 0; i < 2; i++)
         {
             LLRenderTarget* shadow_target = getSpotShadowTarget(i);
-            if (shadow_target)
+            if (shadow_target && !(luminous_spot_maps_on_demand() && !shadow_target->getRHIDepth())) // <Luminous/> not made yet
             {
                 gGL.getTexUnit(0)->bind(shadow_target, true);
                 gGL.getTexUnit(0)->setTextureFilteringOption(LLTexUnit::TFO_ANISOTROPIC);
                 gGL.getTexUnit(0)->setTextureAddressMode(LLTexUnit::TAM_CLAMP);
 
-                glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_COMPARE_MODE, GL_COMPARE_R_TO_TEXTURE);
-                glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_COMPARE_FUNC, GL_LEQUAL);
+                LLTexUnit::setActiveTextureCompare(LLTexUnit::TT_TEXTURE, GL_COMPARE_REF_TO_TEXTURE, GL_LEQUAL);
             }
         }
         LuminousPhotoMode::allocateNoSpotShadow(); // <Luminous/> for empty slots (bindShadowMaps)
@@ -1395,28 +1460,28 @@ void LLPipeline::releaseGLBuffers()
 {
     assertInitialized();
 
-    if (mNoiseMap)
+    if (mNoiseMap.notNull())
     {
-        LLImageGL::deleteTextures(1, &mNoiseMap);
-        mNoiseMap = 0;
+        LLTexUnit::releaseTexture(mNoiseMap.get()); // [Viewer Lab] the encoder lets go first, so the name goes now
+        mNoiseMap = nullptr;
     }
 
-    if (mTrueNoiseMap)
+    if (mTrueNoiseMap.notNull())
     {
-        LLImageGL::deleteTextures(1, &mTrueNoiseMap);
-        mTrueNoiseMap = 0;
+        LLTexUnit::releaseTexture(mTrueNoiseMap.get()); // [Viewer Lab] the encoder lets go first, so the name goes now
+        mTrueNoiseMap = nullptr;
     }
 
-    if (mSMAAAreaMap)
+    if (mSMAAAreaMap.notNull())
     {
-        LLImageGL::deleteTextures(1, &mSMAAAreaMap);
-        mSMAAAreaMap = 0;
+        LLTexUnit::releaseTexture(mSMAAAreaMap.get()); // [Viewer Lab] the encoder lets go first, so the name goes now
+        mSMAAAreaMap = nullptr;
     }
 
-    if (mSMAASearchMap)
+    if (mSMAASearchMap.notNull())
     {
-        LLImageGL::deleteTextures(1, &mSMAASearchMap);
-        mSMAASearchMap = 0;
+        LLTexUnit::releaseTexture(mSMAASearchMap.get()); // [Viewer Lab] the encoder lets go first, so the name goes now
+        mSMAASearchMap = nullptr;
     }
 
     releaseLUTBuffers();
@@ -1454,10 +1519,10 @@ void LLPipeline::releaseGLBuffers()
 
 void LLPipeline::releaseLUTBuffers()
 {
-    if (mLightFunc)
+    if (mLightFunc.notNull())
     {
-        LLImageGL::deleteTextures(1, &mLightFunc);
-        mLightFunc = 0;
+        LLTexUnit::releaseTexture(mLightFunc.get()); // [Viewer Lab] the encoder lets go first, so the name goes now
+        mLightFunc = nullptr;
     }
 
     mPbrBrdfLut.release();
@@ -1544,8 +1609,9 @@ void LLPipeline::createGLBuffers()
     // mRT->height = 0;
 
 
-    if (!mNoiseMap)
+    if (mNoiseMap.isNull())
     {
+        LLGoldenTest::beforeNoise(); // [Viewer Lab] nothing without --golden
         const U32 noiseRes = 128;
         LLVector3 noise[noiseRes*noiseRes];
 
@@ -1557,14 +1623,17 @@ void LLPipeline::createGLBuffers()
             noise[i].mV[2] = ll_frand()*scaler+1.f-scaler/2.f;
         }
 
-        LLImageGL::generateTextures(1, &mNoiseMap);
-
-        gGL.getTexUnit(0)->bindManual(LLTexUnit::TT_TEXTURE, mNoiseMap);
-        LLImageGL::setManualImage(LLTexUnit::getInternalType(LLTexUnit::TT_TEXTURE), 0, GL_RGB16F, noiseRes, noiseRes, GL_RGB, GL_FLOAT, noise, false);
-        gGL.getTexUnit(0)->setTextureFilteringOption(LLTexUnit::TFO_POINT);
+        // [Viewer Lab] upstream's generateTextures, bindManual on unit 0 and setManualImage; null where the device
+        // refuses it (its WARN tagged RHI), and then unit 0 keeps what it held
+        mNoiseMap = LLImageGL::createTextureWithData(LLTexUnit::TT_TEXTURE, GL_RGB16F, GL_RGB, GL_FLOAT, noiseRes, noiseRes,
+                                                     LL::RHI::TEXTURE_SAMPLED, noise, false);
+        if (mNoiseMap.notNull())
+        {
+            gGL.getTexUnit(0)->setTextureFilteringOption(LLTexUnit::TFO_POINT);
+        }
     }
 
-    if (!mTrueNoiseMap)
+    if (mTrueNoiseMap.isNull())
     {
         const U32 noiseRes = 128;
         F32 noise[noiseRes*noiseRes*3];
@@ -1573,13 +1642,15 @@ void LLPipeline::createGLBuffers()
             noise[i] = ll_frand()*2.0f-1.0f;
         }
 
-        LLImageGL::generateTextures(1, &mTrueNoiseMap);
-        gGL.getTexUnit(0)->bindManual(LLTexUnit::TT_TEXTURE, mTrueNoiseMap);
-        LLImageGL::setManualImage(LLTexUnit::getInternalType(LLTexUnit::TT_TEXTURE), 0, GL_RGB16F, noiseRes, noiseRes, GL_RGB,GL_FLOAT, noise, false);
-        gGL.getTexUnit(0)->setTextureFilteringOption(LLTexUnit::TFO_POINT);
+        mTrueNoiseMap = LLImageGL::createTextureWithData(LLTexUnit::TT_TEXTURE, GL_RGB16F, GL_RGB, GL_FLOAT, noiseRes,
+                                                         noiseRes, LL::RHI::TEXTURE_SAMPLED, noise, false);
+        if (mTrueNoiseMap.notNull())
+        {
+            gGL.getTexUnit(0)->setTextureFilteringOption(LLTexUnit::TFO_POINT);
+        }
     }
 
-    if (!mSMAAAreaMap)
+    if (mSMAAAreaMap.isNull())
     {
         std::vector<U8> tempBuffer(AREATEX_SIZE);
         for (U32 y = 0; y < AREATEX_HEIGHT; y++)
@@ -1589,15 +1660,16 @@ void LLPipeline::createGLBuffers()
             memcpy(&tempBuffer[y * AREATEX_PITCH], areaTexBytes + srcY * AREATEX_PITCH, AREATEX_PITCH);
         }
 
-        LLImageGL::generateTextures(1, &mSMAAAreaMap);
-        gGL.getTexUnit(0)->bindManual(LLTexUnit::TT_TEXTURE, mSMAAAreaMap);
-        LLImageGL::setManualImage(LLTexUnit::getInternalType(LLTexUnit::TT_TEXTURE), 0, GL_RG8, AREATEX_WIDTH, AREATEX_HEIGHT, GL_RG,
-            GL_UNSIGNED_BYTE, tempBuffer.data(), false);
-        gGL.getTexUnit(0)->setTextureFilteringOption(LLTexUnit::TFO_BILINEAR);
-        gGL.getTexUnit(0)->setTextureAddressMode(LLTexUnit::TAM_CLAMP);
+        mSMAAAreaMap = LLImageGL::createTextureWithData(LLTexUnit::TT_TEXTURE, GL_RG8, GL_RG, GL_UNSIGNED_BYTE, AREATEX_WIDTH,
+                                                        AREATEX_HEIGHT, LL::RHI::TEXTURE_SAMPLED, tempBuffer.data(), false);
+        if (mSMAAAreaMap.notNull())
+        {
+            gGL.getTexUnit(0)->setTextureFilteringOption(LLTexUnit::TFO_BILINEAR);
+            gGL.getTexUnit(0)->setTextureAddressMode(LLTexUnit::TAM_CLAMP);
+        }
     }
 
-    if (!mSMAASearchMap)
+    if (mSMAASearchMap.isNull())
     {
         std::vector<U8> tempBuffer(SEARCHTEX_SIZE);
         for (U32 y = 0; y < SEARCHTEX_HEIGHT; y++)
@@ -1607,15 +1679,17 @@ void LLPipeline::createGLBuffers()
             memcpy(&tempBuffer[y * SEARCHTEX_PITCH], searchTexBytes + srcY * SEARCHTEX_PITCH, SEARCHTEX_PITCH);
         }
 
-        LLImageGL::generateTextures(1, &mSMAASearchMap);
-        gGL.getTexUnit(0)->bindManual(LLTexUnit::TT_TEXTURE, mSMAASearchMap);
-        LLImageGL::setManualImage(LLTexUnit::getInternalType(LLTexUnit::TT_TEXTURE), 0, GL_R8, SEARCHTEX_WIDTH, SEARCHTEX_HEIGHT,
-            GL_RED, GL_UNSIGNED_BYTE, tempBuffer.data(), false);
-        gGL.getTexUnit(0)->setTextureFilteringOption(LLTexUnit::TFO_BILINEAR);
-        gGL.getTexUnit(0)->setTextureAddressMode(LLTexUnit::TAM_CLAMP);
+        mSMAASearchMap = LLImageGL::createTextureWithData(LLTexUnit::TT_TEXTURE, GL_R8, GL_RED, GL_UNSIGNED_BYTE,
+                                                          SEARCHTEX_WIDTH, SEARCHTEX_HEIGHT, LL::RHI::TEXTURE_SAMPLED,
+                                                          tempBuffer.data(), false);
+        if (mSMAASearchMap.notNull())
+        {
+            gGL.getTexUnit(0)->setTextureFilteringOption(LLTexUnit::TFO_BILINEAR);
+            gGL.getTexUnit(0)->setTextureAddressMode(LLTexUnit::TAM_CLAMP);
+        }
     }
 
-    if (!mSMAASampleMap)
+    if (mSMAASampleMap.isNull())
     {
         LLPointer<LLImageRaw>               raw_image = new LLImageRaw;
         LLPointer<LLImagePNG>               png_image = new LLImagePNG;
@@ -1640,13 +1714,15 @@ void LLPipeline::createGLBuffers()
             default:
                 return;
             };
-            LLImageGL::generateTextures(1, &mSMAASampleMap);
-            gGL.getTexUnit(0)->bindManual(LLTexUnit::TT_TEXTURE, mSMAASampleMap);
-            LLImageGL::setManualImage(LLTexUnit::getInternalType(LLTexUnit::TT_TEXTURE), 0, GL_RGB, raw_image->getWidth(),
-                raw_image->getHeight(), format, GL_UNSIGNED_BYTE, raw_image->getData(), false);
+            mSMAASampleMap = LLImageGL::createTextureWithData(LLTexUnit::TT_TEXTURE, GL_RGB, format, GL_UNSIGNED_BYTE,
+                                                              raw_image->getWidth(), raw_image->getHeight(),
+                                                              LL::RHI::TEXTURE_SAMPLED, raw_image->getData(), false);
             stop_glerror();
-            gGL.getTexUnit(0)->setTextureFilteringOption(LLTexUnit::TFO_BILINEAR);
-            gGL.getTexUnit(0)->setTextureAddressMode(LLTexUnit::TAM_CLAMP);
+            if (mSMAASampleMap.notNull())
+            {
+                gGL.getTexUnit(0)->setTextureFilteringOption(LLTexUnit::TFO_BILINEAR);
+                gGL.getTexUnit(0)->setTextureAddressMode(LLTexUnit::TAM_CLAMP);
+            }
         }
     }
 
@@ -1662,7 +1738,7 @@ F32 lerpf(F32 a, F32 b, F32 w)
 
 void LLPipeline::createLUTBuffers()
 {
-    if (!mLightFunc)
+    if (mLightFunc.isNull())
     {
         U32 lightResX = gSavedSettings.getU32("RenderSpecularResX");
         U32 lightResY = gSavedSettings.getU32("RenderSpecularResY");
@@ -1712,13 +1788,15 @@ void LLPipeline::createLUTBuffers()
             pix_format = GL_R32F;
         }
 #endif
-        LLImageGL::generateTextures(1, &mLightFunc);
-        gGL.getTexUnit(0)->bindManual(LLTexUnit::TT_TEXTURE, mLightFunc);
-        LLImageGL::setManualImage(LLTexUnit::getInternalType(LLTexUnit::TT_TEXTURE), 0, pix_format, lightResX, lightResY, GL_RED, GL_FLOAT, ls, false);
-        gGL.getTexUnit(0)->setTextureAddressMode(LLTexUnit::TAM_CLAMP);
-        gGL.getTexUnit(0)->setTextureFilteringOption(LLTexUnit::TFO_TRILINEAR);
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+        mLightFunc = LLImageGL::createTextureWithData(LLTexUnit::TT_TEXTURE, pix_format, GL_RED, GL_FLOAT, lightResX, lightResY,
+                                                      LL::RHI::TEXTURE_SAMPLED, ls, false);
+        if (mLightFunc.notNull())
+        {
+            gGL.getTexUnit(0)->setTextureAddressMode(LLTexUnit::TAM_CLAMP);
+            gGL.getTexUnit(0)->setTextureFilteringOption(LLTexUnit::TFO_TRILINEAR);
+            LLTexUnit::setActiveTextureMagFilter(LLTexUnit::TT_TEXTURE, GL_LINEAR);
+            LLTexUnit::setActiveTextureMinFilter(LLTexUnit::TT_TEXTURE, GL_NEAREST);
+        }
 
         delete [] ls;
     }
@@ -1749,9 +1827,9 @@ void LLPipeline::createLUTBuffers()
 
     mExposureMap.allocate(1, 1, GL_R16F);
     mExposureMap.bindTarget();
-    glClearColor(1, 1, 1, 0);
+    LLRenderTarget::setClearColor(1, 1, 1, 0);
     mExposureMap.clear();
-    glClearColor(0, 0, 0, 0);
+    LLRenderTarget::setClearColor(0, 0, 0, 0);
     mExposureMap.flush();
 
     mLuminanceMap.allocate(256, 256, GL_R16F, false, LLTexUnit::TT_TEXTURE, LLTexUnit::TMG_AUTO);
@@ -3231,7 +3309,7 @@ void LLPipeline::shiftObjects(const LLVector3 &offset)
     LL_PROFILE_ZONE_SCOPED_CATEGORY_PIPELINE;
     assertInitialized();
 
-    glClear(GL_DEPTH_BUFFER_BIT);
+    LLRenderTarget::clearCurrent(GL_DEPTH_BUFFER_BIT);
     gDepthDirty = true;
 
     LLVector4a offseta;
@@ -4302,7 +4380,7 @@ void LLPipeline::renderGeomDeferred(LLCamera& camera, bool do_occlusion)
 
     if (gUseWireframe)
     {
-        glPolygonMode(GL_FRONT_AND_BACK, GL_LINE);
+        gGL.setPolygonMode(GL_FRONT_AND_BACK, GL_LINE);
     }
 
     if (&camera == LLViewerCamera::getInstance())
@@ -4425,7 +4503,7 @@ void LLPipeline::renderGeomDeferred(LLCamera& camera, bool do_occlusion)
 
     if (gUseWireframe)
     {
-        glPolygonMode(GL_FRONT_AND_BACK, GL_FILL);
+        gGL.setPolygonMode(GL_FRONT_AND_BACK, GL_FILL);
     }
 }
 
@@ -4438,7 +4516,7 @@ void LLPipeline::renderGeomPostDeferred(LLCamera& camera)
 
     if (gUseWireframe)
     {
-        glPolygonMode(GL_FRONT_AND_BACK, GL_LINE);
+        gGL.setPolygonMode(GL_FRONT_AND_BACK, GL_LINE);
     }
 
     U32 cur_type = 0;
@@ -4569,7 +4647,7 @@ void LLPipeline::renderGeomPostDeferred(LLCamera& camera)
 
     if (gUseWireframe)
     {
-        glPolygonMode(GL_FRONT_AND_BACK, GL_FILL);
+        gGL.setPolygonMode(GL_FRONT_AND_BACK, GL_FILL);
     }
 }
 
@@ -4717,7 +4795,8 @@ void LLPipeline::renderSnapshotGuidesOverlay()
     }
     else
     {
-        gGL.getTexUnit(0)->bindManual(LLTexUnit::TT_TEXTURE, LLTexUnit::sWhiteTexture);
+        // [Viewer Lab] without the white image, texture 0
+        gGL.getTexUnit(0)->bindTexture(LLTexUnit::TT_TEXTURE, static_cast<LL::RHI::Texture*>(nullptr));
     }
 
     gGL.matrixMode(LLRender::MM_PROJECTION);
@@ -5055,7 +5134,7 @@ void LLPipeline::renderPhysicsDisplay()
     gDebugProgram.bind();
 
     LLGLEnable polygon_offset_line(GL_POLYGON_OFFSET_LINE);
-    glPolygonOffset(3.f, 3.f);
+    gGL.setPolygonOffset(3.f, 3.f);
     gGL.setLineWidth(3.f);
     LLGLEnable blend(GL_BLEND);
     gGL.setSceneBlendType(LLRender::BT_ALPHA);
@@ -5072,7 +5151,7 @@ void LLPipeline::renderPhysicsDisplay()
 
         if (wireframe)
         {
-            glPolygonMode(GL_FRONT_AND_BACK, GL_LINE);
+            gGL.setPolygonMode(GL_FRONT_AND_BACK, GL_LINE);
         }
 
         for (LLWorld::region_list_t::const_iterator iter = LLWorld::getInstance()->getRegionList().begin();
@@ -5095,7 +5174,7 @@ void LLPipeline::renderPhysicsDisplay()
 
         if (wireframe)
         {
-            glPolygonMode(GL_FRONT_AND_BACK, GL_FILL);
+            gGL.setPolygonMode(GL_FRONT_AND_BACK, GL_FILL);
         }
     }
     gGL.setLineWidth(1.f);
@@ -5173,10 +5252,10 @@ void LLPipeline::renderDebug()
                     {
                         const LLColor4 clearColor = gSavedSettings.getColor4("PathfindingNavMeshClear");
                         gGL.setColorMask(true, true);
-                        glClearColor(clearColor.mV[0],clearColor.mV[1],clearColor.mV[2],0);
-                        glClear(GL_DEPTH_BUFFER_BIT | GL_COLOR_BUFFER_BIT); // no stencil -- deprecated | GL_STENCIL_BUFFER_BIT);
+                        LLRenderTarget::setClearColor(clearColor.mV[0],clearColor.mV[1],clearColor.mV[2],0);
+                        LLRenderTarget::clearCurrent(GL_DEPTH_BUFFER_BIT | GL_COLOR_BUFFER_BIT); // no stencil -- deprecated | GL_STENCIL_BUFFER_BIT);
                         gGL.setColorMask(true, false);
-                        glPolygonMode( GL_FRONT_AND_BACK, GL_FILL );
+                        gGL.setPolygonMode( GL_FRONT_AND_BACK, GL_FILL );
                     }
 
                     //NavMesh
@@ -5206,7 +5285,7 @@ void LLPipeline::renderDebug()
                         gPathfindingProgram.bind();
 
                         gGL.flush();
-                        glPolygonMode( GL_FRONT_AND_BACK, GL_FILL );
+                        gGL.setPolygonMode( GL_FRONT_AND_BACK, GL_FILL );
                         gGL.setLineWidth(1.0f); // <FS> Line width OGL core profile fix by Rye Mutt
                         gGL.flush();
                     }
@@ -5263,11 +5342,11 @@ void LLPipeline::renderDebug()
                             LLGLDisable cull(i >= 2 ? GL_CULL_FACE : 0);
 
                             gGL.flush();
-                            glPolygonMode( GL_FRONT_AND_BACK, GL_FILL );
+                            gGL.setPolygonMode( GL_FRONT_AND_BACK, GL_FILL );
 
                             //get rid of some z-fighting
                             LLGLEnable polyOffset(GL_POLYGON_OFFSET_FILL);
-                            glPolygonOffset(1.0f, 1.0f);
+                            gGL.setPolygonOffset(1.0f, 1.0f);
 
                             //render to depth first to avoid blending artifacts
                             gGL.setColorMask(false, false);
@@ -5275,7 +5354,7 @@ void LLPipeline::renderDebug()
                             gGL.setColorMask(true, false);
 
                             //get rid of some z-fighting
-                            glPolygonOffset(0.f, 0.f);
+                            gGL.setPolygonOffset(0.f, 0.f);
 
                             LLGLEnable blend(GL_BLEND);
 
@@ -5289,7 +5368,7 @@ void LLPipeline::renderDebug()
                                 }
 
                                 LLGLEnable lineOffset(GL_POLYGON_OFFSET_LINE);
-                                glPolygonMode( GL_FRONT_AND_BACK, GL_LINE );
+                                gGL.setPolygonMode( GL_FRONT_AND_BACK, GL_LINE );
 
                                 F32 offset = gSavedSettings.getF32("PathfindingLineOffset");
 
@@ -5300,7 +5379,7 @@ void LLPipeline::renderDebug()
                                     LLGLEnable blend(GL_BLEND);
                                     LLGLDepthTest depth(GL_TRUE, GL_FALSE, GL_GREATER);
 
-                                    glPolygonOffset(offset, -offset);
+                                    gGL.setPolygonOffset(offset, -offset);
 
                                     if (gSavedSettings.getBOOL("PathfindingXRayWireframe"))
                                     { //draw hidden wireframe as darker and less opaque
@@ -5309,15 +5388,15 @@ void LLPipeline::renderDebug()
                                     }
                                     else
                                     {
-                                        glPolygonMode( GL_FRONT_AND_BACK, GL_FILL );
+                                        gGL.setPolygonMode( GL_FRONT_AND_BACK, GL_FILL );
                                         gPathfindingProgram.uniform1f(sAmbiance, ambiance);
                                         llPathingLibInstance->renderNavMeshShapesVBO( render_order[i] );
-                                        glPolygonMode(GL_FRONT_AND_BACK, GL_LINE);
+                                        gGL.setPolygonMode(GL_FRONT_AND_BACK, GL_LINE);
                                     }
                                 }
 
                                 { //draw visible wireframe as brighter, thicker and more opaque
-                                    glPolygonOffset(offset, offset);
+                                    gGL.setPolygonOffset(offset, offset);
                                     gPathfindingProgram.uniform1f(sAmbiance, 1.f);
                                     gPathfindingProgram.uniform1f(sTint, 1.f);
                                     gPathfindingProgram.uniform1f(sAlphaScale, 1.f);
@@ -5329,12 +5408,12 @@ void LLPipeline::renderDebug()
                                     gGL.setLineWidth(1.f); // <FS> Line width OGL core profile fix by Rye Mutt
                                 }
 
-                                glPolygonMode( GL_FRONT_AND_BACK, GL_FILL );
+                                gGL.setPolygonMode( GL_FRONT_AND_BACK, GL_FILL );
                             }
                         }
                     }
 
-                    glPolygonOffset(0.f, 0.f);
+                    gGL.setPolygonOffset(0.f, 0.f);
 
                     if ( pathfindingConsole->isRenderNavMesh() && pathfindingConsole->isRenderXRay() )
                     {   //render navmesh xray
@@ -5344,7 +5423,7 @@ void LLPipeline::renderDebug()
                         LLGLEnable polyOffset(GL_POLYGON_OFFSET_FILL);
 
                         F32 offset = gSavedSettings.getF32("PathfindingLineOffset");
-                        glPolygonOffset(offset, -offset);
+                        gGL.setPolygonOffset(offset, -offset);
 
                         LLGLEnable blend(GL_BLEND);
                         LLGLDepthTest depth(GL_TRUE, GL_FALSE, GL_GREATER);
@@ -5357,10 +5436,10 @@ void LLPipeline::renderDebug()
 
                         if (gSavedSettings.getBOOL("PathfindingXRayWireframe"))
                         { //draw hidden wireframe as darker and less opaque
-                            glPolygonMode( GL_FRONT_AND_BACK, GL_LINE );
+                            gGL.setPolygonMode( GL_FRONT_AND_BACK, GL_LINE );
                             gPathfindingProgram.uniform1f(sAmbiance, 1.f);
                             llPathingLibInstance->renderNavMesh();
-                            glPolygonMode( GL_FRONT_AND_BACK, GL_FILL );
+                            gGL.setPolygonMode( GL_FRONT_AND_BACK, GL_FILL );
                         }
                         else
                         {
@@ -5379,7 +5458,7 @@ void LLPipeline::renderDebug()
                         gGL.setLineWidth(1.0f); // <FS> Line width OGL core profile fix by Rye Mutt
                     }
 
-                    glPolygonOffset(0.f, 0.f);
+                    gGL.setPolygonOffset(0.f, 0.f);
 
                     gGL.flush();
                     gPathfindingProgram.unbind();
@@ -5400,7 +5479,7 @@ void LLPipeline::renderDebug()
 
         gGL.getTexUnit(0)->bind(LLViewerFetchedTexture::sWhiteImagep, true);
 
-        glPointSize(8.f);
+        gGL.setPointSize(8.f);
         LLGLDepthTest depth(GL_TRUE, GL_TRUE, GL_ALWAYS);
 
         gGL.begin(LLRender::POINTS);
@@ -5425,7 +5504,7 @@ void LLPipeline::renderDebug()
         }
         gGL.end();
         gGL.flush();
-        glPointSize(1.f);
+        gGL.setPointSize(1.f);
     }
 
     // Debug stuff.
@@ -5629,7 +5708,7 @@ void LLPipeline::renderDebug()
                 {
                     //render visible point cloud
                     gGL.flush();
-                    glPointSize(8.f);
+                    gGL.setPointSize(8.f);
                     gGL.begin(LLRender::POINTS);
 
                     F32* c = col+i*4;
@@ -5643,7 +5722,7 @@ void LLPipeline::renderDebug()
                     gGL.end();
 
                     gGL.flush();
-                    glPointSize(1.f);
+                    gGL.setPointSize(1.f);
 
                     LLVector3* ext = mShadowExtents[i];
                     LLVector3 pos = (ext[0]+ext[1])*0.5f;
@@ -7720,7 +7799,7 @@ void apply_cube_face_rotation(U32 face)
 void validate_framebuffer_object()
 {
     GLenum status;
-    status = glCheckFramebufferStatus(GL_FRAMEBUFFER_EXT);
+    status = LLRenderTarget::framebufferStatus(GL_FRAMEBUFFER);
     switch(status)
     {
         case GL_FRAMEBUFFER_COMPLETE:
@@ -8060,6 +8139,13 @@ void LLPipeline::copyScreenSpaceReflections(LLRenderTarget* src, LLRenderTarget*
         mScreenTriangleVB->drawArrays(LLRender::TRIANGLES, 0, 3);
 
         dst->flush();
+        ++mScreenSpaceReflectionCopies; // [Viewer Lab]
+        // <Luminous> on Metal, the mip chain photo mode's reflections read in the scene map's place
+        if (dst == &mSceneMap)
+        {
+            LuminousMetal::sceneMapDrawn(dst, LuminousPhotoMode::reflectionsNow());
+        }
+        // </Luminous>
     }
 }
 
@@ -8090,7 +8176,7 @@ void LLPipeline::generateGlow(LLRenderTarget* src)
             S32 channel = gGlowExtractProgram.enableTexture(LLShaderMgr::GLOW_NOISE_MAP);
             if (channel > -1)
             {
-                gGL.getTexUnit(channel)->bindManual(LLTexUnit::TT_TEXTURE, mTrueNoiseMap);
+                gGL.getTexUnit(channel)->bindTexture(LLTexUnit::TT_TEXTURE, mTrueNoiseMap.get());
                 gGL.getTexUnit(channel)->setTextureFilteringOption(LLTexUnit::TFO_POINT);
             }
             gGlowExtractProgram.uniform2f(LLShaderMgr::DEFERRED_SCREEN_RES,
@@ -8281,12 +8367,9 @@ void LLPipeline::applyFXAA(LLRenderTarget* src, LLRenderTarget* dst)
                 mFXAAMap.bindTexture(0, channel, LLTexUnit::TFO_BILINEAR);
             }
 
-            gGLViewport[0] = gViewerWindow->getWorldViewRectRaw().mLeft;
-            gGLViewport[1] = gViewerWindow->getWorldViewRectRaw().mBottom;
-            gGLViewport[2] = gViewerWindow->getWorldViewRectRaw().getWidth();
-            gGLViewport[3] = gViewerWindow->getWorldViewRectRaw().getHeight();
-
-            glViewport(gGLViewport[0], gGLViewport[1], gGLViewport[2], gGLViewport[3]);
+            // [Viewer Lab] also gGLViewport
+            const LLRect world_view = gViewerWindow->getWorldViewRectRaw();
+            gGL.setWindowViewport(world_view.mLeft, world_view.mBottom, world_view.getWidth(), world_view.getHeight());
 
             F32 scale_x = (F32)width / mFXAAMap.getWidth();
             F32 scale_y = (F32)height / mFXAAMap.getHeight();
@@ -8358,7 +8441,7 @@ void LLPipeline::generateSMAABuffers(LLRenderTarget* src)
                 }
                 else
                 {
-                    gGL.getTexUnit(channel)->bindManual(LLTexUnit::TT_TEXTURE, mSMAASampleMap);
+                    gGL.getTexUnit(channel)->bindTexture(LLTexUnit::TT_TEXTURE, mSMAASampleMap.get());
                     gGL.getTexUnit(channel)->setTextureFilteringOption(LLTexUnit::TFO_BILINEAR);
                 }
                 gGL.getTexUnit(channel)->setTextureAddressMode(LLTexUnit::TAM_CLAMP);
@@ -8401,14 +8484,14 @@ void LLPipeline::generateSMAABuffers(LLRenderTarget* src)
             S32 area_tex_channel = blend_weights_shader.enableTexture(LLShaderMgr::SMAA_AREA_TEX, LLTexUnit::TT_TEXTURE);
             if (area_tex_channel > -1)
             {
-                gGL.getTexUnit(area_tex_channel)->bindManual(LLTexUnit::TT_TEXTURE, mSMAAAreaMap);
+                gGL.getTexUnit(area_tex_channel)->bindTexture(LLTexUnit::TT_TEXTURE, mSMAAAreaMap.get());
                 gGL.getTexUnit(area_tex_channel)->setTextureFilteringOption(LLTexUnit::TFO_BILINEAR);
                 gGL.getTexUnit(area_tex_channel)->setTextureAddressMode(LLTexUnit::TAM_CLAMP);
             }
             S32 search_tex_channel = blend_weights_shader.enableTexture(LLShaderMgr::SMAA_SEARCH_TEX, LLTexUnit::TT_TEXTURE);
             if (search_tex_channel > -1)
             {
-                gGL.getTexUnit(search_tex_channel)->bindManual(LLTexUnit::TT_TEXTURE, mSMAASearchMap);
+                gGL.getTexUnit(search_tex_channel)->bindTexture(LLTexUnit::TT_TEXTURE, mSMAASearchMap.get());
                 gGL.getTexUnit(search_tex_channel)->setTextureFilteringOption(LLTexUnit::TFO_BILINEAR);
                 gGL.getTexUnit(search_tex_channel)->setTextureAddressMode(LLTexUnit::TAM_CLAMP);
             }
@@ -9011,7 +9094,7 @@ void LLPipeline::renderDoF(LLRenderTarget* src, LLRenderTarget* dst, bool lumino
 
             { // perform DoF sampling at half-res (preserve alpha channel)
                 src->bindTarget();
-                glViewport(0, 0, dof_width, dof_height);
+                gGL.setViewport(0, 0, dof_width, dof_height);
 
                 gGL.setColorMask(true, false);
 
@@ -9037,7 +9120,7 @@ void LLPipeline::renderDoF(LLRenderTarget* src, LLRenderTarget* dst, bool lumino
             { // combine result based on alpha
 
                 dst->bindTarget();
-                glViewport(0, 0, dst->getWidth(), dst->getHeight());
+                gGL.setViewport(0, 0, dst->getWidth(), dst->getHeight());
 
                 gDeferredDoFCombineProgram.bind();
                 gDeferredDoFCombineProgram.bindTexture(LLShaderMgr::DEFERRED_DIFFUSE, src, LLTexUnit::TFO_POINT);
@@ -9086,7 +9169,7 @@ void LLPipeline::renderFinalize()
     enableLightsFullbright();
 
     gGL.setColorMask(true, true);
-    glClearColor(0, 0, 0, 0);
+    LLRenderTarget::setClearColor(0, 0, 0, 0);
 
     static LLCachedControl<bool> has_hdr(gSavedSettings, "RenderHDREnabled", true);
     bool hdr = gGLManager.mGLVersion > 4.05f && has_hdr();
@@ -9118,10 +9201,12 @@ void LLPipeline::renderFinalize()
         // keeps its first frame's exposure: the frames are averaged as light
         // and tonemapped once, with the last frame's exposure, which a lens
         // or sun sampled elsewhere could move
+        // [Viewer Lab] and without history once after resetExposureHistory() (golden-image tests)
         if (!LuminousPhotoMode::holdExposure())
         {
-            generateExposure(&mLuminanceMap, &mExposureMap, !LuminousPhotoMode::meterAfresh());
+            generateExposure(&mLuminanceMap, &mExposureMap, !LuminousPhotoMode::meterAfresh() && !mResetExposureHistory);
         }
+        mResetExposureHistory = false;
 
         // <Luminous> Photo mode's vignette: after the exposure is measured, so
         // the meter does not brighten the frame to make up for its corners,
@@ -9188,11 +9273,9 @@ void LLPipeline::renderFinalize()
     combineGlow(sourceBuffer, targetBuffer);
     std::swap(sourceBuffer, targetBuffer);
 
-    gGLViewport[0] = gViewerWindow->getWorldViewRectRaw().mLeft;
-    gGLViewport[1] = gViewerWindow->getWorldViewRectRaw().mBottom;
-    gGLViewport[2] = gViewerWindow->getWorldViewRectRaw().getWidth();
-    gGLViewport[3] = gViewerWindow->getWorldViewRectRaw().getHeight();
-    glViewport(gGLViewport[0], gGLViewport[1], gGLViewport[2], gGLViewport[3]);
+    // [Viewer Lab] also gGLViewport
+    const LLRect world_view = gViewerWindow->getWorldViewRectRaw();
+    gGL.setWindowViewport(world_view.mLeft, world_view.mBottom, world_view.getWidth(), world_view.getHeight());
 
     if (dof_wanted && !luminous_dof) // <Luminous/> Firestorm's test, above; not if photo mode's ran
     {
@@ -9297,23 +9380,31 @@ void LLPipeline::renderFinalize()
     // Present the screen target.
 
     // <Luminous> photo mode's live view, rendered smaller, is scaled up to
-    // the window with a sharper filter than bilinear
+    // the window with a sharper filter than bilinear; on Metal by its native
+    // present, which then draws instead of the pass below
+    LuminousMetal::PassTargets luminous_present;
+    luminous_present.frame = sourceBuffer;
+    const bool luminous_presented = LuminousMetal::metal() && LuminousPhotoMode::liveViewSmaller()
+        && LuminousMetal::drawNative(LuminousMetal::Pass::Upscale, luminous_present);
     LLGLSLShader& present = LuminousPhotoMode::upscaling() ? gLuminousPresentProgram : gDeferredPostNoDoFNoiseProgram;
-    present.bind(); // Add noise as part of final render to screen pass to avoid damaging other post effects
-
-    // Whatever is last in the above post processing chain should _always_ be rendered directly here.  If not, expect problems.
-    present.bindTexture(LLShaderMgr::DEFERRED_DIFFUSE, sourceBuffer);
-    present.bindTexture(LLShaderMgr::DEFERRED_DEPTH, &mRT->deferredScreen, true);
-
-    present.uniform2f(LLShaderMgr::DEFERRED_SCREEN_RES, (GLfloat)sourceBuffer->getWidth(), (GLfloat)sourceBuffer->getHeight());
-
+    if (!luminous_presented)
     {
-        LLGLDepthTest depth_test(GL_TRUE, GL_TRUE, GL_ALWAYS);
-        mScreenTriangleVB->setBuffer();
-        mScreenTriangleVB->drawArrays(LLRender::TRIANGLES, 0, 3);
-    }
+        present.bind(); // Add noise as part of final render to screen pass to avoid damaging other post effects
 
-    present.unbind();
+        // Whatever is last in the above post processing chain should _always_ be rendered directly here.  If not, expect problems.
+        present.bindTexture(LLShaderMgr::DEFERRED_DIFFUSE, sourceBuffer);
+        present.bindTexture(LLShaderMgr::DEFERRED_DEPTH, &mRT->deferredScreen, true);
+
+        present.uniform2f(LLShaderMgr::DEFERRED_SCREEN_RES, (GLfloat)sourceBuffer->getWidth(), (GLfloat)sourceBuffer->getHeight());
+
+        {
+            LLGLDepthTest depth_test(GL_TRUE, GL_TRUE, GL_ALWAYS);
+            mScreenTriangleVB->setBuffer();
+            mScreenTriangleVB->drawArrays(LLRender::TRIANGLES, 0, 3);
+        }
+
+        present.unbind();
+    }
     // </Luminous>
 
     gGL.setSceneBlendType(LLRender::BT_ALPHA);
@@ -9346,7 +9437,7 @@ void LLPipeline::bindLightFunc(LLGLSLShader& shader)
     S32 channel = shader.enableTexture(LLShaderMgr::DEFERRED_LIGHTFUNC);
     if (channel > -1)
     {
-        gGL.getTexUnit(channel)->bindManual(LLTexUnit::TT_TEXTURE, mLightFunc);
+        gGL.getTexUnit(channel)->bindTexture(LLTexUnit::TT_TEXTURE, mLightFunc.get());
     }
 
     channel = shader.enableTexture(LLShaderMgr::DEFERRED_BRDF_LUT, LLTexUnit::TT_TEXTURE);
@@ -9383,7 +9474,9 @@ void LLPipeline::bindShadowMaps(LLGLSLShader& shader)
             // a 1 x 1 map is read instead -- read, the map would be given
             // its memory (250 MB at the peak of a render at twice a
             // 2560-wide window); the picture is the same to the bit.
-            if (mShadowSpotLight[i - 4].isNull() && LuminousPhotoMode::noSpotShadow())
+            // On Metal a slot whose map is not made yet reads it too: a depth texture must be bound there.
+            if ((mShadowSpotLight[i - 4].isNull() || (luminous_spot_maps_on_demand() && !shadow_target->getRHIDepth()))
+                && LuminousPhotoMode::noSpotShadow())
             {
                 shadow_target = LuminousPhotoMode::noSpotShadow();
             }
@@ -9484,7 +9577,7 @@ void LLPipeline::bindDeferredShader(LLGLSLShader& shader, LLRenderTarget* light_
     channel = shader.enableTexture(LLShaderMgr::DEFERRED_NOISE);
     if (channel > -1)
     {
-        gGL.getTexUnit(channel)->bindManual(LLTexUnit::TT_TEXTURE, mNoiseMap);
+        gGL.getTexUnit(channel)->bindTexture(LLTexUnit::TT_TEXTURE, mNoiseMap.get());
         gGL.getTexUnit(channel)->setTextureFilteringOption(LLTexUnit::TFO_POINT);
     }
 
@@ -9611,7 +9704,11 @@ void LLPipeline::bindDeferredShader(LLGLSLShader& shader, LLRenderTarget* light_
     shader.uniform3fv(LLShaderMgr::DEFERRED_SUN_DIR, 1, mTransformedSunDir.mV);
     shader.uniform3fv(LLShaderMgr::DEFERRED_MOON_DIR, 1, mTransformedMoonDir.mV);
     shader.uniform2f(LLShaderMgr::DEFERRED_SHADOW_RES, (GLfloat)mRT->shadow[0].getWidth(), (GLfloat)mRT->shadow[0].getHeight());
-    shader.uniform2f(LLShaderMgr::DEFERRED_PROJ_SHADOW_RES, (GLfloat)mSpotShadow[0].getWidth(), (GLfloat)mSpotShadow[0].getHeight());
+    // <Luminous> on Metal the maps' chosen side, as either may not be made
+    const GLfloat luminous_spot_res = luminous_spot_maps_on_demand() ? (GLfloat)sLuminousSpotShadowSize : (GLfloat)mSpotShadow[0].getWidth();
+    shader.uniform2f(LLShaderMgr::DEFERRED_PROJ_SHADOW_RES, luminous_spot_res,
+                     luminous_spot_maps_on_demand() ? luminous_spot_res : (GLfloat)mSpotShadow[0].getHeight());
+    // </Luminous>
     shader.uniform1f(LLShaderMgr::DEFERRED_DEPTH_CUTOFF, RenderEdgeDepthCutoff);
     shader.uniform1f(LLShaderMgr::DEFERRED_NORM_CUTOFF, RenderEdgeNormCutoff);
 
@@ -9719,9 +9816,9 @@ void LLPipeline::renderDeferredLighting()
                 LLGLSLShader& sun_shader = gCubeSnapshot ? gDeferredSunProbeProgram : gDeferredSunProgram;
                 bindDeferredShader(sun_shader, deferred_light_target);
                 mScreenTriangleVB->setBuffer();
-                glClearColor(1, 1, 1, 1);
+                LLRenderTarget::setClearColor(1, 1, 1, 1);
                 deferred_light_target->clear(GL_COLOR_BUFFER_BIT);
-                glClearColor(0, 0, 0, 0);
+                LLRenderTarget::setClearColor(0, 0, 0, 0);
 
                 sun_shader.uniform2f(LLShaderMgr::DEFERRED_SCREEN_RES,
                                               (GLfloat)deferred_light_target->getWidth(),
@@ -9755,10 +9852,12 @@ void LLPipeline::renderDeferredLighting()
             LL_PROFILE_ZONE_NAMED_CATEGORY_PIPELINE("renderDeferredLighting - soften shadow");
             LL_PROFILE_GPU_ZONE("soften shadow");
             // blur lightmap
-            screen_target->bindTarget();
-            glClearColor(1, 1, 1, 1);
+            // [Viewer Lab] The blur samples the depth it tests against and writes none; ends at its flush
+            screen_target->bindTarget(LLRenderTarget::DEPTH_READ_ONLY);
+            const ReadOnlySiteCounts blur_start = read_only_site_start(); // [Viewer Lab]
+            LLRenderTarget::setClearColor(1, 1, 1, 1);
             screen_target->clear(GL_COLOR_BUFFER_BIT);
-            glClearColor(0, 0, 0, 0);
+            LLRenderTarget::setClearColor(0, 0, 0, 0);
 
             bindDeferredShader(gDeferredBlurLightProgram);
 
@@ -9802,6 +9901,7 @@ void LLPipeline::renderDeferredLighting()
                 mScreenTriangleVB->drawArrays(LLRender::TRIANGLES, 0, 3);
             }
 
+            read_only_site_end(RO_BLUR, blur_start); // [Viewer Lab]
             screen_target->flush();
             unbindDeferredShader(gDeferredBlurLightProgram);
 
@@ -9821,9 +9921,12 @@ void LLPipeline::renderDeferredLighting()
             unbindDeferredShader(gDeferredBlurLightProgram);
         }
 
-        screen_target->bindTarget();
+        // [Viewer Lab] Soften and the lights sample the depth they test against and write none, up to setDepthAccess before
+        // renderGeomPostDeferred
+        screen_target->bindTarget(LLRenderTarget::DEPTH_READ_ONLY);
+        const ReadOnlySiteCounts soften_start = read_only_site_start(); // [Viewer Lab]
         // clear color buffer here - zeroing alpha (glow) is important or it will accumulate against sky
-        glClearColor(0, 0, 0, 0);
+        LLRenderTarget::setClearColor(0, 0, 0, 0);
         screen_target->clear(GL_COLOR_BUFFER_BIT);
 
         if (RenderDeferredAtmospheric)
@@ -9861,6 +9964,9 @@ void LLPipeline::renderDeferredLighting()
             unbindDeferredShader(gDeferredSoftenProgram);
         }
 
+        // [Viewer Lab] Soften ends and the lights begin
+        read_only_site_end(RO_SOFTEN, soften_start);
+        const ReadOnlySiteCounts lights_start = read_only_site_start();
         static LLCachedControl<S32> local_light_count(gSavedSettings, "RenderLocalLightCount", 256);
         static LLCachedControl<S32> probe_level(gSavedSettings, "RenderReflectionProbeLevel", 0);
 
@@ -10126,6 +10232,7 @@ void LLPipeline::renderDeferredLighting()
         }
 
         gGL.setColorMask(true, true);
+        read_only_site_end(RO_LIGHTS, lights_start); // [Viewer Lab] the lights end; no draw up to setDepthAccess
     }
 
     {  // render non-deferred geometry (alpha, fullbright, glow)
@@ -10163,6 +10270,10 @@ void LLPipeline::renderDeferredLighting()
                           LLPipeline::RENDER_TYPE_WATEREXCLUSION,
                           END_RENDER_TYPES);
 
+        // [Viewer Lab] The post-deferred geometry writes depth in this bind: the pools before doWaterHaze's and
+        // doAtmospherics' rebinds of screen (fullbright, measured; glow and avatars by the code), and the water and alpha
+        // pools on the probe faces that skip those rebinds
+        screen_target->setDepthAccess(LLRenderTarget::DEPTH_READ_WRITE);
         renderGeomPostDeferred(*LLViewerCamera::getInstance());
         popRenderTypeMask();
     }
@@ -10346,12 +10457,12 @@ void LLPipeline::doWaterExclusionMask()
     }
     // </Luminous>
     mWaterExclusionMask.bindTarget();
-    glClearColor(1, 1, 1, 1);
+    LLRenderTarget::setClearColor(1, 1, 1, 1);
     mWaterExclusionMask.clear();
     mWaterExclusionPool->render();
 
     mWaterExclusionMask.flush();
-    glClearColor(0, 0, 0, 0);
+    LLRenderTarget::setClearColor(0, 0, 0, 0);
 }
 
 // <Luminous>
@@ -10535,7 +10646,7 @@ void LLPipeline::unbindDeferredShader(LLGLSLShader &shader)
     {
         if (shader.disableTexture(LLShaderMgr::DEFERRED_SHADOW0+i) > -1)
         {
-            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_COMPARE_MODE, GL_NONE);
+            LLTexUnit::setActiveTextureCompare(LLTexUnit::TT_TEXTURE, GL_NONE);
         }
     }
 
@@ -10543,7 +10654,7 @@ void LLPipeline::unbindDeferredShader(LLGLSLShader &shader)
     {
         if (shader.disableTexture(LLShaderMgr::DEFERRED_SHADOW0+i) > -1)
         {
-            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_COMPARE_MODE, GL_NONE);
+            LLTexUnit::setActiveTextureCompare(LLTexUnit::TT_TEXTURE, GL_NONE);
         }
     }
 
@@ -10625,11 +10736,34 @@ void LLPipeline::bindReflectionProbes(LLGLSLShader& shader)
     channel = shader.enableTexture(LLShaderMgr::SCENE_MAP);
     if (channel > -1)
     {
-        gGL.getTexUnit(channel)->bind(&mSceneMap);
-        if (LuminousPhotoMode::reflections()) // <Luminous/> its mip levels; Firestorm's reflections read the top one
+        // <Luminous> Photo mode's reflections read the scene map's mip levels: on OpenGL its own (TMG_AUTO), bound
+        // with the unit's mip flag so the sampler is mipmapped; on Metal the chain made from it, until that chain is
+        // ready the scene map's level 0. Firestorm's reflections bind and sample it as Firestorm does.
+        LLTexUnit* unit = gGL.getTexUnit(channel);
+        const bool luminous_mips = LuminousPhotoMode::reflectionsNow();
+        LL::RHI::Texture* chain = luminous_mips ? LuminousMetal::sceneMipChain(&mSceneMap) : nullptr;
+        if (chain)
         {
-            gGL.getTexUnit(channel)->setTextureFilteringOption(LuminousPhotoMode::reflectionsNow() ? LLTexUnit::TFO_TRILINEAR : LLTexUnit::TFO_BILINEAR);
+            unit->bindTexture(LLTexUnit::TT_TEXTURE, chain, true);
+            unit->setTextureAddressMode(LLTexUnit::TAM_CLAMP);
         }
+        else
+        {
+            unit->bind(&mSceneMap);
+        }
+        if (LuminousPhotoMode::reflections())
+        {
+            bool mips = false;
+            if (luminous_mips)
+            {
+                // OpenGL: only a scene map allocated with its levels; a texture of the device says how many it has
+                LL::RHI::Texture* scene = mSceneMap.getRHITexture(0);
+                mips = chain || (!LuminousMetal::metal() && (!scene || scene->desc().mipLevels > 1));
+            }
+            unit->setHasMipMaps(mips);
+            unit->setTextureFilteringOption(mips ? LLTexUnit::TFO_TRILINEAR : LLTexUnit::TFO_BILINEAR);
+        }
+        // </Luminous>
     }
 
 
@@ -11898,6 +12032,22 @@ void LLPipeline::generateSunShadow(LLCamera& camera)
 
                 //
 
+                // <Luminous> on Metal made now that a projector holds the slot
+                if (luminous_spot_maps_on_demand() && sLuminousSpotShadowSize > 0
+                    && (!mSpotShadow[i].getRHIDepth() || mSpotShadow[i].getWidth() != sLuminousSpotShadowSize))
+                {
+                    if (!mSpotShadow[i].allocate(sLuminousSpotShadowSize, sLuminousSpotShadowSize, 0, true))
+                    {
+                        continue;
+                    }
+                    luminous_set_up_spot_map(mSpotShadow[i]);
+                    gGL.getTexUnit(0)->unbind(LLTexUnit::TT_TEXTURE);
+                }
+                if (luminous_spot_maps_on_demand() && !mSpotShadow[i].getRHIDepth())
+                {
+                    continue;
+                }
+                // </Luminous>
                 mSpotShadow[i].bindTarget();
                 mSpotShadow[i].getViewport(gGLViewport);
                 mSpotShadow[i].clear();
@@ -11981,7 +12131,7 @@ void LLPipeline::renderRiggedGroups(LLRenderPass* pass, U32 type, bool texture)
 
 void LLPipeline::profileAvatar(LLVOAvatar* avatar, bool profile_attachments)
 {
-    if (gGLManager.mGLVersion < 3.25f)
+    if (!LLGPUQuery::supported(GL_TIME_ELAPSED)) // [Viewer Lab] the device's timer queries
     { // profiling requires GL 3.3 or later
         return;
     }
@@ -12262,7 +12412,7 @@ void LLPipeline::generateImpostor(LLVOAvatar* avatar, bool preview_avatar, bool 
         gGL.loadMatrix(glm::value_ptr(mat));
         set_current_modelview(mat);
 
-        glClearColor(0.0f,0.0f,0.0f,0.0f);
+        LLRenderTarget::setClearColor(0.0f,0.0f,0.0f,0.0f);
         gGL.setColorMask(true, true);
 
         // get the number of pixels per angle
@@ -12339,7 +12489,7 @@ void LLPipeline::generateImpostor(LLVOAvatar* avatar, bool preview_avatar, bool 
         if (LLPipeline::sRenderDeferred)
         {
             GLuint buff = GL_COLOR_ATTACHMENT0;
-            glDrawBuffers(1, &buff);
+            LLRenderTarget::setDrawBuffers(1, &buff);
         }
 
         LLGLDisable blend(GL_BLEND);

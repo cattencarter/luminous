@@ -426,7 +426,7 @@ void LLViewerParcelOverlay::updateOverlayTexture()
     // Copy data into GL texture from raw data
     if (i >= COUNT)
     {
-        if (!mTexture->hasGLTexture())
+        if (!mTexture->hasTexture()) // [Viewer Lab] any backend
         {
             mTexture->createGLTexture(0, mImageRaw);
         }

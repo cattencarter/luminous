@@ -32,6 +32,7 @@
 #include "pipeline.h"
 #include "llglcommonfunc.h"
 #include "llvoavatar.h"
+#include <atomic>
 
 LLDrawPoolMaterials::LLDrawPoolMaterials()
 :  LLRenderPass(LLDrawPool::POOL_MATERIALS)
@@ -84,7 +85,9 @@ void LLDrawPoolMaterials::beginDeferredPass(S32 pass)
 
     mShader = &(gDeferredMaterialProgram[idx]);
 
-    if (rigged)
+    // [Viewer Lab] As LLGLSLShader::bind(bool): a shader that is not complete and has no rigged variant (its group
+    // failed) stays, so bindDeferredShader's bind refuses it and the rigged pass's draws are skipped
+    if (rigged && (mShader->mRiggedVariant || mShader->isComplete()))
     {
         llassert(mShader->mRiggedVariant != nullptr);
         mShader = mShader->mRiggedVariant;
@@ -163,29 +166,41 @@ void LLDrawPoolMaterials::renderDeferred(S32 pass)
 
     gGL.getTexUnit(diffuseChannel)->unbindFast(LLTexUnit::TT_TEXTURE);
 
+    // [Viewer Lab] The four uniforms through the shader's caching setters, which skip glUniform when the program already
+    // holds the value; the location guards and the last* tracking stay
     if (intensity > -1)
     {
-        glUniform1f(intensity, lastIntensity);
+        mShader->uniform1f(LLShaderMgr::ENVIRONMENT_INTENSITY, lastIntensity); // [Viewer Lab]
     }
 
     if (brightness > -1)
     {
-        glUniform1f(brightness, lastFullbright);
+        mShader->uniform1f(LLShaderMgr::EMISSIVE_BRIGHTNESS, lastFullbright); // [Viewer Lab]
     }
 
     if (minAlpha > -1)
     {
-        glUniform1f(minAlpha, lastMinimumAlpha);
+        mShader->uniform1f(LLShaderMgr::MINIMUM_ALPHA, lastMinimumAlpha); // [Viewer Lab]
     }
 
     if (specular > -1)
     {
-        glUniform4fv(specular, 1, lastSpecular.mV);
+        mShader->uniform4fv(LLShaderMgr::SPECULAR_COLOR, 1, lastSpecular.mV); // [Viewer Lab]
     }
 
     const LLVOAvatar* lastAvatar = nullptr;
     U64 lastMeshId = 0;
     bool skipLastSkin = false;
+
+    if (begin != end)
+    {
+        // [Viewer Lab] Coverage marker, once per session, when the loop has draws
+        static std::atomic<bool> sReached{ false };
+        if (!sReached.exchange(true))
+        {
+            LL_INFOS("RHI") << "Facade site reached: lldrawpoolmaterials.cpp:renderDeferred" << LL_ENDL;
+        }
+    }
 
     for (LLCullResult::drawinfo_iterator i = begin; i != end; )
     {
@@ -197,26 +212,26 @@ void LLDrawPoolMaterials::renderDeferred(S32 pass)
         if (specular > -1 && params.mSpecColor != lastSpecular)
         {
             lastSpecular = params.mSpecColor;
-            glUniform4fv(specular, 1, lastSpecular.mV);
+            mShader->uniform4fv(LLShaderMgr::SPECULAR_COLOR, 1, lastSpecular.mV); // [Viewer Lab]
         }
 
         if (intensity != -1 && lastIntensity != params.mEnvIntensity)
         {
             lastIntensity = params.mEnvIntensity;
-            glUniform1f(intensity, lastIntensity);
+            mShader->uniform1f(LLShaderMgr::ENVIRONMENT_INTENSITY, lastIntensity); // [Viewer Lab]
         }
 
         if (minAlpha > -1 && lastMinimumAlpha != params.mAlphaMaskCutoff)
         {
             lastMinimumAlpha = params.mAlphaMaskCutoff;
-            glUniform1f(minAlpha, lastMinimumAlpha);
+            mShader->uniform1f(LLShaderMgr::MINIMUM_ALPHA, lastMinimumAlpha); // [Viewer Lab]
         }
 
         F32 fullbright = params.mFullbright ? 1.f : 0.f;
         if (brightness > -1 && lastFullbright != fullbright)
         {
             lastFullbright = fullbright;
-            glUniform1f(brightness, lastFullbright);
+            mShader->uniform1f(LLShaderMgr::EMISSIVE_BRIGHTNESS, lastFullbright); // [Viewer Lab]
         }
 
         if (normChannel > -1 && params.mNormalMap != lastNormalMap)

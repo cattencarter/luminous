@@ -39,6 +39,7 @@
 #include "llfloaterautoreplacesettings.h"
 #include "llagent.h"
 #include "llagentcamera.h"
+#include "llappviewer.h" // [Viewer Lab] save_user_settings
 #include "llcheckboxctrl.h"
 #include "llcolorswatch.h"
 #include "llcombobox.h"
@@ -126,6 +127,9 @@
 
 #include "llsearchableui.h"
 #include "llperfstats.h"
+#include "luminousphotomode.h" // <Luminous/>
+#include "llrhi.h"
+#include "llsys.h"
 
 // Firestorm Includes
 #include "exogroupmutelist.h"
@@ -1062,6 +1066,7 @@ void LLFloaterPreference::apply()
 
 void LLFloaterPreference::cancel(const std::vector<std::string> settings_to_skip)
 {
+    LuminousPhotoMode::HoldShaderRebuilds hold_shaders; // <Luminous/> the reverted settings rebuild the shaders once
     LLTabContainer* tabcontainer = getChild<LLTabContainer>("pref core");
     // Call cancel() on all panels that derive from LLPanelPreference
     for (child_list_t::const_iterator iter = tabcontainer->getChildList()->begin();
@@ -1248,7 +1253,6 @@ void LLFloaterPreference::onOpen(const LLSD& key)
     // </FS:Ansariel> [FS Login Panel]
     refresh();
 
-
     getChildView("plain_text_chat_history")->setEnabled(true);
     getChild<LLUICtrl>("plain_text_chat_history")->setValue(gSavedSettings.getBOOL("PlainTextChatHistory"));
 
@@ -1278,6 +1282,12 @@ void LLFloaterPreference::onOpen(const LLSD& key)
             panel->onOpen(key);
     }
     // </FS:Ansariel>
+
+    LLPanelPreferenceGraphics* graphics_panel = findChild<LLPanelPreferenceGraphics>("display");
+    if (graphics_panel)
+    {
+        graphics_panel->refreshBackendSwitch();
+    }
 
     // Make sure the current state of prefs are saved away when
     // when the floater is opened.  That will make cancel do its
@@ -1604,7 +1614,7 @@ void LLFloaterPreference::onBtnOK(const LLSD& userdata)
         }
 
         LLUIColorTable::instance().saveUserSettings();
-        gSavedSettings.saveToFile(gSavedSettings.getString("ClientSettingsFile"), true);
+        save_user_settings(); // [Viewer Lab] keeps the stored MetalSessionOpen in a second instance
 // [SL:KB] - Patch: Viewer-CrashReporting | Checked: 2011-10-02 (Catznip-2.8.0e) | Added: Catznip-2.8.0e
         // We need to save all crash settings, even if they're defaults [see LLCrashLogger::loadCrashBehaviorSetting()]
         gCrashSettings.saveToFile(gSavedSettings.getString("CrashSettingsFile"), false);
@@ -4003,6 +4013,7 @@ bool LLPanelPreferenceGraphics::postBuild()
 
     resetDirtyChilds();
     setPresetText();
+    refreshBackendSwitch();
 
     LLPresetsManager* presetsMgr = LLPresetsManager::getInstance();
     presetsMgr->setPresetListChangeCallback(boost::bind(&LLPanelPreferenceGraphics::onPresetsListChange, this));
@@ -4026,6 +4037,7 @@ bool LLPanelPreferenceGraphics::postBuild()
         }
     }
     // </Luminous>
+    LuminousPhotoMode::showFirestormControls(this, "display"); // <Luminous/> while photo mode is off
 
     return LLPanelPreference::postBuild();
 }
@@ -4164,11 +4176,39 @@ void LLPanelPreferenceGraphics::resetDirtyChilds()
     }
 }
 
+void LLPanelPreferenceGraphics::refreshBackendSwitch()
+{
+    // The graphics backend switch (OpenGL or Metal from the next start) has no control_name: presets take every
+    // control of this panel, and a bound switch would make a preset change the backend. Shown only where Metal can run.
+    const bool selectable = LL::RHI::metalSelectable(LLOSInfo::instance().mMajorVer);
+    getChildView("graphics_backend_label")->setVisible(selectable);
+    getChildView("graphics_backend_note")->setVisible(selectable);
+    LLComboBox* backend = getChild<LLComboBox>("graphics_backend");
+    backend->setVisible(selectable);
+    backend->selectByValue(LLSD(LL::RHI::graphicsBackendEntry(gSavedSettings.getString("GraphicsBackend"))));
+    backend->resetDirty();
+}
+
+void LLPanelPreferenceGraphics::apply()
+{
+    LLPanelPreference::apply();
+    // The switch applies from the next start; the saved choice is what the start reads.
+    LLComboBox* backend = getChild<LLComboBox>("graphics_backend");
+    const std::string value =
+        LL::RHI::graphicsBackendToSave(gSavedSettings.getString("GraphicsBackend"), backend->getValue().asString());
+    if (!value.empty())
+    {
+        gSavedSettings.setString("GraphicsBackend", value);
+        LL_INFOS() << "Graphics backend: GraphicsBackend " << value << " from Preferences, from the next start" << LL_ENDL;
+    }
+}
+
 void LLPanelPreferenceGraphics::cancel(const std::vector<std::string> settings_to_skip)
 {
     // <FS:Ansariel> Improved graphics preferences
     resetDirtyChilds();
     LLPanelPreference::cancel(settings_to_skip);
+    refreshBackendSwitch();
 }
 void LLPanelPreferenceGraphics::saveSettings()
 {

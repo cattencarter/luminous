@@ -1,0 +1,52 @@
+{
+  "libraries": [
+    {
+      "name": "common",
+      "files": [
+        "luminous/common/spd.metal",
+        "luminous/common/copy.metal",
+        "luminous/common/check.metal"
+      ],
+      "defines": {},
+      "compute": [
+        {
+          "function": "luminous_spd_downsample",
+          "threadsPerThreadgroup": [
+            256,
+            1,
+            1
+          ]
+        }
+      ],
+      "render": [
+        {
+          "vertex": "luminous_fullscreen_vs",
+          "fragment": "luminous_copy_fs",
+          "colorFormats": [
+            "RGBA16Float"
+          ],
+          "depthFormat": "",
+          "blend": "none"
+        },
+        {
+          "vertex": "luminous_fullscreen_vs",
+          "fragment": "luminous_copy_fs",
+          "colorFormats": [
+            "RGBA16Float"
+          ],
+          "depthFormat": "",
+          "blend": "additive"
+        },
+        {
+          "vertex": "luminous_fullscreen_vs",
+          "fragment": "luminous_common_check_fs",
+          "colorFormats": [
+            "RGBA16Float"
+          ],
+          "depthFormat": "",
+          "blend": "none"
+        }
+      ]
+    }
+  ]
+}

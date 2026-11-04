@@ -231,3 +231,19 @@ if (LL_TESTS)
   add_subdirectory(${INTEGRATION_TESTS_PREFIX}integration_tests)
 endif (LL_TESTS)
 
+
+# [Viewer Lab] glslang and SPIRV-Cross for the Metal backend's shader translation (indra/third_party),
+# built only for the targets that link them.
+if (DARWIN)
+  add_subdirectory(third_party EXCLUDE_FROM_ALL)
+endif (DARWIN)
+
+# Golden-image test program for the render backends (tests/golden/level1), off by default.
+option(LL_METAL_GOLDEN "Build the golden-image test program for the Metal port" OFF)
+if (LL_METAL_GOLDEN)
+  add_subdirectory(${CMAKE_SOURCE_DIR}/../tests/golden/level1 ${CMAKE_BINARY_DIR}/golden_level1)
+  if (DARWIN)
+    add_subdirectory(${CMAKE_SOURCE_DIR}/../tests/shaders ${CMAKE_BINARY_DIR}/shader_check) # Metal compile check of the shaders
+    add_subdirectory(${CMAKE_SOURCE_DIR}/../tests/gltrap ${CMAKE_BINARY_DIR}/gltrap) # the raw-GL trap
+  endif (DARWIN)
+endif (LL_METAL_GOLDEN)

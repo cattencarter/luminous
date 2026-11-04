@@ -271,6 +271,10 @@ namespace LuminousBenchmark
 
         void start()
         {
+            if (!LuminousPhotoMode::availableOrSay())
+            {
+                return;
+            }
             if (sRunning)
             {
                 tell("The benchmark is already running.");

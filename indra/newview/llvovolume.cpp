@@ -439,6 +439,11 @@ U32 LLVOVolume::processUpdateMessage(LLMessageSystem *mesgsys,
                     }
 
                     gPipeline.markTextured(mDrawable);
+                    if (LLSpatialGroup* group = mDrawable->getSpatialGroup())
+                    {
+                        group->dirtyGeom();
+                        gPipeline.markRebuild(group);
+                    }
                     mFaceMappingChanged = true;
                     mTexAnimMode = 0;
                 }
@@ -638,6 +643,11 @@ U32 LLVOVolume::processUpdateMessage(LLMessageSystem *mesgsys,
                 }
 
                 gPipeline.markTextured(mDrawable);
+                if (LLSpatialGroup* group = mDrawable->getSpatialGroup())
+                {
+                    group->dirtyGeom();
+                    gPipeline.markRebuild(group);
+                }
                 mFaceMappingChanged = true;
                 mTexAnimMode = 0;
             }
@@ -5102,7 +5112,7 @@ bool LLVOVolume::lineSegmentIntersect(const LLVector4a& start, const LLVector4a&
                     }
                 }
 
-                bool no_texture = !face->getTexture() || !face->getTexture()->hasGLTexture();
+                bool no_texture = !face->getTexture() || !face->getTexture()->hasTexture(); // [Viewer Lab] any backend
                 bool mask       = no_texture ? false : face->getTexture()->getMask(face->surfaceToTexture(tc, p, n));
                 if (face &&
                     (ignore_alpha || pick_transparent || no_texture || mask))

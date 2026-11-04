@@ -425,8 +425,9 @@ bool LLGLTFPreviewTexture::render()
 
     if (!mShouldRender) { return false; }
 
-    glClearColor(0, 0, 0, 0);
-    glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+    // [Viewer Lab] The clear facades for the bound target
+    LLRenderTarget::setClearColor(0, 0, 0, 0);
+    LLRenderTarget::clearCurrent(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
 
     LLGLDepthTest(GL_FALSE);
     LLGLDisable stencil(GL_STENCIL_TEST);
@@ -500,7 +501,7 @@ bool LLGLTFPreviewTexture::render()
         // Alpha blend rendering
 
         screen.bindTarget();
-        glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+        LLRenderTarget::clearCurrent(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT); // [Viewer Lab]
 
         LLGLSLShader& shader = gDeferredPBRAlphaProgram;
 

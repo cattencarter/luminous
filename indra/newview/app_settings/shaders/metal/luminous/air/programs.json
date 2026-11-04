@@ -1,0 +1,18 @@
+{
+  "libraries": [
+    {
+      "name": "air",
+      "files": [
+        "luminous/air/air.metal"
+      ],
+      "defines": {},
+      "compute": [
+        { "function": "luminous_air_mask", "threadsPerThreadgroup": [16, 16, 1] },
+        { "function": "luminous_air_half", "threadsPerThreadgroup": [8, 8, 1] }
+      ],
+      "render": [
+        { "vertex": "luminous_fullscreen_vs", "fragment": "luminous_air_fs", "colorFormats": ["RGBA16Float"], "depthFormat": "", "blend": "additive" }
+      ]
+    }
+  ]
+}

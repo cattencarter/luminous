@@ -25,7 +25,9 @@
 
 #extension GL_ARB_texture_rectangle : enable
 #extension GL_ARB_shader_texture_lod : enable
+#ifdef GL_EXT_gpu_shader4
 #extension GL_EXT_gpu_shader4 : enable
+#endif
 
 /*[EXTRA_CODE_HERE]*/
 

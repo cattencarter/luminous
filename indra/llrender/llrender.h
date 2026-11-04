@@ -47,6 +47,8 @@
 
 #include <array>
 #include <list>
+#include <tuple>
+#include <vector>
 
 class LLVertexBuffer;
 class LLCubeMap;
@@ -54,6 +56,17 @@ class LLImageGL;
 class LLRenderTarget;
 class LLTexture;
 class LLVertexBufferData;
+namespace LL
+{
+    namespace RHI
+    {
+        class Device;
+        class Encoder; // [Viewer Lab]
+        class EncoderTracker; // [Viewer Lab]
+        class Texture;
+        struct SamplerDesc;
+    }
+}
 
 #define LL_MATRIX_STACK_DEPTH 32
 
@@ -63,6 +76,7 @@ constexpr U32 LL_NUM_LIGHT_UNITS = 8;
 class LLTexUnit
 {
     friend class LLRender;
+    friend class LLImageGL; // [Viewer Lab] its sampling setters give their texture to the private setters
 public:
     static U32 sWhiteTexture;
 
@@ -193,10 +207,6 @@ public:
     // (automatically enables the texture unit for the RT's texture type)
     bool bind(LLRenderTarget * renderTarget, bool bindDepth = false);
 
-    // Manually binds a texture to the texture unit
-    // (automatically enables the tex unit for the given texture type)
-    bool bindManual(eTextureType type, U32 texture, bool hasMips = false);
-
     // Unbinds the currently bound texture of the given type
     // (only if there's a texture of the given type currently bound)
     void unbind(eTextureType type);
@@ -218,6 +228,15 @@ public:
     // MUST already be active and bound
     void setTextureFilteringOptionFast(LLTexUnit::eTextureFilterOptions option, eTextureType tex_type);
 
+    // [Viewer Lab] Facades for raw sampling calls: the raw glTexParameteri on the texture GL has bound for `type` on GL's
+    // active unit, verbatim; no flush, no activate, no guard; never reads a unit's state. The filter and wrap setters also
+    // set the facade slot of the device texture gGL's active unit holds for the type and tell the channels holding it again.
+    static void setActiveTextureMagFilter(eTextureType type, U32 gl_mag);
+    static void setActiveTextureMinFilter(eTextureType type, U32 gl_min);
+    static void setActiveTextureWrapST(eTextureType type, U32 gl_wrap_s, U32 gl_wrap_t);
+    // gl_func 0: COMPARE_FUNC is not set
+    static void setActiveTextureCompare(eTextureType type, U32 gl_mode, U32 gl_func = 0);
+
     static U32 getInternalType(eTextureType type);
 
     U32 getCurrTexture(void) { return mCurrTexture; }
@@ -225,6 +244,119 @@ public:
     eTextureType getCurrType(void) { return mCurrTexType; }
 
     void setHasMipMaps(bool hasMips) { mHasMipMaps = hasMips; }
+
+    // [Viewer Lab] What LLTexUnit's bindings did on the main thread with the viewer's device since the process began:
+    // plain counts written on the main thread only, as LLVertexBuffer::DrawCounts; a call on another thread
+    // (LLImageGLThread's gGL) neither counts nor writes, so bindCounts() is read on the main thread with no lock. calls
+    // are the entries of bind (all four), bindFast and bindTexture (both) of a unit, and bind(LLRenderTarget*)'s raw
+    // binds; each ends in exactly one of binds (GL bound), skipped (the GL test said the same binding, adoptions
+    // included), refused (no image, a cube map without cube maps) and nested (through bindDefaultImage or
+    // sDefaultGLTexture's nested bind). adoptedNewId: a skip of the same GL name whose record had another id;
+    // adoptedAfterRaw: a skip of the same GL name whose record had none (ended by unbind or a raw bind) while the
+    // texture is known; rawBinds: GL binds and skips of a name with no texture of the device; fastRepeats: bindFast of
+    // what the unit had told already; retold: a skip whose tell changed the unit's told record; samplingSets: the
+    // setters' GL calls, samplingUntracked those whose texture the facade does not know (gGL's active unit's record and
+    // the encoder's tracker, or the texture a bind or LLImageGL gives); unknownFilterParts and unknownAddressParts: the
+    // parts of a tell's sampling neither the texture's slot nor its owner knew; unbindsToWhite: unbinds of the current
+    // 2D type, whiteTold those that told the white image's texture; beyondChannels: tells refused at or above the
+    // device's maxSamplersPerStage; encoded and encodedNull: the encoder calls with a texture and with none;
+    // samplingResends: tells of a setter's changed sampling to the channels holding the texture; textureReads: the
+    // reads of an image's device texture. For level 1, the golden hook and the tests.
+    struct BindCounts
+    {
+        U64 calls = 0;
+        U64 binds = 0;
+        U64 skipped = 0;
+        U64 refused = 0;
+        U64 nested = 0;
+        U64 adoptedNewId = 0;
+        U64 adoptedAfterRaw = 0;
+        U64 rawBinds = 0;
+        U64 fastRepeats = 0;
+        U64 retold = 0;
+        U64 samplingSets = 0;
+        U64 samplingUntracked = 0;
+        U64 unknownFilterParts = 0;
+        U64 unknownAddressParts = 0;
+        U64 unbindsToWhite = 0;
+        U64 whiteTold = 0;
+        U64 beyondChannels = 0;
+        U64 encoded = 0;
+        U64 encodedNull = 0;
+        U64 samplingResends = 0;
+        U64 textureReads = 0;
+    };
+    static BindCounts bindCounts();
+
+    // [Viewer Lab] True on this thread while LLTexUnit gives the encoder a binding it has made on GL itself: the GL
+    // backend then only tracks it, with no flush and no GL, and keeps it apart from the interface's own channels.
+    // Kept as a GL backend switch, its contract with llrender (llrhigl.cpp).
+    static bool makesOwnGLBinds();
+    // [Viewer Lab] That scope. It puts the previous value back, as LLGLSLShader's and LLVertexBuffer's do, so it nests;
+    // per thread (thread_local).
+    struct OwnGLBinds
+    {
+        OwnGLBinds();
+        ~OwnGLBinds();
+        OwnGLBinds(const OwnGLBinds&)            = delete;
+        OwnGLBinds& operator=(const OwnGLBinds&) = delete;
+
+    private:
+        const bool mPrevious;
+    };
+
+    // [Viewer Lab] GL's values for a sampling: the one mapping from a SamplerDesc to GL's MIN_FILTER, MAG_FILTER,
+    // MAX_ANISOTROPY and the wrap of every axis, the chain of setTextureFilteringOptionFast and
+    // setTextureAddressModeFast. Pure: no GL call.
+    struct GLSampling
+    {
+        S32 min;
+        S32 mag;
+        F32 anisotropy;
+        S32 wrapS; // [Viewer Lab] each axis from its own address mode
+        S32 wrapT;
+        S32 wrapR;
+    };
+    static GLSampling toGLSampling(const LL::RHI::SamplerDesc& sampling);
+    // [Viewer Lab] The GL adapter's sampling of an interface binding, on the texture bound on GL's active unit for the
+    // type: the filter (with mips and anisotropy, MAX_ANISOTROPY only with the capability) and then the address mode, as
+    // the two setters make them, with no flush and no encoder call. The GL backend only; nothing on another.
+    static void applyGLSampling(eTextureType type, const LL::RHI::SamplerDesc& sampling);
+
+    // [Viewer Lab] The binding interface by texture of the viewer's device. Both bindTexture forms make bindManual's GL
+    // exactly (no flush when the GL test skips), decided by the GL name whenever the binding has one, and on the main
+    // thread with the viewer's device give the encoder the binding by the texture's 64-bit id with the sampling the
+    // facade remembers. No raw GL name passes through them; callers with only a raw name are llrender's, through
+    // gl_bind_raw_name. The unit holds no reference: the encoder's tracker holds bound textures.
+    // A texture of the device, its GL name from the texture; a null texture makes bindManual(type, 0)'s GL (texture 0 on
+    // this unit, a raw binding of name 0, and the encoder told the unit holds nothing) and returns false.
+    bool bindTexture(eTextureType type, LL::RHI::Texture* texture, bool hasMips = false);
+    // An image's own GL name, its device texture (main thread) and its options for the sampling; with no device texture
+    // a raw bind of its name. A null image binds nothing and returns false.
+    bool bindTexture(eTextureType type, const LLImageGL* image, bool hasMips = false);
+    // The binding's id while the record is valid (it was made on the main thread with the device and GL's binding is
+    // still the one recorded); 0 after unbind, a raw bind or off the main thread.
+    U64 getCurrTextureId() const;
+    // The encoder's texture on this channel when its id is getCurrTextureId(); null off the main thread, without the
+    // device, or raw. Valid while it stays bound; a caller that keeps it takes an LLPointer.
+    LL::RHI::Texture* getCurrRHITexture() const;
+    // Whether the image is bound on this unit by the GL test: its GL name when it has one, else its texture's id.
+    bool isBound(const LLImageGL* image) const;
+    // Main thread: the white image whose GL name is sWhiteTexture (null clears it); unbind(TT_TEXTURE) tells its device
+    // texture while GL binds sWhiteTexture.
+    static void setWhiteImage(LLImageGL* image);
+    // Main thread: the encoder lets go of every binding LLTexUnit told it of a texture whose owner releases it now, so the
+    // owner's release frees the texture and queues its GL name, also while a unit has it bound. No GL call: GL's
+    // bindings and the units' GL records stay as they are (see release_encoder_binding). The display lists' entries let
+    // go of it first, also without the device.
+    static void releaseTexture(const LL::RHI::Texture* texture);
+    // For the golden hook: of the textures the encoder's tracker holds, how many have no filter part and how many no
+    // address part in their facade slot (main thread with the device; else both 0).
+    static void unknownSamplingInUse(U32& filter, U32& address);
+    // [Viewer Lab] Tests only, on the main thread: every tell sent to the encoder, as (channel, texture id or 0, the sampling
+    // given, its known parts), is appended to the log until it is set to null again; null in the viewer
+    using TellLog = std::vector<std::tuple<U32, U64, LL::RHI::SamplerDesc, U8>>;
+    static void setTellLog(TellLog* log);
 
 protected:
     friend class LLRender;
@@ -234,10 +366,88 @@ protected:
     eTextureType        mCurrTexType;
     bool                mHasMipMaps;
 
+    // [Viewer Lab] The binding's 64-bit id while mCurrTextureIdName == mCurrTexture (the id record), and what the unit has
+    // told the encoder (the device's id, the texture's id and the packed sampling: the told record). Written on the main
+    // thread with the viewer's device only.
+    U64                 mCurrTextureId = 0;
+    U32                 mCurrTextureIdName = 0;
+    U64                 mToldDevice = 0;
+    U64                 mToldTexture = 0;
+    U64                 mToldSampling = 0;
+    // [Viewer Lab] The tells tellBinding's shortcut found the same without asking for the sampling; main thread only.
+    // Protected for the tests' probe, outside BindCounts.
+    static U64          sTellShortcuts;
+
     void debugTextureUnit(void);
     GLint getTextureSource(eTextureBlendSrc src);
     GLint getTextureSourceType(eTextureBlendSrc src, bool isAlpha = false);
+
+    // [Viewer Lab] The sampling setTextureFilteringOptionFast gives GL for a filter option: the option, the unit's mip flag
+    // and the current anisotropy, 1 without the capability. Protected for the tests' probe.
+    LL::RHI::SamplerDesc filterSampling(eTextureFilterOptions option) const;
+
+private:
+    // [Viewer Lab] LLTexUnit's records and tells. Each binding function asks for the viewer's device once (on the
+    // main thread, else null) and gives it to the record, the census and the tell.
+    // What a tell did: refused at or above the device's channels, nothing changed, or sent to the encoder.
+    enum class Told : U8
+    {
+        Beyond,
+        Same,
+        Sent
+    };
+    // An image's device texture when its GL name is the one bound, on the main thread only (mRHITexture is read only
+    // there), else null; deviceTextureOf for a call that has the device, so is on the main thread.
+    static LL::RHI::Texture* textureOf(const LLImageGL* image, U32 name);
+    static LL::RHI::Texture* deviceTextureOf(const LLImageGL* image, U32 name);
+    U64 effectiveId() const { return mCurrTextureIdName == mCurrTexture ? mCurrTextureId : 0; }
+    // The GL test: by the GL name whenever the binding has one, as upstream; by the id only for a binding without one.
+    bool sameBinding(U32 name, U64 id) const
+    {
+        return name != 0 ? mCurrTexture == name : mCurrTexture == 0 && effectiveId() == id;
+    }
+    void recordBinding(U32 name, const LL::RHI::Texture* texture);
+    void endRecord()
+    {
+        mCurrTextureId = 0;
+        mCurrTextureIdName = 0;
+    }
+    Told tell(LL::RHI::Device* device, LL::RHI::Texture* texture, const LL::RHI::SamplerDesc& sampling, U8 knownParts);
+    Told tellNothing(LL::RHI::Device* device);
+    Told tellBinding(LL::RHI::Device* device, LL::RHI::Texture* texture, const LLImageGL* owner);
+    LL::RHI::SamplerDesc samplingOf(const LL::RHI::Device* device, LL::RHI::Texture* texture, const LLImageGL* owner,
+                                    U8& knownParts);
+    LL::RHI::Texture* trackedTexture(LL::RHI::Device* device, U64 id) const;
+    static LL::RHI::Texture* activeBinding(LL::RHI::Device* device, eTextureType type);
+    void noteBind(U32 name, const LL::RHI::Texture* texture);
+    void noteSkip(LL::RHI::Device* device, U32 name, LL::RHI::Texture* texture, const LLImageGL* owner);
+    void noteUnbind(eTextureType type);
+    void applyAddressMode(eTextureAddressMode mode, eTextureType type, LL::RHI::Texture* texture, LL::RHI::Device* device);
+    void applyFilteringOption(eTextureFilterOptions option, eTextureType type, LL::RHI::Texture* texture,
+                              LL::RHI::Device* device);
+    static void resend(LL::RHI::Device* device, LL::RHI::Texture* texture, U8 part, const LL::RHI::SamplerDesc& sampling);
+    // The public setters' guards, flush and activate, for a texture the caller knows: the bind paths' dirty options and
+    // LLImageGL's setters.
+    void setTextureAddressMode(eTextureAddressMode mode, LL::RHI::Texture* texture);
+    void setTextureFilteringOption(eTextureFilterOptions option, LL::RHI::Texture* texture);
+    // [Viewer Lab] The GL backend's raw-name bind keeps the unit's name and mips flag
+    friend bool gl_bind_raw_name(LLTexUnit* unit, eTextureType type, U32 name, bool has_mips);
 };
+
+// [Viewer Lab] The GL backend's bind of a raw GL name on a unit, in llrender.cpp, with the GL and the unit's cache of the
+// LLTexUnit::bindManual it replaces: false for the unit's stand-in (index below 0); else, when the unit's
+// name differs, a flush, the unit made active and enabled for type, the name kept, glBindTexture and the mips flag, and
+// nothing when it is the same name; true. No id record and no tell: a caller with the device does its own. For llrender's
+// objects that can hold a raw name (the bind_raw helpers, the facades' raw paths) and the GL adapter (GLEncoder,
+// GLNames::bind); viewer code binds textures of the device through bindTexture.
+bool gl_bind_raw_name(LLTexUnit* unit, LLTexUnit::eTextureType type, U32 name, bool has_mips);
+
+// [Viewer Lab] The --debug-gl check of LLTexUnit's binding, a GL backend function in llrender.cpp: when GL
+// is the backend and name is bound for type on GL's active unit, compares the parts of sampling that known_parts marks
+// (bit 0 the filter part: MIN, MAG and, with the capability, MAX_ANISOTROPY; bit 1 the address part: WRAP_S, WRAP_T and,
+// for the cube and 3D types, WRAP_R) with the texture's GL state and warns with the RHI tag on a difference. Returns
+// whether it compared a part. Reads GL state only; declared here for LLTexUnit and the tests.
+bool gl_check_sampling(LLTexUnit::eTextureType type, U32 name, const LL::RHI::SamplerDesc& sampling, U8 known_parts);
 
 class LLLightState
 {
@@ -464,10 +674,91 @@ public:
     void blendFunc(eBlendFactor color_sfactor, eBlendFactor color_dfactor,
                eBlendFactor alpha_sfactor, eBlendFactor alpha_dfactor);
 
+    // [Viewer Lab] The factors blendFunc last set (BF_UNDEF before the first call) and the color mask, read only and with no
+    // GL, for the render interface's pipeline descriptions
+    void getBlendFunc(eBlendFactor& colorS, eBlendFactor& colorD, eBlendFactor& alphaS, eBlendFactor& alphaD) const
+    {
+        colorS = mCurrBlendColorSFactor;
+        colorD = mCurrBlendColorDFactor;
+        alphaS = mCurrBlendAlphaSFactor;
+        alphaD = mCurrBlendAlphaDFactor;
+    }
+    void getColorMask(bool& r, bool& g, bool& b, bool& a) const
+    {
+        r = mCurrColorMask[0];
+        g = mCurrColorMask[1];
+        b = mCurrColorMask[2];
+        a = mCurrColorMask[3];
+    }
+
     LLLightState* getLight(U32 index);
     void setAmbientLightColor(const LLColor4& color);
+    // [Viewer Lab] The ambient light color setAmbientLightColor last set, read only and with no GL
+    const LLColor4& getAmbientLightColor() const { return mAmbientLightColor; }
 
     void setLineWidth(F32 line_width); // <FS> Line width OGL core profile fix by Rye Mutt
+
+    // [Viewer Lab] Dynamic state with GL's numbers and GL enums. Each setter makes the GL
+    // call it is named after and, like that call, flushes nothing and skips nothing, except setScissor inside the GL backend's
+    // own pass, which skips a box GL and the pass's record already have. The enables stay LLGLState's
+    // (GL_SCISSOR_TEST, GL_CULL_FACE, GL_POLYGON_OFFSET_FILL and _LINE, GL_DEPTH_CLAMP), so depth clamp has no setter of its
+    // own: its facade is LLGLEnable/LLGLState(GL_DEPTH_CLAMP), which the encoder gets as setDepthClamp.
+    void setViewport(S32 x, S32 y, S32 width, S32 height);       // glViewport
+    void setWindowViewport(S32 x, S32 y, S32 width, S32 height); // also gGLViewport, the viewport LLRenderTarget::flush returns to
+    void setScissor(S32 x, S32 y, S32 width, S32 height);        // glScissor
+    void setCullFace(U32 face);                                  // glCullFace
+    void setPolygonMode(U32 face, U32 mode);                     // glPolygonMode
+    void setPolygonOffset(F32 factor, F32 units);                // glPolygonOffset
+    void setPointSize(F32 size);                                 // glPointSize, a value per draw
+    F32 getLineWidth() const { return mLineWidth; }              // what setLineWidth gave GL
+    U32 getCullFace() const { return mCullFace; }                // [Viewer Lab] what setCullFace gave GL
+
+    // [Viewer Lab] While one lives, LLRender's and LLGLState's GL backend functions have made GL's calls for the
+    // dynamic state, so the GL backend's dynamic setters only track, and the facades send nothing. It puts the previous
+    // value back, so a nested scope never clears it early. Main thread only (a static, not thread_local). Kept as a GL
+    // backend switch, its contract with llrender (llrhigl.cpp).
+    struct OwnGLState
+    {
+        OwnGLState();
+        ~OwnGLState();
+        OwnGLState(const OwnGLState&) = delete;
+        OwnGLState& operator=(const OwnGLState&) = delete;
+
+        const bool mPrevious;
+    };
+    static bool makesOwnGLState();
+    // [Viewer Lab] For the GL backend only (llrhigl.cpp), main thread: LLRenderTarget's stack pass has begun on the GL
+    // encoder, whose dynamic setters only track it, and has ended (also with the frame or the device). In between,
+    // setScissor records the box straight in the pass's tracker, as the encoder's setScissor does inside OwnGLState,
+    // and skips a box GL and the record already have. Both forget the box. They stay with OwnGLState.
+    void beginOwnPass(LL::RHI::EncoderTracker& tracker);
+    void endOwnPass();
+    const LL::RHI::EncoderTracker* ownPassTracker() const { return mOwnPassTracker; } // for the tests
+    // [Viewer Lab] GL's scissor box, the open pass's record or LLGLState's GL_SCISSOR_TEST may no longer be what setScissor
+    // last gave: its next call makes the GL call and records, also for the same box. sendEnable(GL_SCISSOR_TEST) and the GL
+    // backend's own scissor calls and enables call it; raw glScissor, which the gl* ratchet keeps out of the viewer, must call
+    // it too (tests).
+    void invalidateScissor()
+    {
+        mScissorKnown = false;
+        mScissorTest = -1;
+    }
+
+    // [Viewer Lab] For LLGLState only: an enable LLGLState changed, given to the viewer's encoder while one of its passes is
+    // open, with the state's whole tuple from LLRender's remembered values. Main thread only.
+    void sendEnable(U32 state, bool enabled);
+    // [Viewer Lab] For LLRenderTarget's stack passes as they begin: the viewport once set, and every remembered value that
+    // differs from the defaults a pass begins with. It neither flushes nor calls a facade, so it may run inside flush.
+    void sendDynamicState(LL::RHI::Encoder& encoder);
+    // [Viewer Lab] Main-thread totals since the process began, for the golden hook and the tests.
+    struct DynamicStateCounts
+    {
+        U64 sends = 0;               ///< values given to an encoder in a pass by the facades and sendEnable
+        U64 passSets = 0;            ///< stack-pass begins that got the viewer's dynamic state again
+        U64 passSetCalls = 0;        ///< the setter calls those begins made
+        U64 unclassifiedEnables = 0; ///< changes LLGLState made to an enum with no fixed path
+    };
+    static const DynamicStateCounts& dynamicStateCounts();
 
     LLTexUnit* getTexUnit(U32 index);
 
@@ -520,6 +811,22 @@ private:
     F32             mMaxLineWidthSmooth;
     F32             mMaxLineWidthAliased;
     // </FS:Ansariel>
+
+    // [Viewer Lab] What the dynamic state facades gave GL, starting as GL does. A box never set is larger than any
+    // attachment, which the backend clips, as GL's initial box is the window's; the face is LLRender::init's.
+    S32             mViewport[4] = { 0, 0, 0, 0 };
+    bool            mViewportSet = false;
+    S32             mScissor[4] = { 0, 0, S32_MAX, S32_MAX };
+    // [Viewer Lab] The GL encoder's own pass while it is open (beginOwnPass), else null; true while GL's box and that pass's
+    // record are mScissor, which setScissor then skips; LLGLState's GL_SCISSOR_TEST at the last record, -1 when not known.
+    // Never a second copy of the box (test<10> finds it once in gGL)
+    LL::RHI::EncoderTracker* mOwnPassTracker = nullptr;
+    bool            mScissorKnown = false;
+    S8              mScissorTest = -1;
+    U32             mCullFace = GL_BACK;
+    U32             mPolygonMode = GL_FILL;
+    F32             mPolygonOffset[2] = { 0.f, 0.f };
+    F32             mPointSize = 1.f;
 
     LLPointer<LLVertexBuffer>   mBuffer;
     LLStrider<LLVector4a>       mVerticesp;

@@ -4682,9 +4682,9 @@ bool LLModelPreview::render()
                     if (show_edges)
                     {
                         gGL.setLineWidth(edge_width()); // <FS:Beq/> restore changes removed by the lab
-                        glPolygonMode(GL_FRONT_AND_BACK, GL_LINE);
+                        gGL.setPolygonMode(GL_FRONT_AND_BACK, GL_LINE); // [Viewer Lab]
                         buffer->drawRange(LLRender::TRIANGLES, 0, buffer->getNumVerts() - 1, buffer->getNumIndices(), 0);
-                        glPolygonMode(GL_FRONT_AND_BACK, GL_FILL);
+                        gGL.setPolygonMode(GL_FRONT_AND_BACK, GL_FILL); // [Viewer Lab]
                         gGL.setLineWidth(1.f); // <FS> Line width OGL core profile fix by Rye Mutt
                     }
                     buffer->unmapBuffer();
@@ -4694,7 +4694,7 @@ bool LLModelPreview::render()
 
             if (show_physics)
             {
-                glClear(GL_DEPTH_BUFFER_BIT);
+                LLRenderTarget::clearCurrent(GL_DEPTH_BUFFER_BIT); // [Viewer Lab]
 
                 for (U32 pass = 0; pass < 2; pass++)
                 {
@@ -4812,10 +4812,10 @@ bool LLModelPreview::render()
                                     gGL.diffuseColor4fv(phys_edge_col().mV);
                                     gGL.setLineWidth(phys_edge_width());
                                     // </FS:Beq>
-                                    glPolygonMode(GL_FRONT_AND_BACK, GL_LINE);
+                                    gGL.setPolygonMode(GL_FRONT_AND_BACK, GL_LINE); // [Viewer Lab]
                                     buffer->drawRange(LLRender::TRIANGLES, 0, buffer->getNumVerts() - 1, buffer->getNumIndices(), 0);
 
-                                    glPolygonMode(GL_FRONT_AND_BACK, GL_FILL);
+                                    gGL.setPolygonMode(GL_FRONT_AND_BACK, GL_FILL); // [Viewer Lab]
                                     gGL.setLineWidth(1.f); // <FS> Line width OGL core profile fix by Rye Mutt
 
                                     buffer->unmapBuffer();
@@ -4833,7 +4833,7 @@ bool LLModelPreview::render()
                         // glPointSize(PREVIEW_DEG_POINT_SIZE);
                         // gPipeline.enableLightsFullbright();
                         gGL.setLineWidth(deg_edge_width());
-                        glPointSize(deg_point_size());
+                        gGL.setPointSize(deg_point_size()); // [Viewer Lab]
                         // gPipeline.enableLightsFullbright(); // This may need to be restored when I fined the cause of the black rendering
                         // </FS:Beq>
                         //show degenerate triangles
@@ -4893,10 +4893,10 @@ bool LLModelPreview::render()
                                             if (ll_is_degenerate(v1, v2, v3))
                                             {
                                                 // <FS:Beq> restore (configurable) coloured overlay
-                                                glPolygonMode(GL_FRONT_AND_BACK, GL_FILL);
+                                                gGL.setPolygonMode(GL_FRONT_AND_BACK, GL_FILL);
                                                 gGL.diffuseColor4fv(deg_fill_col().mV);
                                                 buffer->draw(LLRender::TRIANGLES, 3, i);
-                                                glPolygonMode(GL_FRONT_AND_BACK, GL_LINE);
+                                                gGL.setPolygonMode(GL_FRONT_AND_BACK, GL_LINE);
                                                 gGL.diffuseColor3fv(deg_edge_col().mV);
                                                 gGL.color3fv(deg_edge_col().mV);
                                                 // </FS:Beq>
@@ -4913,7 +4913,7 @@ bool LLModelPreview::render()
                             gGL.popMatrix();
                         }
                         gGL.setLineWidth(1.f); // <FS> Line width OGL core profile fix by Rye Mutt
-                        glPointSize(1.f);
+                        gGL.setPointSize(1.f); // [Viewer Lab]
                         gPipeline.enableLightsPreview();
                         gGL.setSceneBlendType(LLRender::BT_ALPHA);
                     }
@@ -5041,9 +5041,9 @@ bool LLModelPreview::render()
                                 gGL.diffuseColor4fv(edge_col().mV);
                                 gGL.setLineWidth(edge_width());
                                 // </FS:Beq>
-                                glPolygonMode(GL_FRONT_AND_BACK, GL_LINE);
+                                gGL.setPolygonMode(GL_FRONT_AND_BACK, GL_LINE); // [Viewer Lab]
                                 buffer->draw(LLRender::TRIANGLES, buffer->getNumIndices(), 0);
-                                glPolygonMode(GL_FRONT_AND_BACK, GL_FILL);
+                                gGL.setPolygonMode(GL_FRONT_AND_BACK, GL_FILL); // [Viewer Lab]
                                 gGL.setLineWidth(1.f); // <FS> Line width OGL core profile fix by Rye Mutt
                             }
                         }

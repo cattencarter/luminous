@@ -132,10 +132,10 @@ void LLViewerDynamicTexture::preRender(bool clear_depth)
     mCamera.setView(camera->getView());
     mCamera.setNear(camera->getNear());
 
-    glViewport(mOrigin.mX, mOrigin.mY, mFullWidth, mFullHeight);
+    gGL.setViewport(mOrigin.mX, mOrigin.mY, mFullWidth, mFullHeight); // [Viewer Lab]
     if (clear_depth)
     {
-        glClear(GL_DEPTH_BUFFER_BIT);
+        LLRenderTarget::clearCurrent(GL_DEPTH_BUFFER_BIT); // [Viewer Lab]
     }
 }
 
@@ -151,7 +151,7 @@ void LLViewerDynamicTexture::postRender(bool success)
             {
                 generateGLTexture() ;
             }
-            else if(!mGLTexturep->getHasGLTexture())
+            else if(!mGLTexturep->hasTexture()) // [Viewer Lab] any backend
             {
                 generateGLTexture() ;
             }
@@ -222,7 +222,7 @@ bool LLViewerDynamicTexture::updateAllInstances()
                 llassert(dynamicTexture->getFullWidth() <= width);
                 llassert(dynamicTexture->getFullHeight() <= height);
 
-                glClear(GL_DEPTH_BUFFER_BIT);
+                LLRenderTarget::clearCurrent(GL_DEPTH_BUFFER_BIT); // [Viewer Lab]
 
                 gGL.color4f(1.f, 1.f, 1.f, 1.f);
                 dynamicTexture->setBoundTarget(&renderTarget);

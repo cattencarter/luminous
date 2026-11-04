@@ -43,6 +43,11 @@ class LLWearableData;
 class LLAvatarBoneInfo;
 class LLAvatarSkeletonInfo;
 class LLJointData;
+// [Viewer Lab]
+namespace LL::RHI
+{
+    class Texture;
+}
 
 //~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 // LLAvatarAppearance
@@ -358,7 +363,8 @@ protected:
         bool                                mIsLoaded{ false };
         bool                                mIsUsed{ false };
         LLAvatarAppearanceDefines::ETextureIndex    mTextureIndex{ LLAvatarAppearanceDefines::ETextureIndex::TEX_INVALID };
-        U32                                 mMaskTexName{ 0 };
+        // [Viewer Lab] The morph mask's texture of the viewer's render device, holding one reference, or null
+        LL::RHI::Texture*                   mMaskTexture{ nullptr };
         // Stores pointers to the joint meshes that this baked texture deals with
         avatar_joint_mesh_list_t            mJointMeshes;
         morph_list_t                        mMaskedMorphs;

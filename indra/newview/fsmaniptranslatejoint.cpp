@@ -36,6 +36,7 @@
 #include "llworld.h"
 #include "fsfloaterposer.h"
 #include "llfloaterreg.h"
+#include "llrhi.h"
 
 constexpr S32 NUM_AXES = 3;
 constexpr S32 MOUSE_DRAG_SLOP = 2;       // pixels
@@ -45,7 +46,7 @@ constexpr F32 MANIPULATOR_HOTSPOT_END = 1.2f;
 constexpr F32 MIN_PLANE_MANIP_DOT_PRODUCT = 0.25f;
 constexpr F32 PLANE_TICK_SIZE = 0.4f;
 
-static LLPointer<LLViewerTexture> sGridTex = nullptr;
+static LLPointer<LL::RHI::Texture> sGridTex; // [Viewer Lab] a texture of the viewer's render device
 
 constexpr LLManip::EManipPart MANIPULATOR_IDS[9] =
 {
@@ -98,14 +99,14 @@ void FSManipTranslateJoint::setJoint(LLJoint* joint)
 }
 
 //static
-U32 FSManipTranslateJoint::getGridTexName()
+LL::RHI::Texture* FSManipTranslateJoint::getGridTexture()
 {
     if (sGridTex.isNull())
     {
         restoreGL();
     }
 
-    return sGridTex.isNull() ? 0 : sGridTex->getTexName();
+    return sGridTex.get();
 }
 
 //static
@@ -113,6 +114,8 @@ void FSManipTranslateJoint::destroyGL()
 {
     if (sGridTex)
     {
+        // [Viewer Lab] the encoder lets go of it first, then its name goes to LLImageGL's deletion lists
+        LLTexUnit::releaseTexture(sGridTex.get());
         sGridTex = nullptr;
     }
 }
@@ -125,16 +128,20 @@ void FSManipTranslateJoint::restoreGL()
     U32 mip = 0;
 
     destroyGL();
-    sGridTex = LLViewerTextureManager::getLocalTexture();
-    if (!sGridTex->createGLTexture())
+    // [Viewer Lab] one name from LLImageGL's pool, for a texture described with the grid's ten levels (512 down to 1);
+    // false leaves no grid, as a failed createGLTexture did
+    std::vector<LLPointer<LL::RHI::Texture>> textures;
+    if (!LLImageGL::createTextureNames(textures, 1, LLTexUnit::TT_TEXTURE, GL_RGBA, GL_RGBA, GL_UNSIGNED_BYTE, rez, rez,
+                                       LL::RHI::TEXTURE_SAMPLED, true, 10))
     {
         sGridTex = nullptr;
         return;
     }
+    sGridTex = textures[0];
 
     GLuint* d = new GLuint[rez * rez];
 
-    gGL.getTexUnit(0)->bindManual(LLTexUnit::TT_TEXTURE, sGridTex->getTexName(), true);
+    gGL.getTexUnit(0)->bindTexture(LLTexUnit::TT_TEXTURE, sGridTex.get(), true); // [Viewer Lab] bindManual's GL
     gGL.getTexUnit(0)->setTextureFilteringOption(LLTexUnit::TFO_TRILINEAR);
 
     while (rez >= 1)
@@ -228,7 +235,7 @@ void FSManipTranslateJoint::restoreGL()
                 }
             }
         }
-        LLImageGL::setManualImage(GL_TEXTURE_2D, mip, GL_RGBA, rez, rez, GL_RGBA, GL_UNSIGNED_BYTE, d);
+        LLImageGL::specifyTexture(sGridTex.get(), mip, GL_RGBA, rez, rez, GL_RGBA, GL_UNSIGNED_BYTE, d); // [Viewer Lab]
         rez = rez >> 1;
         mip++;
     }

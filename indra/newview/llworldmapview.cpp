@@ -525,7 +525,7 @@ void LLWorldMapView::draw()
                 overlayimage->setKnownDrawSize(ll_round(x_draw_size * LLUI::getScaleFactor().mV[VX]), ll_round(y_draw_size * LLUI::getScaleFactor().mV[VY]));
 // </FS:CR> Aurora Sim
                 // Draw something whenever we have enough info
-                if (overlayimage->hasGLTexture())
+                if (overlayimage->hasTexture()) // [Viewer Lab] any backend
                 {
                     gGL.getTexUnit(0)->bind(overlayimage);
                     gGL.color4f(1.f, 1.f, 1.f, 1.f);
@@ -822,7 +822,7 @@ bool LLWorldMapView::drawMipmapLevel(S32 width, S32 height, S32 level, bool load
             if (simimage)
             {
                 // Checks that the image has a valid texture
-                if (simimage->hasGLTexture())
+                if (simimage->hasTexture()) // [Viewer Lab] any backend
                 {
                     // Increment the number of completly fetched tiles
                     completed_tiles++;

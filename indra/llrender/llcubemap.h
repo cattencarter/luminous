@@ -32,6 +32,12 @@
 #include <vector>
 
 class LLVector3;
+class LLCubeMap;
+// [Viewer Lab] The GL backend's name accessor (llrhigl.h), the one way to the cube map's GL name outside it
+namespace LL::RHI::GLNames
+{
+    U32 of(LLCubeMap* cube);
+}
 
 // Environment map hack!
 class LLCubeMap : public LLRefCount
@@ -72,8 +78,6 @@ public:
     // NOTE: Cube Map MUST already be resident in VRAM
     void generateMipMaps();
 
-    GLuint getGLName();
-
     void destroyGL();
 
 public:
@@ -81,6 +85,9 @@ public:
 
 protected:
     friend class LLTexUnit;
+    friend U32 LL::RHI::GLNames::of(LLCubeMap* cube); // [Viewer Lab]
+    // [Viewer Lab] GL-backend state inside llrender, read through GLNames::of
+    GLuint getGLName();
     ~LLCubeMap();
     LLGLenum mTargets[6];
     LLPointer<LLImageGL> mImages[6];

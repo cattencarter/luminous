@@ -237,7 +237,7 @@ layout (std140) uniform GLTFNodes
     vec4 gltf_nodes[MAX_NODES_PER_GLTF_OBJECT];
 };
 
-uniform int gltf_node_id = 0;
+uniform int gltf_node_id;
 
 mat4 getGLTFTransform()
 {

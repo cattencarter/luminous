@@ -312,7 +312,7 @@ void LLTextureBar::draw()
     pip_x += pip_width + pip_space;
 
     // we don't want to show bind/resident pips for textures using the default texture
-    if (mImagep->hasGLTexture())
+    if (mImagep->hasTexture()) // [Viewer Lab] any backend
     {
         // Draw the bound pip
         last_event = mImagep->getTimePassedSinceLastBound();
@@ -332,7 +332,8 @@ void LLTextureBar::draw()
         // draw the image size at the end
         {
             std::string num_str = llformat("%3dx%3d (%2d) %7d", mImagep->getWidth(), mImagep->getHeight(),
-                mImagep->getDiscardLevel(), mImagep->hasGLTexture() ? mImagep->getTextureMemory().value() : 0);
+                // [Viewer Lab] hasTexture: any backend
+                mImagep->getDiscardLevel(), mImagep->hasTexture() ? mImagep->getTextureMemory().value() : 0);
             LLFontGL::getFontMonospace()->renderUTF8(num_str, 0, title_x4, getRect().getHeight(), color,
                                             LLFontGL::LEFT, LLFontGL::TOP);
         }
@@ -956,7 +957,8 @@ void LLTextureView::draw()
 
             if (mPrintList)
             {
-                S32 tex_mem = imagep->hasGLTexture() ? imagep->getTextureMemory().value() : 0 ;
+                // [Viewer Lab] hasTexture: any backend
+                S32 tex_mem = imagep->hasTexture() ? imagep->getTextureMemory().value() : 0 ;
                 LL_INFOS() << imagep->getID()
                         << "\t" << tex_mem
                         << "\t" << imagep->getBoostLevel()

@@ -6273,4 +6273,35 @@ Gostaria de salvá-las primeiro?
 			<button name="Cancel" text="Cancelar"/>
 		</form>
 	</notification>
+	<notification name="FSWearableFavoritesNewFolder">
+		Digite um nome para a nova pasta de Vestíveis favoritos:
+		<form name="form">
+			<input name="message">
+				Nova pasta
+			</input>
+			<button name="OK" text="OK"/>
+			<button name="Cancel" text="Cancelar"/>
+		</form>
+	</notification>
+	<notification name="FSWearableFavoritesRenameFolder">
+		Digite um novo nome para a pasta de Vestíveis favoritos [FOLDER_NAME]:
+		<form name="form">
+			<button name="OK" text="OK"/>
+			<button name="Cancel" text="Cancelar"/>
+		</form>
+	</notification>
+	<notification name="FSWearableFavoritesDeleteFolder">
+		Excluir a pasta de Vestíveis favoritos "[FOLDER_NAME]"?
+
+Isso remove apenas a pasta e seus links de favoritos. Os itens originais do inventário não são excluídos.
+		<form name="form">
+			<button name="Delete" text="Excluir"/>
+			<button name="Cancel" text="Cancelar"/>
+		</form>
+	</notification>
+	<notification name="FSWearableFavoritesFolderInvalidName">
+		Não foi possível criar a pasta de Vestíveis favoritos "[FOLDER_NAME]".
+Nomes de pasta não podem conter / ou \.
+		<usetemplate name="okbutton" yestext="OK"/>
+	</notification>
 </notifications>

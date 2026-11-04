@@ -177,6 +177,7 @@
 #include "llviewermenu.h"
 #include "llviewermessage.h"
 #include "llviewernetwork.h"
+#include "llrhi.h"
 #include "llviewerobjectlist.h"
 #include "llviewerparcelaskplay.h"
 #include "llviewerparcelmedia.h"
@@ -193,6 +194,7 @@
 #include "llworldmapmessage.h"
 #include "llxfermanager.h"
 #include "pipeline.h"
+#include "llglslshader.h" // [Viewer Lab] writeClassLines
 #include "llappviewer.h"
 #include "llfasttimerview.h"
 #include "llfloatermap.h"
@@ -350,6 +352,7 @@ void transition_back_to_login_panel(const std::string& emsg);
 // <FS:KC> FIRE-18250: Option to disable default eye movement
 void update_static_eyes();
 // </FS:KC> FIRE-18250
+void log_metal_compile_stats(); // [Viewer Lab] in llviewerwindow.cpp
 
 void callback_cache_name(const LLUUID& id, const std::string& full_name, bool is_group)
 {
@@ -823,6 +826,12 @@ bool idle_startup()
         else if (!gViewerWindow->getInitAlert().empty())
         {
             LLNotificationsUtil::add(gViewerWindow->getInitAlert());
+        }
+        // [Viewer Lab] The normal backend choice: this start is GL because the last Metal
+        // session did not end normally, which the start says once. A GL start never sets the flag.
+        if (gMetalFellBack)
+        {
+            LLNotificationsUtil::add("MetalFellBackToOpenGL");
         }
 
         //-------------------------------------------------
@@ -1326,6 +1335,14 @@ bool idle_startup()
 
         OmnifilterEngine::getInstance()->init();    // <FS:Zi> Omnifilter support
 
+        if (gMetalUIDev && !show_connect_box)
+        {
+            // [Viewer Lab] The world is off in the Metal UI development mode: the login screen
+            // always shows, so the branch below never asks for STATE_LOGIN_CLEANUP.
+            LL_INFOS("AppInit") << "Metal UI dev mode: autologin ignored" << LL_ENDL;
+            show_connect_box = true;
+        }
+
         if (show_connect_box)
         {
             LL_DEBUGS("AppInit") << "show_connect_box on" << LL_ENDL;
@@ -1432,6 +1449,14 @@ bool idle_startup()
 
     if (STATE_LOGIN_CLEANUP == LLStartUp::getStartupState())
     {
+        if (gMetalUIDev)
+        {
+            // [Viewer Lab] The last layer of the world-off gate: the login panel and
+            // setStartupState refuse the login in the Metal UI development mode, so this is never
+            // reached; LL_ERRS stops the process in Release too (llassert is empty there).
+            LL_ERRS("AppInit") << "Metal UI dev mode reached STATE_LOGIN_CLEANUP" << LL_ENDL;
+        }
+
         // <FS:Ansariel> Check for test build expiration
         if (is_testbuild_expired())
         {
@@ -2078,7 +2103,7 @@ bool idle_startup()
 
         // Since we connected, save off the settings so the user doesn't have to
         // type the name/password again if we crash.
-        gSavedSettings.saveToFile(gSavedSettings.getString("ClientSettingsFile"), true);
+        save_user_settings(); // [Viewer Lab] keeps the stored MetalSessionOpen in a second instance
         LLUIColorTable::instance().saveUserSettings();
 
         do_startup_frame();
@@ -3018,7 +3043,7 @@ bool idle_startup()
             gSavedSettings.setString( "NextLoginLocation", "" );
 
             // and make sure it's saved
-            gSavedSettings.saveToFile( gSavedSettings.getString("ClientSettingsFile") , true );
+            save_user_settings(); // [Viewer Lab] keeps the stored MetalSessionOpen in a second instance
             LLUIColorTable::instance().saveUserSettings();
         };
         // </FS:Ansariel> [FS Login Panel]
@@ -3383,6 +3408,12 @@ bool idle_startup()
         // </FS:PP>
 
         LLStartUp::setStartupState( STATE_STARTED );
+        LLGLSLShader::writeClassLines(); // [Viewer Lab] the held shader class lines, after the startup
+        if (const LL::RHI::Device* device = LL::RHI::viewerDevice();
+            device && device->backend() == LL::RHI::BackendType::Metal)
+        {
+            doAfterInterval(log_metal_compile_stats, 30.f); // [Viewer Lab] the compile counts' line
+        }
         do_startup_frame();
 
         // <Luminous> Luminous's sidebar, folded to its column of tabs: always
@@ -3551,7 +3582,7 @@ void login_callback(S32 option, void *userdata)
         if (!gSavedSettings.getBOOL("RememberPassword"))
         {
             // turn off the setting and write out to disk
-            gSavedSettings.saveToFile( gSavedSettings.getString("ClientSettingsFile") , true );
+            save_user_settings(); // [Viewer Lab] keeps the stored MetalSessionOpen in a second instance
             LLUIColorTable::instance().saveUserSettings();
         }
 
@@ -4238,6 +4269,17 @@ std::string LLStartUp::startupStateToString(EStartupState state)
 // static
 void LLStartUp::setStartupState( EStartupState state )
 {
+    if (gMetalUIDev && state > STATE_LOGIN_WAIT)
+    {
+        // [Viewer Lab] The world is off in the Metal UI development mode: every way past the
+        // login screen (the login callback, autologin, a login link, the alert and certificate paths)
+        // comes through here, so the state stays and the user is told.
+        LL_WARNS("AppInit") << "Metal UI dev mode: login refused (" << startupStateToString(state) << " asked for in "
+                            << getStartupStateString() << ")" << LL_ENDL;
+        LLNotificationsUtil::add("MetalUIDevLoginOff");
+        return;
+    }
+
     LL_INFOS("AppInit") << getStartupStateString() << " --> " << startupStateToString(state) << LL_ENDL;
 
     getPhases().stopPhase(getStartupStateString());

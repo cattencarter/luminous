@@ -31,6 +31,12 @@
 #include <vector>
 
 class LLVector3;
+class LLCubeMapArray;
+// [Viewer Lab] The GL backend's name accessor (llrhigl.h), the one way to the array's GL name outside it
+namespace LL::RHI::GLNames
+{
+    U32 of(LLCubeMapArray* array);
+}
 
 class LLCubeMapArray : public LLRefCount
 {
@@ -57,8 +63,6 @@ public:
     void bind(S32 stage);
     void unbind();
 
-    GLuint getGLName();
-
     void destroyGL();
 
     // get width of cubemaps in array (they're cubes, so this is also the height)
@@ -69,6 +73,9 @@ public:
 
 protected:
     friend class LLTexUnit;
+    friend U32 LL::RHI::GLNames::of(LLCubeMapArray* array); // [Viewer Lab]
+    // [Viewer Lab] GL-backend state inside llrender, read through GLNames::of
+    GLuint getGLName();
     ~LLCubeMapArray();
     LLPointer<LLImageGL> mImage;
     U32 mWidth = 0;

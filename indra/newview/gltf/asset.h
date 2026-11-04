@@ -229,6 +229,29 @@ namespace LL
             void setScale(const vec3& scale);
         };
 
+        // [Viewer Lab] One glTF block's uniform buffer through its facade. The facade cannot be copied, but Asset is
+        // copy-assigned and Skin is copied in a std::vector, so the copies share it, as they would share a GL name, and
+        // the last of them lets go of it on the main thread. So an asset's buffers go when it dies.
+        class UniformBuffer
+        {
+        public:
+            // The whole buffer for block: allocated dynamic at the first upload and again at another size, then updated
+            // whole (an upload with new storage). Nothing for size 0, which allocate refuses.
+            void upload(LLGLSLShader::UniformBlock block, const void* data, U32 size);
+            // To the block's slot, once allocated
+            void bind() const;
+            // The facade, or null before the first upload (the golden hook's measure)
+            const LLShaderUniformBuffer* facade() const { return mShared ? &mShared->mBuffer : nullptr; }
+
+        private:
+            struct Shared
+            {
+                LLShaderUniformBuffer mBuffer;
+                U32 mSize = 0; // the size it was last allocated at
+            };
+            std::shared_ptr<Shared> mShared;
+        };
+
         class Skin
         {
         public:
@@ -237,7 +260,7 @@ namespace LL
             S32 mInverseBindMatrices = INVALID_INDEX;
             S32 mSkeleton = INVALID_INDEX;
 
-            U32 mUBO = 0;
+            UniformBuffer mUBO; // [Viewer Lab]
             std::vector<S32> mJoints;
             std::string mName;
             std::vector<mat4> mInverseBindMatricesData;
@@ -392,10 +415,10 @@ namespace LL
             RenderData mRenderData[2];
 
             // UBO for storing node transforms
-            U32 mNodesUBO = 0;
+            UniformBuffer mNodesUBO; // [Viewer Lab]
 
             // UBO for storing material data
-            U32 mMaterialsUBO = 0;
+            UniformBuffer mMaterialsUBO; // [Viewer Lab]
             bool mLoadIntoVRAM = false;
 
             std::vector<std::string> mUnsupportedExtensions;

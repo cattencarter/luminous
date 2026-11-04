@@ -424,11 +424,13 @@ class LLPanelPreferenceGraphics : public LLPanelPreference
 public:
     bool postBuild();
     void draw();
+    void apply();
     void cancel(const std::vector<std::string> settings_to_skip = {});
     void saveSettings();
     void resetDirtyChilds();
     void setHardwareDefaults();
     void setPresetText();
+    void refreshBackendSwitch(); // the graphics backend switch shows the saved GraphicsBackend
 
 protected:
     bool hasDirtyChilds();

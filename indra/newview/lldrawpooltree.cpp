@@ -39,6 +39,7 @@
 #include "llviewercontrol.h"
 #include "llviewerregion.h"
 #include "llenvironment.h"
+#include <atomic>
 
 S32 LLDrawPoolTree::sDiffTex = 0;
 static LLGLSLShader* shader = NULL;
@@ -114,9 +115,15 @@ void LLDrawPoolTree::beginShadowPass(S32 pass)
 {
     LL_PROFILE_ZONE_SCOPED;
 
+    // [Viewer Lab] Coverage marker, once per session
+    static std::atomic<bool> sReached{ false };
+    if (!sReached.exchange(true))
+    {
+        LL_INFOS("RHI") << "Facade site reached: lldrawpooltree.cpp:beginShadowPass" << LL_ENDL;
+    }
     static LLCachedControl<F32> shadow_offset(gSavedSettings, "RenderDeferredTreeShadowOffset");
     static LLCachedControl<F32> shadow_bias(gSavedSettings, "RenderDeferredTreeShadowBias");
-    glPolygonOffset(shadow_offset(), shadow_bias());
+    gGL.setPolygonOffset(shadow_offset(), shadow_bias()); // [Viewer Lab]
 
     LLEnvironment& environment = LLEnvironment::instance();
 
@@ -134,12 +141,18 @@ void LLDrawPoolTree::endShadowPass(S32 pass)
 {
     LL_PROFILE_ZONE_SCOPED;
 
+    // [Viewer Lab] Coverage marker, once per session
+    static std::atomic<bool> sReached{ false };
+    if (!sReached.exchange(true))
+    {
+        LL_INFOS("RHI") << "Facade site reached: lldrawpooltree.cpp:endShadowPass" << LL_ENDL;
+    }
     // <FS:PP> Attempt to speed up things a little
     // glPolygonOffset(gSavedSettings.getF32("RenderDeferredSpotShadowOffset"),
     //                  gSavedSettings.getF32("RenderDeferredSpotShadowBias"));
     static LLCachedControl<F32> RenderDeferredSpotShadowOffset(gSavedSettings, "RenderDeferredSpotShadowOffset");
     static LLCachedControl<F32> RenderDeferredSpotShadowBias(gSavedSettings, "RenderDeferredSpotShadowBias");
-    glPolygonOffset(RenderDeferredSpotShadowOffset, RenderDeferredSpotShadowBias);
+    gGL.setPolygonOffset(RenderDeferredSpotShadowOffset, RenderDeferredSpotShadowBias); // [Viewer Lab]
     // </FS:PP>
 
     gDeferredTreeShadowProgram.unbind();

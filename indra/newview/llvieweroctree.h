@@ -38,6 +38,7 @@
 #include "llquaternion.h"
 #include "lloctree.h"
 #include "llviewercamera.h"
+#include "llglslshader.h" // [Viewer Lab] LLGPUQuery
 
 class LLViewerRegion;
 class LLViewerOctreeEntryData;
@@ -295,6 +296,12 @@ protected:
     virtual ~LLOcclusionCullingGroup();
 
 public:
+    // [Viewer Lab] The world camera's query results checkOcclusion read since the start: all, 0 (occluded), and those
+    // read only after the timeout without being available (a wait). The golden hook reports them.
+    static U64 sWorldResultsRead;
+    static U64 sWorldResultsHidden;
+    static U64 sWorldResultsWaited;
+
     LLOcclusionCullingGroup(OctreeNode* node, LLViewerOctreePartition* part);
     LLOcclusionCullingGroup(const LLOcclusionCullingGroup& rhs) : LLViewerOctreeGroup(rhs)
     {
@@ -318,8 +325,9 @@ public:
     bool isRecentlyVisible() const;
     bool isAnyRecentlyVisible() const;
 
-    static U32 getNewOcclusionQueryObjectName();
-    static void releaseOcclusionQueryObjectName(U32 name);
+    // [Viewer Lab] Queries of the viewer's device from one pool in first-in first-out order, as the names were
+    static LLGPUQuery getNewOcclusionQueryObjectName();
+    static void releaseOcclusionQueryObjectName(LLGPUQuery query);
 
 protected:
     void releaseOcclusionQueryObjectNames();
@@ -334,11 +342,11 @@ protected:
     S32         mLODHash;
 
     LLViewerOctreePartition* mSpatialPartition;
-    U32                      mOcclusionQuery[LLViewerCamera::NUM_CAMERAS];
+    LLGPUQuery               mOcclusionQuery[LLViewerCamera::NUM_CAMERAS]; // [Viewer Lab]
     U32                      mOcclusionCheckCount[LLViewerCamera::NUM_CAMERAS];
 
 public:
-    static std::set<U32> sPendingQueries;
+    static std::set<U64> sPendingQueries; // [Viewer Lab] the queries' ids
 };//LL_ALIGN_POSTFIX(16);
 
 class LLViewerOctreePartition

@@ -29,8 +29,13 @@
 #import "llappdelegate-objc.h"
 
 #import <Carbon/Carbon.h>
+#import <QuartzCore/CAMetalLayer.h>  // [Viewer Lab]
+#import <QuartzCore/CATransaction.h> // [Viewer Lab]
 
 extern bool gHiDPISupport;
+
+// [Viewer Lab] setUseMetalLayer:'s value: the views made after it get a CAMetalLayer.
+static BOOL sUseMetalLayer = NO;
 
 #pragma mark local functions
 
@@ -162,6 +167,7 @@ attributedStringInfo getSegments(NSAttributedString *str)
                                                object:[self window]];
     // </Luminous>
 
+    [self updateMetalLayer:"window"]; // [Viewer Lab]
 
     // <Luminous> Only with HiDPI: without it the surface is in points, but
     // the view, just put in its window, still converted to the display's
@@ -171,7 +177,7 @@ attributedStringInfo getSegments(NSAttributedString *str)
     if (gHiDPISupport)
     {
         NSRect wnd_rect = [[self window] frame];
-        NSRect dev_rect = [self convertRectToBacking:wnd_rect];
+        NSRect dev_rect = [self llConvertRectToBacking:wnd_rect]; // [Viewer Lab]
         if (!NSEqualSizes(wnd_rect.size,dev_rect.size))
         {
             callResize(dev_rect.size.width, dev_rect.size.height);
@@ -182,7 +188,8 @@ attributedStringInfo getSegments(NSAttributedString *str)
 
 - (void)windowResized:(NSNotification *)notification;
 {
-    NSSize dev_sz = gHiDPISupport ? [self convertSizeToBacking:[self frame].size] : [self frame].size; // <Luminous/> points without HiDPI
+    // <Luminous/> points without HiDPI; [Viewer Lab] llConvertSizeToBacking
+    NSSize dev_sz = gHiDPISupport ? [self llConvertSizeToBacking:[self frame].size] : [self frame].size;
     callResize(dev_sz.width, dev_sz.height);
 }
 
@@ -209,6 +216,9 @@ attributedStringInfo getSegments(NSAttributedString *str)
 - (void)dealloc
 {
     [[NSNotificationCenter defaultCenter] removeObserver:self];
+    // [Viewer Lab] What NSOpenGLView's dealloc did: clear and release the context, then release the pixel format.
+    [self clearGLContext];
+    [mGLPixelFormat release];
     [super dealloc];
 }
 
@@ -242,6 +252,23 @@ attributedStringInfo getSegments(NSAttributedString *str)
     [self registerForDraggedTypes:[NSArray arrayWithObject:NSPasteboardTypeURL]];
     //[self initWithFrame:frame]; <FS> Fix some bad refcount code and squash some potential leakiness; by Cinder Roxley
 
+    // [Viewer Lab] The context follows the view when its geometry in the window or its screen changes, as
+    // NSOpenGLView's did.
+    [[NSNotificationCenter defaultCenter] addObserver:self
+                                             selector:@selector(viewGlobalFrameDidChange:) name:NSViewGlobalFrameDidChangeNotification
+                                               object:self];
+
+    // [Viewer Lab] The GL backend makes the view's GL context (createGLContextWithVsync:) when it creates the device.
+
+    return self;
+}
+
+// [Viewer Lab] The view's GL context: the pixel format and the context, setPixelFormat:, the retina setting,
+// setOpenGLContext:, setView:, makeCurrentContext and the swap interval, in the order the view's init had them.
+// LLWindowMacOSX::createContext calls it through the bridge's createOpenGLContext when
+// the GL backend creates the device; the Metal backend never does. NO where the init returned nil.
+- (BOOL) createGLContextWithVsync:(BOOL)vsync
+{
     // Initialize with a default "safe" pixel format that will work with versions dating back to OS X 10.6.
     // Any specialized pixel formats, i.e. a core profile pixel format, should be initialized through rebuildContextWithFormat.
     // 10.7 and 10.8 don't really care if we're defining a profile or not.  If we don't explicitly request a core or legacy profile, it'll always assume a legacy profile (for compatibility reasons).
@@ -265,7 +292,7 @@ attributedStringInfo getSegments(NSAttributedString *str)
     if (pixelFormat == nil)
     {
         NSLog(@"Failed to create pixel format!", nil);
-        return nil;
+        return NO;
     }
 
     // <FS> Fix some bad refcount code and squash some potential leakiness; by Cinder Roxley
@@ -276,7 +303,7 @@ attributedStringInfo getSegments(NSAttributedString *str)
     if (glContext == nil)
     {
         NSLog(@"Failed to create OpenGL context!", nil);
-        return nil;
+        return NO;
     }
 
     [self setPixelFormat:pixelFormat];
@@ -302,7 +329,7 @@ attributedStringInfo getSegments(NSAttributedString *str)
         [glContext setValues:&swapInterval forParameter:NSOpenGLContextParameterSwapInterval];
     }
 
-    return self;
+    return YES;
 }
 
 - (BOOL) rebuildContext
@@ -332,6 +359,62 @@ attributedStringInfo getSegments(NSAttributedString *str)
     return true;
 }
 
+// [Viewer Lab] The view's own context storage, which NSOpenGLView kept before LLOpenGLView became an NSView.
+// The accessors, clearGLContext and update do what NSOpenGLView's did; openGLContext never makes a context.
+- (NSOpenGLContext*) openGLContext
+{
+    return mGLContext;
+}
+
+- (void) setOpenGLContext:(NSOpenGLContext*)context
+{
+    if (context != mGLContext)
+    {
+        [self clearGLContext];
+        mGLContext = [context retain];
+        [context setView:self];
+    }
+}
+
+- (NSOpenGLPixelFormat*) pixelFormat
+{
+    return mGLPixelFormat;
+}
+
+- (void) setPixelFormat:(NSOpenGLPixelFormat*)format
+{
+    if (format != mGLPixelFormat)
+    {
+        [mGLPixelFormat release];
+        mGLPixelFormat = [format retain];
+    }
+}
+
+// As NSOpenGLView.h's clearGLContext and update ("moved or resized"): both act on the context only while it is
+// attached to this view.
+- (void) clearGLContext
+{
+    NSOpenGLContext *ctx = mGLContext;
+    if (ctx != nil)
+    {
+        if ([ctx view] == self)
+        {
+            [ctx clearDrawable];
+        }
+        [ctx release];
+        mGLContext = nil;
+    }
+}
+
+- (void) update
+{
+    NSOpenGLContext *ctx = mGLContext;
+    if ([ctx view] == self)
+    {
+        [ctx update];
+    }
+}
+
 #if LL_DARWIN
 #pragma clang diagnostic pop
 #endif
@@ -346,6 +429,196 @@ attributedStringInfo getSegments(NSAttributedString *str)
 {
     NSOpenGLPixelFormat *fmt = [self pixelFormat];
     return (CGLPixelFormatObj*)[fmt CGLPixelFormatObj];
+}
+
+// [Viewer Lab] NSOpenGLView's own view behaviour, kept since LLOpenGLView is an NSView: the same opacity,
+// layer and redraw policy; the context updated when the layer is set, after a backing change (deferred, in the
+// common run loop modes) and when the view's geometry changes; empty reshape and prepareOpenGL.
+- (BOOL) isOpaque
+{
+    return YES;
+}
+
+- (BOOL) wantsLayer
+{
+    return YES;
+}
+
+- (NSViewLayerContentsRedrawPolicy) layerContentsRedrawPolicy
+{
+    return NSViewLayerContentsRedrawDuringViewResize;
+}
+
+- (void) setLayer:(CALayer *)layer
+{
+    [super setLayer:layer];
+    [self update];
+    [self updateMetalLayer:"layer"]; // [Viewer Lab] AppKit makes the layer after the view is in its window
+}
+
+- (void) viewDidChangeBackingProperties
+{
+    [super viewDidChangeBackingProperties];
+    [self updateMetalLayer:"backing"]; // [Viewer Lab]
+    if ([self layer] != nil)
+    {
+        CFRunLoopPerformBlock(CFRunLoopGetMain(), kCFRunLoopCommonModes, ^{
+            [self update];
+        });
+        CFRunLoopWakeUp(CFRunLoopGetMain());
+    }
+}
+
+- (void) reshape
+{
+}
+
+- (void) prepareOpenGL
+{
+}
+
+- (void) viewGlobalFrameDidChange:(NSNotification *)notification
+{
+    [self update];
+}
+
+// [Viewer Lab] The Metal backend's layer on this view. makeBackingLayer is AppKit's hook for a
+// layer-backed view's own layer (NSView.h:237); wantsLayer is YES. The other methods act only while the layer is a
+// CAMetalLayer, not on setUseMetalLayer:'s flag, so they do nothing once GL's setView: has replaced the layer after a
+// fallback. The view sets only the layer's contentsScale and drawableSize, never its device, format or presentation
+// (the Metal surface's).
++ (void) setUseMetalLayer:(BOOL)use
+{
+    sUseMetalLayer = use;
+}
+
+- (CALayer *) makeBackingLayer
+{
+    if (sUseMetalLayer)
+    {
+        return [CAMetalLayer layer];
+    }
+    return [super makeBackingLayer];
+}
+
+- (BOOL) hasMetalLayer
+{
+    return [[self layer] isKindOfClass:[CAMetalLayer class]];
+}
+
+// s, the Metal layer's scale: the backing scale with RenderHiDPI (the test override's when set, else the window's), else 1, as GL's
+// surface has the backing scale only with setWantsBestResolutionOpenGLSurface:gHiDPISupport (NSOpenGLView.h:40).
+- (CGFloat) metalBackingScale
+{
+    if (!gHiDPISupport)
+    {
+        return 1.0;
+    }
+    return [self windowBackingScale];
+}
+
+// The backing scale the view would have at RenderHiDPI 1: the test override's when set, else the window's.
+- (CGFloat) windowBackingScale
+{
+    if (mTestBackingScale > 0.f)
+    {
+        return mTestBackingScale;
+    }
+    NSWindow *window = [self window];
+    return window != nil ? [window backingScaleFactor] : 1.0;
+}
+
+// Then AppKit's calls on a screen change, so the drawable follows and the viewer's resolution update
+// (callRequestResolutionUpdate, checkSettings) reads the new scale.
+- (void) setTestBackingScale:(float)scale
+{
+    mTestBackingScale = scale > 0.f ? scale : 0.f;
+    [self viewDidChangeBackingProperties];
+    [self windowDidChangeScreen:nil];
+}
+
+- (NSSize) llConvertSizeToBacking:(NSSize)size
+{
+    if (![self hasMetalLayer])
+    {
+        return [self convertSizeToBacking:size];
+    }
+    CGFloat s = [self metalBackingScale];
+    return NSMakeSize(size.width * s, size.height * s);
+}
+
+- (NSRect) llConvertRectToBacking:(NSRect)rect
+{
+    if (![self hasMetalLayer])
+    {
+        return [self convertRectToBacking:rect];
+    }
+    CGFloat s = [self metalBackingScale];
+    return NSMakeRect(rect.origin.x * s, rect.origin.y * s, rect.size.width * s, rect.size.height * s);
+}
+
+- (NSPoint) llConvertPointToBacking:(NSPoint)point
+{
+    if (![self hasMetalLayer])
+    {
+        return [self convertPointToBacking:point];
+    }
+    CGFloat s = [self metalBackingScale];
+    return NSMakePoint(point.x * s, point.y * s);
+}
+
+// The drawable follows the view: contentsScale = s and drawableSize = bounds x s, after every frame size or backing
+// change, since the layer does not derive drawableSize from the view (CAMetalLayer.h:89-93) and the global frame
+// notification is meant for GL views (NSView.h:714). Only for non-zero sizes: the layer ignores a 0 dimension and
+// keeps the old size. Then the probe's line for the event, which the window logs with the Metal debug setting.
+- (void) updateMetalLayer:(const char *)event
+{
+    if (![self hasMetalLayer])
+    {
+        return;
+    }
+    CAMetalLayer *layer = (CAMetalLayer *)[self layer];
+    const CGSize before = [layer drawableSize];
+    const NSSize bounds = [self bounds].size;
+    const CGFloat s = [self metalBackingScale];
+    const bool sized = bounds.width > 0 && bounds.height > 0;
+    if (sized)
+    {
+        [CATransaction begin];
+        [CATransaction setDisableActions:YES];
+        [layer setContentsScale:s];
+        [layer setDrawableSize:CGSizeMake(bounds.width * s, bounds.height * s)];
+        [CATransaction commit];
+    }
+
+    // The probe, from the rule rather than from s: at a non-zero size the drawable is bounds x (H ? S : 1)
+    // and contentsScale (H ? S : 1), with H RenderHiDPI and S the backing scale; at a zero size it is kept.
+    const CGSize drawable = [layer drawableSize];
+    const CGFloat contents_scale = [layer contentsScale];
+    const CGFloat backing_scale = [self windowBackingScale];
+    const CGFloat expected = gHiDPISupport ? backing_scale : 1.0;
+    bool ok = false;
+    if (sized)
+    {
+        ok = drawable.width == bounds.width * expected && drawable.height == bounds.height * expected &&
+             contents_scale == expected;
+    }
+    else
+    {
+        ok = CGSizeEqualToSize(drawable, before);
+    }
+    NSString *line = [NSString stringWithFormat:@"metal layer probe: %s %gx%g scale %g hidpi %d (%s: bounds %gx%g, "
+                                                @"contentsScale %g%s)",
+                                                ok ? "ok" : "FAILED", drawable.width, drawable.height, backing_scale,
+                                                gHiDPISupport ? 1 : 0, event, bounds.width, bounds.height, contents_scale,
+                                                sized ? "" : ", drawable kept"];
+    callMetalLayerProbe([line UTF8String], ok);
+}
+
+- (void) setFrameSize:(NSSize)newSize
+{
+    [super setFrameSize:newSize];
+    [self updateMetalLayer:"frame size"];
 }
 
 // Various events can be intercepted by our view, thus not reaching our window.
@@ -381,7 +654,7 @@ attributedStringInfo getSegments(NSAttributedString *str)
         callRightMouseUp(mMousePos, [theEvent modifierFlags]);
         mSimulatedRightClick = false;
     } else {
-        NSPoint mPoint = (gHiDPISupport ? [self convertPointToBacking:[theEvent locationInWindow]] : [theEvent locationInWindow]) /* <Luminous/> points without HiDPI */;
+        NSPoint mPoint = (gHiDPISupport ? [self llConvertPointToBacking:[theEvent locationInWindow]] : [theEvent locationInWindow]) /* <Luminous/> points without HiDPI; [Viewer Lab] llConvertPointToBacking */;
         mMousePos[0] = mPoint.x;
         mMousePos[1] = mPoint.y;
         callLeftMouseUp(mMousePos, [theEvent modifierFlags]);
@@ -400,7 +673,7 @@ attributedStringInfo getSegments(NSAttributedString *str)
 
 - (void)mouseMoved:(NSEvent *)theEvent
 {
-    NSPoint dev_delta = (gHiDPISupport ? [self convertPointToBacking:NSMakePoint([theEvent deltaX], [theEvent deltaY])] : NSMakePoint([theEvent deltaX], [theEvent deltaY])) /* <Luminous/> */;
+    NSPoint dev_delta = (gHiDPISupport ? [self llConvertPointToBacking:NSMakePoint([theEvent deltaX], [theEvent deltaY])] : NSMakePoint([theEvent deltaX], [theEvent deltaY])) /* <Luminous/>; [Viewer Lab] llConvertPointToBacking */;
 
     float mouseDeltas[] = {
         float(dev_delta.x),
@@ -409,7 +682,7 @@ attributedStringInfo getSegments(NSAttributedString *str)
 
     callDeltaUpdate(mouseDeltas, 0);
 
-    NSPoint mPoint = (gHiDPISupport ? [self convertPointToBacking:[theEvent locationInWindow]] : [theEvent locationInWindow]) /* <Luminous/> points without HiDPI */;
+    NSPoint mPoint = (gHiDPISupport ? [self llConvertPointToBacking:[theEvent locationInWindow]] : [theEvent locationInWindow]) /* <Luminous/> points without HiDPI; [Viewer Lab] llConvertPointToBacking */;
     mMousePos[0] = mPoint.x;
     mMousePos[1] = mPoint.y;
     callMouseMoved(mMousePos, 0);
@@ -424,7 +697,7 @@ attributedStringInfo getSegments(NSAttributedString *str)
     // The old CoreGraphics APIs we previously relied on are now flagged as obsolete.
     // NSEvent isn't obsolete, and provides us with the correct deltas.
 
-    NSPoint dev_delta = (gHiDPISupport ? [self convertPointToBacking:NSMakePoint([theEvent deltaX], [theEvent deltaY])] : NSMakePoint([theEvent deltaX], [theEvent deltaY])) /* <Luminous/> */;
+    NSPoint dev_delta = (gHiDPISupport ? [self llConvertPointToBacking:NSMakePoint([theEvent deltaX], [theEvent deltaY])] : NSMakePoint([theEvent deltaX], [theEvent deltaY])) /* <Luminous/>; [Viewer Lab] llConvertPointToBacking */;
 
     float mouseDeltas[] = {
         float(dev_delta.x),
@@ -433,7 +706,7 @@ attributedStringInfo getSegments(NSAttributedString *str)
 
     callDeltaUpdate(mouseDeltas, 0);
 
-    NSPoint mPoint = (gHiDPISupport ? [self convertPointToBacking:[theEvent locationInWindow]] : [theEvent locationInWindow]) /* <Luminous/> points without HiDPI */;
+    NSPoint mPoint = (gHiDPISupport ? [self llConvertPointToBacking:[theEvent locationInWindow]] : [theEvent locationInWindow]) /* <Luminous/> points without HiDPI; [Viewer Lab] llConvertPointToBacking */;
     mMousePos[0] = mPoint.x;
     mMousePos[1] = mPoint.y;
     callMouseDragged(mMousePos, 0);

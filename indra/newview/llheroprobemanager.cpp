@@ -41,9 +41,14 @@
 #include "llviewerwindow.h"
 #include "llviewerjoystick.h"
 #include "llviewermediafocus.h"
+#include "llrhi.h" // [Viewer Lab]
 
 extern bool gCubeSnapshot;
 extern bool gTeleportDisplay;
+
+// [Viewer Lab] Whether update has zeroed every level of the current hero cube map array; initReflectionMaps clears it
+// with each new array. gPipeline has the one LLHeroProbeManager
+static bool sUnwrittenLevelsZeroed = false;
 
 // get the next highest power of two of v (or v if v is already a power of two)
 //defined in llvertexbuffer.cpp
@@ -116,12 +121,49 @@ void LLHeroProbeManager::update()
         U32 res = mProbeResolution;
         U32 count = (U32)(log2((F32)res) + 0.5f);
 
+        // [Viewer Lab] Off GL the mip chain has the cube map array's format (R11G11B10 with HDR, as the reflection
+        // probes' chain; GL_RGBA8 and the array's GL_RGB8 are both RGBA8Unorm), so the two copies into the array are
+        // same-format copies Metal makes; reflectionmipF writes alpha 0 and the array has none. GL as before
+        const bool gl = LL::RHI::viewerBackend() == LL::RHI::BackendType::GL;
+        const U32 hdr_fmt = gl ? GL_RGBA16F : GL_R11F_G11F_B10F;
+
         mMipChain.resize(count);
         for (U32 i = 0; i < count; ++i)
         {
-            mMipChain[i].allocate(res, res, render_hdr ? GL_RGBA16F : GL_RGBA8);
+            mMipChain[i].allocate(res, res, render_hdr ? hdr_fmt : GL_RGBA8);
             res /= 2;
         }
+    }
+
+    // [Viewer Lab] Off GL, once per array and before the hero search: every level of every face of the array, down to
+    // 1x1, is zeroed, as GL's glTexImage3D without data left them. Metal's memory there is undefined; with mirrors on
+    // bindReflectionProbes binds the array and tapHeroProbe samples it at (1 - glossiness) * heroMipCount even where its
+    // weight is 0, also when no hero probe is rendered (no mirror in the region, out of view or range, occluded), and
+    // generateRadiance writes only the first quarter of the levels. An infinity or NaN there took whole channels out of
+    // glossy surfaces. Same-format copies of the cleared mip chain level 0, through generateRadiance's copy; the colour
+    // mask the clear follows is restored
+    if (!sUnwrittenLevelsZeroed && LL::RHI::viewerBackend() != LL::RHI::BackendType::GL && !mMipChain.empty() &&
+        mMipChain[0].isComplete())
+    {
+        sUnwrittenLevelsZeroed = true;
+        bool mask_r = true, mask_g = true, mask_b = true, mask_a = true;
+        gGL.getColorMask(mask_r, mask_g, mask_b, mask_a);
+        gGL.setColorMask(true, true);
+        mMipChain[0].bindTarget();
+        LLRenderTarget::setClearColor(0.f, 0.f, 0.f, 0.f);
+        mMipChain[0].clear(GL_COLOR_BUFFER_BIT);
+        mTexture->bind(0);
+        const S32 layers = S32(mTexture->getCount() * 6);
+        for (U32 level = 0, res = mProbeResolution; res >= 1; ++level, res /= 2)
+        {
+            for (S32 layer = 0; layer < layers; ++layer)
+            {
+                copy_to_cube_map_array(0, S32(level), layer, S32(res));
+            }
+        }
+        mTexture->unbind();
+        mMipChain[0].flush();
+        gGL.setColorMask(mask_r, mask_g, mask_b, mask_a);
     }
 
     llassert(mProbes[0] == mDefaultProbe);
@@ -415,7 +457,7 @@ void LLHeroProbeManager::updateProbeFace(LLReflectionMap* probe, U32 face, bool 
                 LL_PROFILE_GPU_ZONE("hero probe mip copy");
                 mTexture->bind(0);
 
-                glCopyTexSubImage3D(GL_TEXTURE_CUBE_MAP_ARRAY, mip, 0, 0, sourceIdx * 6 + face, 0, 0, res, res);
+                copy_to_cube_map_array(0, mip, sourceIdx * 6 + face, res); // [Viewer Lab]
 
                 mTexture->unbind();
             }
@@ -482,13 +524,13 @@ void LLHeroProbeManager::generateRadiance(LLReflectionMap* probe)
 
                     mVertexBuffer->drawArrays(gGL.TRIANGLE_STRIP, 0, 4);
 
-                    glCopyTexSubImage3D(GL_TEXTURE_CUBE_MAP_ARRAY, i, 0, 0, probe->mCubeIndex * 6 + cf, 0, 0, res, res);
+                    copy_to_cube_map_array(channel, i, probe->mCubeIndex * 6 + cf, res); // [Viewer Lab]
                 }
 
                 if (i != mMipChain.size() - 1)
                 {
                     res /= 2;
-                    glViewport(0, 0, res, res);
+                    gGL.setViewport(0, 0, res, res); // [Viewer Lab]
                 }
             }
 
@@ -585,6 +627,7 @@ void LLHeroProbeManager::initReflectionMaps()
         mMaxProbeLOD = log2f((F32)mProbeResolution) - 1.f; // number of mips - 1
 
         mTexture = new LLCubeMapArray();
+        sUnwrittenLevelsZeroed = false; // [Viewer Lab] a new array: nothing has written its levels yet
 
         static LLCachedControl<bool> render_hdr(gSavedSettings, "RenderHDREnabled", true);
 

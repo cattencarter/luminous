@@ -790,39 +790,48 @@ void LLViewerOctreeGroup::checkStates()
 //-------------------------------------------------------------------------------------------
 //occulsion culling functions and classes
 //-------------------------------------------------------------------------------------------
-std::set<U32> LLOcclusionCullingGroup::sPendingQueries;
+std::set<U64> LLOcclusionCullingGroup::sPendingQueries; // [Viewer Lab] the queries' ids
 
-static std::queue<GLuint> sFreeQueries;
+static std::queue<LLGPUQuery> sFreeQueries; // [Viewer Lab]
+U64 LLOcclusionCullingGroup::sWorldResultsRead = 0;   // [Viewer Lab]
+U64 LLOcclusionCullingGroup::sWorldResultsHidden = 0; // [Viewer Lab]
+U64 LLOcclusionCullingGroup::sWorldResultsWaited = 0; // [Viewer Lab]
 
 #define QUERY_POOL_SIZE 1024
 
-U32 LLOcclusionCullingGroup::getNewOcclusionQueryObjectName()
+LLGPUQuery LLOcclusionCullingGroup::getNewOcclusionQueryObjectName()
 {
     LL_PROFILE_ZONE_SCOPED_CATEGORY_OCTREE;
 
     if (sFreeQueries.empty())
     {
         //seed 1024 query names into the free query pool
-        GLuint queries[1024];
-        glGenQueries(1024, queries);
-        for (int i = 0; i < 1024; ++i)
+        // [Viewer Lab] The device makes them in one allocation, in GL's order, for "at least one sample", whose GL target
+        // the backend chooses
+        std::vector<LLGPUQuery> fresh;
+        LLGPUQuery::create(GL_ANY_SAMPLES_PASSED, QUERY_POOL_SIZE, fresh);
+        for (LLGPUQuery& query : fresh)
         {
-            sFreeQueries.push(queries[i]);
+            sFreeQueries.push(std::move(query));
+        }
+        if (sFreeQueries.empty())
+        {
+            return LLGPUQuery(); // none without the device, as name 0
         }
     }
 
     // pull from pool
-    GLuint ret = sFreeQueries.front();
+    LLGPUQuery ret = std::move(sFreeQueries.front());
     sFreeQueries.pop();
     return ret;
 }
 
-void LLOcclusionCullingGroup::releaseOcclusionQueryObjectName(GLuint name)
+void LLOcclusionCullingGroup::releaseOcclusionQueryObjectName(LLGPUQuery query)
 {
-    if (name != 0)
+    if (query)
     {
         LL_PROFILE_ZONE_SCOPED_CATEGORY_OCTREE;
-        sFreeQueries.push(name);
+        sFreeQueries.push(std::move(query));
     }
 }
 
@@ -873,7 +882,6 @@ LLOcclusionCullingGroup::LLOcclusionCullingGroup(OctreeNode* node, LLViewerOctre
 
     for (U32 i = 0; i < LLViewerCamera::NUM_CAMERAS; i++)
     {
-        mOcclusionQuery[i] = 0;
         mOcclusionCheckCount[i] = 0;
         mOcclusionIssued[i] = 0;
         mOcclusionState[i] = parent ? SG_STATE_INHERIT_MASK & parent->mOcclusionState[i] : 0;
@@ -926,8 +934,7 @@ void LLOcclusionCullingGroup::releaseOcclusionQueryObjectNames()
     {
         if (mOcclusionQuery[i])
         {
-            releaseOcclusionQueryObjectName(mOcclusionQuery[i]);
-            mOcclusionQuery[i] = 0;
+            releaseOcclusionQueryObjectName(std::move(mOcclusionQuery[i]));
         }
     }
 }
@@ -944,8 +951,7 @@ void LLOcclusionCullingGroup::setOcclusionState(U32 state, S32 mode /* = STATE_M
         mOcclusionState[LLViewerCamera::sCurCameraID] |= state;
         if ((state & DISCARD_QUERY) && mOcclusionQuery[LLViewerCamera::sCurCameraID])
         {
-            releaseOcclusionQueryObjectName(mOcclusionQuery[LLViewerCamera::sCurCameraID]);
-            mOcclusionQuery[LLViewerCamera::sCurCameraID] = 0;
+            releaseOcclusionQueryObjectName(std::move(mOcclusionQuery[LLViewerCamera::sCurCameraID]));
         }
         break;
 
@@ -972,8 +978,7 @@ void LLOcclusionCullingGroup::setOcclusionState(U32 state, S32 mode /* = STATE_M
 
             if ((state & DISCARD_QUERY) && mOcclusionQuery[i])
             {
-                releaseOcclusionQueryObjectName(mOcclusionQuery[i]);
-                mOcclusionQuery[i] = 0;
+                releaseOcclusionQueryObjectName(std::move(mOcclusionQuery[i]));
             }
         }
         break;
@@ -1120,8 +1125,7 @@ void LLOcclusionCullingGroup::checkOcclusion()
     {
         if (isOcclusionState(DISCARD_QUERY))
         {   // delete the query to avoid holding onto hundreds of pending queries
-            releaseOcclusionQueryObjectName(mOcclusionQuery[LLViewerCamera::sCurCameraID]);
-            mOcclusionQuery[LLViewerCamera::sCurCameraID] = 0;
+            releaseOcclusionQueryObjectName(std::move(mOcclusionQuery[LLViewerCamera::sCurCameraID]));
             // mark non-occluded
             clearOcclusionState(LLOcclusionCullingGroup::OCCLUDED, LLOcclusionCullingGroup::STATE_MODE_DIFF);
             clearOcclusionState(QUERY_PENDING | DISCARD_QUERY);
@@ -1131,7 +1135,7 @@ void LLOcclusionCullingGroup::checkOcclusion()
             GLuint available;
             {
                 LL_PROFILE_ZONE_NAMED_CATEGORY_OCTREE("co - query available");
-                glGetQueryObjectuiv(mOcclusionQuery[LLViewerCamera::sCurCameraID], GL_QUERY_RESULT_AVAILABLE, &available);
+                available = GLuint(mOcclusionQuery[LLViewerCamera::sCurCameraID].get(GL_QUERY_RESULT_AVAILABLE));
                 mOcclusionCheckCount[LLViewerCamera::sCurCameraID]++;
             }
 
@@ -1145,11 +1149,17 @@ void LLOcclusionCullingGroup::checkOcclusion()
                     LL_PROFILE_ZONE_NAMED_CATEGORY_OCTREE("co - query result");
                     // Ping watchdog before a blocking GL_QUERY_RESULT GPU call
                     LLAppViewer::instance()->pingMainloopTimeout("Display:CullQueryResult");
-                    glGetQueryObjectuiv(mOcclusionQuery[LLViewerCamera::sCurCameraID], GL_QUERY_RESULT, &query_result);
+                    query_result = GLuint(mOcclusionQuery[LLViewerCamera::sCurCameraID].get(GL_QUERY_RESULT));
                 }
 #if LL_TRACK_PENDING_OCCLUSION_QUERIES
-                sPendingQueries.erase(mOcclusionQuery[LLViewerCamera::sCurCameraID]);
+                sPendingQueries.erase(mOcclusionQuery[LLViewerCamera::sCurCameraID].id());
 #endif
+                if (LLViewerCamera::sCurCameraID == LLViewerCamera::CAMERA_WORLD) // [Viewer Lab]
+                {
+                    ++sWorldResultsRead;
+                    sWorldResultsHidden += query_result == 0 ? 1 : 0;
+                    sWorldResultsWaited += available ? 0 : 1;
+                }
 
                 if (query_result > 0)
                 {
@@ -1219,10 +1229,11 @@ void LLOcclusionCullingGroup::doOcclusion(LLCamera* camera, const LLVector4a* sh
 
                     LLGLEnable clamp(use_depth_clamp ? GL_DEPTH_CLAMP : 0);
 
-                    U32 mode = gGLManager.mGLVersion >= 3.3f ? GL_ANY_SAMPLES_PASSED : GL_SAMPLES_PASSED;
+                    // [Viewer Lab] At least one sample; the GL backend asks GL_SAMPLES_PASSED below GL 3.3
+                    U32 mode = GL_ANY_SAMPLES_PASSED;
 
 #if LL_TRACK_PENDING_OCCLUSION_QUERIES
-                    sPendingQueries.insert(mOcclusionQuery[LLViewerCamera::sCurCameraID]);
+                    sPendingQueries.insert(mOcclusionQuery[LLViewerCamera::sCurCameraID].id());
 #endif
                     add(sOcclusionQueries, 1);
 
@@ -1236,9 +1247,9 @@ void LLOcclusionCullingGroup::doOcclusion(LLCamera* camera, const LLVector4a* sh
                             LL_PROFILE_ZONE_NAMED_CATEGORY_OCTREE("glBeginQuery");
 
                             //get an occlusion query that hasn't been used in awhile
-                            releaseOcclusionQueryObjectName(mOcclusionQuery[LLViewerCamera::sCurCameraID]);
+                            releaseOcclusionQueryObjectName(std::move(mOcclusionQuery[LLViewerCamera::sCurCameraID]));
                             mOcclusionQuery[LLViewerCamera::sCurCameraID] = getNewOcclusionQueryObjectName();
-                            glBeginQuery(mode, mOcclusionQuery[LLViewerCamera::sCurCameraID]);
+                            mOcclusionQuery[LLViewerCamera::sCurCameraID].begin(mode);
                         }
 
                         LLGLSLShader* shader = LLGLSLShader::sCurBoundShaderPtr;
@@ -1280,7 +1291,7 @@ void LLOcclusionCullingGroup::doOcclusion(LLCamera* camera, const LLVector4a* sh
 
                         {
                             LL_PROFILE_ZONE_NAMED_CATEGORY_OCTREE("glEndQuery");
-                            glEndQuery(mode);
+                            mOcclusionQuery[LLViewerCamera::sCurCameraID].end(mode);
                         }
                     }
                 }

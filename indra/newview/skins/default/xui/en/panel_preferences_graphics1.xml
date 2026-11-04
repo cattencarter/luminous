@@ -1235,6 +1235,53 @@ If you do not understand the distinction then leave this control alone."
          width="100">
             Second(s)
         </text>
+
+        <!-- The graphics backend switch: no control_name, so graphics presets never change the backend; shown only where
+             Metal can run (LLPanelPreferenceGraphics::refreshBackendSwitch). -->
+        <text
+         type="string"
+         length="1"
+         follows="left|top"
+         height="16"
+         layout="topleft"
+         left="10"
+         name="graphics_backend_label"
+         top_pad="20"
+         visible="false"
+         width="115">
+            Graphics backend:
+        </text>
+        <combo_box
+         follows="left|top"
+         height="23"
+         layout="topleft"
+         left_pad="5"
+         name="graphics_backend"
+         top_delta="-4"
+         visible="false"
+         width="90">
+            <combo_box.item
+             label="OpenGL"
+             name="OpenGL"
+             value="OpenGL"/>
+            <combo_box.item
+             label="Metal"
+             name="Metal"
+             value="Metal"/>
+        </combo_box>
+        <text
+         type="string"
+         length="1"
+         follows="left|top"
+         height="16"
+         layout="topleft"
+         left_pad="10"
+         name="graphics_backend_note"
+         top_delta="4"
+         visible="false"
+         width="250">
+            (takes effect at the next start)
+        </text>
     </panel>
 
 <!--Rendering-->

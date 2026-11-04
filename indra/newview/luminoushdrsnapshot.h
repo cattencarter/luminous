@@ -104,6 +104,12 @@ namespace LuminousHDRSnapshot
     /// rawSnapshot then draws into targets of the picture's size, as for a
     /// picture larger than the window.
     bool shapedRender();
+    /// Metal, during one of Luminous's renders: true for a frame whose eight
+    /// bits rawSnapshot need not read -- every frame of a TIFF or EXR, which
+    /// capture() reads, and every frame but the last when the frames are
+    /// averaged as light. rawSnapshot then waits for the frame instead of
+    /// reading it. Always false on OpenGL.
+    bool frameReadSkipped();
 
     /// Registers the commit callbacks Luminous.SaveHDRSnapshot (EXR),
     /// Luminous.Save16BitSnapshot (TIFF) and Luminous.SaveLargeSnapshot

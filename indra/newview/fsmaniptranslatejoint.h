@@ -58,7 +58,7 @@ public:
     /// <param name="avatar">The avatar to interact with.</param>
     void setReferenceFrame(const E_PoserReferenceFrame frame) { mReferenceFrame = frame; };
 
-    static U32  getGridTexName();
+    static LL::RHI::Texture* getGridTexture(); // [Viewer Lab] the grid's texture, or null
     static void destroyGL();
     static void restoreGL();
     bool        handleMouseDown(S32 x, S32 y, MASK mask) override;

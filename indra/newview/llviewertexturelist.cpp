@@ -125,7 +125,7 @@ void LLViewerTextureList::doPreloadImages()
 
     // Set the "white" image
     LLViewerFetchedTexture::sWhiteImagep = LLViewerTextureManager::getFetchedTextureFromFile("white.tga", FTT_LOCAL_FILE, MIPMAP_NO, LLViewerFetchedTexture::BOOST_UI);
-    LLTexUnit::sWhiteTexture = LLViewerFetchedTexture::sWhiteImagep->getTexName();
+    LLTexUnit::setWhiteImage(LLViewerFetchedTexture::sWhiteImagep->getGLTexture()); // [Viewer Lab]
     LLUIImageList* image_list = LLUIImageList::getInstance();
 
     // Set default particle texture
@@ -307,7 +307,7 @@ void LLViewerTextureList::shutdown()
          iter != mImageList.end(); ++iter)
     {
         LLViewerFetchedTexture* image = *iter;
-        if (!image->hasGLTexture() ||
+        if (!image->hasTexture() || // [Viewer Lab] any backend
             !image->getUseDiscard() ||
             image->needsAux() ||
             !image->getTargetHost().isInvalid() ||
@@ -1156,7 +1156,8 @@ F32 LLViewerTextureList::updateImagesCreateTextures(F32 max_time)
         // desired discard may change while an image is being decoded. If the texture in VRAM is sufficient
         // for the current desired discard level, skip the texture creation.  This happens more often than it probably
         // should
-        bool redundant_load = imagep->hasGLTexture() && imagep->getDiscardLevel() <= imagep->getDesiredDiscardLevel();
+        // [Viewer Lab] hasTexture: any backend
+        bool redundant_load = imagep->hasTexture() && imagep->getDiscardLevel() <= imagep->getDesiredDiscardLevel();
 
         if (!redundant_load)
         {
@@ -1166,7 +1167,8 @@ F32 LLViewerTextureList::updateImagesCreateTextures(F32 max_time)
         imagep->postCreateTexture();
         imagep->mCreatePending = false;
 
-        if (imagep->hasGLTexture() && imagep->getDiscardLevel() < imagep->getDesiredDiscardLevel() &&
+        // [Viewer Lab] hasTexture: any backend
+        if (imagep->hasTexture() && imagep->getDiscardLevel() < imagep->getDesiredDiscardLevel() &&
            (imagep->getDesiredDiscardLevel() <= MAX_DISCARD_LEVEL))
         {
             // NOTE: this may happen if the desired discard reduces while a decode is in progress and does not
@@ -1207,9 +1209,10 @@ F32 LLViewerTextureList::updateImagesCreateTextures(F32 max_time)
             llassert(image->mDownScalePending);
 
             LLImageGL* img = image->getGLTexture();
-            if (img && img->getHasGLTexture())
+            if (img && img->hasTexture()) // [Viewer Lab] off GL a texture has no GL name
             {
-                img->scaleDown(image->getDesiredDiscardLevel());
+                // [Viewer Lab] The screen triangle set above, so the draw reaches the viewer's encoder
+                img->scaleDown(image->getDesiredDiscardLevel(), gPipeline.mScreenTriangleVB.get());
             }
 
             image->mDownScalePending = false;

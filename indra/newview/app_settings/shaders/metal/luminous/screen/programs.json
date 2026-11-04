@@ -1,0 +1,67 @@
+{
+  "libraries": [
+    {
+      "name": "screen",
+      "files": [
+        "luminous/common/spd.metal",
+        "luminous/screen/depthpyramid.metal",
+        "luminous/screen/gtao.metal",
+        "luminous/screen/scenemips.metal"
+      ],
+      "defines": {},
+      "compute": [
+        {
+          "function": "luminous_depth_pyramid",
+          "threadsPerThreadgroup": [
+            8,
+            8,
+            1
+          ]
+        },
+        {
+          "function": "luminous_gtao_half",
+          "threadsPerThreadgroup": [
+            8,
+            8,
+            1
+          ]
+        },
+        {
+          "function": "luminous_gtao_denoise",
+          "threadsPerThreadgroup": [
+            8,
+            8,
+            1
+          ]
+        },
+        {
+          "function": "luminous_spd_downsample",
+          "threadsPerThreadgroup": [
+            256,
+            1,
+            1
+          ]
+        },
+        {
+          "function": "luminous_scene_mip_down",
+          "threadsPerThreadgroup": [
+            8,
+            8,
+            1
+          ]
+        }
+      ],
+      "render": [
+        {
+          "vertex": "luminous_fullscreen_vs",
+          "fragment": "luminous_gtao_up_fs",
+          "colorFormats": [
+            "RGBA16Float"
+          ],
+          "depthFormat": "",
+          "blend": "none"
+        }
+      ]
+    }
+  ]
+}

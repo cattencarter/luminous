@@ -53,6 +53,7 @@ public:
     bool maximize() override;
     void minimize() override;
     void restore() override;
+    void setNativeTitle(const std::string& title); // [Viewer Lab] setTitle stays inert, see the .cpp
     bool getFullscreen();
     bool getPosition(LLCoordScreen *position) override;
     bool getSize(LLCoordScreen *size) override;
@@ -108,6 +109,7 @@ public:
     bool dialogColorPicker(F32 *r, F32 *g, F32 *b) override;
 
     void *getPlatformWindow() override;
+    void* getNativeView() override; // [Viewer Lab]
     void bringToFront() override {};
 
     void allowLanguageTextInput(LLPreeditor *preeditor, bool b) override;
@@ -139,6 +141,17 @@ public:
     void handleDragNDrop(std::string url, LLWindowCallbacks::DragNDropAction action);
 
     bool allowsLanguageInput() { return mLanguageTextInputAllowed; }
+
+    // [Viewer Lab] Makes the window's GL context on its view when the GL backend creates the device.
+    bool createGLContext() override;
+
+    // [Viewer Lab] Before the Metal backend's device: fills gGLManager from GL on a temporary CGL context,
+    // with no view and no drawable, releases and destroys that context, and leaves mInited false. A query that gets no
+    // context, or leaves one current, ends the run with LL_ERRS.
+    void queryGLManager();
+    // [Viewer Lab] Makes the view's CAMetalLayer exist now rather than in AppKit's next display cycle, so getSize
+    // already follows the layer's scale when the Metal device is made.
+    void makeViewLayer();
 
     //create a new GL context that shares a namespace with this Window's main GL context and make it current on the current thread
     // returns a pointer to be handed back to destroySharedConext/makeContextCurrent
@@ -188,9 +201,12 @@ protected:
     // Platform specific methods
     //
 
-    // create or re-create the GL context/window.  Called from the constructor and switchContext().
-    bool createContext(int x, int y, int width, int height, int bits, bool fullscreen, bool enable_vsync);
+    // [Viewer Lab] createView gets the window and makes the view (the constructor). createContext makes the window's
+    // GL context when the GL backend creates the device (createGLContext).
+    bool createView(bool fullscreen, bool enable_vsync);
+    bool createContext(bool enable_vsync);
     void destroyContext();
+    void destroyGLContext(); // [Viewer Lab] destroyContext's GL part
     void setupFailure(const std::string& text, const std::string& caption, U32 type);
     void adjustCursorDecouple(bool warpingMouse = false);
     static MASK modifiersToMask(S16 modifiers);
@@ -210,8 +226,11 @@ protected:
     // Use generic pointers here.  This lets us do some funky Obj-C interop using Obj-C objects without having to worry about any compilation problems that may arise.
     NSWindowRef         mWindow;
     GLViewRef           mGLView;
-    CGLContextObj       mContext;
-    CGLPixelFormatObj   mPixelFormat;
+    // [Viewer Lab] The GL context (a CGLContextObj) and the shared contexts' pixel format (a CGLPixelFormatObj), as
+    // generic pointers like mWindow and mGLView, so this header names no GL type; only the GL backend functions in
+    // llwindowmacosx.cpp use them.
+    void*               mContext;
+    void*               mPixelFormat;
     CGDirectDisplayID   mDisplay;
 
     LLRect      mOldMouseClip;  // Screen rect to which the mouse cursor was globally constrained before we changed it in clipMouse()
@@ -232,6 +251,8 @@ protected:
     bool        mMinimized;
     U32         mFSAASamples;
     bool        mForceRebuild;
+    // [Viewer Lab] createWindow's enable_vsync, for the GL context made when the device is created
+    bool        mEnableVSync = false;
 
     S32 mDragOverrideCursor;
 

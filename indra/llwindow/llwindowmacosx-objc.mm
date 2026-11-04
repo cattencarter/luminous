@@ -30,6 +30,7 @@
 #include <errno.h>
 #include "llopenglview-objc.h"
 #include "llwindowmacosx-objc.h"
+#include "llwindowmacosxcontext-objc.h" // [Viewer Lab] getCGLContextObj
 #include "llappdelegate-objc.h"
 
 // <Luminous> Without HiDPI the surface is in points, and so is every size
@@ -238,11 +239,41 @@ NSWindowRef createNSWindow(int x, int y, int width, int height)
     return window;
 }
 
+// [Viewer Lab] The window's title from UTF-8; a string that is not valid UTF-8 leaves the title as it is and
+// gives false.
+bool setNSWindowTitle(NSWindowRef window, const char* title)
+{
+    @autoreleasepool {
+        NSString* str = [NSString stringWithUTF8String:title];
+        if (!str)
+        {
+            return false;
+        }
+        [(LLNSWindow*)window setTitle:str];
+        return true;
+    }
+}
+
+// [Viewer Lab] Whether the views made after this call get a CAMetalLayer; LLWindowMacOSX::createView calls it with the
+// Metal backend before createOpenGLView.
+void setOpenGLViewMetalLayer(bool use)
+{
+    [LLOpenGLView setUseMetalLayer:use];
+}
+
 GLViewRef createOpenGLView(NSWindowRef window, unsigned int samples, bool vsync)
 {
     LLOpenGLView *glview = [[LLOpenGLView alloc]initWithFrame:[(LLNSWindow*)window frame] withSamples:samples andVsync:vsync];
     [(LLNSWindow*)window setContentView:glview];
     return glview;
+}
+
+// [Viewer Lab] The view's GL context and pixel format. LLWindowMacOSX::createContext calls this when the GL backend
+// creates the device. If the context cannot be made, mContext stays NULL there and no dialog is shown, as
+// when the init returned nil.
+void createOpenGLContext(GLViewRef view, bool vsync)
+{
+    [(LLOpenGLView*)view createGLContextWithVsync:vsync];
 }
 
 void glSwapBuffers(void* context)
@@ -266,9 +297,21 @@ unsigned long getVramSize(GLViewRef view)
     return [(LLOpenGLView *)view getVramSize];
 }
 
+// [Viewer Lab] AppKit makes a layer-backed view's layer in the next display cycle; the window's displayIfNeeded makes
+// it now, as the Metal surface's metalLayerOf does when it finds none.
+void makeOpenGLViewLayer(GLViewRef view)
+{
+    LLOpenGLView *glview = (LLOpenGLView *)view;
+    if ([glview layer] == nil)
+    {
+        [[glview window] displayIfNeeded];
+    }
+}
+
 float getDeviceUnitSize(GLViewRef view)
 {
-    return gHiDPISupport ? [(LLOpenGLView*)view convertSizeToBacking:NSMakeSize(1, 1)].width : 1.f; // <Luminous/> points without HiDPI
+    // <Luminous/> points without HiDPI; [Viewer Lab] llConvertSizeToBacking also covers the view's CAMetalLayer
+    return gHiDPISupport ? [(LLOpenGLView*)view llConvertSizeToBacking:NSMakeSize(1, 1)].width : 1.f;
 }
 
 CGRect getContentViewRect(NSWindowRef window)
@@ -279,7 +322,14 @@ CGRect getContentViewRect(NSWindowRef window)
 CGRect getBackingViewRect(NSWindowRef window, GLViewRef view)
 {
     NSRect bounds = [[(LLNSWindow*)window contentView] bounds];
-    return gHiDPISupport ? [(NSOpenGLView*)view convertRectToBacking:bounds] : bounds; // <Luminous/> points without HiDPI
+    // <Luminous/> points without HiDPI; [Viewer Lab] llConvertRectToBacking also covers the view's CAMetalLayer
+    return gHiDPISupport ? [(LLOpenGLView*)view llConvertRectToBacking:bounds] : bounds;
+}
+
+// [Viewer Lab] The golden hook's backing scale for a view with a CAMetalLayer (0 is off), on the main thread.
+void setOpenGLViewTestBackingScale(GLViewRef view, float scale)
+{
+    [(LLOpenGLView*)view setTestBackingScale:scale];
 }
 
 void getWindowSize(NSWindowRef window, float* size)
@@ -342,8 +392,8 @@ int takeHeldClicks(GLViewRef view, float* positions, int max_clicks, bool* escap
             }
             else if (clicks < max_clicks && [event window] == [(LLOpenGLView*)view window])
             {
-                NSPoint point = gHiDPISupport ? [(LLOpenGLView*)view convertPointToBacking:[event locationInWindow]]
-                                              : [event locationInWindow]; // <Luminous/> points without HiDPI
+                NSPoint point = gHiDPISupport ? [(LLOpenGLView*)view llConvertPointToBacking:[event locationInWindow]]
+                                              : [event locationInWindow]; // <Luminous/> points without HiDPI; [Viewer Lab] llConvertPointToBacking
                 positions[2 * clicks] = point.x;
                 positions[2 * clicks + 1] = point.y;
                 ++clicks;

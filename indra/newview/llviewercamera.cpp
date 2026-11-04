@@ -355,11 +355,7 @@ void LLViewerCamera::setPerspective(bool for_selection,
         {
             z_far = MAX_FAR_CLIP;
         }
-        glViewport(x, y_from_bot, width, height);
-        gGLViewport[0] = x;
-        gGLViewport[1] = y_from_bot;
-        gGLViewport[2] = width;
-        gGLViewport[3] = height;
+        gGL.setWindowViewport(x, y_from_bot, width, height); // [Viewer Lab] also gGLViewport
     }
 
     if (mZoomFactor > 1.f)

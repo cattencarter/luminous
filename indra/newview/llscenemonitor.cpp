@@ -41,6 +41,7 @@
 #include "pipeline.h"
 #include "llviewerparcelmgr.h"
 #include "llviewerpartsim.h"
+#include <atomic>
 
 LLSceneMonitorView* gSceneMonitorView = NULL;
 
@@ -63,7 +64,6 @@ LLSceneMonitor::LLSceneMonitor() :
     mDiffTolerance(0.1f),
     mDiffState(WAITING_FOR_NEXT_DIFF),
     mDebugViewerVisible(false),
-    mQueryObject(0),
     mDiffPixelRatio(0.5f)
 {
     mFrames[0] = NULL;
@@ -94,10 +94,9 @@ void LLSceneMonitor::reset()
 
     unfreezeScene();
 
-    if(mQueryObject > 0)
+    if(mQueryObject)
     {
-        LLOcclusionCullingGroup::releaseOcclusionQueryObjectName(mQueryObject);
-        mQueryObject = 0;
+        mQueryObject.release(); // [Viewer Lab] its own query, no longer the octree pool's
     }
 }
 
@@ -309,18 +308,22 @@ void LLSceneMonitor::capture()
 
         last_capture_frame = gFrameCount;
 
+        // [Viewer Lab] Coverage marker, once per session
+        static std::atomic<bool> sReached{ false };
+        if (!sReached.exchange(true))
+        {
+            LL_INFOS("RHI") << "Facade site reached: llscenemonitor.cpp:capture" << LL_ENDL;
+        }
+
         LLRenderTarget& cur_target = getCaptureTarget();
 
-        U32 old_FBO = LLRenderTarget::sCurFBO;
-
         gGL.getTexUnit(0)->bind(&cur_target);
-        glBindFramebuffer(GL_READ_FRAMEBUFFER, 0); //point to the main frame buffer.
-
-        glCopyTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, 0, 0, cur_target.getWidth(), cur_target.getHeight()); //copy the content
-
-        glBindFramebuffer(GL_READ_FRAMEBUFFER, 0);
-        glBindFramebuffer(GL_DRAW_FRAMEBUFFER, 0);
-        glBindFramebuffer(GL_FRAMEBUFFER, old_FBO);
+        // [Viewer Lab] The main frame buffer's content into the capture target, with the framebuffer bindings as the raw
+        // calls left them (GL_FRAMEBUFFER back at sCurFBO). The result is ignored as before: GL always copies; off GL it
+        // copies only when the encoder tracked the copy. A world view larger than the window (a snapshot
+        // above the window's size) gives a capture target larger than the back buffer: copyFromBackBuffer copies the
+        // overlap, the only pixels GL's copy defined
+        (void)cur_target.copyFromBackBuffer();
 
         mDiffState = NEED_DIFF;
     }
@@ -427,13 +430,13 @@ void LLSceneMonitor::calcDiffAggregate()
 
     if(!mQueryObject)
     {
-        mQueryObject = LLOcclusionCullingGroup::getNewOcclusionQueryObjectName();
+        mQueryObject = LLGPUQuery::create(GL_SAMPLES_PASSED); // [Viewer Lab]
     }
 
     LLGLDepthTest depth(true, false, GL_ALWAYS);
     if(!mDebugViewerVisible)
     {
-        glColorMask(GL_FALSE, GL_FALSE, GL_FALSE, GL_FALSE);
+        gGL.setColorMask(GL_FALSE, GL_FALSE, GL_FALSE, GL_FALSE); // [Viewer Lab] through LLRender's cache
     }
 
     LLGLSLShader* cur_shader = NULL;
@@ -444,14 +447,14 @@ void LLSceneMonitor::calcDiffAggregate()
 
     if(mDiffState == EXECUTE_DIFF)
     {
-        glBeginQuery(GL_SAMPLES_PASSED, mQueryObject);
+        mQueryObject.begin(GL_SAMPLES_PASSED);
     }
 
     gl_draw_scaled_target(0, 0, S32(mDiff->getWidth() * mDiffPixelRatio), S32(mDiff->getHeight() * mDiffPixelRatio), mDiff);
 
     if(mDiffState == EXECUTE_DIFF)
     {
-        glEndQuery(GL_SAMPLES_PASSED);
+        mQueryObject.end(GL_SAMPLES_PASSED);
         mDiffState = WAIT_ON_RESULT;
     }
 
@@ -464,7 +467,7 @@ void LLSceneMonitor::calcDiffAggregate()
 
     if(!mDebugViewerVisible)
     {
-        glColorMask(GL_TRUE, GL_TRUE, GL_TRUE, GL_TRUE);
+        gGL.setColorMask(GL_TRUE, GL_TRUE, GL_TRUE, GL_TRUE);
     }
 #endif
 }
@@ -481,12 +484,10 @@ void LLSceneMonitor::fetchQueryResult()
     {
         mDiffState = WAITING_FOR_NEXT_DIFF;
 
-        GLuint available = 0;
-        glGetQueryObjectuiv(mQueryObject, GL_QUERY_RESULT_AVAILABLE, &available);
+        GLuint available = GLuint(mQueryObject.get(GL_QUERY_RESULT_AVAILABLE)); // [Viewer Lab]
         if(available)
         {
-            GLuint count = 0;
-            glGetQueryObjectuiv(mQueryObject, GL_QUERY_RESULT, &count);
+            GLuint count = GLuint(mQueryObject.get(GL_QUERY_RESULT));
 
             mDiffResult = sqrtf(count * 0.5f / (mDiff->getWidth() * mDiff->getHeight() * mDiffPixelRatio * mDiffPixelRatio)); //0.5 -> (front face + back face)
 

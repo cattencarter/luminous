@@ -29,6 +29,7 @@
 
 #include "llfloaternamedesc.h"
 #include "lldynamictexture.h"
+#include "llimagegl.h" // [Viewer Lab] setTexture keeps the image
 #include "llpointer.h"
 #include "llquaternion.h"
 
@@ -52,7 +53,7 @@ protected:
     S8 getType() const override;
 
     void setPreviewTarget(LLImageRaw *imagep, F32 distance);
-    void setTexture(U32 name) { mTextureName = name; }
+    void setTexture(LLImageGL* image) { mTexture = image; } // [Viewer Lab] the image, not its GL name
 
     bool render() override;
     void refresh();
@@ -63,7 +64,7 @@ protected:
 
  protected:
     bool        mNeedsUpdate;
-    U32         mTextureName;
+    LLPointer<LLImageGL>      mTexture; // [Viewer Lab]
     F32         mCameraDistance;
     F32         mCameraYaw;
     F32         mCameraPitch;
@@ -85,7 +86,7 @@ public:
     S8 getType() const override;
 
     void setPreviewTarget(const std::string& joint_name, const std::string& mesh_name, LLImageRaw* imagep, F32 distance, bool male);
-    void setTexture(U32 name) { mTextureName = name; }
+    void setTexture(LLImageGL* image) { mTexture = image; } // [Viewer Lab] the image, not its GL name
     void clearPreviewTexture(const std::string& mesh_name);
 
     bool    render() override;
@@ -105,7 +106,7 @@ protected:
     F32         mCameraZoom;
     LLVector3   mCameraOffset;
     LLPointer<LLVOAvatar> mDummyAvatar;
-    U32         mTextureName;
+    LLPointer<LLImageGL>  mTexture; // [Viewer Lab]
 };
 
 class LLFloaterImagePreview : public LLFloaterNameDesc

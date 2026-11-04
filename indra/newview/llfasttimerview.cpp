@@ -33,6 +33,7 @@
 #include "llcombobox.h"
 #include "llerror.h"
 #include "llgl.h"
+#include "llimagegl.h"
 #include "llimagepng.h"
 #include "llrender.h"
 #include "llrendertarget.h"
@@ -54,6 +55,8 @@
 #include "lltreeiterators.h"
 #include "llmetricperformancetester.h"
 #include "llviewerstats.h"
+
+#include <atomic>
 
 //////////////////////////////////////////////////////////////////////////////
 
@@ -474,8 +477,21 @@ void saveChart(const std::string& label, const char* suffix, LLImageRaw* scratch
     {
         LLImageDataSharedLock lock(scratch);
 
+        // [Viewer Lab] Coverage marker, once per session
+        static std::atomic<bool> sReached{ false };
+        if (!sReached.exchange(true))
+        {
+            LL_INFOS("RHI") << "Transfer site reached: saveChart" << LL_ENDL;
+        }
         //read result back into raw image
-        glReadPixels(0, 0, 1024, 512, GL_RGB, GL_UNSIGNED_BYTE, scratch->getData());
+        // [Viewer Lab] Through the readback facade
+        if (!LLGPUReadback::readPixels(0, 0, 1024, 512, GL_RGB, GL_UNSIGNED_BYTE, scratch->getData(),
+                                       size_t(scratch->getDataSize())))
+        {
+            // [Viewer Lab] Off GL nothing was read: no chart
+            LL_WARNS("RHI") << "saveChart: the chart was not read back" << LL_ENDL;
+            return;
+        }
 
         //write results to disk
         LLPointer<LLImagePNG> result = new LLImagePNG();

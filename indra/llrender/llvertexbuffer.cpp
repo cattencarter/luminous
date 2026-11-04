@@ -36,7 +36,14 @@
 #include "llshadermgr.h"
 #include "llglslshader.h"
 #include "llmemory.h"
+#include "llrhi.h"
+#include "llrhigl.h" // [Viewer Lab] GLNames
+#include "llthread.h"
+#include "llrendertarget.h" // [Viewer Lab]
 #include <glm/gtc/type_ptr.hpp>
+#include <set> // [Viewer Lab]
+#include <unordered_map> // [Viewer Lab]
+#include <vector> // [Viewer Lab]
 
 //Next Highest Power Of Two
 //helper function, returns first number > v that is a power of 2, or v if v is already a power of 2
@@ -70,190 +77,6 @@ struct CompareMappedRegion
         return lhs.mStart < rhs.mStart;
     }
 };
-
-#define ENABLE_GL_WORK_QUEUE 0
-
-#if ENABLE_GL_WORK_QUEUE
-
-#define THREAD_COUNT 1
-
-//============================================================================
-
-// High performance WorkQueue for usage in real-time rendering work
-class GLWorkQueue
-{
-public:
-    using Work = std::function<void()>;
-
-    GLWorkQueue();
-
-    void post(const Work& value);
-
-    size_t size();
-
-    bool done();
-
-    // Get the next element from the queue
-    Work pop();
-
-    void runOne();
-
-    bool runPending();
-
-    void runUntilClose();
-
-    void close();
-
-    bool isClosed();
-
-    void syncGL();
-
-private:
-    std::mutex mMutex;
-    std::condition_variable mCondition;
-    std::queue<Work> mQueue;
-    bool mClosed = false;
-};
-
-GLWorkQueue::GLWorkQueue()
-{
-
-}
-
-void GLWorkQueue::syncGL()
-{
-    /*if (mSync)
-    {
-        std::lock_guard<std::mutex> lock(mMutex);
-        glWaitSync(mSync, 0, GL_TIMEOUT_IGNORED);
-        mSync = 0;
-    }*/
-}
-
-size_t GLWorkQueue::size()
-{
-    LL_PROFILE_ZONE_SCOPED_CATEGORY_THREAD;
-    std::lock_guard<std::mutex> lock(mMutex);
-    return mQueue.size();
-}
-
-bool GLWorkQueue::done()
-{
-    return size() == 0 && isClosed();
-}
-
-void GLWorkQueue::post(const GLWorkQueue::Work& value)
-{
-    LL_PROFILE_ZONE_SCOPED_CATEGORY_THREAD;
-    {
-        std::lock_guard<std::mutex> lock(mMutex);
-        mQueue.push(std::move(value));
-    }
-
-    mCondition.notify_one();
-}
-
-// Get the next element from the queue
-GLWorkQueue::Work GLWorkQueue::pop()
-{
-    LL_PROFILE_ZONE_SCOPED_CATEGORY_THREAD;
-    // Lock the mutex
-    {
-        std::unique_lock<std::mutex> lock(mMutex);
-
-        // Wait for a new element to become available or for the queue to close
-        {
-            mCondition.wait(lock, [=] { return !mQueue.empty() || mClosed; });
-        }
-    }
-
-    Work ret;
-
-    {
-        std::lock_guard<std::mutex> lock(mMutex);
-
-        // Get the next element from the queue
-        if (mQueue.size() > 0)
-        {
-            ret = mQueue.front();
-            mQueue.pop();
-        }
-        else
-        {
-            ret = []() {};
-        }
-    }
-
-    return ret;
-}
-
-void GLWorkQueue::runOne()
-{
-    LL_PROFILE_ZONE_SCOPED_CATEGORY_THREAD;
-    Work w = pop();
-    w();
-    //mSync = glFenceSync(GL_SYNC_GPU_COMMANDS_COMPLETE, 0);
-}
-
-void GLWorkQueue::runUntilClose()
-{
-    while (!isClosed())
-    {
-        runOne();
-    }
-}
-
-void GLWorkQueue::close()
-{
-    LL_PROFILE_ZONE_SCOPED_CATEGORY_THREAD;
-    {
-        std::lock_guard<std::mutex> lock(mMutex);
-        mClosed = true;
-    }
-
-    mCondition.notify_all();
-}
-
-bool GLWorkQueue::isClosed()
-{
-    LL_PROFILE_ZONE_SCOPED_CATEGORY_THREAD;
-    std::lock_guard<std::mutex> lock(mMutex);
-    return mClosed;
-}
-
-#include "llwindow.h"
-
-class LLGLWorkerThread : public LLThread
-{
-public:
-    LLGLWorkerThread(const std::string& name, GLWorkQueue* queue, LLWindow* window)
-        : LLThread(name)
-    {
-        mWindow = window;
-        mContext = mWindow->createSharedContext();
-        mQueue = queue;
-    }
-
-    void run() override
-    {
-        mWindow->makeContextCurrent(mContext);
-        gGL.init(false);
-        LL_PROFILER_GPU_CONTEXT_NS("LLGLWorker Context", 18);
-        mQueue->runUntilClose();
-        gGL.shutdown();
-        mWindow->destroySharedContext(mContext);
-    }
-
-    GLWorkQueue* mQueue;
-    LLWindow* mWindow;
-    void* mContext = nullptr;
-};
-
-
-static LLGLWorkerThread* sVBOThread[THREAD_COUNT];
-static GLWorkQueue* sQueue = nullptr;
-
-#endif
 
 //============================================================================
 // Pool of reusable VertexBuffer state
@@ -319,6 +142,424 @@ static void delete_buffers(S32 count, GLuint* buffers)
 }
 
 
+// [Viewer Lab] The GL backend functions below do nothing when GL is not the backend chosen at
+// startup, as llgl.cpp's gl_is_backend and llrender.cpp's drain_gl_errors.
+static bool gl_is_backend()
+{
+    return LL::RHI::viewerBackend() == LL::RHI::BackendType::GL;
+}
+
+// [Viewer Lab] LLVertexBuffer's record of the buffer bound on a target
+static U32& bound_gl_name(GLenum type)
+{
+    return type == GL_ELEMENT_ARRAY_BUFFER ? LLVertexBuffer::sGLRenderIndices : LLVertexBuffer::sGLRenderBuffer;
+}
+
+// [Viewer Lab] Binds a buffer when LLVertexBuffer's record names another one, as _unmapBuffer does
+static void rebind_gl_buffer(GLenum type, GLuint name)
+{
+    if (!gl_is_backend())
+    {
+        LL_GL_GATED("llvertexbuffer:rebind_gl_buffer");
+        return;
+    }
+    U32& bound = bound_gl_name(type);
+    if (bound != name)
+    {
+        glBindBuffer(type, name);
+        bound = name;
+    }
+}
+
+// [Viewer Lab] setBuffer's GL: the array buffer's bind with the attribute setup for the program's mask, the setup alone when
+// only the mask changed, and the element buffer's bind, each when LLVertexBuffer's record of GL's bindings names another
+// buffer or mask, with the record, in LLVertexBuffer's order. Only GL code reads that record.
+static void gl_set_buffer(U32 vertices, U32 indices, U32 data_mask, const U32* offsets)
+{
+    if (!gl_is_backend())
+    {
+        LL_GL_GATED("llvertexbuffer:gl_set_buffer");
+        return;
+    }
+    if (LLVertexBuffer::sGLRenderBuffer != vertices)
+    {
+        glBindBuffer(GL_ARRAY_BUFFER, vertices);
+        LLVertexBuffer::sGLRenderBuffer = vertices;
+
+        LLVertexBuffer::setupVertexAttributes(data_mask, offsets);
+    }
+    else if (LLVertexBuffer::sLastMask != data_mask)
+    {
+        LLVertexBuffer::setupVertexAttributes(data_mask, offsets);
+        LLVertexBuffer::sLastMask = data_mask;
+    }
+
+    if (indices != LLVertexBuffer::sGLRenderIndices)
+    {
+        glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, indices);
+        LLVertexBuffer::sGLRenderIndices = indices;
+    }
+}
+
+// [Viewer Lab] unbind's GL: no array or element buffer bound, with the record
+static void gl_unbind_buffers()
+{
+    if (!gl_is_backend())
+    {
+        LL_GL_GATED("llvertexbuffer:gl_unbind_buffers");
+        return;
+    }
+    glBindBuffer(GL_ARRAY_BUFFER, 0);
+    glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, 0);
+    LLVertexBuffer::sGLRenderBuffer = 0;
+    LLVertexBuffer::sGLRenderIndices = 0;
+}
+
+// [Viewer Lab] drawRange's and drawRangeFast's draw in GL's mode, so fans, line loops and strips draw as GL draws them
+static void gl_draw_range_elements(U32 mode, U32 start, U32 end, U32 count, U32 type, size_t offset)
+{
+    if (!gl_is_backend())
+    {
+        LL_GL_GATED("llvertexbuffer:gl_draw_range_elements");
+        return;
+    }
+    glDrawRangeElements(LLVertexBuffer::sGLMode[mode], start, end, count, type, (GLvoid*)offset);
+}
+
+// [Viewer Lab] drawArrays' draw in GL's mode; true when it made the call, so drawArrays tells whether
+// the draw was delivered without asking which backend runs
+static bool gl_draw_arrays(U32 mode, U32 first, U32 count)
+{
+    if (!gl_is_backend())
+    {
+        LL_GL_GATED("llvertexbuffer:gl_draw_arrays");
+        return false;
+    }
+    glDrawArrays(LLVertexBuffer::sGLMode[mode], first, count);
+    return true;
+}
+
+// [Viewer Lab] Whether LLVertexBuffer's record of GL's bindings names these buffers, as the draws assert; true when GL is not
+// the backend. Unused where llassert is compiled out.
+[[maybe_unused]] static bool gl_bound(U32 vertices, U32 indices)
+{
+    if (!gl_is_backend())
+    {
+        LL_GL_GATED("llvertexbuffer:gl_bound");
+        return true;
+    }
+    return vertices == LLVertexBuffer::sGLRenderBuffer && indices == LLVertexBuffer::sGLRenderIndices;
+}
+
+// [Viewer Lab] The census of the draws and setBuffer calls since the process began (LLVertexBuffer::DrawCounts): plain
+// counts, since LLVertexBuffer binds and draws on the main thread only; no GL.
+static LLVertexBuffer::DrawCounts sDrawCounts;
+// [Viewer Lab] The draws per shader while LLVertexBuffer::sTallyPrograms is set, with the name taken at its first draw
+// Keyed by the shader, so a tallied draw costs a hash of a pointer, not string compares; programTally()
+// gives them by name.
+struct ProgramTallyEntry
+{
+    std::string name;
+    U64 draws = 0;
+};
+static std::unordered_map<const LLGLSLShader*, ProgramTallyEntry> sProgramTally;
+bool LLVertexBuffer::sTallyPrograms = false;
+
+// [Viewer Lab] One draw: with a shader bound, with a program of the viewer's current device, with the part's storage on the
+// device (storage), and an indexed draw whose indices end past the part's
+static void count_draw(bool storage, bool indices_beyond)
+{
+    ++sDrawCounts.draws;
+    if (const LLGLSLShader* shader = LLGLSLShader::sCurBoundShaderPtr)
+    {
+        ++sDrawCounts.drawsWithShader;
+        if (LLVertexBuffer::sTallyPrograms)
+        {
+            ProgramTallyEntry& entry = sProgramTally[shader];
+            if (entry.draws++ == 0)
+            {
+                entry.name = shader->mName;
+            }
+        }
+        const LL::RHI::Device* device = LL::RHI::viewerDevice();
+        if (device && shader->getRHIProgram() && shader->getRHIDevice() == device->id())
+        {
+            ++sDrawCounts.drawsWithProgram;
+        }
+    }
+    sDrawCounts.drawsWithStorage += storage ? 1 : 0;
+    sDrawCounts.indicesBeyondBuffer += indices_beyond ? 1 : 0;
+}
+
+// [Viewer Lab]
+//static
+void LLVertexBuffer::noteSkippedDraw()
+{
+    count_draw(false, false);
+    ++sDrawCounts.skipped;
+}
+
+// [Viewer Lab] A member so the tests reach it
+//static
+bool LLVertexBuffer::streamsBeyond(U32 mask, const U32* offsets, U32 size)
+{
+    for (U32 i = 0; i < TYPE_MAX; ++i)
+    {
+        if ((mask & (1u << i)) && offsets[i] >= size)
+        {
+            return true;
+        }
+    }
+    return false;
+}
+
+// [Viewer Lab] The program last found pipeline ready by a draw, by id, which is never reused
+static U64 sReadyProgram = 0;
+// [Viewer Lab] The shaders and generations whose skipped draws have warned
+static std::set<std::pair<const LLGLSLShader*, U32>> sSkipWarned;
+
+// [Viewer Lab] Whether a draw goes on with the bound shader: not for a shader bind() refused (its record, no GL
+// name), nor for one whose pipeline failed after its publication; a shader without an RHI program (hand-made, or made
+// without the device) draws on GL alone. The draw waits for 'pipeline ready' only with an RHI program. No GL.
+static bool shader_can_draw()
+{
+    LLGLSLShader* shader = LLGLSLShader::sCurBoundShaderPtr;
+    if (!shader)
+    {
+        return true;
+    }
+    if (shader->drawsRefused()) // [Viewer Lab] as LLRender::flush asks
+    {
+        if (sSkipWarned.emplace(shader, shader->getGeneration()).second)
+        {
+            LL_WARNS("Shader") << "Draws of program " << shader->mName << " are skipped: bind refused it" << LL_ENDL;
+        }
+        return false;
+    }
+    if (!shader->isComplete())
+    {
+        // Unloaded or rebuilt while still current, after bind() bound it complete: drawn on GL alone
+        return true;
+    }
+    const LL::RHI::Program* program = shader->getRHIProgram();
+    if (!program)
+    {
+        return true;
+    }
+    if (program->id() == sReadyProgram)
+    {
+        return true;
+    }
+    if (!shader->isPipelineReady())
+    {
+        shader->waitForPipeline();
+        if (!shader->isPipelineReady())
+        {
+            if (sSkipWarned.emplace(shader, shader->getGeneration()).second)
+            {
+                LL_WARNS("Shader") << "Draws of program " << shader->mName << " are skipped: its pipeline failed" << LL_ENDL;
+            }
+            return false;
+        }
+    }
+    sReadyProgram = program->id();
+    return true;
+}
+
+// [Viewer Lab] True while LLVertexBuffer gives a draw to the viewer's encoder (LLVertexBuffer::OwnGLDraws); main
+// thread, as LLRenderTarget's OwnGL
+static bool sMakesOwnGLDraws = false;
+
+namespace
+{
+    // [Viewer Lab] LLGLState's record of an enable, found without inserting into it as operator[] would, so gDebugGL's
+    // checkStates sees the map unchanged; off, GL's default, when the record has none
+    class GLStateRecord : public LLGLState
+    {
+    public:
+        static bool isEnabled(LLGLenum state)
+        {
+            const auto it = sStateMap.find(state);
+            return it != sStateMap.end() && it->second == GL_TRUE;
+        }
+    };
+
+    // [Viewer Lab] A draw's compact pipeline key: describePipeline's inputs, with the program's id and the pass formats'
+    // serial, so that equal keys describe equal pipelines within one tracker
+    struct DrawKey
+    {
+        U64 program = 0;
+        U64 formats = 0;
+        U32 mask = 0;
+        U8 primitiveClass = 0;
+        bool blend = false;
+        std::array<U8, 4> factors{};
+        U8 colorMask = 0;
+
+        bool operator==(const DrawKey&) const = default;
+    };
+
+    // [Viewer Lab] One way of the pipeline table: a key with the pass's formats by value in place of their serial, which
+    // changes when formats alternate, and the device's answer, null too, so a description it refuses is asked for, and
+    // warns, once
+    struct PipelineWay
+    {
+        bool used = false;
+        U64 program = 0;
+        U32 mask = 0;
+        U8 primitiveClass = 0;
+        bool blend = false;
+        std::array<U8, 4> factors{};
+        U8 colorMask = 0;
+        LL::RHI::PassFormats formats;
+        LL::RHI::Pipeline* pipeline = nullptr;
+
+        bool matches(const DrawKey& key, const LL::RHI::PassFormats& pass) const
+        {
+            return used && program == key.program && mask == key.mask && primitiveClass == key.primitiveClass
+                   && blend == key.blend && factors == key.factors && colorMask == key.colorMask && formats == pass;
+        }
+    };
+
+    // [Viewer Lab] The pipeline table's sets, of 2 ways each. A probe found at most 55 distinct keys in a frame of the
+    // golden level 2 scenes, and no miss after the first frame.
+    // 4096 sets: made once per record, no per-frame cost; 1024 missed ~6 a frame in overview-smaa-sample.
+    constexpr U32 PIPELINE_SETS = 4096;
+    // [Viewer Lab] The depth table's slots, [test][write][func]
+    constexpr U32 DEPTH_SLOTS = 2 * 2 * 8;
+
+    // [Viewer Lab] encodeDraw's records for the viewer's device: plain values and raw pointers into the device's caches,
+    // never Refs. The device's PipelineCache keeps a pipeline until its program dies, and program ids are never
+    // reused, so a way is matched only through a live shader's program id; depth states live as long as the device. A new
+    // device id clears them all.
+    struct EncodeRecord
+    {
+        U64 device = 0;
+        U64 passSerial = ~U64(0);
+        U64 formatsSerial = ~U64(0);
+        LL::RHI::PassFormats formats;
+        U64 formatsHash = 0;
+        bool keyKnown = false;
+        DrawKey key;
+        LL::RHI::Pipeline* wanted = nullptr; ///< the last key's pipeline, null when the device refused its description
+        std::vector<std::array<PipelineWay, 2>> pipelines; ///< PIPELINE_SETS sets, made at the first lookup
+        std::array<LL::RHI::DepthStencilState*, DEPTH_SLOTS> depths{};
+    };
+
+    EncodeRecord sEncode;
+
+    // [Viewer Lab] A 64-bit mix for the table's set
+    U64 mix_bits(U64 x)
+    {
+        x ^= x >> 33;
+        x *= 0xff51afd7ed558ccdULL;
+        x ^= x >> 33;
+        x *= 0xc4ceb9fe1a85ec53ULL;
+        x ^= x >> 33;
+        return x;
+    }
+
+    // [Viewer Lab]
+    U64 formats_hash(const LL::RHI::PassFormats& formats)
+    {
+        U64 hash = mix_bits(U64(formats.colorCount) ^ (U64(formats.depthFormat) << 8) ^ (U64(formats.samples) << 24));
+        for (LL::RHI::Format format : formats.colorFormats)
+        {
+            hash = mix_bits(hash ^ U64(format));
+        }
+        return hash;
+    }
+}
+
+// [Viewer Lab] The draw's key: the program's id and the bound shader's mask, the pass formats' serial, the mode's primitive
+// class, LLGLState's GL_BLEND and LLRender's factors and colour mask
+static DrawKey draw_key(U64 program, U32 mask, U32 mode, U64 formats)
+{
+    DrawKey key;
+    key.program = program;
+    key.mask = mask;
+    key.formats = formats;
+    key.primitiveClass = U8(LL::RHI::primitiveClass(LL::RHI::PrimitiveType(mode)));
+    key.blend = GLStateRecord::isEnabled(GL_BLEND);
+    LLRender::eBlendFactor factors[4];
+    gGL.getBlendFunc(factors[0], factors[1], factors[2], factors[3]);
+    for (U32 i = 0; i < 4; ++i)
+    {
+        key.factors[i] = U8(factors[i]);
+    }
+    bool r, g, b, a;
+    gGL.getColorMask(r, g, b, a);
+    key.colorMask = U8((r ? 1 : 0) | (g ? 2 : 0) | (b ? 4 : 0) | (a ? 8 : 0));
+    return key;
+}
+
+// [Viewer Lab] The pipeline of a key from the 2-way table, which compares the whole key with the pass's formats, so a hash
+// collision only misses. A hit in way 1 swaps the ways. A miss describes the pipeline, asks the device and keeps its
+// answer, null too, in way 0, with the old way 0 moved to way 1.
+static LL::RHI::Pipeline* find_pipeline(LL::RHI::Device& device, LL::RHI::Program& program, EncodeRecord& record,
+                                        const DrawKey& key, U32 mode)
+{
+    if (record.pipelines.empty())
+    {
+        record.pipelines.resize(PIPELINE_SETS);
+    }
+    const U64 blend = U64(key.blend) | (U64(key.factors[0]) << 1) | (U64(key.factors[1]) << 5) | (U64(key.factors[2]) << 9)
+                      | (U64(key.factors[3]) << 13) | (U64(key.colorMask) << 17);
+    const U64 hash = mix_bits(key.program ^ mix_bits(U64(key.mask) | (U64(key.primitiveClass) << 32)) ^ record.formatsHash
+                              ^ mix_bits(blend + 1));
+    std::array<PipelineWay, 2>& set = record.pipelines[hash & (PIPELINE_SETS - 1)];
+    if (set[0].matches(key, record.formats))
+    {
+        return set[0].pipeline;
+    }
+    if (set[1].matches(key, record.formats))
+    {
+        std::swap(set[0], set[1]);
+        return set[0].pipeline;
+    }
+    LL::RHI::PipelineDesc desc;
+    LLVertexBuffer::describePipeline(mode, key.mask, record.formats, desc);
+    sDrawCounts.attributeMaskMismatches += key.mask != program.reflection().attributeMask ? 1 : 0;
+    const LLPointer<LL::RHI::Pipeline> pipeline = device.getPipeline(program, desc);
+    ++sDrawCounts.pipelineRequests;
+    set[1] = set[0];
+    set[0] = { true, key.program, key.mask, key.primitiveClass, key.blend, key.factors, key.colorMask, record.formats,
+               pipeline.get() };
+    return pipeline.get();
+}
+
+// [Viewer Lab] The encoder lets go of a part's storage as it is destroyed, so its pool name is freed at once: the
+// tracker holds a bound buffer until it is rebound or the frame ends. Main thread, with the viewer's device; inside
+// OwnGLDraws, so GL is untouched.
+static void release_encoder_binding(const LL::RHI::Buffer* buffer, bool indices)
+{
+    if (!on_main_thread())
+    {
+        return;
+    }
+    LL::RHI::Device* device = LL::RHI::viewerDevice();
+    if (!device)
+    {
+        return;
+    }
+    LL::RHI::Encoder& encoder = device->encoder();
+    const LL::RHI::EncoderTracker& state = encoder.state();
+    if ((indices ? state.indexBuffer() : state.vertexBuffer()) != buffer)
+    {
+        return;
+    }
+    LLVertexBuffer::OwnGLDraws own;
+    if (indices)
+    {
+        encoder.setIndexBuffer(nullptr, LL::RHI::IndexType::U16);
+    }
+    else
+    {
+        encoder.setVertexBuffer(nullptr, LL::RHI::VertexStreams());
+    }
+}
+
+
 #define ANALYZE_VBO_POOL 0
 
 // VBO Pool interface
@@ -326,8 +567,21 @@ class LLVBOPool
 {
     public:
     virtual ~LLVBOPool() = default;
-    virtual void allocate(GLenum type, U32 size, GLuint& name, U8*& data) = 0;
-    virtual void free(GLenum type, U32 size, GLuint name, U8* data) = 0;
+    // [Viewer Lab] GL names, their updates and the CPU copies as separate calls, for the render
+    // interface's GL backend. allocate leaves the name 0 when the pool names a buffer at its
+    // first update. update is GL's part of updating bytes [offset, offset + bytes) of a buffer of
+    // size bytes, and may give the buffer a new name. replacesWhole says that an update gives the
+    // buffer new memory, so it is updated whole. allocateCopy and freeCopy give the CPU copy
+    // LLVertexBuffer maps, with the pool's own reuse; CPU only.
+    virtual void allocate(GLenum type, U32 size, GLuint& name) = 0;
+    virtual void free(GLenum type, U32 size, GLuint name) = 0;
+    virtual void update(GLenum type, U32 size, GLuint& name, U32 offset, const U8* data, U32 bytes) = 0;
+    virtual bool replacesWhole() const = 0;
+    // [Viewer Lab] True when the parts' storage has no GL name, so a part with a CPU copy has storage
+    // although its name is 0
+    virtual bool storageHasNoGLName() const = 0;
+    virtual U8* allocateCopy(GLenum type, U32 size) = 0;
+    virtual void freeCopy(GLenum type, U32 size, U8* data) = 0;
     virtual U64 getVramBytesUsed() = 0;
 };
 
@@ -343,13 +597,12 @@ public:
         return mAllocated;
     }
 
-    void allocate(GLenum type, U32 size, GLuint& name, U8*& data) override
+    void allocate(GLenum type, U32 size, GLuint& name) override // [Viewer Lab]
     {
         LL_PROFILE_ZONE_SCOPED_CATEGORY_VERTEX;
         STOP_GLERROR;
         llassert(type == GL_ARRAY_BUFFER || type == GL_ELEMENT_ARRAY_BUFFER);
         llassert(name == 0); // non zero name indicates a gl name that wasn't freed
-        llassert(data == nullptr);  // non null data indicates a buffer that wasn't freed
         llassert(size >= 2);  // any buffer size smaller than a single index is nonsensical
 
         mAllocated += size;
@@ -358,21 +611,15 @@ public:
             LL_PROFILE_GPU_ZONE("vbo alloc");
             // ON OS X, we don't allocate a VBO until the last possible moment
             // in unmapBuffer
-            data = (U8*) ll_aligned_malloc_16(size);
             STOP_GLERROR;
         }
     }
 
-    void free(GLenum type, U32 size, GLuint name, U8* data) override
+    void free(GLenum type, U32 size, GLuint name) override // [Viewer Lab]
     {
         LL_PROFILE_ZONE_SCOPED_CATEGORY_VERTEX;
         llassert(type == GL_ARRAY_BUFFER || type == GL_ELEMENT_ARRAY_BUFFER);
         llassert(size >= 2);
-
-        if (data)
-        {
-            ll_aligned_free_16(data);
-        }
 
         mAllocated -= size;
         STOP_GLERROR;
@@ -381,6 +628,55 @@ public:
             delete_buffers(1, &name);
         }
         STOP_GLERROR;
+    }
+
+    // [Viewer Lab] _unmapBuffer's Apple path: a whole update makes a new GL name with the whole
+    // copy. A part, which only interface callers send, goes into the buffer.
+    void update(GLenum type, U32 size, GLuint& name, U32 offset, const U8* data, U32 bytes) override
+    {
+        if (offset == 0 && bytes == size)
+        {
+            if (name)
+            {
+                delete_buffers(1, &name);
+            }
+            name = gen_buffer();
+            glBindBuffer(type, name);
+            bound_gl_name(type) = name;
+            glBufferData(type, size, data, GL_STATIC_DRAW);
+        }
+        else
+        {
+            if (!name)
+            {
+                name = gen_buffer();
+                glBindBuffer(type, name);
+                bound_gl_name(type) = name;
+                glBufferData(type, size, nullptr, GL_STATIC_DRAW);
+            }
+            else
+            {
+                rebind_gl_buffer(type, name);
+            }
+            glBufferSubData(type, offset, bytes, data);
+        }
+    }
+
+    bool replacesWhole() const override { return true; } // [Viewer Lab]
+    bool storageHasNoGLName() const override { return false; } // [Viewer Lab]
+
+    // [Viewer Lab] The CPU copy, as allocate and free made it
+    U8* allocateCopy(GLenum type, U32 size) override
+    {
+        return (U8*) ll_aligned_malloc_16(size);
+    }
+
+    void freeCopy(GLenum type, U32 size, U8* data) override // [Viewer Lab]
+    {
+        if (data)
+        {
+            ll_aligned_free_16(data);
+        }
     }
 };
 
@@ -391,8 +687,7 @@ public:
     typedef std::chrono::steady_clock::time_point Time;
     struct Entry
     {
-        U8* mData;
-        GLuint mGLName;
+        GLuint mGLName; // [Viewer Lab] the CPU copy is in mVBOCopies and mIBOCopies
         Time mAge;
     };
 
@@ -405,6 +700,18 @@ public:
 
     Pool mVBOPool;
     Pool mIBOPool;
+
+    // [Viewer Lab] The CPU copies LLVertexBuffer maps, reused by adjusted size as they were with the
+    // names
+    struct Copy
+    {
+        U8* mData;
+        Time mAge;
+    };
+    typedef std::unordered_map<U32, std::list<Copy>> Copies;
+
+    Copies mVBOCopies;
+    Copies mIBOCopies;
 
     U32 mTouchCount = 0;
 
@@ -430,12 +737,11 @@ public:
         size += block_size - (size % block_size);
     }
 
-    void allocate(GLenum type, U32 size, GLuint& name, U8*& data) override
+    void allocate(GLenum type, U32 size, GLuint& name) override // [Viewer Lab]
     {
         LL_PROFILE_ZONE_SCOPED_CATEGORY_VERTEX;
         llassert(type == GL_ARRAY_BUFFER || type == GL_ELEMENT_ARRAY_BUFFER);
         llassert(name == 0); // non zero name indicates a gl name that wasn't freed
-        llassert(data == nullptr);  // non null data indicates a buffer that wasn't freed
         llassert(size >= 2);  // any buffer size smaller than a single index is nonsensical
 
         mDistributed += size;
@@ -462,8 +768,6 @@ public:
             {
                 LLVertexBuffer::sGLRenderBuffer = name;
             }
-
-            data = (U8*)ll_aligned_malloc_16(size);
         }
         else
         {
@@ -474,7 +778,6 @@ public:
             std::list<Entry>& entries = iter->second;
             Entry& entry = entries.back();
             name = entry.mGLName;
-            data = entry.mData;
 
             entries.pop_back();
             if (entries.empty())
@@ -486,13 +789,12 @@ public:
         clean();
     }
 
-    void free(GLenum type, U32 size, GLuint name, U8* data) override
+    void free(GLenum type, U32 size, GLuint name) override // [Viewer Lab]
     {
         LL_PROFILE_ZONE_SCOPED_CATEGORY_VERTEX;
         llassert(type == GL_ARRAY_BUFFER || type == GL_ELEMENT_ARRAY_BUFFER);
         llassert(size >= 2);
         llassert(name != 0);
-        llassert(data != nullptr);
 
         clean();
 
@@ -510,14 +812,67 @@ public:
         if (iter == pool.end())
         {
             std::list<Entry> newlist;
-            newlist.push_front({ data, name, std::chrono::steady_clock::now() });
+            newlist.push_front({ name, std::chrono::steady_clock::now() }); // [Viewer Lab]
             pool[size] = newlist;
         }
         else
         {
-            iter->second.push_front({ data, name, std::chrono::steady_clock::now() });
+            iter->second.push_front({ name, std::chrono::steady_clock::now() }); // [Viewer Lab]
         }
 
+    }
+
+    // [Viewer Lab] flush_vbo's glBufferSubData in 64 KB blocks, after a bind when LLVertexBuffer's
+    // record names another buffer
+    void update(GLenum type, U32 size, GLuint& name, U32 offset, const U8* data, U32 bytes) override
+    {
+        rebind_gl_buffer(type, name);
+
+        const U32 start = offset;
+        const U32 end = offset + bytes - 1;
+        LL_PROFILE_ZONE_NAMED_CATEGORY_VERTEX("glBufferSubData");
+        LL_PROFILE_ZONE_NUM(start);
+        LL_PROFILE_ZONE_NUM(end);
+        LL_PROFILE_ZONE_NUM(end-start);
+
+        constexpr U32 block_size = 65536;
+
+        for (U32 i = start; i <= end; i += block_size)
+        {
+            //LL_PROFILE_ZONE_NAMED_CATEGORY_VERTEX("glBufferSubData block");
+            //LL_PROFILE_GPU_ZONE("glBufferSubData");
+            U32 tend = llmin(i + block_size, end);
+            glBufferSubData(type, i, tend - i + 1, data + (i-start));
+        }
+    }
+
+    bool replacesWhole() const override { return false; } // [Viewer Lab]
+    bool storageHasNoGLName() const override { return false; } // [Viewer Lab]
+
+    // [Viewer Lab] A miss mallocs the adjusted size, a hit hands back the oldest copy of that size,
+    // as allocate hands back names
+    U8* allocateCopy(GLenum type, U32 size) override
+    {
+        adjustSize(size);
+        Copies& copies = type == GL_ELEMENT_ARRAY_BUFFER ? mIBOCopies : mVBOCopies;
+        Copies::iterator iter = copies.find(size);
+        if (iter == copies.end())
+        {
+            return (U8*) ll_aligned_malloc_16(size);
+        }
+        U8* data = iter->second.back().mData;
+        iter->second.pop_back();
+        if (iter->second.empty())
+        {
+            copies.erase(iter);
+        }
+        return data;
+    }
+
+    void freeCopy(GLenum type, U32 size, U8* data) override // [Viewer Lab]
+    {
+        adjustSize(size);
+        (type == GL_ELEMENT_ARRAY_BUFFER ? mIBOCopies : mVBOCopies)[size].push_front({ data, std::chrono::steady_clock::now() });
     }
 
     // clean periodically (clean gets called for every alloc/free)
@@ -548,7 +903,6 @@ public:
                 {
                     LL_PROFILE_ZONE_NAMED_CATEGORY_VERTEX("vbo cache timeout");
                     auto& entry = entries.back();
-                    ll_aligned_free_16(entry.mData);
                     delete_buffers(1, &entry.mGLName);
                     llassert(mReserved >= iter->first);
                     mReserved -= iter->first;
@@ -559,6 +913,29 @@ public:
                 if (entries.empty())
                 {
                     iter = pool->erase(iter);
+                }
+                else
+                {
+                    ++iter;
+                }
+            }
+        }
+
+        // [Viewer Lab] The CPU copies time out with the same cutoff
+        Copies* copy_lists[] = { &mVBOCopies, &mIBOCopies };
+        for (Copies* copies : copy_lists)
+        {
+            for (Copies::iterator iter = copies->begin(); iter != copies->end(); )
+            {
+                auto& entries = iter->second;
+                while (!entries.empty() && entries.back().mAge < cutoff)
+                {
+                    ll_aligned_free_16(entries.back().mData);
+                    entries.pop_back();
+                }
+                if (entries.empty())
+                {
+                    iter = copies->erase(iter);
                 }
                 else
                 {
@@ -584,7 +961,6 @@ public:
         {
             for (auto& entry : entries.second)
             {
-                ll_aligned_free_16(entry.mData);
                 delete_buffers(1, &entry.mGLName);
             }
         }
@@ -593,9 +969,21 @@ public:
         {
             for (auto& entry : entries.second)
             {
-                ll_aligned_free_16(entry.mData);
                 delete_buffers(1, &entry.mGLName);
             }
+        }
+
+        // [Viewer Lab]
+        for (Copies* copies : { &mIBOCopies, &mVBOCopies })
+        {
+            for (auto& entries : *copies)
+            {
+                for (auto& copy : entries.second)
+                {
+                    ll_aligned_free_16(copy.mData);
+                }
+            }
+            copies->clear();
         }
 
         mReserved = 0;
@@ -605,7 +993,356 @@ public:
     }
 };
 
+// [Viewer Lab] The CPU copies LLVertexBuffer maps when GL is not the backend: the parts' storage is
+// the render device's, so this pool names nothing, and gl_pool() keeps allocate, update and free from
+// being called. An update gives the device's buffer the whole copy, and the bytes used are those of
+// the live copies, as Apple's GL pool counts the sizes asked for
+class LLDeviceCopyPool final : public LLVBOPool
+{
+public:
+    U64 mAllocated = 0;
+
+    U64 getVramBytesUsed() override
+    {
+        return mAllocated;
+    }
+
+    void allocate(GLenum type, U32 size, GLuint& name) override
+    {
+        llassert(false); // gl_pool() is null when GL is not the backend
+        name = 0;
+    }
+
+    void free(GLenum type, U32 size, GLuint name) override
+    {
+        llassert(false);
+    }
+
+    void update(GLenum type, U32 size, GLuint& name, U32 offset, const U8* data, U32 bytes) override
+    {
+        llassert(false);
+    }
+
+    bool replacesWhole() const override { return true; }
+    bool storageHasNoGLName() const override { return true; }
+
+    U8* allocateCopy(GLenum type, U32 size) override
+    {
+        U8* data = (U8*) ll_aligned_malloc_16(size);
+        if (data)
+        {
+            mAllocated += size;
+        }
+        return data;
+    }
+
+    void freeCopy(GLenum type, U32 size, U8* data) override
+    {
+        if (data)
+        {
+            llassert(mAllocated >= size);
+            mAllocated -= size;
+            ll_aligned_free_16(data);
+        }
+    }
+};
+
 static LLVBOPool* sVBOPool = nullptr;
+
+// [Viewer Lab] The GL backend's VBO pool, or none when GL is not the backend
+static LLVBOPool* gl_pool()
+{
+    if (!gl_is_backend())
+    {
+        LL_GL_GATED("llvertexbuffer:gl_pool");
+        return nullptr;
+    }
+    return sVBOPool;
+}
+
+// [Viewer Lab] The GL storage of LLVertexBuffer's parts: the pool's GL calls, memory accounting and
+// deletion delays. The facade and the render interface's GL backend both come here.
+static bool gl_storage_allocate(GLenum type, U32 size, GLuint& name)
+{
+    LLVBOPool* pool = gl_pool();
+    if (!pool)
+    {
+        return false;
+    }
+    pool->allocate(type, size, name);
+    return true;
+}
+
+static void gl_storage_update(GLenum type, U32 size, GLuint& name, U32 offset, const U8* data, U32 bytes) // [Viewer Lab]
+{
+    if (LLVBOPool* pool = gl_pool())
+    {
+        pool->update(type, size, name, offset, data, bytes);
+    }
+}
+
+static void gl_storage_free(GLenum type, U32 size, GLuint name) // [Viewer Lab]
+{
+    if (LLVBOPool* pool = gl_pool())
+    {
+        pool->free(type, size, name);
+    }
+}
+
+// [Viewer Lab] The CPU copy LLVertexBuffer maps, with the pool's reuse; CPU only, so no backend
+// test. Called only where the facade has tested sVBOPool.
+static U8* allocate_cpu_copy(GLenum type, U32 size)
+{
+    return sVBOPool->allocateCopy(type, size);
+}
+
+static void free_cpu_copy(GLenum type, U32 size, U8* data) // [Viewer Lab]
+{
+    sVBOPool->freeCopy(type, size, data);
+}
+
+// [Viewer Lab] The GL backend's choice of VBO pool; the
+// device's CPU copies when GL is not the backend
+static LLVBOPool* create_vbo_pool()
+{
+    if (!gl_is_backend())
+    {
+        LL_GL_GATED("llvertexbuffer:create_vbo_pool");
+        return new LLDeviceCopyPool();
+    }
+#if LL_DARWIN || LL_ARM64
+    if (gGLManager.mIsApple)
+    {
+        LL_INFOS() << "VBO Pooling Disabled" << LL_ENDL;
+        return new LLAppleVBOPool();
+    }
+    else
+#endif
+    {
+        LL_INFOS() << "VBO Pooling Enabled" << LL_ENDL;
+        return new LLDefaultVBOPool();
+    }
+}
+
+// [Viewer Lab] The pool's answer to whether an update gives a buffer new memory, so LLVertexBuffer
+// sends the whole CPU copy once per unmap instead of each mapped range. On GL
+// sVBOPool is gl_pool(); the device's copy pool answers too
+static bool whole_buffer_updates()
+{
+    return sVBOPool && sVBOPool->replacesWhole();
+}
+
+// [Viewer Lab] Apple's pool is the one that replaces a buffer whole, and it names a part at its first update
+//static
+bool LLVertexBuffer::bindsBeforeData()
+{
+    LLVBOPool* pool = gl_pool();
+    return pool && !pool->replacesWhole();
+}
+
+// [Viewer Lab] A part's storage on the viewer's render device. Without the device
+// (headless, llappearanceutility, the unit tests' fixture) or off the main thread the storage is the
+// GL backend's pool (the branch LLGPUZone makes, on the device and never on the backend).
+static LLPointer<LL::RHI::Buffer> create_rhi_storage(U8 usage, U32 size)
+{
+    LL::RHI::Device* device = LL::RHI::viewerDevice();
+    if (!device || !on_main_thread())
+    {
+        return nullptr;
+    }
+    LL::RHI::BufferDesc desc;
+    desc.size = size;
+    desc.usage = usage;
+    desc.dynamic = true;
+    return device->createBuffer(desc);
+}
+
+// [Viewer Lab] The GL name that LLVertexBuffer's GL backend functions bind and draw with, 0 off GL; the
+// GL backend's state in llrender
+static U32 gl_name(const LLPointer<LL::RHI::Buffer>& buffer)
+{
+    return LL::RHI::GLNames::of(buffer.get());
+}
+
+// [Viewer Lab] Kept, never released, where LLVertexBuffer frees nothing (after cleanupClass, and
+// createGLIndices' test of the GL name alone), so no render interface object dies in static
+// destruction and the pool's count is unchanged
+static void keep_unreleased(LLPointer<LL::RHI::Buffer>& buffer)
+{
+    buffer->ref();
+    buffer = nullptr;
+}
+
+// [Viewer Lab] The display list entries that hold each texture of the device, by the texture's id, which let go of it at
+// its owner's release. The entries of an id form an intrusive doubly-linked list through mTrackedPrev and mTrackedNext, and
+// LLTrackedEntryTable (llvertexbuffer.h) maps the id to its list's first entry. Main thread only. Made once and never
+// destroyed, so entries destroyed in static destruction still find it
+using TrackedEntries = LLTrackedEntryTable<LLVertexBufferData>;
+
+static TrackedEntries& tracked_entries()
+{
+    static auto* entries = new TrackedEntries();
+    return *entries;
+}
+
+// [Viewer Lab] Only an entry made on the main thread is tracked; one made elsewhere keeps its texture until it goes. It
+// becomes the first of its id's list
+void LLVertexBufferData::track()
+{
+    llassert(mTrackedId == 0);
+    if (mTexture.notNull() && on_main_thread())
+    {
+        const U64 id = mTexture->id();
+        if (id != 0)
+        {
+            LLVertexBufferData*& first = tracked_entries().first(id);
+            mTrackedPrev = nullptr;
+            mTrackedNext = first;
+            if (mTrackedNext)
+            {
+                mTrackedNext->mTrackedPrev = this;
+            }
+            first = this;
+            mTrackedId = id;
+        }
+    }
+}
+
+// [Viewer Lab] Only the first of a list touches the table
+void LLVertexBufferData::untrack()
+{
+    if (mTrackedId == 0)
+    {
+        return;
+    }
+    llassert(on_main_thread());
+    if (mTrackedNext)
+    {
+        mTrackedNext->mTrackedPrev = mTrackedPrev;
+    }
+    if (mTrackedPrev)
+    {
+        mTrackedPrev->mTrackedNext = mTrackedNext;
+    }
+    else
+    {
+        tracked_entries().setFirst(mTrackedId, mTrackedNext);
+    }
+    mTrackedId = 0;
+    mTrackedPrev = nullptr;
+    mTrackedNext = nullptr;
+}
+
+// [Viewer Lab]
+//static
+void LLVertexBufferData::releaseTexture(U64 texture_id)
+{
+    llassert(on_main_thread());
+    // Out of the table first, and the texture kept until the walk is done, so letting go destroys nothing during the walk
+    LLVertexBufferData* entry = tracked_entries().take(texture_id);
+    if (!entry)
+    {
+        return;
+    }
+    const LLPointer<LL::RHI::Texture> texture = entry->mTexture;
+    while (entry)
+    {
+        LLVertexBufferData* next = entry->mTrackedNext;
+        entry->mTrackedId = 0;
+        entry->mTrackedPrev = nullptr;
+        entry->mTrackedNext = nullptr;
+        entry->mTexture = nullptr; // mTextureId and mTexName stay; draw binds the GL name raw
+        entry = next;
+    }
+}
+
+// [Viewer Lab]
+//static
+U32 LLVertexBufferData::trackedEntries(U64 texture_id)
+{
+    llassert(on_main_thread());
+    U32 count = 0;
+    for (const LLVertexBufferData* entry = tracked_entries().peek(texture_id); entry; entry = entry->mTrackedNext)
+    {
+        ++count;
+    }
+    return count;
+}
+
+// [Viewer Lab]
+LLVertexBufferData::LLVertexBufferData()
+    : mVB(nullptr)
+    , mMode(0)
+    , mCount(0)
+    , mTextureId(0)
+    , mTexName(0)
+    , mProjection(glm::identity<glm::mat4>())
+    , mModelView(glm::identity<glm::mat4>())
+    , mTexture0(glm::identity<glm::mat4>())
+{}
+
+// [Viewer Lab]
+LLVertexBufferData::LLVertexBufferData(LLVertexBuffer* buffer, U8 mode, U32 count, LL::RHI::Texture* texture, U64 texture_id, U32 tex_name, const glm::mat4& model_view, const glm::mat4& projection, const glm::mat4& texture0)
+    : mVB(buffer)
+    , mMode(mode)
+    , mCount(count)
+    , mTexture(texture)
+    , mTextureId(texture_id)
+    , mTexName(tex_name)
+    , mProjection(model_view)
+    , mModelView(projection)
+    , mTexture0(texture0)
+{
+    track(); // [Viewer Lab]
+}
+
+// [Viewer Lab] Member-wise, and tracked as an entry of its own: mTrackedId is not copied
+LLVertexBufferData::LLVertexBufferData(const LLVertexBufferData& other)
+    : mVB(other.mVB)
+    , mMode(other.mMode)
+    , mCount(other.mCount)
+    , mTexture(other.mTexture)
+    , mTextureId(other.mTextureId)
+    , mTexName(other.mTexName)
+    , mProjection(other.mProjection)
+    , mModelView(other.mModelView)
+    , mTexture0(other.mTexture0)
+{
+    track();
+}
+
+// [Viewer Lab]
+LLVertexBufferData& LLVertexBufferData::operator=(const LLVertexBufferData& other)
+{
+    if (this != &other)
+    {
+        untrack();
+        mVB = other.mVB;
+        mMode = other.mMode;
+        mCount = other.mCount;
+        mTexture = other.mTexture;
+        mTextureId = other.mTextureId;
+        mTexName = other.mTexName;
+        mProjection = other.mProjection;
+        mModelView = other.mModelView;
+        mTexture0 = other.mTexture0;
+        track();
+    }
+    return *this;
+}
+
+// [Viewer Lab]
+LLVertexBufferData::~LLVertexBufferData()
+{
+    untrack();
+}
+
+// [Viewer Lab] The GL backend's raw-name bind for a list's raw GL name, a binding without a texture of the device (no
+// device, a caller's raw name)
+static void bind_raw(LLTexUnit* unit, U32 name)
+{
+    gl_bind_raw_name(unit, LLTexUnit::TT_TEXTURE, name, false);
+}
 
 void LLVertexBufferData::drawWithMatrix()
 {
@@ -616,9 +1353,14 @@ void LLVertexBufferData::drawWithMatrix()
         return;
     }
 
-    if (mTexName)
+    llassert(mTexture.isNull() || mTexture->id() == mTextureId); // [Viewer Lab]
+    if (mTexture.notNull())
     {
-        gGL.getTexUnit(0)->bindManual(LLTexUnit::TT_TEXTURE, mTexName);
+        gGL.getTexUnit(0)->bindTexture(LLTexUnit::TT_TEXTURE, mTexture.get()); // [Viewer Lab] by the device's texture
+    }
+    else if (mTexName)
+    {
+        bind_raw(gGL.getTexUnit(0), mTexName); // [Viewer Lab]
     }
     else
     {
@@ -654,9 +1396,14 @@ void LLVertexBufferData::draw()
         return;
     }
 
-    if (mTexName)
+    llassert(mTexture.isNull() || mTexture->id() == mTextureId); // [Viewer Lab]
+    if (mTexture.notNull())
     {
-        gGL.getTexUnit(0)->bindManual(LLTexUnit::TT_TEXTURE, mTexName);
+        gGL.getTexUnit(0)->bindTexture(LLTexUnit::TT_TEXTURE, mTexture.get()); // [Viewer Lab] by the device's texture
+    }
+    else if (mTexName)
+    {
+        bind_raw(gGL.getTexUnit(0), mTexName); // [Viewer Lab]
     }
     else
     {
@@ -898,7 +1645,14 @@ bool LLVertexBuffer::validateRange(U32 start, U32 end, U32 count, U32 indices_of
 
 #if LL_PROFILER_ENABLE_RENDER_DOC
 void LLVertexBuffer::setLabel(const char* label) {
-    LL_LABEL_OBJECT_GL(GL_BUFFER, mGLBuffer, strlen(label), label);
+    if (mRHIBuffer.notNull()) // [Viewer Lab] the RHI buffer's name, which the GL backend labels
+    {
+        mRHIBuffer->setDebugName(label);
+    }
+    else
+    {
+        LL_LABEL_OBJECT_GL(GL_BUFFER, mGLBuffer, (GLsizei)strlen(label), label); // [Viewer Lab] (GLsizei): C4267 under /WX
+    }
 }
 #endif
 
@@ -914,22 +1668,104 @@ void LLVertexBuffer::clone(LLVertexBuffer& target) const
     }
 }
 
+// [Viewer Lab] With LL_METAL_DEBUG=1 on Metal: an indexed draw's indices checked against GL's [start, end] and the vertex
+// count, from the CPU copy. GL is given the range and Metal is not, so an index outside it can draw differently on the
+// two. The first 200 such draws are logged in full, then a count every 1000.
+static bool metal_index_check()
+{
+    static const bool on = [] {
+        const char* debug = getenv("LL_METAL_DEBUG");
+        return debug && std::string(debug) == "1" && LL::RHI::viewerBackend() == LL::RHI::BackendType::Metal;
+    }();
+    return on;
+}
+
+static void check_index_range(const U8* indices, U32 type, U32 num_verts, U32 mode, U32 start, U32 end, U32 count,
+                              U32 offset)
+{
+    static U32 sLogged = 0;
+    static U64 sOutside = 0;
+    if (!indices || count == 0)
+    {
+        return;
+    }
+    U32 low = U32_MAX, high = 0, outside_range = 0, beyond_verts = 0;
+    for (U32 i = 0; i < count; ++i)
+    {
+        const U32 index = type == GL_UNSIGNED_INT ? reinterpret_cast<const U32*>(indices)[offset + i]
+                                                  : reinterpret_cast<const U16*>(indices)[offset + i];
+        low = llmin(low, index);
+        high = llmax(high, index);
+        outside_range += (index < start || index > end) ? 1 : 0;
+        beyond_verts += index >= num_verts ? 1 : 0;
+    }
+    if (outside_range == 0 && beyond_verts == 0)
+    {
+        return;
+    }
+    ++sOutside;
+    if (sLogged < 200)
+    {
+        ++sLogged;
+        LL_WARNS("RHI") << "index range: mode " << mode << ", indices " << offset << "+" << count << ", range " << start
+                        << "-" << end << ", vertices " << num_verts << ", indices span " << low << "-" << high << ", "
+                        << outside_range << " outside the range, " << beyond_verts << " beyond the vertices" << LL_ENDL;
+    }
+    else if (sOutside % 1000 == 0)
+    {
+        LL_WARNS("RHI") << "index range: " << sOutside << " draws with indices outside their range so far" << LL_ENDL;
+    }
+}
+
 void LLVertexBuffer::drawRange(U32 mode, U32 start, U32 end, U32 count, U32 indices_offset) const
 {
     llassert(validateRange(start, end, count, indices_offset));
-    llassert(mGLBuffer == sGLRenderBuffer);
-    llassert(mGLIndices == sGLRenderIndices);
+    llassert(gl_bound(mGLBuffer, mGLIndices)); // [Viewer Lab] GL's record, in the GL backend
+    // [Viewer Lab] The census, the skip and the encoder on the main thread only, with one check
+    const bool main_thread = on_main_thread();
+    if (main_thread)
+    {
+        count_draw(mRHIBuffer.notNull() && mRHIIndices.notNull(),
+                   indicesBeyond(indices_offset, count, mIndicesStride, mIndicesSize));
+        if (!shader_can_draw())
+        {
+            ++sDrawCounts.skipped;
+            return;
+        }
+    }
     gGL.syncMatrices();
     STOP_GLERROR;
-    glDrawRangeElements(sGLMode[mode], start, end, count, mIndicesType,
-        (GLvoid*) (indices_offset * (size_t) mIndicesStride));
+    if (main_thread) // [Viewer Lab]
+    {
+        if (metal_index_check())
+        {
+            check_index_range(mMappedIndexData, mIndicesType, mNumVerts, mode, start, end, count, indices_offset);
+        }
+        encodeDraw(mode, true, indices_offset, count);
+    }
+    gl_draw_range_elements(mode, start, end, count, mIndicesType, indices_offset * (size_t) mIndicesStride); // [Viewer Lab]
     STOP_GLERROR;
 }
 
 void LLVertexBuffer::drawRangeFast(U32 mode, U32 start, U32 end, U32 count, U32 indices_offset) const
 {
-    glDrawRangeElements(sGLMode[mode], start, end, count, mIndicesType,
-        (GLvoid*)(indices_offset * (size_t)mIndicesStride));
+    // [Viewer Lab] The census, the skip and the encoder on the main thread only, with one check
+    if (on_main_thread())
+    {
+        count_draw(mRHIBuffer.notNull() && mRHIIndices.notNull(),
+                   indicesBeyond(indices_offset, count, mIndicesStride, mIndicesSize));
+        if (!shader_can_draw())
+        {
+            ++sDrawCounts.skipped;
+            return;
+        }
+        if (metal_index_check())
+        {
+            check_index_range(mMappedIndexData, mIndicesType, mNumVerts, mode, start, end, count, indices_offset);
+        }
+        encodeDraw(mode, true, indices_offset, count);
+    }
+    gl_draw_range_elements(mode, start, end, count, mIndicesType, indices_offset * (size_t)mIndicesStride); // [Viewer Lab]
 }
 
 
@@ -939,54 +1775,334 @@ void LLVertexBuffer::draw(U32 mode, U32 count, U32 indices_offset) const
 }
 
 
-void LLVertexBuffer::drawArrays(U32 mode, U32 first, U32 count) const
+bool LLVertexBuffer::drawArrays(U32 mode, U32 first, U32 count) const
 {
     llassert(first + count <= mNumVerts);
-    llassert(mGLBuffer == sGLRenderBuffer);
-    llassert(mGLIndices == sGLRenderIndices);
+    llassert(gl_bound(mGLBuffer, mGLIndices)); // [Viewer Lab] GL's record, in the GL backend
+    // [Viewer Lab] The census, the skip and the encoder on the main thread only, with one check
+    const bool main_thread = on_main_thread();
+    if (main_thread)
+    {
+        count_draw(mRHIBuffer.notNull(), false);
+        if (!shader_can_draw())
+        {
+            ++sDrawCounts.skipped;
+            return false;
+        }
+    }
 
     gGL.syncMatrices();
     STOP_GLERROR;
-    glDrawArrays(sGLMode[mode], first, count);
+    bool encoded = false; // [Viewer Lab]
+    if (main_thread) // [Viewer Lab]
+    {
+        encoded = encodeDraw(mode, false, first, count);
+    }
+    const bool made = gl_draw_arrays(mode, first, count); // [Viewer Lab]
     STOP_GLERROR;
+    return encoded || made; // [Viewer Lab]
 }
 
-//static
-void LLVertexBuffer::initClass(LLWindow* window)
+// [Viewer Lab] The steps of encoding a draw, in order. Every main-thread draw that is not skipped ends in exactly one of
+// encoded, withoutDevice, withoutProgram, withoutStorage, passless and withoutPipeline. The tracker's verdict never
+// decides whether GL draws, and every binding the tracker holds is compared at every draw, since the GL encoder puts the
+// interface's bindings back before its calls and at the frame's end.
+bool LLVertexBuffer::encodeDraw(U32 mode, bool indexed, U32 first, U32 count) const
 {
-    llassert(sVBOPool == nullptr);
-
-    if (gGLManager.mIsApple)
+    // (1) The preconditions: the viewer's device, asked every time with no reference kept, a program of that device
+    // for the bound shader, and the part's storage on it. The draws call it on the main thread only.
+    llassert(on_main_thread());
+    LL::RHI::Device* device = LL::RHI::viewerDevice();
+    if (!device)
     {
-        LL_INFOS() << "VBO Pooling Disabled" << LL_ENDL;
-        sVBOPool = new LLAppleVBOPool();
+        ++sDrawCounts.withoutDevice;
+        return false;
+    }
+    const LLGLSLShader* shader = LLGLSLShader::sCurBoundShaderPtr;
+    LL::RHI::Program* program = shader ? shader->getRHIProgram() : nullptr;
+    if (!program || shader->getRHIDevice() != device->id())
+    {
+        ++sDrawCounts.withoutProgram;
+        return false;
+    }
+    if (mRHIBuffer.isNull() || (indexed && mRHIIndices.isNull()))
+    {
+        ++sDrawCounts.withoutStorage;
+        return false;
+    }
+
+    // (2) The pass: the open one, an interface pass too, or else the stack's, begun now; a level without one stays raw.
+    EncodeRecord& record = sEncode;
+    if (record.device != device->id())
+    {
+        record = EncodeRecord();
+        record.device = device->id();
+    }
+    LL::RHI::Encoder& encoder = device->encoder();
+    const LL::RHI::EncoderTracker& state = encoder.state();
+    if (!state.inPass() && !LLRenderTarget::beginStackPass())
+    {
+        ++sDrawCounts.passless;
+        return false;
+    }
+
+    // (3) GL's calls stay LLVertexBuffer's own, and the interface keeps its bindings.
+    OwnGLDraws own;
+
+    // (4) The pass and its formats, read once per change.
+    if (state.passSerial() != record.passSerial)
+    {
+        record.passSerial = state.passSerial();
+        ++sDrawCounts.passesWithDraws;
+    }
+    const U64 formats = state.passFormatsSerial();
+    if (formats != record.formatsSerial)
+    {
+        record.formatsSerial = formats;
+        record.formats = state.passFormats();
+        record.formatsHash = formats_hash(record.formats);
+        ++sDrawCounts.formatChanges;
+    }
+
+    // (5) The pipeline, looked up when the key changes, and compared with the tracker's at every draw.
+    const DrawKey key = draw_key(program->id(), shader->mAttributeMask, mode, formats);
+    if (!record.keyKnown || !(key == record.key))
+    {
+        record.keyKnown = true;
+        record.key = key;
+        ++sDrawCounts.tableLookups;
+        record.wanted = find_pipeline(*device, *program, record, key, mode);
+    }
+    LL::RHI::Pipeline* pipeline = record.wanted;
+    if (!pipeline)
+    {
+        ++sDrawCounts.withoutPipeline;
+        return false;
+    }
+    const LL::RHI::Pipeline* bound = state.pipeline();
+    if (!bound || bound->id() != pipeline->id())
+    {
+        encoder.setPipeline(pipeline);
+        ++sDrawCounts.pipelineSets;
+    }
+
+    // (6) The depth state, from the device's cache through the table, by pointer.
+    LL::RHI::DepthStencilDesc depth;
+    if (!describeDepth(depth))
+    {
+        ++sDrawCounts.withoutPipeline;
+        return false;
+    }
+    LL::RHI::DepthStencilState*& slot =
+        record.depths[(depth.depthTest ? 16 : 0) + (depth.depthWrite ? 8 : 0) + (U32(depth.depthFunc) & 7)];
+    if (!slot)
+    {
+        slot = device->getDepthStencilState(depth).get();
+        ++sDrawCounts.depthRequests;
+    }
+    sDrawCounts.depthWritesInReadOnlyPass += writesInReadOnlyPass(state.pass().depth.readOnly, depth.depthWrite) ? 1 : 0;
+    sDrawCounts.drawsInReadOnlyPass += state.pass().depth.readOnly ? 1 : 0;
+    if (state.depthStencilState() != slot)
+    {
+        encoder.setDepthStencilState(slot);
+        ++sDrawCounts.depthSets;
+    }
+
+    // (7) The buffers, by the encoder's bound objects' ids, with the streams at their offsets.
+    LL::RHI::VertexStreams streams;
+    vertexStreams(key.mask, mOffsets, streams);
+    const LL::RHI::Buffer* vertices = state.vertexBuffer();
+    const LL::RHI::VertexStreams& boundStreams = state.streams();
+    if (!vertices || vertices->id() != mRHIBuffer->id() || boundStreams.attributeMask != streams.attributeMask
+        || boundStreams.offset != streams.offset)
+    {
+        encoder.setVertexBuffer(mRHIBuffer.get(), streams);
+        ++sDrawCounts.vertexBufferSets;
+    }
+    if (indexed)
+    {
+        const LL::RHI::IndexType type = *LL::RHI::indexTypeFromGL(mIndicesType);
+        const LL::RHI::Buffer* indices = state.indexBuffer();
+        if (!indices || indices->id() != mRHIIndices->id() || state.indexType() != type)
+        {
+            encoder.setIndexBuffer(mRHIIndices.get(), type);
+            ++sDrawCounts.indexBufferSets;
+        }
+    }
+
+    // (8) The draw, recorded in the pass; GL's draw follows in the caller. Made when the tracker's draws() went up across
+    // it.
+    const U64 made = state.draws();
+    if (indexed)
+    {
+        encoder.drawIndexed(LL::RHI::PrimitiveType(mode), first, count);
     }
     else
     {
-        LL_INFOS() << "VBO Pooling Enabled" << LL_ENDL;
-        sVBOPool = new LLDefaultVBOPool();
+        encoder.draw(LL::RHI::PrimitiveType(mode), first, count);
     }
+    ++sDrawCounts.encoded;
+    return state.draws() > made;
+}
 
-#if ENABLE_GL_WORK_QUEUE
-    sQueue = new GLWorkQueue();
+// [Viewer Lab]
+//static
+LLVertexBuffer::DrawCounts LLVertexBuffer::drawCounts()
+{
+    return sDrawCounts;
+}
 
-    for (int i = 0; i < THREAD_COUNT; ++i)
+// [Viewer Lab] The tally by shader name; shaders of the same name add up.
+//static
+const std::map<std::string, U64>& LLVertexBuffer::programTally()
+{
+    static std::map<std::string, U64> by_name;
+    by_name.clear();
+    for (const auto& [shader, entry] : sProgramTally)
     {
-        sVBOThread[i] = new LLGLWorkerThread("VBO Worker", sQueue, window);
-        sVBOThread[i]->start();
+        by_name[entry.name] += entry.draws;
     }
-#endif
+    return by_name;
+}
+
+// [Viewer Lab]
+//static
+void LLVertexBuffer::clearProgramTally()
+{
+    sProgramTally.clear();
+}
+
+// [Viewer Lab]
+LLVertexBuffer::OwnGLDraws::OwnGLDraws()
+:   mPrevious(sMakesOwnGLDraws)
+{
+    sMakesOwnGLDraws = true;
+}
+
+// [Viewer Lab]
+LLVertexBuffer::OwnGLDraws::~OwnGLDraws()
+{
+    sMakesOwnGLDraws = mPrevious;
+}
+
+// [Viewer Lab]
+//static
+bool LLVertexBuffer::makesOwnGLDraws()
+{
+    return sMakesOwnGLDraws;
+}
+
+// [Viewer Lab] setupVertexAttributes' rules
+//static
+void LLVertexBuffer::vertexStreams(U32 data_mask, const U32* offsets, LL::RHI::VertexStreams& streams)
+{
+    streams.attributeMask = data_mask;
+    for (U32 i = 0; i < TYPE_MAX; ++i)
+    {
+        streams.offset[i] = offsets[i];
+    }
+    if (data_mask & MAP_EMISSIVE)
+    {
+        streams.offset[TYPE_COLOR] = offsets[TYPE_EMISSIVE]; // with or without MAP_COLOR
+    }
+    streams.offset[TYPE_TEXTURE_INDEX] = offsets[TYPE_VERTEX] + 12;
+}
+
+// [Viewer Lab] The factors are eBlendFactor's order (llrhigl.cpp's static_assert)
+//static
+void LLVertexBuffer::describePipeline(U32 mode, U32 data_mask, const LL::RHI::PassFormats& pass, LL::RHI::PipelineDesc& pipeline)
+{
+    LL::RHI::PipelineDesc desc;
+    desc.attributeMask = data_mask;
+    desc.primitiveClass = LL::RHI::primitiveClass(LL::RHI::PrimitiveType(mode));
+    LL::RHI::applyPassFormats(pass, desc);
+    desc.blend.enabled = GLStateRecord::isEnabled(GL_BLEND);
+    LLRender::eBlendFactor factors[4];
+    gGL.getBlendFunc(factors[0], factors[1], factors[2], factors[3]);
+    auto factor = [](LLRender::eBlendFactor value, LL::RHI::BlendFactor initial)
+    {
+        return value < LLRender::BF_UNDEF ? LL::RHI::BlendFactor(value) : initial;
+    };
+    desc.blend.srcColor = factor(factors[0], LL::RHI::BlendFactor::One);
+    desc.blend.dstColor = factor(factors[1], LL::RHI::BlendFactor::Zero);
+    desc.blend.srcAlpha = factor(factors[2], LL::RHI::BlendFactor::One);
+    desc.blend.dstAlpha = factor(factors[3], LL::RHI::BlendFactor::Zero);
+    desc.blend.colorOp = LL::RHI::BlendOp::Add;
+    desc.blend.alphaOp = LL::RHI::BlendOp::Add;
+    bool r, g, b, a;
+    gGL.getColorMask(r, g, b, a);
+    desc.colorMask = U8((r ? LL::RHI::COLOR_MASK_R : 0) | (g ? LL::RHI::COLOR_MASK_G : 0) | (b ? LL::RHI::COLOR_MASK_B : 0)
+                        | (a ? LL::RHI::COLOR_MASK_A : 0));
+    pipeline = LL::RHI::normalized(desc);
+}
+
+// [Viewer Lab]
+//static
+bool LLVertexBuffer::describeDepth(LL::RHI::DepthStencilDesc& depth)
+{
+    GLboolean enabled = GL_FALSE;
+    GLboolean write = GL_FALSE;
+    GLenum func = GL_LESS;
+    LLGLDepthTest::getState(enabled, write, func);
+    const std::optional<LL::RHI::CompareFunc> compare = LL::RHI::compareFuncFromGL(func);
+    if (!compare)
+    {
+        return false;
+    }
+    depth.depthTest = enabled != GL_FALSE;
+    depth.depthWrite = depth.depthTest && write != GL_FALSE;
+    depth.depthFunc = *compare;
+    return true;
+}
+
+//static
+void LLVertexBuffer::initClass(LLWindow*) // [Viewer Lab] the window is not used
+{
+    llassert(sVBOPool == nullptr);
+    sVBOPool = create_vbo_pool(); // [Viewer Lab]
+}
+
+// [Viewer Lab]
+//static
+U32 LLVertexBuffer::genGLBuffer()
+{
+    return gen_buffer();
+}
+
+// [Viewer Lab]
+//static
+void LLVertexBuffer::deleteGLBuffers(S32 count, U32* buffers)
+{
+    delete_buffers(count, buffers);
+}
+
+// [Viewer Lab]
+//static
+bool LLVertexBuffer::allocateGLStorage(U32 target, U32 size, U32& name)
+{
+    return gl_storage_allocate(target, size, name);
+}
+
+// [Viewer Lab]
+//static
+void LLVertexBuffer::updateGLStorage(U32 target, U32 size, U32& name, U32 offset, const U8* data, U32 bytes)
+{
+    gl_storage_update(target, size, name, offset, data, bytes);
+}
+
+// [Viewer Lab]
+//static
+void LLVertexBuffer::freeGLStorage(U32 target, U32 size, U32 name)
+{
+    gl_storage_free(target, size, name);
 }
 
 //static
 void LLVertexBuffer::unbind()
 {
     STOP_GLERROR;
-    glBindBuffer(GL_ARRAY_BUFFER, 0);
-    glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, 0);
+    gl_unbind_buffers(); // [Viewer Lab] the binds and the record, in the GL backend
     STOP_GLERROR;
-    sGLRenderBuffer = 0;
-    sGLRenderIndices = 0;
 }
 
 //static
@@ -997,18 +2113,6 @@ void LLVertexBuffer::cleanupClass()
     delete sVBOPool;
     sVBOPool = nullptr;
 
-#if ENABLE_GL_WORK_QUEUE
-    sQueue->close();
-    for (int i = 0; i < THREAD_COUNT; ++i)
-    {
-        sVBOThread[i]->shutdown();
-        delete sVBOThread[i];
-        sVBOThread[i] = nullptr;
-    }
-
-    delete sQueue;
-    sQueue = nullptr;
-#endif
 }
 
 //----------------------------------------------------------------------------
@@ -1117,8 +2221,21 @@ void LLVertexBuffer::genBuffer(U32 size)
         llassert(mGLBuffer == 0);
         llassert(mMappedData == nullptr);
 
+        llassert(mRHIBuffer.isNull()); // [Viewer Lab]
+
         mSize = size;
-        sVBOPool->allocate(GL_ARRAY_BUFFER, mSize, mGLBuffer, mMappedData);
+        // [Viewer Lab] the CPU copy before the name, as the pool's lists expect, and the storage on
+        // the viewer's device when there is one
+        mMappedData = allocate_cpu_copy(GL_ARRAY_BUFFER, mSize);
+        mRHIBuffer = create_rhi_storage(LL::RHI::BUFFER_VERTEX, mSize);
+        if (mRHIBuffer)
+        {
+            mGLBuffer = gl_name(mRHIBuffer);
+        }
+        else
+        {
+            gl_storage_allocate(GL_ARRAY_BUFFER, mSize, mGLBuffer);
+        }
     }
 }
 
@@ -1132,8 +2249,26 @@ void LLVertexBuffer::genIndices(U32 size)
         llassert(mIndicesSize == 0);
         llassert(mGLIndices == 0);
         llassert(mMappedIndexData == nullptr);
+        // [Viewer Lab] Only createGLIndices' test of mGLIndices alone gets here with storage, on
+        // Apple's pool before the first unmap, where the pool keeps counting the old bytes and the
+        // old copy is lost
+        if (mRHIIndices)
+        {
+            keep_unreleased(mRHIIndices);
+        }
         mIndicesSize = size;
-        sVBOPool->allocate(GL_ELEMENT_ARRAY_BUFFER, mIndicesSize, mGLIndices, mMappedIndexData);
+        // [Viewer Lab] the CPU copy before the name, as the pool's lists expect, and the storage on
+        // the viewer's device when there is one
+        mMappedIndexData = allocate_cpu_copy(GL_ELEMENT_ARRAY_BUFFER, mIndicesSize);
+        mRHIIndices = create_rhi_storage(LL::RHI::BUFFER_INDEX, mIndicesSize);
+        if (mRHIIndices)
+        {
+            mGLIndices = gl_name(mRHIIndices);
+        }
+        else
+        {
+            gl_storage_allocate(GL_ELEMENT_ARRAY_BUFFER, mIndicesSize, mGLIndices);
+        }
     }
 }
 
@@ -1162,7 +2297,9 @@ bool LLVertexBuffer::createGLBuffer(U32 size)
 
 bool LLVertexBuffer::createGLIndices(U32 size)
 {
-    if (mGLIndices)
+    // [Viewer Lab] Storage without a GL name has the CPU copy to show for it, so it goes before the
+    // new size; GL's test is of the name alone
+    if (mGLIndices || (mMappedIndexData && sVBOPool && sVBOPool->storageHasNoGLName()))
     {
         destroyGLIndices();
     }
@@ -1191,7 +2328,25 @@ void LLVertexBuffer::destroyGLBuffer()
         //llassert(sVBOPool);
         if (sVBOPool)
         {
-            sVBOPool->free(GL_ARRAY_BUFFER, mSize, mGLBuffer, mMappedData);
+            // [Viewer Lab] the storage on the device gives its name back to the pool as it goes,
+            // before the copy, as the pool's own storage does
+            if (mRHIBuffer)
+            {
+                release_encoder_binding(mRHIBuffer.get(), false); // [Viewer Lab]
+                mRHIBuffer = nullptr;
+            }
+            else
+            {
+                gl_storage_free(GL_ARRAY_BUFFER, mSize, mGLBuffer);
+            }
+            if (mMappedData)
+            {
+                free_cpu_copy(GL_ARRAY_BUFFER, mSize, mMappedData); // [Viewer Lab]
+            }
+        }
+        else if (mRHIBuffer) // [Viewer Lab] after cleanupClass nothing is freed
+        {
+            keep_unreleased(mRHIBuffer);
         }
 
         mSize = 0;
@@ -1208,7 +2363,25 @@ void LLVertexBuffer::destroyGLIndices()
         //llassert(sVBOPool);
         if (sVBOPool)
         {
-            sVBOPool->free(GL_ELEMENT_ARRAY_BUFFER, mIndicesSize, mGLIndices, mMappedIndexData);
+            // [Viewer Lab] the storage on the device gives its name back to the pool as it goes,
+            // before the copy, as the pool's own storage does
+            if (mRHIIndices)
+            {
+                release_encoder_binding(mRHIIndices.get(), true); // [Viewer Lab]
+                mRHIIndices = nullptr;
+            }
+            else
+            {
+                gl_storage_free(GL_ELEMENT_ARRAY_BUFFER, mIndicesSize, mGLIndices);
+            }
+            if (mMappedIndexData)
+            {
+                free_cpu_copy(GL_ELEMENT_ARRAY_BUFFER, mIndicesSize, mMappedIndexData); // [Viewer Lab]
+            }
+        }
+        else if (mRHIIndices) // [Viewer Lab] after cleanupClass nothing is freed
+        {
+            keep_unreleased(mRHIIndices);
         }
 
         mIndicesSize = 0;
@@ -1299,7 +2472,9 @@ U8* LLVertexBuffer::mapVertexBuffer(LLVertexBuffer::AttributeType type, U32 inde
         count = mNumVerts - index;
     }
 
-    if (!gGLManager.mIsApple)
+    // [Viewer Lab] Region tracking is not needed when the backend replaces the whole buffer at
+    // every update, as Apple silicon's GL does
+    if (!whole_buffer_updates()) // [Viewer Lab]
     {
         U32 start = mOffsets[type] + sTypeSize[type] * index;
         U32 end = start + sTypeSize[type] * count-1;
@@ -1336,7 +2511,7 @@ U8* LLVertexBuffer::mapIndexBuffer(U32 index, S32 count)
         count = mNumIndices-index;
     }
 
-    if (!gGLManager.mIsApple)
+    if (!whole_buffer_updates()) // [Viewer Lab]
     {
         U32 start = sizeof(U16) * index;
         U32 end = start + sizeof(U16) * count-1;
@@ -1371,7 +2546,7 @@ U8* LLVertexBuffer::mapIndexBuffer(U32 index, S32 count)
 //  dst -- mMappedData or mMappedIndexData
 void LLVertexBuffer::flush_vbo(GLenum target, U32 start, U32 end, void* data, U8* dst)
 {
-    if (gGLManager.mIsApple)
+    if (whole_buffer_updates()) // [Viewer Lab]
     {
         // on OS X, flush_vbo doesn't actually write to the GL buffer, so be sure to call
         // _mapBuffer to tag the buffer for flushing to GL
@@ -1388,21 +2563,7 @@ void LLVertexBuffer::flush_vbo(GLenum target, U32 start, U32 end, void* data, U8
         // skip mapped data and stream to GPU via glBufferSubData
         if (end != 0)
         {
-            LL_PROFILE_ZONE_NAMED_CATEGORY_VERTEX("glBufferSubData");
-            LL_PROFILE_ZONE_NUM(start);
-            LL_PROFILE_ZONE_NUM(end);
-            LL_PROFILE_ZONE_NUM(end-start);
-
-            constexpr U32 block_size = 65536;
-
-            for (U32 i = start; i <= end; i += block_size)
-            {
-                //LL_PROFILE_ZONE_NAMED_CATEGORY_VERTEX("glBufferSubData block");
-                //LL_PROFILE_GPU_ZONE("glBufferSubData");
-                U32 tend = llmin(i + block_size, end);
-                U32 size = tend - i + 1;
-                glBufferSubData(target, i, size, (U8*) data + (i-start));
-            }
+            updateStorage(target, start, (const U8*) data, end - start + 1); // [Viewer Lab] the pool's glBufferSubData blocks
         }
     }
 }
@@ -1437,44 +2598,26 @@ void LLVertexBuffer::_unmapBuffer()
         }
     };
 
-    if (gGLManager.mIsApple)
+    if (whole_buffer_updates()) // [Viewer Lab] the pool gives each part a new name with the whole copy
     {
         STOP_GLERROR;
         if (mMappedData)
         {
-            if (mGLBuffer)
-            {
-                delete_buffers(1, &mGLBuffer);
-            }
-            mGLBuffer = gen_buffer();
-            glBindBuffer(GL_ARRAY_BUFFER, mGLBuffer);
-            sGLRenderBuffer = mGLBuffer;
-            glBufferData(GL_ARRAY_BUFFER, mSize, mMappedData, GL_STATIC_DRAW);
+            updateStorage(GL_ARRAY_BUFFER, 0, mMappedData, mSize); // [Viewer Lab]
         }
-        else if (mGLBuffer != sGLRenderBuffer)
+        else
         {
-            glBindBuffer(GL_ARRAY_BUFFER, mGLBuffer);
-            sGLRenderBuffer = mGLBuffer;
+            rebind_gl_buffer(GL_ARRAY_BUFFER, mGLBuffer); // [Viewer Lab]
         }
         STOP_GLERROR;
 
         if (mMappedIndexData)
         {
-            if (mGLIndices)
-            {
-                delete_buffers(1, &mGLIndices);
-            }
-
-            mGLIndices = gen_buffer();
-            glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, mGLIndices);
-            sGLRenderIndices = mGLIndices;
-
-            glBufferData(GL_ELEMENT_ARRAY_BUFFER, mIndicesSize, mMappedIndexData, GL_STATIC_DRAW);
+            updateStorage(GL_ELEMENT_ARRAY_BUFFER, 0, mMappedIndexData, mIndicesSize); // [Viewer Lab]
         }
-        else if (mGLIndices != sGLRenderIndices)
+        else
         {
-            glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, mGLIndices);
-            sGLRenderIndices = mGLIndices;
+            rebind_gl_buffer(GL_ELEMENT_ARRAY_BUFFER, mGLIndices); // [Viewer Lab]
         }
         STOP_GLERROR;
     }
@@ -1484,11 +2627,7 @@ void LLVertexBuffer::_unmapBuffer()
         {
             LL_PROFILE_ZONE_NAMED_CATEGORY_VERTEX("unmapBuffer - vertex");
 
-            if (sGLRenderBuffer != mGLBuffer)
-            {
-                glBindBuffer(GL_ARRAY_BUFFER, mGLBuffer);
-                sGLRenderBuffer = mGLBuffer;
-            }
+            rebind_gl_buffer(GL_ARRAY_BUFFER, mGLBuffer); // [Viewer Lab]
 
             U32 start = 0;
             U32 end = 0;
@@ -1518,11 +2657,7 @@ void LLVertexBuffer::_unmapBuffer()
         {
             LL_PROFILE_ZONE_NAMED_CATEGORY_VERTEX("unmapBuffer - index");
 
-            if (mGLIndices != sGLRenderIndices)
-            {
-                glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, mGLIndices);
-                sGLRenderIndices = mGLIndices;
-            }
+            rebind_gl_buffer(GL_ELEMENT_ARRAY_BUFFER, mGLIndices); // [Viewer Lab]
             U32 start = 0;
             U32 end = 0;
 
@@ -1547,6 +2682,34 @@ void LLVertexBuffer::_unmapBuffer()
             mMappedIndexRegions.clear();
         }
     }
+}
+
+// [Viewer Lab] Through the viewer's render device when the part has storage there, otherwise the GL
+// backend's pool
+void LLVertexBuffer::updateStorage(U32 target, U32 offset, const U8* data, U32 bytes)
+{
+    const bool indices = target == GL_ELEMENT_ARRAY_BUFFER;
+    LLPointer<LL::RHI::Buffer>& storage = indices ? mRHIIndices : mRHIBuffer;
+    U32& name = indices ? mGLIndices : mGLBuffer;
+    if (storage.isNull())
+    {
+        gl_storage_update(target, indices ? mIndicesSize : mSize, name, offset, data, bytes);
+        return;
+    }
+    LL::RHI::Device* device = LL::RHI::viewerDevice();
+    if (!device || !on_main_thread())
+    {
+        LL_WARNS_ONCE("RHI") << "LLVertexBuffer's storage on the render device is updated only on the main thread "
+                             << "while the device exists; this update is skipped" << LL_ENDL;
+        return;
+    }
+    if (bytes == 0)
+    {
+        return;
+    }
+    device->encoder().updateBuffer(storage.get(), offset,
+                                   std::span<const std::byte>(reinterpret_cast<const std::byte*>(data), bytes));
+    name = gl_name(storage);
 }
 
 //----------------------------------------------------------------------------
@@ -1692,6 +2855,11 @@ void LLVertexBuffer::setBuffer()
 
     // a shader must be bound
     llassert(LLGLSLShader::sCurBoundShaderPtr);
+    if (!LLGLSLShader::sCurBoundShaderPtr) // [Viewer Lab] no mask to read; without the check release builds would dereference null
+    {
+        LL_WARNS_ONCE("Shader") << "setBuffer with no shader bound: nothing is bound" << LL_ENDL;
+        return;
+    }
 
     U32 data_mask = LLGLSLShader::sCurBoundShaderPtr->mAttributeMask;
 
@@ -1700,84 +2868,73 @@ void LLVertexBuffer::setBuffer()
         "Attribute mask mismatch! mTypeMask should be a superset of data_mask.  data_mask: 0x"
                 << std::hex << data_mask << " mTypeMask: 0x" << mTypeMask << " Missing: 0x" << (data_mask & ~mTypeMask) <<  std::dec);
 
-    if (sGLRenderBuffer != mGLBuffer)
-    {
-        glBindBuffer(GL_ARRAY_BUFFER, mGLBuffer);
-        sGLRenderBuffer = mGLBuffer;
+    // [Viewer Lab] The census: the call, a part without one of the shader's attributes, and a part where the stream of one
+    // starts at or past its vertices
+    ++sDrawCounts.setBuffers;
+    sDrawCounts.missingAttributes += lacksAttributes(data_mask, mTypeMask) ? 1 : 0;
+    sDrawCounts.streamsBeyondBuffer += streamsBeyond(data_mask, mOffsets, mSize) ? 1 : 0;
 
-        setupVertexBuffer();
-    }
-    else if (sLastMask != data_mask)
-    {
-        setupVertexBuffer();
-        sLastMask = data_mask;
-    }
-
-    if (mGLIndices != sGLRenderIndices)
-    {
-        glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, mGLIndices);
-        sGLRenderIndices = mGLIndices;
-    }
+    gl_set_buffer(mGLBuffer, mGLIndices, data_mask, mOffsets); // [Viewer Lab] the binds and the setup, in the GL backend
 
     STOP_GLERROR;
 }
 
-
-// virtual (default)
-void LLVertexBuffer::setupVertexBuffer()
+// [Viewer Lab] setBuffer's attribute setup for the bound program's mask (gl_set_buffer), with the
+// offsets of the attributes' streams given, so the render interface's GL backend sets attributes
+// up the same way (llrhigl.cpp).
+//static
+void LLVertexBuffer::setupVertexAttributes(U32 data_mask, const U32* offsets)
 {
     STOP_GLERROR;
     U8* base = nullptr;
 
-    U32 data_mask = LLGLSLShader::sCurBoundShaderPtr->mAttributeMask;
-
     if (data_mask & MAP_NORMAL)
     {
         AttributeType loc = TYPE_NORMAL;
-        void* ptr = (void*)(base + mOffsets[TYPE_NORMAL]);
+        void* ptr = (void*)(base + offsets[TYPE_NORMAL]);
         glVertexAttribPointer(loc, 3, GL_FLOAT, GL_FALSE, LLVertexBuffer::sTypeSize[TYPE_NORMAL], ptr);
     }
     if (data_mask & MAP_TEXCOORD3)
     {
         AttributeType loc = TYPE_TEXCOORD3;
-        void* ptr = (void*)(base + mOffsets[TYPE_TEXCOORD3]);
+        void* ptr = (void*)(base + offsets[TYPE_TEXCOORD3]);
         glVertexAttribPointer(loc, 2, GL_FLOAT, GL_FALSE, LLVertexBuffer::sTypeSize[TYPE_TEXCOORD3], ptr);
     }
     if (data_mask & MAP_TEXCOORD2)
     {
         AttributeType loc = TYPE_TEXCOORD2;
-        void* ptr = (void*)(base + mOffsets[TYPE_TEXCOORD2]);
+        void* ptr = (void*)(base + offsets[TYPE_TEXCOORD2]);
         glVertexAttribPointer(loc, 2, GL_FLOAT, GL_FALSE, LLVertexBuffer::sTypeSize[TYPE_TEXCOORD2], ptr);
     }
     if (data_mask & MAP_TEXCOORD1)
     {
         AttributeType loc = TYPE_TEXCOORD1;
-        void* ptr = (void*)(base + mOffsets[TYPE_TEXCOORD1]);
+        void* ptr = (void*)(base + offsets[TYPE_TEXCOORD1]);
         glVertexAttribPointer(loc, 2, GL_FLOAT, GL_FALSE, LLVertexBuffer::sTypeSize[TYPE_TEXCOORD1], ptr);
     }
     if (data_mask & MAP_TANGENT)
     {
         AttributeType loc = TYPE_TANGENT;
-        void* ptr = (void*)(base + mOffsets[TYPE_TANGENT]);
+        void* ptr = (void*)(base + offsets[TYPE_TANGENT]);
         glVertexAttribPointer(loc, 4, GL_FLOAT, GL_FALSE, LLVertexBuffer::sTypeSize[TYPE_TANGENT], ptr);
     }
     if (data_mask & MAP_TEXCOORD0)
     {
         AttributeType loc = TYPE_TEXCOORD0;
-        void* ptr = (void*)(base + mOffsets[TYPE_TEXCOORD0]);
+        void* ptr = (void*)(base + offsets[TYPE_TEXCOORD0]);
         glVertexAttribPointer(loc, 2, GL_FLOAT, GL_FALSE, LLVertexBuffer::sTypeSize[TYPE_TEXCOORD0], ptr);
     }
     if (data_mask & MAP_COLOR)
     {
         AttributeType loc = TYPE_COLOR;
         //bind emissive instead of color pointer if emissive is present
-        void* ptr = (data_mask & MAP_EMISSIVE) ? (void*)(base + mOffsets[TYPE_EMISSIVE]) : (void*)(base + mOffsets[TYPE_COLOR]);
+        void* ptr = (data_mask & MAP_EMISSIVE) ? (void*)(base + offsets[TYPE_EMISSIVE]) : (void*)(base + offsets[TYPE_COLOR]);
         glVertexAttribPointer(loc, 4, GL_UNSIGNED_BYTE, GL_TRUE, LLVertexBuffer::sTypeSize[TYPE_COLOR], ptr);
     }
     if (data_mask & MAP_EMISSIVE)
     {
         AttributeType loc = TYPE_EMISSIVE;
-        void* ptr = (void*)(base + mOffsets[TYPE_EMISSIVE]);
+        void* ptr = (void*)(base + offsets[TYPE_EMISSIVE]);
         glVertexAttribPointer(loc, 4, GL_UNSIGNED_BYTE, GL_TRUE, LLVertexBuffer::sTypeSize[TYPE_EMISSIVE], ptr);
 
         if (!(data_mask & MAP_COLOR))
@@ -1789,37 +2946,37 @@ void LLVertexBuffer::setupVertexBuffer()
     if (data_mask & MAP_WEIGHT)
     {
         AttributeType loc = TYPE_WEIGHT;
-        void* ptr = (void*)(base + mOffsets[TYPE_WEIGHT]);
+        void* ptr = (void*)(base + offsets[TYPE_WEIGHT]);
         glVertexAttribPointer(loc, 1, GL_FLOAT, GL_FALSE, LLVertexBuffer::sTypeSize[TYPE_WEIGHT], ptr);
     }
     if (data_mask & MAP_WEIGHT4)
     {
         AttributeType loc = TYPE_WEIGHT4;
-        void* ptr = (void*)(base + mOffsets[TYPE_WEIGHT4]);
+        void* ptr = (void*)(base + offsets[TYPE_WEIGHT4]);
         glVertexAttribPointer(loc, 4, GL_FLOAT, GL_FALSE, LLVertexBuffer::sTypeSize[TYPE_WEIGHT4], ptr);
     }
     if (data_mask & MAP_JOINT)
     {
         AttributeType loc = TYPE_JOINT;
-        void* ptr = (void*)(base + mOffsets[TYPE_JOINT]);
+        void* ptr = (void*)(base + offsets[TYPE_JOINT]);
         glVertexAttribIPointer(loc, 4, GL_UNSIGNED_SHORT, LLVertexBuffer::sTypeSize[TYPE_JOINT], ptr);
     }
     if (data_mask & MAP_CLOTHWEIGHT)
     {
         AttributeType loc = TYPE_CLOTHWEIGHT;
-        void* ptr = (void*)(base + mOffsets[TYPE_CLOTHWEIGHT]);
+        void* ptr = (void*)(base + offsets[TYPE_CLOTHWEIGHT]);
         glVertexAttribPointer(loc, 4, GL_FLOAT, GL_TRUE, LLVertexBuffer::sTypeSize[TYPE_CLOTHWEIGHT], ptr);
     }
     if (data_mask & MAP_TEXTURE_INDEX)
     {
         AttributeType loc = TYPE_TEXTURE_INDEX;
-        void* ptr = (void*)(base + mOffsets[TYPE_VERTEX] + 12);
+        void* ptr = (void*)(base + offsets[TYPE_VERTEX] + 12);
         glVertexAttribIPointer(loc, 1, GL_UNSIGNED_INT, LLVertexBuffer::sTypeSize[TYPE_VERTEX], ptr);
     }
     if (data_mask & MAP_VERTEX)
     {
         AttributeType loc = TYPE_VERTEX;
-        void* ptr = (void*)(base + mOffsets[TYPE_VERTEX]);
+        void* ptr = (void*)(base + offsets[TYPE_VERTEX]);
         glVertexAttribPointer(loc, 3, GL_FLOAT, GL_FALSE, LLVertexBuffer::sTypeSize[TYPE_VERTEX], ptr);
     }
     STOP_GLERROR;

@@ -35,6 +35,7 @@
 #include "llstrider.h"
 #include "llrender.h"
 #include "lltrace.h"
+#include <map>
 #include <set>
 #include <vector>
 #include <list>
@@ -56,36 +57,182 @@
 class LLPrivateMemoryPool;
 class LLVertexBuffer;
 
+// [Viewer Lab]
+namespace LL::RHI
+{
+    class Buffer;
+    class Texture;
+    struct VertexStreams;
+    struct PipelineDesc;
+    struct DepthStencilDesc;
+    struct PassFormats;
+}
+
+// [Viewer Lab] The table behind the display list entries that hold each texture of the device (llvertexbuffer.cpp): it maps
+// a texture's id to the first Entry of its intrusive list, with open addressing and linear probing. Tracking and
+// untracking allocate nothing: the table is touched only when an entry is or becomes the first of its id, and it allocates
+// only as it grows at half load. Here rather than in the .cpp so that a unit test reaches its probe, erase and grow paths
+// directly.
+template <class Entry>
+class LLTrackedEntryTable
+{
+public:
+    LLTrackedEntryTable() : mSlots(256), mShift(64 - 8) {}
+
+    // The slot of the id's first entry, made with none if the id has no list
+    Entry*& first(U64 id)
+    {
+        llassert(id != 0);
+        size_t i = find(id);
+        if (mSlots[i].mId == 0)
+        {
+            if ((mUsed + 1) * 2 > mSlots.size())
+            {
+                grow();
+                i = find(id);
+            }
+            mSlots[i].mId = id;
+            ++mUsed;
+        }
+        return mSlots[i].mFirst;
+    }
+
+    // The id's first entry, or null
+    Entry* peek(U64 id) const
+    {
+        const Slot& slot = mSlots[find(id)];
+        return slot.mId == id ? slot.mFirst : nullptr;
+    }
+
+    // The id's list starts with this entry; with none, the id goes
+    void setFirst(U64 id, Entry* entry)
+    {
+        const size_t i = find(id);
+        llassert(id != 0 && mSlots[i].mId == id);
+        if (entry)
+        {
+            mSlots[i].mFirst = entry;
+        }
+        else
+        {
+            erase(i);
+        }
+    }
+
+    // Takes the id out and returns its first entry, or null
+    Entry* take(U64 id)
+    {
+        const size_t i = find(id);
+        if (id == 0 || mSlots[i].mId != id)
+        {
+            return nullptr;
+        }
+        Entry* entry = mSlots[i].mFirst;
+        erase(i);
+        return entry;
+    }
+
+    // Tests only: the slots in use, the table's size, and an id's home slot
+    size_t used() const { return mUsed; }
+    size_t capacity() const { return mSlots.size(); }
+    size_t home(U64 id) const { return size_t((id * 0x9E3779B97F4A7C15ull) >> mShift); }
+
+private:
+    struct Slot
+    {
+        U64 mId = 0; // 0: free
+        Entry* mFirst = nullptr;
+    };
+
+    // The id's slot, or the free slot where it would go
+    size_t find(U64 id) const
+    {
+        const size_t mask = mSlots.size() - 1;
+        size_t i = home(id);
+        while (mSlots[i].mId != id && mSlots[i].mId != 0)
+        {
+            i = (i + 1) & mask;
+        }
+        return i;
+    }
+
+    // Backward-shift deletion: the later slots of the probe run move up, so lookups need no markers
+    void erase(size_t i)
+    {
+        const size_t mask = mSlots.size() - 1;
+        for (size_t j = (i + 1) & mask; mSlots[j].mId != 0; j = (j + 1) & mask)
+        {
+            // j's id may fill the hole at i only if its home is not after i in the run
+            if (((j - home(mSlots[j].mId)) & mask) >= ((j - i) & mask))
+            {
+                mSlots[i] = mSlots[j];
+                i = j;
+            }
+        }
+        mSlots[i] = Slot();
+        --mUsed;
+    }
+
+    void grow()
+    {
+        std::vector<Slot> old(mSlots.size() * 2);
+        old.swap(mSlots);
+        --mShift;
+        for (const Slot& slot : old)
+        {
+            if (slot.mId != 0)
+            {
+                mSlots[find(slot.mId)] = slot;
+            }
+        }
+    }
+
+    std::vector<Slot> mSlots; // a power of two, at most half used
+    U32 mShift;               // 64 minus the power
+    size_t mUsed = 0;
+};
+
+
 class LLVertexBufferData
 {
 public:
-    LLVertexBufferData()
-        : mVB(nullptr)
-        , mMode(0)
-        , mCount(0)
-        , mTexName(0)
-        , mProjection(glm::identity<glm::mat4>())
-        , mModelView(glm::identity<glm::mat4>())
-        , mTexture0(glm::identity<glm::mat4>())
-    {}
-    LLVertexBufferData(LLVertexBuffer* buffer, U8 mode, U32 count, U32 tex_name, const glm::mat4& model_view, const glm::mat4& projection, const glm::mat4& texture0)
-        : mVB(buffer)
-        , mMode(mode)
-        , mCount(count)
-        , mTexName(tex_name)
-        , mProjection(model_view)
-        , mModelView(projection)
-        , mTexture0(texture0)
-    {}
+    // [Viewer Lab] Defined in llvertexbuffer.cpp, where LL::RHI::Texture is complete for mTexture
+    LLVertexBufferData();
+    LLVertexBufferData(LLVertexBuffer* buffer, U8 mode, U32 count, LL::RHI::Texture* texture, U64 texture_id, U32 tex_name, const glm::mat4& model_view, const glm::mat4& projection, const glm::mat4& texture0);
+    LLVertexBufferData(const LLVertexBufferData& other);
+    LLVertexBufferData& operator=(const LLVertexBufferData& other);
+    ~LLVertexBufferData();
     void drawWithMatrix();
     void draw();
     LLPointer<LLVertexBuffer> mVB;
     U8 mMode;
     U32 mCount;
+    // [Viewer Lab] Texture unit 0's binding at the flush by the device's texture and its id, which draw binds again
+    // through LLTexUnit::bindTexture, and unit 0's GL name at the flush, as upstream. mTexName is bound
+    // raw only while the entry holds no texture of the device: there was none at the flush, or the texture's owner has
+    // released it since; a GL-backend path that stays
+    LLPointer<LL::RHI::Texture> mTexture;
+    U64 mTextureId;
     U32 mTexName;
     glm::mat4 mProjection;
     glm::mat4 mModelView;
     glm::mat4 mTexture0;
+
+    // [Viewer Lab] Main thread: the entries made on the main thread that hold the texture with this id let go of it, as
+    // its owner releases it (LLTexUnit::releaseTexture), so a list no longer keeps a released texture and its GL name
+    // alive; their id and GL name stay
+    static void releaseTexture(U64 texture_id);
+    // [Viewer Lab] For tests, main thread: how many entries hold the texture with this id and let go of it at its release
+    static U32 trackedEntries(U64 texture_id);
+
+private:
+    // [Viewer Lab] The release's registry: track adds an entry that holds a texture of the device on the main thread to
+    // the list of the texture's id, untrack takes it out; neither allocates
+    void track();
+    void untrack();
+    U64 mTrackedId = 0; // [Viewer Lab] the id the entry is tracked under, 0 when it is not; copies do not take it
+    LLVertexBufferData* mTrackedPrev = nullptr; // [Viewer Lab] its neighbours in its id's list; copies do not take them
+    LLVertexBufferData* mTrackedNext = nullptr;
 };
 typedef std::list<LLVertexBufferData> buffer_data_list_t;
 
@@ -109,6 +256,120 @@ public:
 
     static void unbind(); //unbind any bound vertex buffer
 
+    // [Viewer Lab] Buffer names from the same pool, and deleted with the same delay, as the
+    // vertex buffers' own, for the render interface's GL backend (llrhigl.cpp).
+    static U32 genGLBuffer();
+    static void deleteGLBuffers(S32 count, U32* buffers);
+    // [Viewer Lab] The GL storage of LLVertexBuffer's buffers, from the VBO pool initClass picked,
+    // with its GL calls, memory accounting and deletion delays, for the render interface's GL
+    // backend (llrhigl.cpp). Main thread.
+    static bool allocateGLStorage(U32 target, U32 size, U32& name);
+    static void updateGLStorage(U32 target, U32 size, U32& name, U32 offset, const U8* data, U32 bytes);
+    static void freeGLStorage(U32 target, U32 size, U32 name);
+    // [Viewer Lab] Attribute pointers for the bound array buffer, as setBuffer sets them.
+    static void setupVertexAttributes(U32 data_mask, const U32* offsets);
+
+    // [Viewer Lab] The draws and setBuffer calls since the process began, main thread: the draws (draw counts
+    // once, through drawRange), those with a shader bound, with the part's RHI storage (its indices too for an indexed
+    // draw) and with a program of the viewer's current device, and those skipped because the bound shader was refused or
+    // its pipeline failed; setBuffer's calls, those where the part lacks one of the shader's attributes, and those where
+    // the stream of one of the shader's attributes starts at or past the part's vertices; and the indexed draws whose
+    // indices end past the part's. For level 1's per-scene lines, golden level 2's render profile and the tests.
+    // Each draw not skipped goes to the viewer's encoder, or stays raw GL counted by its reason: no device, no RHI program
+    // of the device for the bound shader, no RHI storage for the part, no pass to record into (a passless level), or no
+    // pipeline or depth state for its description. So the draws are skipped + encoded + the five reasons. Of the draws
+    // that reach their pipeline: those in another pass than the draw before, with other pass formats, the pipeline table's
+    // lookups (a change of the draw's key) and the device's pipeline and depth state requests (the tables' misses), the
+    // descriptions whose mask is not the program's, the depth states that write in a pass with read-only depth, the draws
+    // in a pass with read-only depth (golden level 2's floor on the passes that must be read-only), and the
+    // encoder calls made: pipelines, depth states, vertex buffers and index buffers set.
+    struct DrawCounts
+    {
+        U64 draws = 0;
+        U64 drawsWithShader = 0;
+        U64 drawsWithStorage = 0;
+        U64 drawsWithProgram = 0;
+        U64 setBuffers = 0;
+        U64 missingAttributes = 0;
+        U64 streamsBeyondBuffer = 0;
+        U64 indicesBeyondBuffer = 0;
+        U64 skipped = 0;
+        U64 encoded = 0;
+        U64 passless = 0;
+        U64 withoutDevice = 0;
+        U64 withoutProgram = 0;
+        U64 withoutStorage = 0;
+        U64 withoutPipeline = 0;
+        U64 passesWithDraws = 0;
+        U64 formatChanges = 0;
+        U64 tableLookups = 0;
+        U64 pipelineRequests = 0;
+        U64 depthRequests = 0;
+        U64 attributeMaskMismatches = 0;
+        U64 depthWritesInReadOnlyPass = 0;
+        U64 drawsInReadOnlyPass = 0;
+        U64 pipelineSets = 0;
+        U64 depthSets = 0;
+        U64 vertexBufferSets = 0;
+        U64 indexBufferSets = 0;
+    };
+    static DrawCounts drawCounts();
+    // [Viewer Lab] While sTallyPrograms is set, every counted draw with a shader bound is tallied by the
+    // shader's name (golden level 2's draws per program over the warm-up, the floors in features.json). Off unless the
+    // golden hook sets it; main thread; no GL.
+    static bool sTallyPrograms;
+    static const std::map<std::string, U64>& programTally();
+    static void clearProgramTally();
+    // [Viewer Lab] One draw skipped before it reaches drawRange, counted as drawRange counts a skipped one (no part's
+    // storage): LLRender::flush's batch for a shader bind() refused, which it drops before making a buffer; main thread.
+    static void noteSkippedDraw();
+    // [Viewer Lab] Whether a new part is bound before its data is set, as LLRender::genBuffer asks: with a VBO pool of the
+    // GL backend that updates the bound GL buffer at each set (glBufferSubData), not with Apple's, which names the part and
+    // sends its whole copy in _unmapBuffer, nor when GL is not the backend. The pool's choice, not a GPU flag.
+    static bool bindsBeforeData();
+
+    // [Viewer Lab] The census's predicates, named so the tests check them at their boundaries: a part
+    // without one of the shader's attributes; the stream of an attribute of the mask starting at or past the part's
+    // vertices, which the render interface's tracker refuses (the constructor zeroes the offsets of the attributes a part
+    // does not have); an indexed draw whose indices end past the part's; a depth state that writes in a pass with read-only
+    // depth.
+    static bool lacksAttributes(U32 shader_mask, U32 type_mask) { return (shader_mask & type_mask) != shader_mask; }
+    static bool streamsBeyond(U32 mask, const U32* offsets, U32 size);
+    static bool indicesBeyond(U32 indices_offset, U32 count, U32 stride, U32 size)
+    {
+        return (static_cast<U64>(indices_offset) + count) * stride > size; // not U64(): OpenSSL's sha.h defines a U64 macro
+    }
+    static bool writesInReadOnlyPass(bool read_only, bool depth_write) { return read_only && depth_write; }
+
+    // [Viewer Lab] True on the main thread while LLVertexBuffer gives a draw, its pipeline, depth state and buffers to the
+    // viewer's encoder: the GL backend then only tracks them, and keeps them apart from the interface's, because
+    // LLVertexBuffer's GL backend functions make the GL calls themselves.
+    static bool makesOwnGLDraws();
+    // [Viewer Lab] That scope. It puts the previous value back, as LLRenderTarget's does, so it nests; main thread only
+    // (a static, not thread_local). A GL backend switch, part of its contract with llrender (llrhigl.cpp).
+    struct OwnGLDraws
+    {
+        OwnGLDraws();
+        ~OwnGLDraws();
+        OwnGLDraws(const OwnGLDraws&)            = delete;
+        OwnGLDraws& operator=(const OwnGLDraws&) = delete;
+
+    private:
+        const bool mPrevious;
+    };
+
+    // [Viewer Lab] What the render interface gets for a draw, from llrender's caches and with no GL:
+    // - the streams of a shader's mask, as setupVertexAttributes sets the attributes up: the mask is the shader's, which
+    //   setupClientArrays enables, the colour's stream is the emissive one whenever the mask has emissive, and the texture
+    //   index is in the position's fourth component;
+    static void vertexStreams(U32 data_mask, const U32* offsets, LL::RHI::VertexStreams& streams);
+    // - the pipeline of a draw in a mode with a shader's mask in a pass of these formats: the primitive class, LLGLState's
+    //   GL_BLEND, LLRender's blend factors (GL's initial One and Zero before the first blendFunc) and colour mask,
+    //   normalized;
+    static void describePipeline(U32 mode, U32 data_mask, const LL::RHI::PassFormats& pass, LL::RHI::PipelineDesc& pipeline);
+    // - the depth state of LLGLDepthTest: no writes while the test is off, as GL; false for a function the table lacks.
+    static bool describeDepth(LL::RHI::DepthStencilDesc& depth);
+
     //get the size of a vertex with the given typemask
     static U32 calcVertexSize(const U32& typemask);
 
@@ -124,7 +385,7 @@ public:
     // 1 - update LLVertexBuffer::sTypeSize
     // 2 - update LLVertexBuffer::vb_type_name
     // 3 - add a strider accessor
-    // 4 - modify LLVertexBuffer::setupVertexBuffer
+    // 4 - modify LLVertexBuffer::setupVertexAttributes and vertexStreams
     // 6 - modify LLViewerShaderMgr::mReservedAttribs
 
     // clang-format off
@@ -169,8 +430,6 @@ protected:
     friend class LLRender;
 
     ~LLVertexBuffer(); // use unref()
-
-    void setupVertexBuffer();
 
     void    genBuffer(U32 size);
     void    genIndices(U32 size);
@@ -257,6 +516,10 @@ public:
     U32 getTypeMask() const                 { return mTypeMask; }
     bool hasDataType(AttributeType type) const { return ((1 << type) & getTypeMask()); }
     U32 getSize() const                     { return mSize; }
+    // [Viewer Lab] For the tests and the draws through the render interface. Update the buffers through LLVertexBuffer:
+    // a whole update made on them directly gives a new GL name that mGLBuffer and mGLIndices do not follow.
+    LL::RHI::Buffer* getRHIBuffer() const   { return mRHIBuffer.get(); }
+    LL::RHI::Buffer* getRHIIndices() const  { return mRHIIndices.get(); }
     U32 getIndicesSize() const              { return mIndicesSize; }
     U8* getMappedData() const               { return mMappedData; }
     U8* getMappedIndices() const            { return mMappedIndexData; }
@@ -265,7 +528,10 @@ public:
     // these functions assume (and assert on) the current VBO being bound
     // Detailed error checking can be enabled by setting gDebugGL to true
     void draw(U32 mode, U32 count, U32 indices_offset) const;
-    void drawArrays(U32 mode, U32 offset, U32 count) const;
+    // [Viewer Lab] Returns whether the draw was delivered: the viewer's encoder made it (its tracker's draws() went up) or
+    // the GL draw was made; false for a draw skipped or left raw off GL. LLImageGL::scaleDown copies the draw's result
+    // only when it was delivered.
+    bool drawArrays(U32 mode, U32 offset, U32 count) const;
     void drawRange(U32 mode, U32 start, U32 end, U32 count, U32 indices_offset) const;
 
     // draw without syncing matrices.  If you're positive there have been no matrix
@@ -282,8 +548,8 @@ public:
     void clone(LLVertexBuffer& target) const;
 
 protected:
-    U32     mGLBuffer = 0;      // GL VBO handle
-    U32     mGLIndices = 0;     // GL IBO handle
+    U32     mGLBuffer = 0;      // GL VBO handle ([Viewer Lab] the RHI buffer's GL name when there is one, LL::RHI::GLNames::of)
+    U32     mGLIndices = 0;     // GL IBO handle ([Viewer Lab] the RHI buffer's GL name when there is one, LL::RHI::GLNames::of)
     U32     mNumVerts = 0;      // Number of vertices allocated
     U32     mNumIndices = 0;    // Number of indices allocated
     U32     mIndicesType = GL_UNSIGNED_SHORT; // type of indices in index buffer
@@ -321,9 +587,26 @@ private:
     // actually unmap buffer
     void _unmapBuffer();
 
+    // [Viewer Lab] GL's part of an update of bytes [offset, offset + bytes) of the vertices or the
+    // indices
+    void updateStorage(U32 target, U32 offset, const U8* data, U32 bytes);
+
     // add to set of mapped buffers
     void _mapBuffer();
     bool mMapped = false;
+
+    // [Viewer Lab] A draw of this part with the bound shader, given to the viewer's encoder in the open pass before GL's
+    // draw: the pipeline, depth state, buffers and draw, inside OwnGLDraws, so GL's calls stay LLVertexBuffer's own; or
+    // counted by the reason it stays raw GL. Main thread; no GL. Returns whether the encoder made the draw, by its
+    // tracker's draws() across the call.
+    bool encodeDraw(U32 mode, bool indexed, U32 first, U32 count) const;
+
+    // [Viewer Lab] The storage on the viewer's render device; null when the part was made
+    // without it. After the existing members, so their offsets stay, but the class grows by two
+    // pointers: code built against the old header, such as the prebuilt llphysicsextensions_tpv of
+    // HAVOK_TPV builds, which allocates these objects, must be rebuilt against this one.
+    LLPointer<LL::RHI::Buffer> mRHIBuffer;
+    LLPointer<LL::RHI::Buffer> mRHIIndices;
 
 public:
 

@@ -55,6 +55,7 @@
 #include "m4math.h"
 #include "llmatrix4a.h"
 #include "llperfstats.h"
+#include <atomic>
 
 #if !LL_DARWIN && !LL_LINUX
 extern PFNGLWEIGHTPOINTERARBPROC glWeightPointerARB;
@@ -244,9 +245,15 @@ U32 LLViewerJointMesh::drawShape( F32 pixelArea, bool first_pass, bool is_dummy)
     llassert( !(mTexture.notNull() && mLayerSet) );  // mutually exclusive
 
     LLViewerTexLayerSet *layerset = dynamic_cast<LLViewerTexLayerSet*>(mLayerSet);
-    if (mTestImageName)
+    if (mTestImage) // [Viewer Lab]
     {
-        gGL.getTexUnit(diffuse_channel)->bindManual(LLTexUnit::TT_TEXTURE, mTestImageName);
+        // [Viewer Lab] Coverage marker, once per session
+        static std::atomic<bool> sReached{ false };
+        if (!sReached.exchange(true))
+        {
+            LL_INFOS("RHI") << "Facade site reached: llviewerjointmesh.cpp:drawShape" << LL_ENDL;
+        }
+        gGL.getTexUnit(diffuse_channel)->bindTexture(LLTexUnit::TT_TEXTURE, mTestImage); // [Viewer Lab] the image's own binding
 
         if (mIsTransparent)
         {

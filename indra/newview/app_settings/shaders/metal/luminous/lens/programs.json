@@ -1,0 +1,30 @@
+{
+  "libraries": [
+    {
+      "name": "lens",
+      "files": [
+        "luminous/lens/bloom.metal",
+        "luminous/lens/streak.metal",
+        "luminous/lens/flare.metal",
+        "luminous/lens/finish.metal"
+      ],
+      "defines": {},
+      "compute": [
+        { "function": "luminous_lens_bloom_down", "threadsPerThreadgroup": [16, 16, 1] },
+        { "function": "luminous_lens_bloom_up", "threadsPerThreadgroup": [16, 16, 1] },
+        { "function": "luminous_lens_bloom_up_in_place", "threadsPerThreadgroup": [16, 16, 1] },
+        { "function": "luminous_lens_streak", "threadsPerThreadgroup": [256, 1, 1] },
+        { "function": "luminous_lens_flare_bright", "threadsPerThreadgroup": [16, 16, 1] },
+        { "function": "luminous_lens_flare", "threadsPerThreadgroup": [16, 16, 1] }
+      ],
+      "render": [
+        { "vertex": "luminous_fullscreen_vs", "fragment": "luminous_lens_tone_fs", "colorFormats": ["RGBA16Float"], "depthFormat": "", "blend": "none" },
+        { "vertex": "luminous_fullscreen_vs", "fragment": "luminous_lens_bloom_fs", "colorFormats": ["RGBA16Float"], "depthFormat": "", "blend": "alpha" },
+        { "vertex": "luminous_fullscreen_vs", "fragment": "luminous_lens_streak_fs", "colorFormats": ["RGBA16Float"], "depthFormat": "", "blend": "additive" },
+        { "vertex": "luminous_fullscreen_vs", "fragment": "luminous_lens_flare_fs", "colorFormats": ["RGBA16Float"], "depthFormat": "", "blend": "additive" },
+        { "vertex": "luminous_fullscreen_vs", "fragment": "luminous_lens_finish_fs", "colorFormats": ["RGBA16Float"], "depthFormat": "", "blend": "none" },
+        { "vertex": "luminous_fullscreen_vs", "fragment": "luminous_lens_vignette_fs", "colorFormats": ["RGBA16Float"], "depthFormat": "", "blend": "multiply" }
+      ]
+    }
+  ]
+}

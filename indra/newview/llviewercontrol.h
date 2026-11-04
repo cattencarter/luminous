@@ -43,6 +43,10 @@ bool toggle_show_favorites_panel(const LLSD& newvalue);
 // These functions found in llcontroldef.cpp *TODO: clean this up!
 //setting variables are declared in this function
 void settings_setup_listeners();
+// <Luminous> Photo mode's HDR switches set on, without their listeners, while photo mode is on; called once the backend
+// is chosen
+void settings_force_photo_mode_hdr();
+// </Luminous>
 
 // for the graphics settings
 void create_graphics_group(LLControlGroup& group);

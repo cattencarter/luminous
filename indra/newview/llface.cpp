@@ -67,6 +67,7 @@
 //
 #pragma GCC diagnostic ignored "-Wuninitialized"
 #endif
+#include <atomic>
 
 #define LL_MAX_INDICES_COUNT 1000000
 
@@ -643,6 +644,12 @@ void renderFace(LLDrawable* drawable, LLFace *face)
 
 void LLFace::renderOneWireframe(const LLColor4 &color, F32 fogCfx, bool wireframe_selection, bool bRenderHiddenSelections, bool shader)
 {
+    // [Viewer Lab] Coverage marker, once per session
+    static std::atomic<bool> sReached{ false };
+    if (!sReached.exchange(true))
+    {
+        LL_INFOS("RHI") << "Facade site reached: llface.cpp:renderOneWireframe" << LL_ENDL;
+    }
     if (bRenderHiddenSelections)
     {
         gGL.blendFunc(LLRender::BF_SOURCE_COLOR, LLRender::BF_ONE);
@@ -671,9 +678,9 @@ void LLFace::renderOneWireframe(const LLColor4 &color, F32 fogCfx, bool wirefram
         LLGLDisable depth(wireframe_selection ? 0 : GL_BLEND);
 
         LLGLEnable offset(GL_POLYGON_OFFSET_LINE);
-        glPolygonOffset(3.f, 3.f);
+        gGL.setPolygonOffset(3.f, 3.f); // [Viewer Lab]
         gGL.setLineWidth(5.f); // <FS> Line width OGL core profile fix by Rye Mutt
-        glPolygonMode(GL_FRONT_AND_BACK, GL_LINE);
+        gGL.setPolygonMode(GL_FRONT_AND_BACK, GL_LINE); // [Viewer Lab]
         renderFace(mDrawablep, this);
     }
 }
@@ -1683,7 +1690,7 @@ bool LLFace::getGeometryVolume(const LLVolume& volume,
                     break;
                     case BE_BRIGHTNESS:
                     case BE_DARKNESS:
-                    if( mTexture[LLRender::DIFFUSE_MAP].notNull() && mTexture[LLRender::DIFFUSE_MAP]->hasGLTexture())
+                    if( mTexture[LLRender::DIFFUSE_MAP].notNull() && mTexture[LLRender::DIFFUSE_MAP]->hasTexture()) // [Viewer Lab] any backend
                     {
                         // Offset by approximately one texel
                         S32 cur_discard = mTexture[LLRender::DIFFUSE_MAP]->getDiscardLevel();

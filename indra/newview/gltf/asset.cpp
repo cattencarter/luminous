@@ -178,14 +178,8 @@ void Asset::uploadTransforms()
         mp[idx + 11] = m[14];
     }
 
-    if (mNodesUBO == 0)
-    {
-        glGenBuffers(1, &mNodesUBO);
-    }
-
-    glBindBuffer(GL_UNIFORM_BUFFER, mNodesUBO);
-    glBufferData(GL_UNIFORM_BUFFER, glmp.size() * sizeof(F32), glmp.data(), GL_STREAM_DRAW);
-    glBindBuffer(GL_UNIFORM_BUFFER, 0);
+    // [Viewer Lab] through the uniform buffer facade, the block declared in gltfscenemanager.cpp
+    mNodesUBO.upload(LLGLSLShader::UB_GLTF_NODES, glmp.data(), U32(glmp.size() * sizeof(F32)));
 }
 
 void Asset::uploadMaterials()
@@ -227,14 +221,40 @@ void Asset::uploadMaterials()
             min_alpha);
     }
 
-    if (mMaterialsUBO == 0)
-    {
-        glGenBuffers(1, &mMaterialsUBO);
-    }
+    // [Viewer Lab] through the uniform buffer facade, the block declared in gltfscenemanager.cpp
+    mMaterialsUBO.upload(LLGLSLShader::UB_GLTF_MATERIALS, md.data(), U32(md.size() * sizeof(vec4)));
+}
 
-    glBindBuffer(GL_UNIFORM_BUFFER, mMaterialsUBO);
-    glBufferData(GL_UNIFORM_BUFFER, md.size() * sizeof(vec4), md.data(), GL_STREAM_DRAW);
-    glBindBuffer(GL_UNIFORM_BUFFER, 0);
+// [Viewer Lab]
+void UniformBuffer::upload(LLGLSLShader::UniformBlock block, const void* data, U32 size)
+{
+    if (size == 0)
+    {
+        return;
+    }
+    if (!mShared)
+    {
+        mShared = std::make_shared<Shared>();
+    }
+    if (mShared->mSize != size || !mShared->mBuffer.isAllocated())
+    {
+        if (!mShared->mBuffer.allocate(block, size, true))
+        {
+            LL_WARNS_ONCE("RHI") << "A glTF uniform buffer could not be made" << LL_ENDL;
+            return;
+        }
+        mShared->mSize = size;
+    }
+    mShared->mBuffer.update(0, data, size);
+}
+
+// [Viewer Lab]
+void UniformBuffer::bind() const
+{
+    if (mShared && mShared->mBuffer.isAllocated())
+    {
+        mShared->mBuffer.bind();
+    }
 }
 
 S32 Asset::lineSegmentIntersect(const LLVector4a& start, const LLVector4a& end,

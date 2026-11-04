@@ -27,6 +27,7 @@
 #include "linden_common.h"
 
 #include "llwindowmacosx.h"
+#include "llwindowmacosxcontext-objc.h" // [Viewer Lab] getCGLContextObj
 
 #include "llkeyboardmacosx.h"
 #include "llwindowcallbacks.h"
@@ -34,7 +35,9 @@
 
 #include "llerror.h"
 #include "llgl.h"
+#include "llrhimetal.h" // [Viewer Lab] viewerBackend, metalDebug
 #include "llstring.h"
+#include "lltimer.h" // [Viewer Lab] the CGL query's time
 #include "lldir.h"
 #include "indra_constants.h"
 
@@ -70,6 +73,14 @@ namespace
 // LLWindowMacOSX
 //
 
+// [Viewer Lab] Declared here, before setUseMultGL, which reads it.
+// MBW -- HACK ALERT
+// On the Mac, to put up an OS dialog in full screen mode, we must first switch OUT of full screen mode.
+// The proper way to do this is to bracket the dialog with calls to beforeDialog() and afterDialog(), but these
+// require a pointer to the LLWindowMacOSX object.  Stash it here and maintain in the constructor and destructor.
+// This assumes that there will be only one object of this class at any time.  Hopefully this is true.
+static LLWindowMacOSX *gWindowImplementation = NULL;
+
 bool LLWindowMacOSX::sUseMultGL = false;
 
 //static
@@ -79,7 +90,9 @@ void LLWindowMacOSX::setUseMultGL(bool use_mult_gl)
 
     sUseMultGL = use_mult_gl;
 
-    if (gGLManager.mInited)
+    // [Viewer Lab] CGL only with the window's GL context: on Metal, initForDevice sets mInited without one, and
+    // CGLGetCurrentContext is a CGL call too.
+    if (gGLManager.mInited && gWindowImplementation && gWindowImplementation->mContext)
     {
         CGLContextObj ctx = CGLGetCurrentContext();
         //enable multi-threaded OpenGL (whether or not sUseMultGL actually changed)
@@ -149,13 +162,6 @@ bool check_for_card(const char* RENDERER, const char* bad_card)
 //static double getDictDouble (CFDictionaryRef refDict, CFStringRef key);
 static long getDictLong (CFDictionaryRef refDict, CFStringRef key);
 
-// MBW -- HACK ALERT
-// On the Mac, to put up an OS dialog in full screen mode, we must first switch OUT of full screen mode.
-// The proper way to do this is to bracket the dialog with calls to beforeDialog() and afterDialog(), but these
-// require a pointer to the LLWindowMacOSX object.  Stash it here and maintain in the constructor and destructor.
-// This assumes that there will be only one object of this class at any time.  Hopefully this is true.
-static LLWindowMacOSX *gWindowImplementation = NULL;
-
 LLWindowMacOSX::LLWindowMacOSX(LLWindowCallbacks* callbacks,
                                const std::string& title, const std::string& name, S32 x, S32 y, S32 width,
                                S32 height, U32 flags,
@@ -199,6 +205,7 @@ LLWindowMacOSX::LLWindowMacOSX(LLWindowCallbacks* callbacks,
     mLanguageTextInputAllowed = false;
     mPreeditor = NULL;
     mFSAASamples = fsaa_samples;
+    mEnableVSync = enable_vsync; // [Viewer Lab] for createGLContext
     mForceRebuild = false;
 
     // Get the original aspect ratio of the main device.
@@ -215,24 +222,13 @@ LLWindowMacOSX::LLWindowMacOSX(LLWindowCallbacks* callbacks,
 
     // Stash an object pointer for OSMessageBox()
     gWindowImplementation = this;
-    // Create the GL context and set it up for windowed or fullscreen, as appropriate.
-    if(createContext(x, y, width, height, 32, fullscreen, enable_vsync))
+    // [Viewer Lab] Get the window and make the view. The GL backend makes the GL context on the view when it creates
+    // the device (createGLContext).
+    if(createView(fullscreen, enable_vsync))
     {
         if(mWindow != NULL)
         {
             makeWindowOrderFront(mWindow);
-        }
-
-        if (!gGLManager.initGL())
-        {
-            setupFailure(
-                "Second Life is unable to run because your video card drivers\n"
-                "are out of date or unsupported. Please make sure you have\n"
-                "the latest video card drivers installed.\n"
-                "If you continue to receive this message, contact customer service.",
-                "Error",
-                OSMB_OK);
-            return;
         }
 
         //start with arrow cursor
@@ -244,9 +240,6 @@ LLWindowMacOSX::LLWindowMacOSX(LLWindowCallbacks* callbacks,
     }
 
     mCallbacks = callbacks;
-    stop_glerror();
-
-
 }
 
 // These functions are used as wrappers for our internal event handling callbacks.
@@ -517,6 +510,26 @@ void callWindowDidChangeScreen()
     }
 }
 
+// [Viewer Lab] The view's Metal layer probe: with the Metal backend's debug setting, the line the
+// view writes after each change of its CAMetalLayer goes to the log, a mismatch as a WARN. Nothing without it.
+void callMetalLayerProbe(const char* line, bool ok)
+{
+#if LL_RHI_METAL
+    if (!LL::RHI::metalDebug())
+    {
+        return;
+    }
+    if (ok)
+    {
+        LL_INFOS("Window") << line << LL_ENDL;
+    }
+    else
+    {
+        LL_WARNS("Window") << line << LL_ENDL;
+    }
+#endif
+}
+
 void callDeltaUpdate(float *delta, MASK mask)
 {
     if (!gWindowImplementation)
@@ -738,7 +751,8 @@ void LLWindowMacOSX::getMouseDeltas(float* delta)
     delta[1] = mCursorLastEventDeltaY;
 }
 
-bool LLWindowMacOSX::createContext(int x, int y, int width, int height, int bits, bool fullscreen, bool enable_vsync)
+// [Viewer Lab] The window part of the window setup, for the constructor: gets the window and makes the view.
+bool LLWindowMacOSX::createView(bool fullscreen, bool enable_vsync)
 {
     mFullscreen = fullscreen;
 
@@ -747,60 +761,15 @@ bool LLWindowMacOSX::createContext(int x, int y, int width, int height, int bits
         mWindow = getMainAppWindow();
     }
 
-    if(mContext == NULL)
-    {
-        // Our OpenGL view is already defined within SecondLife.xib.
-        // Get the view instead.
-        mGLView = createOpenGLView(mWindow, mFSAASamples, enable_vsync);
-        mContext = getCGLContextObj(mGLView);
-        gGLManager.mVRAM = getVramSize(mGLView);
+    // [Viewer Lab] With the Metal backend the view gets a CAMetalLayer.
+    setOpenGLViewMetalLayer(LL::RHI::viewerBackend() == LL::RHI::BackendType::Metal);
 
-        if(!mPixelFormat)
-        {
-            CGLPixelFormatAttribute attribs[] =
-            {
-                kCGLPFANoRecovery,
-                kCGLPFADoubleBuffer,
-                kCGLPFAClosestPolicy,
-                kCGLPFAAccelerated,
-                kCGLPFAMultisample,
-                kCGLPFASampleBuffers, static_cast<CGLPixelFormatAttribute>((mFSAASamples > 0 ? 1 : 0)),
-                kCGLPFASamples, static_cast<CGLPixelFormatAttribute>(mFSAASamples),
-                kCGLPFAStencilSize, static_cast<CGLPixelFormatAttribute>(8),
-                kCGLPFADepthSize, static_cast<CGLPixelFormatAttribute>(24),
-                kCGLPFAAlphaSize, static_cast<CGLPixelFormatAttribute>(8),
-                kCGLPFAColorSize, static_cast<CGLPixelFormatAttribute>(24),
-                kCGLPFAOpenGLProfile, static_cast<CGLPixelFormatAttribute>(kCGLOGLPVersion_GL4_Core),
-                static_cast<CGLPixelFormatAttribute>(0)
-            };
-
-            GLint numPixelFormats;
-            CGLChoosePixelFormat (attribs, &mPixelFormat, &numPixelFormats);
-
-            if(mPixelFormat == NULL) {
-                CGLChoosePixelFormat (attribs, &mPixelFormat, &numPixelFormats);
-            }
-        }
-
-    }
+    // Our OpenGL view is already defined within SecondLife.xib.
+    // Get the view instead.
+    mGLView = createOpenGLView(mWindow, mFSAASamples, enable_vsync);
 
     // This sets up our view to recieve text from our non-inline text input window.
     setupInputWindow(mWindow, mGLView);
-
-    // Hook up the context to a drawable
-
-    if(mContext != NULL)
-    {
-
-        // <FS:CR> Mac OpenGL
-        //U32 err = CGLSetCurrentContext(mContext);
-        CGLError err = CGLSetCurrentContext(mContext);
-        if (err != kCGLNoError)
-        {
-            setupFailure("Can't activate GL rendering context", "Error", OSMB_OK);
-            return false;
-        }
-    }
 
     mRefreshRate = CGDisplayModeGetRefreshRate(CGDisplayCopyDisplayMode(mDisplay));
     if(mRefreshRate == 0)
@@ -809,16 +778,170 @@ bool LLWindowMacOSX::createContext(int x, int y, int width, int height, int bits
         mRefreshRate = DEFAULT_REFRESH_RATE;
     }
 
-    // Disable vertical sync for swap
-    toggleVSync(enable_vsync);
-
-    setUseMultGL(sUseMultGL);
-
     makeFirstResponder(mWindow, mGLView);
 
     return true;
 }
 
+// [Viewer Lab] The CGL pixel format of createContext and queryGLManager: Linden's attribute list, chosen a second time
+// when the first call gives none. NULL when both give none.
+static CGLPixelFormatObj choose_pixel_format(U32 fsaa_samples)
+{
+    CGLPixelFormatAttribute attribs[] =
+    {
+        kCGLPFANoRecovery,
+        kCGLPFADoubleBuffer,
+        kCGLPFAClosestPolicy,
+        kCGLPFAAccelerated,
+        kCGLPFAMultisample,
+        kCGLPFASampleBuffers, static_cast<CGLPixelFormatAttribute>((fsaa_samples > 0 ? 1 : 0)),
+        kCGLPFASamples, static_cast<CGLPixelFormatAttribute>(fsaa_samples),
+        kCGLPFAStencilSize, static_cast<CGLPixelFormatAttribute>(8),
+        kCGLPFADepthSize, static_cast<CGLPixelFormatAttribute>(24),
+        kCGLPFAAlphaSize, static_cast<CGLPixelFormatAttribute>(8),
+        kCGLPFAColorSize, static_cast<CGLPixelFormatAttribute>(24),
+        kCGLPFAOpenGLProfile, static_cast<CGLPixelFormatAttribute>(kCGLOGLPVersion_GL4_Core),
+        static_cast<CGLPixelFormatAttribute>(0)
+    };
+
+    GLint numPixelFormats = 0;
+    CGLPixelFormatObj pixel_format = NULL;
+    CGLChoosePixelFormat (attribs, &pixel_format, &numPixelFormats);
+
+    if(pixel_format == NULL) {
+        CGLChoosePixelFormat (attribs, &pixel_format, &numPixelFormats);
+    }
+    return pixel_format;
+}
+
+// [Viewer Lab] The GL part of the window setup: the GL context, then LLGLManager::initGL with its dialog and the
+// closing stop_glerror. createGLContext calls it when the GL backend creates the device.
+bool LLWindowMacOSX::createContext(bool enable_vsync)
+{
+    if(mContext == NULL)
+    {
+        // [Viewer Lab] First the view's GL context.
+        createOpenGLContext(mGLView, enable_vsync);
+        mContext = getCGLContextObj(mGLView);
+        if (mContext)
+        {
+            // [Viewer Lab] A Metal run's log must not have it: createGLContext is never called there
+            LL_INFOS("Window") << "GL context created (createContext)" << LL_ENDL;
+        }
+        gGLManager.mVRAM = getVramSize(mGLView);
+
+        if(!mPixelFormat)
+        {
+            mPixelFormat = choose_pixel_format(mFSAASamples); // [Viewer Lab] mPixelFormat is a void*
+        }
+
+    }
+
+    // Hook up the context to a drawable
+
+    if(mContext != NULL)
+    {
+
+        // <FS:CR> Mac OpenGL
+        //U32 err = CGLSetCurrentContext(mContext);
+        CGLError err = CGLSetCurrentContext(static_cast<CGLContextObj>(mContext));
+        if (err != kCGLNoError)
+        {
+            setupFailure("Can't activate GL rendering context", "Error", OSMB_OK);
+            stop_glerror(); // [Viewer Lab] the setup's stop_glerror after this failure
+            return false;
+        }
+    }
+
+    // Disable vertical sync for swap
+    toggleVSync(enable_vsync);
+
+    setUseMultGL(sUseMultGL);
+
+    if (!gGLManager.initGL())
+    {
+        setupFailure(
+            "Second Life is unable to run because your video card drivers\n"
+            "are out of date or unsupported. Please make sure you have\n"
+            "the latest video card drivers installed.\n"
+            "If you continue to receive this message, contact customer service.",
+            "Error",
+            OSMB_OK);
+        return false; // [Viewer Lab] without stop_glerror
+    }
+
+    stop_glerror();
+    return true;
+}
+
+// [Viewer Lab] The GL backend's createGLDevice calls this once. The window's events go to dummy callbacks meanwhile:
+// the close and the alert's activation in setupFailure, and any resize while the context is attached, so
+// LLViewerWindow, still in its constructor, sees none of them.
+bool LLWindowMacOSX::createGLContext()
+{
+    LLWindowCallbacks null_callbacks;
+    LLWindowCallbacks* callbacks = mCallbacks;
+    mCallbacks = &null_callbacks;
+    bool ok = createContext(mEnableVSync);
+    mCallbacks = callbacks;
+    return ok;
+}
+
+// [Viewer Lab] GL's values without the window's GL context, for the Metal backend: a temporary CGL context from
+// createContext's pixel format, with no view and no drawable, is made current,
+// gets the CGL VRAM query and LLGLManager::initGL exactly as createContext does, and keeps GL's three raw strings for
+// the GL string functions. Then it is released and destroyed, and mInited is false again, so a GL device made after a
+// failed Metal device has the window make its context as on GL. A query that gets no pixel format or context, or
+// leaves a context current, ends the run: a Metal device needs GL's values.
+void LLWindowMacOSX::queryGLManager()
+{
+    LLTimer timer;
+
+    // createContext's pixel format.
+    CGLPixelFormatObj pixel_format = choose_pixel_format(mFSAASamples);
+    CGLContextObj context = NULL;
+    if (pixel_format != NULL)
+    {
+        CGLCreateContext(pixel_format, NULL, &context);
+    }
+    if (context == NULL || CGLSetCurrentContext(context) != kCGLNoError)
+    {
+        LL_ERRS("Window") << "CGL query failed (Metal still queries CGL while the GL path remains)" << LL_ENDL;
+    }
+
+    gGLManager.mVRAM        = getVramSize(mGLView); // the CGL renderer query; it uses no view
+    const bool inited       = gGLManager.initGL();
+    gGLManager.mRawVendor   = ll_safe_string((const char*)glGetString(GL_VENDOR));
+    gGLManager.mRawRenderer = ll_safe_string((const char*)glGetString(GL_RENDERER));
+    gGLManager.mRawVersion  = ll_safe_string((const char*)glGetString(GL_VERSION));
+
+    CGLSetCurrentContext(NULL);
+    // The check comes before the destruction: CGLDestroyContext on the current context also clears the current context
+    // (shown by a run-time probe), so a check after it could not see a missing release.
+    if (CGLGetCurrentContext() != NULL)
+    {
+        LL_ERRS("Window") << "The CGL query's context is still current after its release" << LL_ENDL;
+    }
+    CGLDestroyContext(context);
+    CGLDestroyPixelFormat(pixel_format);
+    gGLManager.mInited = false;
+
+    if (!inited)
+    {
+        LL_ERRS("Window") << "CGL query failed (Metal still queries CGL while the GL path remains): LLGLManager::initGL"
+                          << LL_ENDL;
+    }
+    LL_INFOS("Window") << "CGL query context released (" << llformat("%.1f", timer.getElapsedTimeF64() * 1000.0) << " ms)" << LL_ENDL;
+}
+
+// [Viewer Lab]
+void LLWindowMacOSX::makeViewLayer()
+{
+    if (mGLView)
+    {
+        makeOpenGLViewLayer(mGLView);
+    }
+}
 
 // We only support OS X 10.7's fullscreen app mode which is literally a full screen window that fills a virtual desktop.
 // This makes this method obsolete.
@@ -827,7 +950,8 @@ bool LLWindowMacOSX::switchContext(bool fullscreen, const LLCoordScreen &size, b
     return false;
 }
 
-void LLWindowMacOSX::destroyContext()
+// [Viewer Lab] destroyContext's GL part: unhooks and destroys the GL context and the pixel format.
+void LLWindowMacOSX::destroyGLContext()
 {
     if (!mContext)
     {
@@ -847,14 +971,27 @@ void LLWindowMacOSX::destroyContext()
     // Clean up the pixel format
     if(mPixelFormat != NULL)
     {
-        CGLDestroyPixelFormat(mPixelFormat);
+        CGLDestroyPixelFormat(static_cast<CGLPixelFormatObj>(mPixelFormat));
         mPixelFormat = NULL;
     }
 
     // Clean up the GL context
     if(mContext != NULL)
     {
-        CGLDestroyContext(mContext);
+        CGLDestroyContext(static_cast<CGLContextObj>(mContext));
+    }
+}
+
+void LLWindowMacOSX::destroyContext()
+{
+    destroyGLContext(); // [Viewer Lab]
+
+    // [Viewer Lab] Without a GL context (the Metal backend), the render context that initForDevice marked ends here,
+    // where destroyGLContext's LLGLManager::shutdownGL ends GL's, without a GL call: the textures that static
+    // destruction frees at exit then leave LLImageGL's already destroyed lists alone, as on GL.
+    if (!mContext)
+    {
+        gGLManager.mInited = false;
     }
 
     // Destroy our LLOpenGLView
@@ -908,6 +1045,19 @@ void LLWindowMacOSX::minimize()
 void LLWindowMacOSX::restore()
 {
     show();
+}
+
+// [Viewer Lab] The window's title: the main window comes from SecondLife.xib, titled "Second Life", and the
+// title given at creation is only stashed. Not an override of setTitle, which stays inert on macOS as upstream has it,
+// so the in-world title LLTeleportHistory sets through it ("user @ region", shown on Windows) does not replace the one
+// set here.
+void LLWindowMacOSX::setNativeTitle(const std::string& title)
+{
+    mWindowTitle = title;
+    if (mWindow && !setNSWindowTitle(mWindow, title.c_str()))
+    {
+        LL_WARNS("Window") << "The window's title is not valid UTF-8 and stays as it was" << LL_ENDL;
+    }
 }
 
 
@@ -1118,12 +1268,20 @@ bool LLWindowMacOSX::setSizeImpl(const LLCoordWindow size)
 
 void LLWindowMacOSX::swapBuffers()
 {
-    CGLFlushDrawable(mContext);
+    if (!mContext)
+    {
+        return; // [Viewer Lab] no GL context (the Metal backend): the device's surface presents
+    }
+    CGLFlushDrawable(static_cast<CGLContextObj>(mContext));
 }
 
 void LLWindowMacOSX::restoreGLContext()
 {
-    CGLSetCurrentContext(mContext);
+    if (!mContext)
+    {
+        return; // [Viewer Lab] no GL context to restore (the Metal backend)
+    }
+    CGLSetCurrentContext(static_cast<CGLContextObj>(mContext));
 }
 
 F32 LLWindowMacOSX::getGamma()
@@ -2532,6 +2690,13 @@ void *LLWindowMacOSX::getPlatformWindow()
     return (void*)mWindow;
 }
 
+// [Viewer Lab] The LLOpenGLView, which holds the GL context or the CAMetalLayer, for the device's
+// DeviceCreateInfo::window; the view, since getPlatformWindow() is NULL in fullscreen.
+void* LLWindowMacOSX::getNativeView()
+{
+    return mGLView;
+}
+
 // get a double value from a dictionary
 /*
 static double getDictDouble (CFDictionaryRef refDict, CFStringRef key)
@@ -2594,17 +2759,24 @@ void LLWindowMacOSX::allowLanguageTextInput(LLPreeditor *preeditor, bool b)
 class sharedContext
 {
 public:
-    CGLContextObj mContext;
+    void* mContext; // [Viewer Lab] a CGLContextObj
 };
 
 void* LLWindowMacOSX::createSharedContext()
 {
+    if (!mContext)
+    {
+        return nullptr; // [Viewer Lab] no GL context to share (the Metal backend)
+    }
     sharedContext* sc = new sharedContext();
-    CGLCreateContext(mPixelFormat, mContext, &(sc->mContext));
+    CGLContextObj context = NULL; // [Viewer Lab] sc->mContext is a void*
+    CGLCreateContext(static_cast<CGLPixelFormatObj>(mPixelFormat), static_cast<CGLContextObj>(mContext), &context);
+    sc->mContext = context;
 
     if (sUseMultGL)
     {
-        CGLEnable(mContext, kCGLCEMPEngine);
+        // [Viewer Lab] Upstream enables the MP engine on the main context, not on the new one; kept.
+        CGLEnable(static_cast<CGLContextObj>(mContext), kCGLCEMPEngine);
     }
 
     return (void *)sc;
@@ -2612,7 +2784,7 @@ void* LLWindowMacOSX::createSharedContext()
 
 void LLWindowMacOSX::makeContextCurrent(void* context)
 {
-    CGLSetCurrentContext(((sharedContext*)context)->mContext);
+    CGLSetCurrentContext(static_cast<CGLContextObj>(((sharedContext*)context)->mContext));
 
     //enable multi-threaded OpenGL
     if (sUseMultGL)
@@ -2638,13 +2810,19 @@ void LLWindowMacOSX::destroySharedContext(void* context)
 {
     sharedContext* sc = (sharedContext*)context;
 
-    CGLDestroyContext(sc->mContext);
+    CGLDestroyContext(static_cast<CGLContextObj>(sc->mContext));
 
     delete sc;
 }
 
 void LLWindowMacOSX::toggleVSync(bool enable_vsync)
 {
+    if (!mContext)
+    {
+        // [Viewer Lab] No GL context (the Metal backend): only keep the value; the viewer sets the device's surface.
+        mEnableVSync = enable_vsync;
+        return;
+    }
     GLint frames_per_swap = 0;
     if (!enable_vsync)
     {
@@ -2655,7 +2833,7 @@ void LLWindowMacOSX::toggleVSync(bool enable_vsync)
         frames_per_swap = 1;
     }
 
-    CGLSetParameter(mContext, kCGLCPSwapInterval, &frames_per_swap);
+    CGLSetParameter(static_cast<CGLContextObj>(mContext), kCGLCPSwapInterval, &frames_per_swap);
 }
 
 void LLWindowMacOSX::interruptLanguageTextInput()

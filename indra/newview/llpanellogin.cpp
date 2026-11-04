@@ -965,6 +965,15 @@ void LLPanelLogin::onClickConnect(bool commit_fields)
     }
 #endif
 
+    if (gMetalUIDev)
+    {
+        // [Viewer Lab] The world is off in the Metal UI development mode: no grid choice, no
+        // login callback, so no network login. The login plugin (LEAP) comes this way too.
+        LL_WARNS("AppInit") << "Metal UI dev mode: login refused (login panel)" << LL_ENDL;
+        LLNotificationsUtil::add("MetalUIDevLoginOff");
+        return;
+    }
+
     if (sInstance && sInstance->mCallback && !sInstance->mAlertNotif)
     {
         if (commit_fields)

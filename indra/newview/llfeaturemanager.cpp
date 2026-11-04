@@ -54,6 +54,7 @@
 #include "llstring.h"
 #include "stringize.h"
 #include "llcorehttputil.h"
+#include "llrhi.h" // [Viewer Lab]
 
 #if LL_WINDOWS
 #include "lldxhardware.h"
@@ -61,6 +62,9 @@
 
 // <FS:Techwolf Lupindo> downloadable gpu table support
 #include "fscommon.h"
+#include "luminousphotomode.h" // <Luminous/>
+#include "luminousmetal.h" // <Luminous/>
+#include <optional>
 #include <boost/filesystem.hpp>
 // </FS:Techwolf Lupindo>
 
@@ -565,6 +569,111 @@ void LLFeatureManager::initSingleton()
     applyBaseMasks();
 }
 
+// [Viewer Lab] Metal's caps from the feature table's texture-unit lists.
+S32 LLFeatureManager::featureTableTextureUnits() const
+{
+    LL::RHI::Device* device = LL::RHI::viewerDevice();
+    return device ? LL::RHI::featureTableTextureUnits(device->capabilities(), gGLManager.mNumTextureImageUnits)
+                  : gGLManager.mNumTextureImageUnits;
+}
+
+const std::map<std::string, F32>& LLFeatureManager::hardwareCaps() const
+{
+    // Once per device (the in-process GL fallback after the window replaces it); nothing to build on GL.
+    LL::RHI::Device* device = LL::RHI::viewerDevice();
+    if (device != mHardwareCapsDevice)
+    {
+        mHardwareCapsDevice = device;
+        mHardwareCaps.clear();
+        if (device && device->capabilities().backend == LL::RHI::BackendType::Metal)
+        {
+            std::map<std::string, LL::RHI::SettingCaps> lists;
+            for (const auto& [name, list] : mMaskList)
+            {
+                if (list)
+                {
+                    LL::RHI::SettingCaps& settings = lists[name];
+                    for (const auto& [feature, info] : list->getFeatures())
+                    {
+                        // as LLFeatureList::getRecommendedValue: 0 for a feature the list makes unavailable
+                        settings[feature] = info.mAvailable ? info.mRecommendedLevel : 0.f;
+                    }
+                }
+            }
+            mHardwareCaps = LL::RHI::hardwareSettingCaps(device->capabilities(), gGLManager.mNumTextureImageUnits, lists);
+        }
+    }
+    return mHardwareCaps;
+}
+
+F32 LLFeatureManager::hardwareCapped(const std::string& name, F32 value) const
+{
+    return LL::RHI::cappedSetting(hardwareCaps(), name, value);
+}
+
+// A new value above the setting's cap is refused (the setting's validate signal); the cap holds only on Metal.
+static bool validate_hardware_cap(const std::string& name, const LLSD& value)
+{
+    if (!LLFeatureManager::instanceExists())
+    {
+        return true;
+    }
+    const F32 asked = (F32)value.asReal();
+    const F32 cap = LLFeatureManager::getInstance()->hardwareCapped(name, asked);
+    if (cap < asked)
+    {
+        LL_WARNS("RenderInit") << name << " " << asked << " refused: this Metal device allows at most " << cap
+                               << " (the feature table's texture-unit lists, 16 samplers per stage; P3-UX2)" << LL_ENDL;
+        return false;
+    }
+    return true;
+}
+
+void LLFeatureManager::applyHardwareCaps()
+{
+    for (const auto& [name, cap] : hardwareCaps())
+    {
+        LLControlVariable* ctrl = gSavedSettings.getControl(name);
+        if (!ctrl)
+        {
+            LL_WARNS("RenderInit") << "AHHH! Control setting " << name << " does not exist!" << LL_ENDL;
+            continue;
+        }
+        const F32 value = (F32)ctrl->getValue().asReal();
+        if (value > cap)
+        {
+            LL_INFOS("RenderInit") << name << " " << value << " is above what this Metal device allows (the feature "
+                                   << "table's texture-unit lists for " << featureTableTextureUnits()
+                                   << " units); set to " << cap << " before the shaders load (P3-UX2)" << LL_ENDL;
+            // An unsaved value: the session reads the cap, and the user's saved value stays in the settings file,
+            // so a later start on GL gets it back.
+            if (ctrl->isType(TYPE_BOOLEAN))
+            {
+                ctrl->setValue(LLSD((bool)cap), false);
+            }
+            else if (ctrl->isType(TYPE_S32))
+            {
+                ctrl->setValue(LLSD((S32)cap), false);
+            }
+            else if (ctrl->isType(TYPE_U32))
+            {
+                ctrl->setValue(LLSD((LLSD::Integer)(U32)cap), false);
+            }
+            else if (ctrl->isType(TYPE_F32))
+            {
+                ctrl->setValue(LLSD((F64)cap), false);
+            }
+        }
+        if (mHardwareCapGuards.insert(name).second)
+        {
+            const std::string setting = name;
+            ctrl->getValidateSignal()->connect([setting](LLControlVariable*, const LLSD& asked)
+                                               { return validate_hardware_cap(setting, asked); });
+        }
+    }
+}
+// [Viewer Lab] end
+
 void LLFeatureManager::applyRecommendedSettings()
 {
     // apply saved settings
@@ -647,6 +756,13 @@ void LLFeatureManager::applyFeatures(bool skipFeatures)
 
 void LLFeatureManager::setGraphicsLevel(U32 level, bool skipFeatures)
 {
+    // <Luminous> On Metal the level's settings rebuild the buffers and shaders once, as this ends; OpenGL as it was
+    std::optional<LuminousPhotoMode::HoldShaderRebuilds> hold_rebuilds;
+    if (LuminousMetal::metal())
+    {
+        hold_rebuilds.emplace();
+    }
+    // </Luminous>
     LLViewerShaderMgr::sSkipReload = true;
     flush_glerror(); // Whatever may have already happened (e.g., to cause us to change), don't let confuse it with new initializations.
     applyBaseMasks();
@@ -712,15 +828,8 @@ void LLFeatureManager::applyBaseMasks()
     {
         maskFeatures("Intel");
 
-        static constexpr F32 TARGET_GL_VERSION =
-#if LL_DARWIN
-            4.09f;
-#else
-            4.59f;
-#endif
-
-        // check against 3.33 to avoid applying this fallback twice
-        if (gGLManager.mGLVersion < TARGET_GL_VERSION && gGLManager.mGLVersion > 3.33f)
+        // [Viewer Lab] the condition is in llrender, which the GL backend's capabilities share
+        if (gGLManager.needsIntelGL33Fallback())
         {
             // if we don't have OpenGL 4.6 on intel, set it to OpenGL 3.3
             // we also want to trigger the GL3 fallbacks on these chipsets
@@ -750,11 +859,13 @@ void LLFeatureManager::applyBaseMasks()
     {
         maskFeatures("OpenGLPre30");
     }
-    if (gGLManager.mNumTextureImageUnits <= 8)
+    // [Viewer Lab] GL's texture units, and on Metal no more than a stage's samplers (featureTableTextureUnits)
+    const S32 texture_units = featureTableTextureUnits();
+    if (texture_units <= 8)
     {
         maskFeatures("TexUnit8orLess");
     }
-    if (gGLManager.mNumTextureImageUnits <= 16)
+    if (texture_units <= 16)
     {
         maskFeatures("TexUnit16orLess");
     }

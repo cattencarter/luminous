@@ -44,6 +44,11 @@ class LLViewerObject;
 #define LL_REFLECTION_PROBE_MINIMUM_SCALE 1.f;
 
 void renderReflectionProbe(LLReflectionMap* probe, std::map<LLSpatialGroup*, int> groupCount, std::map<LLViewerObject*, int> objCount, std::map<F32*, int> locCount); // <FS:Beq/> enhanced metadata render for probes
+
+// [Viewer Lab] glCopyTexSubImage3D of res x res from the framebuffer GL reads into level and layer (cube * 6 + face) of the
+// cube map array bound on channel, through the copy facade with the array's device texture from that unit
+void copy_to_cube_map_array(S32 channel, S32 level, S32 layer, S32 res);
+
 class alignas(16) LLReflectionMapManager
 {
     LL_ALIGN_NEW
@@ -153,6 +158,29 @@ public:
     // True if currently updating a radiance map, false if currently updating an irradiance map
     bool isRadiancePass() { return mRadiancePass; }
 
+    // [Viewer Lab] Golden-image tests: why not every probe in use has run `updates` whole updates
+    // that began at or after `since` (frame time) and faded in, with none waiting to be created;
+    // empty when they all have. Call it every frame: `begun` and `finished` keep what the calls
+    // for the same `since` saw, and the caller empties them when `since` changes.
+    std::string probesNotComplete(F32 since, U32 updates, std::set<const LLReflectionMap*>& begun,
+                                  std::map<const LLReflectionMap*, U32>& finished) const;
+
+    // [Viewer Lab] Golden-image tests: the probes as the render profile records them, sorted by
+    // origin: cube index, origin, radius, whether complete, seconds since the last update (frame
+    // time), whether the default probe and whether being updated, and the face and pass of the
+    // update in progress.
+    LLSD probeState() const;
+
+    // [Viewer Lab] Golden-image tests: reset() on the next update, with the update count the
+    // scheduler uses (check_priority) starting over too.
+    void restart();
+
+    // [Viewer Lab] Golden-image tests: how many times every probe has been reset so far.
+    U32 getResetCount() const { return mResets; }
+
+    // [Viewer Lab] Golden-image tests: whether pause() holds the updates (only update() and resume() end it).
+    bool isPaused() const { return mPaused; }
+
     // perform occlusion culling on all active reflection probes
     void doOcclusion();
 
@@ -165,8 +193,12 @@ public:
     U32 probeMemory();
 
     // glDeleteQueries is expensive, so we maintain a pool of queries
-    GLuint allocateQuery();
-    void recycleQuery(GLuint query);
+    LLGPUQuery allocateQuery(); // [Viewer Lab]
+    void recycleQuery(LLGPUQuery query);
+
+    // [Viewer Lab] The ReflectionProbes block's buffer, null before the first updateUniforms allocates it; for the golden
+    // hook's measured.rhi.uniform_blocks
+    const LL::RHI::Buffer* getProbesBuffer() const { return mUBO.getRHIBuffer(); }
 
 private:
     friend class LLPipeline;
@@ -194,7 +226,7 @@ private:
     // bind UBO used for rendering
     void setUniforms();
 
-    std::deque<GLuint>                                    mQueryPool;
+    std::deque<LLGPUQuery>                                mQueryPool; // [Viewer Lab]
 
     // render target for cube snapshots
     // used to generate mipmaps without doing a copy-to-texture
@@ -230,7 +262,7 @@ private:
     std::vector<LLPointer<LLReflectionMap> > mCreateList;
 
     // handle to UBO
-    U32 mUBO = 0;
+    LLShaderUniformBuffer mUBO; // [Viewer Lab] the ReflectionProbes block through the uniform buffer facade
 
     // list of maps being used for rendering
     std::vector<LLReflectionMap*> mReflectionMaps;
@@ -273,6 +305,7 @@ private:
 
     // if true, reset all probe render state on the next update (for teleports and sky changes)
     bool mReset = false;
+    U32 mResets = 0; // [Viewer Lab]
 
     float mResetFade = 1.f;
     float mGlobalFadeTarget = 1.f;

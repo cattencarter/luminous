@@ -49,6 +49,8 @@
 
 #include "llglheaders.h"
 #include "llglslshader.h"
+#include "llrhi.h"
+#include "llthread.h"
 
 #include "glm/glm.hpp"
 #include <glm/gtc/matrix_access.hpp>
@@ -63,6 +65,15 @@
 
 #define GLH_EXT_GET_PROC_ADDRESS SDL_GL_GetProcAddress
 #define ExtensionExists(exten, unused) SDL_GL_ExtensionSupported(exten);
+#endif
+
+#include "llsd.h"  // [Viewer Lab] the CGL store
+#include <variant> // [Viewer Lab]
+#include <array>   // [Viewer Lab] LLGLGated
+#include <atomic>  // [Viewer Lab] LLGLGated
+#include <mutex>   // [Viewer Lab] LLGLGated
+#if LL_DARWIN
+#include <sys/sysctl.h> // [Viewer Lab] the store key's macOS build and memory
 #endif
 
 #ifdef _DEBUG
@@ -180,6 +191,7 @@ void APIENTRY gl_debug_callback(GLenum source,
 #endif
 
 void parse_glsl_version(S32& major, S32& minor);
+static bool gl_is_backend(); // [Viewer Lab] below, with GL's error checks
 
 void ll_init_fail_log(std::string filename)
 {
@@ -1296,6 +1308,9 @@ bool LLGLManager::initGL()
     glGetIntegerv(GL_MAX_VARYING_VECTORS, &mMaxVaryingVectors);
     glGetIntegerv(GL_MAX_UNIFORM_BLOCK_SIZE, &mMaxUniformBlockSize);
 
+    // [Viewer Lab] If outside the allowed range, glLineWidth fails with "invalid value".
+    glGetFloatv(GL_ALIASED_LINE_WIDTH_RANGE, mAliasedLineRange.mV);
+
     // sanity clamp max uniform block size to 64k just in case
     // there's some implementation that reports a crazy value
     mMaxUniformBlockSize = llmin(mMaxUniformBlockSize, 65536);
@@ -1318,6 +1333,14 @@ void LLGLManager::getGLInfo(LLSD& info)
         info["GLInfo"]["GLRenderer"] = HEADLESS_RENDERER_STRING;
         info["GLInfo"]["GLVersion"] = HEADLESS_VERSION_STRING;
         return;
+    }
+    else if (!gl_is_backend())
+    {
+        LL_GL_GATED("llgl:LLGLManager::getGLInfo");
+        // [Viewer Lab] No GL context where GL is not the backend: the CGL query's strings
+        info["GLInfo"]["GLVendor"]   = mRawVendor;
+        info["GLInfo"]["GLRenderer"] = mRawRenderer;
+        info["GLInfo"]["GLVersion"]  = mRawVersion;
     }
     else
     {
@@ -1347,6 +1370,14 @@ std::string LLGLManager::getGLInfoString()
         info_str += std::string("GL_RENDERER    ") + HEADLESS_RENDERER_STRING + std::string("\n");
         info_str += std::string("GL_VERSION     ") + HEADLESS_VERSION_STRING + std::string("\n");
     }
+    else if (!gl_is_backend())
+    {
+        LL_GL_GATED("llgl:LLGLManager::getGLInfoString");
+        // [Viewer Lab] The CGL query's strings where GL is not the backend
+        info_str += std::string("GL_VENDOR      ") + mRawVendor + std::string("\n");
+        info_str += std::string("GL_RENDERER    ") + mRawRenderer + std::string("\n");
+        info_str += std::string("GL_VERSION     ") + mRawVersion + std::string("\n");
+    }
     else
     {
         info_str += std::string("GL_VENDOR      ") + ll_safe_string((const char *)glGetString(GL_VENDOR)) + std::string("\n");
@@ -1371,6 +1402,14 @@ void LLGLManager::printGLInfoString()
         LL_INFOS("RenderInit") << "GL_RENDERER:   " << HEADLESS_RENDERER_STRING << LL_ENDL;
         LL_INFOS("RenderInit") << "GL_VERSION:    " << HEADLESS_VERSION_STRING << LL_ENDL;
     }
+    else if (!gl_is_backend())
+    {
+        LL_GL_GATED("llgl:LLGLManager::printGLInfoString");
+        // [Viewer Lab] The CGL query's strings where GL is not the backend
+        LL_INFOS("RenderInit") << "GL_VENDOR:     " << mRawVendor << LL_ENDL;
+        LL_INFOS("RenderInit") << "GL_RENDERER:   " << mRawRenderer << LL_ENDL;
+        LL_INFOS("RenderInit") << "GL_VERSION:    " << mRawVersion << LL_ENDL;
+    }
     else
     {
         LL_INFOS("RenderInit") << "GL_VENDOR:     " << ll_safe_string((const char *)glGetString(GL_VENDOR)) << LL_ENDL;
@@ -1392,11 +1431,56 @@ std::string LLGLManager::getRawGLString()
     {
         gl_string = HEADLESS_VENDOR_STRING + " " + HEADLESS_RENDERER_STRING;
     }
+    else if (!gl_is_backend())
+    {
+        LL_GL_GATED("llgl:LLGLManager::getRawGLString");
+        gl_string = mRawVendor + " " + mRawRenderer; // [Viewer Lab] the CGL query's strings
+    }
     else
     {
         gl_string = ll_safe_string((char*)glGetString(GL_VENDOR)) + " " + ll_safe_string((char*)glGetString(GL_RENDERER));
     }
     return gl_string;
+}
+
+// [Viewer Lab] A live query with no headless substitute and no upper-casing, so the About box shows
+// what GL says. Without GL as the backend there is no context: the CGL query's strings, as GL
+// gave them.
+std::string LLGLManager::getGLString(GLenum name)
+{
+    if (!gl_is_backend())
+    {
+        LL_GL_GATED("llgl:LLGLManager::getGLString");
+        switch (name)
+        {
+        case GL_VENDOR:
+            return mRawVendor;
+        case GL_RENDERER:
+            return mRawRenderer;
+        case GL_VERSION:
+            return mRawVersion;
+        default:
+            LL_WARNS_ONCE("RenderInit") << "getGLString(" << name << ") without GL as the backend: no string" << LL_ENDL;
+            return {};
+        }
+    }
+    return ll_safe_string((const char*)glGetString(name));
+}
+
+// [Viewer Lab] LLFeatureManager::applyBaseMasks' condition for lowering an Intel GPU's mGLVersion to
+// 3.33, here so that the GL backend's capabilities give the version the checks will see, also when
+// the device is made before the fallback.
+bool LLGLManager::needsIntelGL33Fallback() const
+{
+    static constexpr F32 TARGET_GL_VERSION =
+#if LL_DARWIN
+        4.09f;
+#else
+        4.59f;
+#endif
+
+    // check against 3.33 to avoid applying this fallback twice
+    return mIsIntel && mGLVersion < TARGET_GL_VERSION && mGLVersion > 3.33f;
 }
 
 void LLGLManager::asLLSD(LLSD& info)
@@ -1427,6 +1511,263 @@ void LLGLManager::asLLSD(LLSD& info)
     info["gl_renderer"] = mGLRenderer;
 }
 
+// [Viewer Lab] The render context with the device's capabilities. The CGL query's maximum texture size is GL's; the
+// device's should be the same.
+void LLGLManager::initForDevice(const LL::RHI::Capabilities& caps)
+{
+    if (mGLMaxTextureSize > 0 && mGLMaxTextureSize != S32(caps.maxTextureSize))
+    {
+        LL_WARNS("RenderInit") << "The device's maximum texture size " << caps.maxTextureSize << " is not GL's " << mGLMaxTextureSize
+                               << LL_ENDL;
+    }
+    mInited = true;
+    mGLMaxTextureSize = S32(caps.maxTextureSize);
+}
+
+// [Viewer Lab] The CGL store -----------------------------------------------------------------------------------------
+
+namespace
+{
+// Every LLGLManager field the CGL query sets on Darwin: initGL's and initExtensions', mVRAM (the query's
+// getVramSize, which initGL keeps), and the three raw strings. Not stored: mInited (initForDevice's), mIsDisabled,
+// mHasRequirements and mDownScaleMethod (set elsewhere), mVRAMDetected (LLAppViewer copies mVRAM into it after the
+// window is made), mIsMobileGF (never written on Darwin) and the WGL fields. toStoredLLSD and fromStoredLLSD add mAliasedLineRange and mGLExtensions.
+using GLStoreMember =
+    std::variant<bool LLGLManager::*, S32 LLGLManager::*, U32 LLGLManager::*, F32 LLGLManager::*, std::string LLGLManager::*>;
+struct GLStoreField
+{
+    const char*   name;
+    GLStoreMember member;
+};
+const GLStoreField GL_STORE_FIELDS[] = {
+    { "mVRAM", &LLGLManager::mVRAM },
+    { "mGLVendor", &LLGLManager::mGLVendor },
+    { "mGLRenderer", &LLGLManager::mGLRenderer },
+    { "mDriverVersionMajor", &LLGLManager::mDriverVersionMajor },
+    { "mDriverVersionMinor", &LLGLManager::mDriverVersionMinor },
+    { "mDriverVersionRelease", &LLGLManager::mDriverVersionRelease },
+    { "mDriverVersionVendorString", &LLGLManager::mDriverVersionVendorString },
+    { "mGLVersionString", &LLGLManager::mGLVersionString },
+    { "mGLVersion", &LLGLManager::mGLVersion },
+    { "mGLSLVersionMajor", &LLGLManager::mGLSLVersionMajor },
+    { "mGLSLVersionMinor", &LLGLManager::mGLSLVersionMinor },
+    { "mGLVendorShort", &LLGLManager::mGLVendorShort },
+    { "mIsAMD", &LLGLManager::mIsAMD },
+    { "mIsNVIDIA", &LLGLManager::mIsNVIDIA },
+    { "mIsIntel", &LLGLManager::mIsIntel },
+    { "mIsApple", &LLGLManager::mIsApple },
+    { "mHasCubeMapArray", &LLGLManager::mHasCubeMapArray },
+    { "mHasTransformFeedback", &LLGLManager::mHasTransformFeedback },
+    { "mHasDebugOutput", &LLGLManager::mHasDebugOutput },
+    { "mHasAnisotropic", &LLGLManager::mHasAnisotropic },
+    { "mHasNVXGpuMemoryInfo", &LLGLManager::mHasNVXGpuMemoryInfo },
+    { "mHasATIMemInfo", &LLGLManager::mHasATIMemInfo },
+    { "mGLMaxVertexRange", &LLGLManager::mGLMaxVertexRange },
+    { "mGLMaxIndexRange", &LLGLManager::mGLMaxIndexRange },
+    { "mGLMaxTextureSize", &LLGLManager::mGLMaxTextureSize },
+    { "mNumTextureImageUnits", &LLGLManager::mNumTextureImageUnits },
+    { "mMaxColorTextureSamples", &LLGLManager::mMaxColorTextureSamples },
+    { "mMaxDepthTextureSamples", &LLGLManager::mMaxDepthTextureSamples },
+    { "mMaxIntegerSamples", &LLGLManager::mMaxIntegerSamples },
+    { "mMaxSampleMaskWords", &LLGLManager::mMaxSampleMaskWords },
+    { "mMaxSamples", &LLGLManager::mMaxSamples },
+    { "mMaxVaryingVectors", &LLGLManager::mMaxVaryingVectors },
+    { "mMaxUniformBlockSize", &LLGLManager::mMaxUniformBlockSize },
+    { "mMaxAnisotropy", &LLGLManager::mMaxAnisotropy },
+    { "mRawVendor", &LLGLManager::mRawVendor },
+    { "mRawRenderer", &LLGLManager::mRawRenderer },
+    { "mRawVersion", &LLGLManager::mRawVersion },
+};
+
+#if LL_DARWIN
+// A field added to LLGLManager (an upstream merge) changes its size and stops the build here: decide whether
+// the CGL query sets it, add it to GL_STORE_FIELDS if so, raise kGLStoreFormat, then set the size here.
+static_assert(sizeof(LLGLManager) == 328, "LLGLManager changed: revisit GL_STORE_FIELDS and kGLStoreFormat");
+#endif
+
+bool storedTypeMatches(const LLSD& value, const GLStoreMember& member)
+{
+    return std::visit(
+        [&value](auto field)
+        {
+            using T = std::remove_cvref_t<decltype(std::declval<LLGLManager&>().*field)>;
+            if constexpr (std::is_same_v<T, bool>)
+            {
+                return value.isBoolean();
+            }
+            else if constexpr (std::is_same_v<T, std::string>)
+            {
+                return value.isString();
+            }
+            else if constexpr (std::is_same_v<T, F32>)
+            {
+                return value.isReal();
+            }
+            else
+            {
+                return value.isInteger();
+            }
+        },
+        member);
+}
+} // namespace
+
+LLSD LLGLManager::toStoredLLSD() const
+{
+    LLSD stored = LLSD::emptyMap();
+    for (const GLStoreField& entry : GL_STORE_FIELDS)
+    {
+        std::visit(
+            [&](auto field)
+            {
+                using T = std::remove_cvref_t<decltype(this->*field)>;
+                if constexpr (std::is_same_v<T, U32>)
+                {
+                    stored[entry.name] = LLSD::Integer(this->*field);
+                }
+                else if constexpr (std::is_same_v<T, F32>)
+                {
+                    stored[entry.name] = LLSD::Real(this->*field);
+                }
+                else
+                {
+                    stored[entry.name] = this->*field;
+                }
+            },
+            entry.member);
+    }
+    stored["mAliasedLineRange"] = LLSD::emptyArray();
+    stored["mAliasedLineRange"].append(LLSD::Real(mAliasedLineRange.mV[VX]));
+    stored["mAliasedLineRange"].append(LLSD::Real(mAliasedLineRange.mV[VY]));
+    stored["mGLExtensions"] = LLSD::emptyArray();
+    for (const std::string& extension : mGLExtensions)
+    {
+        stored["mGLExtensions"].append(extension);
+    }
+    return stored;
+}
+
+bool LLGLManager::fromStoredLLSD(const LLSD& stored)
+{
+    if (!stored.isMap())
+    {
+        return false;
+    }
+    for (const GLStoreField& entry : GL_STORE_FIELDS)
+    {
+        if (!stored.has(entry.name) || !storedTypeMatches(stored[entry.name], entry.member))
+        {
+            return false;
+        }
+    }
+    const LLSD& range      = stored["mAliasedLineRange"];
+    const LLSD& extensions = stored["mGLExtensions"];
+    if (!range.isArray() || range.size() != 2 || !range[0].isReal() || !range[1].isReal() || !extensions.isArray())
+    {
+        return false;
+    }
+    for (auto extension = extensions.beginArray(); extension != extensions.endArray(); ++extension)
+    {
+        if (!extension->isString())
+        {
+            return false;
+        }
+    }
+
+    for (const GLStoreField& entry : GL_STORE_FIELDS)
+    {
+        std::visit(
+            [&](auto field)
+            {
+                using T           = std::remove_cvref_t<decltype(this->*field)>;
+                const LLSD& value = stored[entry.name];
+                if constexpr (std::is_same_v<T, bool>)
+                {
+                    this->*field = value.asBoolean();
+                }
+                else if constexpr (std::is_same_v<T, std::string>)
+                {
+                    this->*field = value.asString();
+                }
+                else if constexpr (std::is_same_v<T, F32>)
+                {
+                    this->*field = F32(value.asReal());
+                }
+                else
+                {
+                    this->*field = T(value.asInteger());
+                }
+            },
+            entry.member);
+    }
+    mAliasedLineRange.set(F32(range[0].asReal()), F32(range[1].asReal()));
+    mGLExtensions.clear();
+    for (auto extension = extensions.beginArray(); extension != extensions.endArray(); ++extension)
+    {
+        mGLExtensions.insert(extension->asString());
+    }
+#if LL_DARWIN
+    // [Viewer Lab] initExtensions' extension string, which the GL info lines read, from the stored names
+    std::string all_extensions;
+    for (const std::string& extension : mGLExtensions)
+    {
+        all_extensions += extension;
+        all_extensions += ' ';
+    }
+    free(gGLHExts.mSysExts);
+    gGLHExts.mSysExts = all_extensions.empty() ? nullptr : strdup(all_extensions.c_str());
+#endif
+
+    // initGL's effects outside LLGLManager, as it has them: parse_gl_version's line, texture compression only from GL
+    // 2.1 (its glHint is context state, gone with the query's context), and LLGLState's map (initGLStates; its
+    // gl_set_enabled does nothing where GL is not the backend).
+    if (!mGLVersionString.empty())
+    {
+        LL_INFOS() << "GL: " << mGLVersionString << LL_ENDL;
+    }
+    if (!(mGLVersion >= 2.1f && LLImageGL::sCompressTextures))
+    {
+        LLImageGL::sCompressTextures = false;
+    }
+    initGLStates();
+    return true;
+}
+
+// static
+LLSD LLGLManager::storeKey(S32 format, const std::string& viewer_build, const std::string& os_version, const std::string& os_build,
+                           U64 memory_bytes, const std::string& gpu_name)
+{
+    LLSD key             = LLSD::emptyMap();
+    key["format"]        = format;
+    key["viewer"]        = viewer_build; // a new build can derive a value differently with the same layout
+    key["macos_version"] = os_version;
+    key["macos_build"]   = os_build; // a beta or security build can bring a new GL driver
+    key["memory"]        = std::to_string(memory_bytes); // mVRAM follows it; LLSD's integer has 32 bits
+    key["gpu"]           = gpu_name;
+    return key;
+}
+
+// static
+LLSD LLGLManager::storeKey(const std::string& viewer_build, const std::string& gpu_name)
+{
+    std::string build;
+    U64         memory = 0;
+#if LL_DARWIN
+    char   text[256] = {};
+    size_t size      = sizeof(text) - 1;
+    if (sysctlbyname("kern.osversion", text, &size, nullptr, 0) == 0)
+    {
+        build = text;
+    }
+    size = sizeof(memory);
+    if (sysctlbyname("hw.memsize", &memory, &size, nullptr, 0) != 0)
+    {
+        memory = 0;
+    }
+#endif
+    return storeKey(kGLStoreFormat, viewer_build, LLOSInfo::instance().getOSVersionString(), build, memory, gpu_name);
+}
+
 void LLGLManager::shutdownGL()
 {
     if (mInited)
@@ -1452,15 +1793,21 @@ void LLGLManager::initExtensions()
     GLint num_extensions = 0;
     std::string all_extensions{""};
     glGetIntegerv(GL_NUM_EXTENSIONS, &num_extensions);
+    mGLExtensions.clear(); // [Viewer Lab] the same names as a set
     for(GLint i = 0; i < num_extensions; ++i) {
         char const * extension = (char const *)glGetStringi(GL_EXTENSIONS, i);
         all_extensions += extension;
         all_extensions += ' ';
+        mGLExtensions.insert(ll_safe_string(extension)); // [Viewer Lab]
     }
     if (num_extensions)
     {
         all_extensions += "GL_ARB_multitexture GL_ARB_texture_cube_map GL_ARB_texture_compression "; // These are in 3.2 core, but not listed by OSX
         gGLHExts.mSysExts = strdup(all_extensions.data());
+        // [Viewer Lab] The three core extensions in the set too
+        mGLExtensions.insert("GL_ARB_multitexture");
+        mGLExtensions.insert("GL_ARB_texture_cube_map");
+        mGLExtensions.insert("GL_ARB_texture_compression");
     }
 #endif
 
@@ -2344,14 +2691,81 @@ void rotate_quat(LLQuaternion& rotation)
     gGL.rotatef(angle_radians * RAD_TO_DEG, x, y, z);
 }
 
+// [Viewer Lab] The counts of skipped GL work (llgl.h): a fixed table, so count() needs no lock. The names
+// are the macros' string literals.
+namespace
+{
+    constexpr U32 GL_GATED_MOST = 256; // gated-gl.py fails a list longer than this
+    std::mutex sGLGatedMutex;
+    std::array<const char*, GL_GATED_MOST> sGLGatedNames{};
+    std::array<std::atomic<U64>, GL_GATED_MOST> sGLGatedCounts{};
+    U32 sGLGatedSites = 0;
+}
+
+U32 LLGLGated::site(const char* name)
+{
+    std::lock_guard<std::mutex> lock(sGLGatedMutex);
+    for (U32 i = 0; i < sGLGatedSites; ++i)
+    {
+        if (strcmp(sGLGatedNames[i], name) == 0)
+        {
+            return i;
+        }
+    }
+    if (sGLGatedSites == GL_GATED_MOST)
+    {
+        LL_ERRS("RHI") << "More than " << GL_GATED_MOST << " gated GL functions: " << name << LL_ENDL;
+    }
+    sGLGatedNames[sGLGatedSites] = name;
+    return sGLGatedSites++;
+}
+
+void LLGLGated::count(U32 index)
+{
+    sGLGatedCounts[index].fetch_add(1, std::memory_order_relaxed);
+}
+
+std::vector<std::pair<std::string, U64>> LLGLGated::counts()
+{
+    std::vector<std::pair<std::string, U64>> counts;
+    {
+        std::lock_guard<std::mutex> lock(sGLGatedMutex);
+        for (U32 i = 0; i < sGLGatedSites; ++i)
+        {
+            counts.emplace_back(sGLGatedNames[i], sGLGatedCounts[i].load(std::memory_order_relaxed));
+        }
+    }
+    std::sort(counts.begin(), counts.end());
+    return counts;
+}
+
+// [Viewer Lab] GL's error and state checks do nothing when GL is not the backend chosen at startup
+// The test is in the GL functions, so their callers stay as they are. It is the
+// startup choice rather than the device, which does not exist yet when the window's first
+// stop_glerror runs, and is gone when LLGLManager::shutdownGL runs.
+static bool gl_is_backend()
+{
+    return LL::RHI::viewerBackend() == LL::RHI::BackendType::GL;
+}
+
 void flush_glerror()
 {
+    if (!gl_is_backend()) // [Viewer Lab]
+    {
+        LL_GL_GATED("llgl:flush_glerror");
+        return;
+    }
     glGetError();
 }
 
 //this function outputs gl error to the log file, does not crash the code.
 void log_glerror()
 {
+    if (!gl_is_backend()) // [Viewer Lab]
+    {
+        LL_GL_GATED("llgl:log_glerror");
+        return;
+    }
     if (LL_UNLIKELY(!gGLManager.mInited))
     {
         return ;
@@ -2378,6 +2792,11 @@ void log_glerror()
 
 void do_assert_glerror()
 {
+    if (!gl_is_backend()) // [Viewer Lab]
+    {
+        LL_GL_GATED("llgl:do_assert_glerror");
+        return;
+    }
     //  Create or update texture to be used with this data
     GLenum error;
     error = glGetError();
@@ -2448,8 +2867,56 @@ void assert_glerror()
 
 void clear_glerror()
 {
+    if (!gl_is_backend()) // [Viewer Lab]
+    {
+        LL_GL_GATED("llgl:clear_glerror");
+        return;
+    }
     glGetError();
     glGetError();
+}
+
+// [Viewer Lab] LLAppViewer::forceErrorDriverCrash's crash, on purpose in the GL driver.
+void force_gl_driver_crash()
+{
+    glDeleteTextures(1, NULL);
+}
+
+#if LL_PROFILER_ENABLE_RENDER_DOC
+// [Viewer Lab] LL_LABEL_OBJECT_GL (llprofiler.h), which only RenderDoc builds compile.
+void ll_label_object_gl(GLenum identifier, GLuint name, GLsizei length, const GLchar* label)
+{
+    if (!gl_is_backend())
+    {
+        LL_GL_GATED("llgl:ll_label_object_gl");
+        return;
+    }
+    glObjectLabel(identifier, name, length, label);
+}
+#endif
+
+// [Viewer Lab] LL_PROFILE_GPU_ZONE's debug group (llprofiler.h). The encoder belongs
+// to the main thread, so zones on other threads, such as LLImageGLThread's, push nothing; a zone
+// that outlives its device, or opens before one exists, pops nothing.
+LLGPUZone::LLGPUZone(const char* name)
+{
+    if (LL::RHI::Device* device = LL::RHI::viewerDevice(); device && on_main_thread())
+    {
+        device->encoder().pushDebugGroup(name);
+        mDeviceId = device->id();
+    }
+}
+
+LLGPUZone::~LLGPUZone()
+{
+    if (mDeviceId)
+    {
+        LL::RHI::Device* device = LL::RHI::viewerDevice();
+        if (device && device->id() == mDeviceId)
+        {
+            device->encoder().popDebugGroup();
+        }
+    }
 }
 
 ///////////////////////////////////////////////////////////////
@@ -2464,6 +2931,67 @@ GLboolean LLGLDepthTest::sDepthEnabled = GL_FALSE; // OpenGL default
 GLenum LLGLDepthTest::sDepthFunc = GL_LESS; // OpenGL default
 GLboolean LLGLDepthTest::sWriteEnabled = GL_TRUE; // OpenGL default
 
+// [Viewer Lab] LLGLState's and LLGLDepthTest's glEnable and glDisable: the callers keep their flushes and caches, and nothing happens when GL is not the backend.
+static void gl_set_enabled(LLGLenum state, bool enabled)
+{
+    if (!gl_is_backend())
+    {
+        LL_GL_GATED("llgl:gl_set_enabled");
+        return;
+    }
+    if (enabled)
+    {
+        glEnable(state);
+    }
+    else
+    {
+        glDisable(state);
+    }
+}
+
+// [Viewer Lab] ~LLGLState's check of LLGLState's map against GL under gDebugGL: nothing when GL is not the backend.
+static void check_gl_enabled(LLGLenum state, LLGLboolean expected)
+{
+    if (!gl_is_backend())
+    {
+        LL_GL_GATED("llgl:check_gl_enabled");
+        return;
+    }
+    if (!gDebugSession)
+    {
+        llassert_always(expected == glIsEnabled(state));
+    }
+    else
+    {
+        if (expected != glIsEnabled(state))
+        {
+            ll_fail("GL enabled state does not match expected");
+        }
+    }
+}
+
+// [Viewer Lab] LLGLDepthTest's glDepthFunc: nothing when GL is not the backend.
+static void gl_depth_func(GLenum func)
+{
+    if (!gl_is_backend())
+    {
+        LL_GL_GATED("llgl:gl_depth_func");
+        return;
+    }
+    glDepthFunc(func);
+}
+
+// [Viewer Lab] LLGLDepthTest's glDepthMask: nothing when GL is not the backend.
+static void gl_depth_mask(GLboolean write)
+{
+    if (!gl_is_backend())
+    {
+        LL_GL_GATED("llgl:gl_depth_mask");
+        return;
+    }
+    glDepthMask(write);
+}
+
 //static
 void LLGLState::initClass()
 {
@@ -2472,7 +3000,7 @@ void LLGLState::initClass()
 
     //make sure multisample defaults to disabled
     sStateMap[GL_MULTISAMPLE] = GL_FALSE;
-    glDisable(GL_MULTISAMPLE);
+    gl_set_enabled(GL_MULTISAMPLE, false); // [Viewer Lab]
 }
 
 //static
@@ -2487,9 +3015,8 @@ void LLGLState::restoreGL()
 void LLGLState::resetTextureStates()
 {
     gGL.flush();
-    GLint maxTextureUnits;
+    const S32 maxTextureUnits = gGLManager.mNumTextureImageUnits; // [Viewer Lab] initGL's GL_MAX_TEXTURE_IMAGE_UNITS
 
-    glGetIntegerv(GL_MAX_TEXTURE_UNITS_ARB, &maxTextureUnits);
     for (S32 j = maxTextureUnits-1; j >=0; j--)
     {
         gGL.getTexUnit(j)->activate();
@@ -2508,10 +3035,12 @@ void LLGLState::dumpStates()
     }
 }
 
-void LLGLState::checkStates(GLboolean writeAlpha)
+// [Viewer Lab] LLGLState::checkStates' GL queries: nothing when GL is not the backend.
+static void check_gl_states(const std::unordered_map<LLGLenum, LLGLboolean>& states)
 {
-    if (!gDebugGL)
+    if (!gl_is_backend())
     {
+        LL_GL_GATED("llgl:check_gl_states");
         return;
     }
 
@@ -2525,6 +3054,29 @@ void LLGLState::checkStates(GLboolean writeAlpha)
     llassert_always(dstRGB == GL_ONE_MINUS_SRC_ALPHA);
     llassert_always(dstAlpha == GL_ONE_MINUS_SRC_ALPHA);
 
+    for (std::unordered_map<LLGLenum, LLGLboolean>::const_iterator iter = states.begin();
+         iter != states.end(); ++iter)
+    {
+        LLGLenum state = iter->first;
+        LLGLboolean cur_state = iter->second;
+        LLGLboolean gl_state = glIsEnabled(state);
+        if(cur_state != gl_state)
+        {
+            LLGLState::dumpStates();
+            LL_GL_ERRS << llformat("LLGLState error. State: 0x%04x",state) << LL_ENDL;
+        }
+    }
+}
+
+void LLGLState::checkStates(GLboolean writeAlpha)
+{
+    if (!gDebugGL)
+    {
+        return;
+    }
+
+    check_gl_states(sStateMap); // [Viewer Lab] the blend function and the states against GL
+
     // disable for now until usage is consistent
     //GLboolean colorMask[4];
     //glGetBooleanv(GL_COLOR_WRITEMASK, colorMask);
@@ -2532,25 +3084,27 @@ void LLGLState::checkStates(GLboolean writeAlpha)
     //llassert_always(colorMask[1]);
     //llassert_always(colorMask[2]);
     // llassert_always(colorMask[3] == writeAlpha);
-
-    for (std::unordered_map<LLGLenum, LLGLboolean>::iterator iter = sStateMap.begin();
-         iter != sStateMap.end(); ++iter)
-    {
-        LLGLenum state = iter->first;
-        LLGLboolean cur_state = iter->second;
-        LLGLboolean gl_state = glIsEnabled(state);
-        if(cur_state != gl_state)
-        {
-            dumpStates();
-            LL_GL_ERRS << llformat("LLGLState error. State: 0x%04x",state) << LL_ENDL;
-        }
-    }
 }
 
 ///////////////////////////////////////////////////////////////////////
 
 LLGLState::LLGLState(LLGLenum state, S32 enabled) :
     mState(state), mWasEnabled(false), mIsEnabled(false)
+{
+    LL_PROFILE_ZONE_SCOPED_CATEGORY_PIPELINE;
+
+    if (mState)
+    {
+        mWasEnabled = sStateMap[state];
+        setEnabled(enabled);
+    }
+}
+
+// [Viewer Lab] For the GL backend's own scopes (llrhigl.cpp): GL and LLGLState's map change as setEnabled changes them, and
+// nothing goes to the viewer's encoder, so LLGLState and the GL adapter never call each other in a ring. The body
+// is the constructor's above.
+LLGLState::LLGLState(LLGLenum state, S32 enabled, GLOnly) :
+    mState(state), mWasEnabled(false), mIsEnabled(false), mSendsToEncoder(false)
 {
     LL_PROFILE_ZONE_SCOPED_CATEGORY_PIPELINE;
 
@@ -2574,14 +3128,22 @@ void LLGLState::setEnabled(S32 enabled)
     else if (enabled == ENABLED_STATE && sStateMap[mState] != GL_TRUE)
     {
         gGL.flush();
-        glEnable(mState);
+        gl_set_enabled(mState, true); // [Viewer Lab]
         sStateMap[mState] = GL_TRUE;
+        if (mSendsToEncoder)
+        {
+            gGL.sendEnable(mState, true); // [Viewer Lab]
+        }
     }
     else if (enabled == DISABLED_STATE && sStateMap[mState] != GL_FALSE)
     {
         gGL.flush();
-        glDisable(mState);
+        gl_set_enabled(mState, false); // [Viewer Lab]
         sStateMap[mState] = GL_FALSE;
+        if (mSendsToEncoder)
+        {
+            gGL.sendEnable(mState, false); // [Viewer Lab]
+        }
     }
     mIsEnabled = enabled;
 }
@@ -2593,31 +3155,24 @@ LLGLState::~LLGLState()
     {
         if (gDebugGL)
         {
-            if (!gDebugSession)
-            {
-                llassert_always(sStateMap[mState] == glIsEnabled(mState));
-            }
-            else
-            {
-                if (sStateMap[mState] != glIsEnabled(mState))
-                {
-                    ll_fail("GL enabled state does not match expected");
-                }
-            }
+            check_gl_enabled(mState, sStateMap[mState]); // [Viewer Lab]
         }
 
         if (mIsEnabled != mWasEnabled)
         {
             gGL.flush();
+            gl_set_enabled(mState, mWasEnabled); // [Viewer Lab]
             if (mWasEnabled)
             {
-                glEnable(mState);
                 sStateMap[mState] = GL_TRUE;
             }
             else
             {
-                glDisable(mState);
                 sStateMap[mState] = GL_FALSE;
+            }
+            if (mSendsToEncoder)
+            {
+                gGL.sendEnable(mState, mWasEnabled); // [Viewer Lab]
             }
         }
     }
@@ -2836,20 +3391,19 @@ LLGLDepthTest::LLGLDepthTest(GLboolean depth_enabled, GLboolean write_enabled, G
     if (depth_enabled != sDepthEnabled)
     {
         gGL.flush();
-        if (depth_enabled) glEnable(GL_DEPTH_TEST);
-        else glDisable(GL_DEPTH_TEST);
+        gl_set_enabled(GL_DEPTH_TEST, depth_enabled != GL_FALSE); // [Viewer Lab]
         sDepthEnabled = depth_enabled;
     }
     if (depth_func != sDepthFunc)
     {
         gGL.flush();
-        glDepthFunc(depth_func);
+        gl_depth_func(depth_func); // [Viewer Lab]
         sDepthFunc = depth_func;
     }
     if (write_enabled != sWriteEnabled)
     {
         gGL.flush();
-        glDepthMask(write_enabled);
+        gl_depth_mask(write_enabled); // [Viewer Lab]
         sWriteEnabled = write_enabled;
     }
 }
@@ -2861,21 +3415,50 @@ LLGLDepthTest::~LLGLDepthTest()
     if (sDepthEnabled != mPrevDepthEnabled )
     {
         gGL.flush();
-        if (mPrevDepthEnabled) glEnable(GL_DEPTH_TEST);
-        else glDisable(GL_DEPTH_TEST);
+        gl_set_enabled(GL_DEPTH_TEST, mPrevDepthEnabled != GL_FALSE); // [Viewer Lab]
         sDepthEnabled = mPrevDepthEnabled;
     }
     if (sDepthFunc != mPrevDepthFunc)
     {
         gGL.flush();
-        glDepthFunc(mPrevDepthFunc);
+        gl_depth_func(mPrevDepthFunc); // [Viewer Lab]
         sDepthFunc = mPrevDepthFunc;
     }
     if (sWriteEnabled != mPrevWriteEnabled )
     {
         gGL.flush();
-        glDepthMask(mPrevWriteEnabled);
+        gl_depth_mask(mPrevWriteEnabled); // [Viewer Lab]
         sWriteEnabled = mPrevWriteEnabled;
+    }
+}
+
+// [Viewer Lab] LLGLDepthTest::checkState's GL queries: nothing when GL is not the backend.
+static void check_gl_depth_state(GLboolean enabled, GLboolean write, GLenum func)
+{
+    if (!gl_is_backend())
+    {
+        LL_GL_GATED("llgl:check_gl_depth_state");
+        return;
+    }
+
+    GLint gl_func = 0;
+    GLboolean mask = GL_FALSE;
+
+    glGetIntegerv(GL_DEPTH_FUNC, &gl_func);
+    glGetBooleanv(GL_DEPTH_WRITEMASK, &mask);
+
+    if (glIsEnabled(GL_DEPTH_TEST) != enabled ||
+        write != mask ||
+        func != gl_func)
+    {
+        if (gDebugSession)
+        {
+            gFailLog << "Unexpected depth testing state." << std::endl;
+        }
+        else
+        {
+            LL_GL_ERRS << "Unexpected depth testing state." << LL_ENDL;
+        }
     }
 }
 
@@ -2883,25 +3466,7 @@ void LLGLDepthTest::checkState()
 {
     if (gDebugGL)
     {
-        GLint func = 0;
-        GLboolean mask = GL_FALSE;
-
-        glGetIntegerv(GL_DEPTH_FUNC, &func);
-        glGetBooleanv(GL_DEPTH_WRITEMASK, &mask);
-
-        if (glIsEnabled(GL_DEPTH_TEST) != sDepthEnabled ||
-            sWriteEnabled != mask ||
-            sDepthFunc != func)
-        {
-            if (gDebugSession)
-            {
-                gFailLog << "Unexpected depth testing state." << std::endl;
-            }
-            else
-            {
-                LL_GL_ERRS << "Unexpected depth testing state." << LL_ENDL;
-            }
-        }
+        check_gl_depth_state(sDepthEnabled, sWriteEnabled, sDepthFunc); // [Viewer Lab]
     }
 }
 

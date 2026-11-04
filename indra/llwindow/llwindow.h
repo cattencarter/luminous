@@ -90,6 +90,12 @@ public:
 
     virtual void toggleVSync(bool enable_vsync) = 0;
 
+    // [Viewer Lab] The GL backend calls this when it makes the viewer's device and LLGLManager is not initialized yet.
+    // A window that leaves its GL context to the device (macOS) makes it current on its view, sets its
+    // swap interval and initializes LLGLManager here, and on failure returns false after the error dialog. The windows
+    // that make their context in their constructors (Windows, Linux, headless) keep this default.
+    virtual bool createGLContext() { return true; }
+
     virtual bool setCursorPosition(LLCoordWindow position) = 0;
     virtual bool getCursorPosition(LLCoordWindow *position) = 0;
 #if LL_WINDOWS
@@ -182,6 +188,11 @@ public:
 
 // return the platform-specific window reference we use to initialize llmozlib (HWND on Windows, WindowRef on the Mac, Gtk window on Linux)
     virtual void *getMediaWindow();
+
+    // [Viewer Lab] The view the render device draws into, for DeviceCreateInfo::window: on macOS the LLOpenGLView,
+    // which holds the GL context or the CAMetalLayer (getPlatformWindow() is NULL in fullscreen there); null on the
+    // windows that give none.
+    virtual void* getNativeView() { return nullptr; }
 
     // control platform's Language Text Input mechanisms.
     virtual void allowLanguageTextInput(LLPreeditor *preeditor, bool b) {}

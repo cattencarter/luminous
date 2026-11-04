@@ -6012,6 +6012,41 @@
       <key>Value</key>
       <string>https://marketplace.secondlife.com/products/search?search[category_id]=200&amp;search[maturity][]=General&amp;search[page]=1&amp;search[per_page]=12</string>
     </map>
+    <key>GoldenTestConfig</key>
+    <map>
+      <key>Comment</key>
+      <string>[Viewer Lab] Golden-image test config (LLSD XML) from --golden; empty for normal runs.</string>
+      <key>Persist</key>
+      <integer>0</integer>
+      <key>Type</key>
+      <string>String</string>
+      <key>Value</key>
+      <string />
+    </map>
+    <key>GraphicsBackend</key>
+    <map>
+      <key>Comment</key>
+      <string>[Viewer Lab] The graphics backend, Metal or OpenGL; Metal by default. Read once at startup, so a change takes effect at the next start; --backend overrides it for one start. Metal needs Apple Silicon and macOS 26: elsewhere the viewer starts on OpenGL without saving it here, so a later Mac that can run Metal starts on Metal. After a Metal session that did not end normally the viewer starts on OpenGL and saves OpenGL here.</string>
+      <key>Persist</key>
+      <integer>1</integer>
+      <key>Type</key>
+      <string>String</string>
+      <key>Value</key>
+      <string>Metal</string>
+    </map>
+    <key>GraphicsBackendThisStart</key>
+    <map>
+      <key>Comment</key>
+      <string>[Viewer Lab] The graphics backend for this start only, from --backend metal or --backend opengl; empty: GraphicsBackend decides. Never saved.</string>
+      <key>Persist</key>
+      <integer>0</integer>
+      <key>HideFromEditor</key>
+      <integer>1</integer>
+      <key>Type</key>
+      <string>String</string>
+      <key>Value</key>
+      <string />
+    </map>
     <key>GridCrossSections</key>
     <map>
       <key>Comment</key>
@@ -8394,6 +8429,54 @@
     <key>Value</key>
     <integer>600</integer>
     <key>Backup</key>
+    <integer>0</integer>
+  </map>
+  <key>MetalFrameCapture</key>
+  <map>
+    <key>Comment</key>
+    <string>[Viewer Lab] Developer, Metal only (Metal UI dev mode): the path of a .gputrace (must not exist); the frame after the current one is captured (set with --set at startup: the second main-loop frame); needs MTL_CAPTURE_ENABLED=1 from the launcher and shader validation off</string>
+    <key>Persist</key>
+    <integer>0</integer>
+    <key>HideFromEditor</key>
+    <integer>1</integer>
+    <key>Type</key>
+    <string>String</string>
+    <key>Value</key>
+    <string />
+  </map>
+  <key>MetalMultiThreadedMedia</key>
+  <map>
+    <key>Comment</key>
+    <string>[Viewer Lab] Metal only: media texture updates on the load thread (LLImageGLThread, through the Metal backend's upload context). On by default; read once at startup and used only when the backend is Metal. RenderGLMultiThreadedMedia on also turns it on, on either backend; GL and the feature table never read this setting.</string>
+    <key>Persist</key>
+    <integer>1</integer>
+    <key>Type</key>
+    <string>Boolean</string>
+    <key>Value</key>
+    <integer>1</integer>
+  </map>
+  <key>MetalMultiThreadedTextures</key>
+  <map>
+    <key>Comment</key>
+    <string>[Viewer Lab] Metal only: fetched textures are made on the load thread (LLImageGLThread, through the Metal backend's upload context). On by default; read once at startup and used only when the backend is Metal. RenderGLMultiThreadedTextures on also turns it on, on either backend; GL and the feature table never read this setting.</string>
+    <key>Persist</key>
+    <integer>1</integer>
+    <key>Type</key>
+    <string>Boolean</string>
+    <key>Value</key>
+    <integer>1</integer>
+  </map>
+  <key>MetalSessionOpen</key>
+  <map>
+    <key>Comment</key>
+    <string>[Viewer Lab] Set while a session runs on Metal and cleared when it ends normally: a start that finds it set with GraphicsBackend Metal starts on OpenGL, sets GraphicsBackend to OpenGL and says so once.</string>
+    <key>Persist</key>
+    <integer>1</integer>
+    <key>HideFromEditor</key>
+    <integer>1</integer>
+    <key>Type</key>
+    <string>Boolean</string>
+    <key>Value</key>
     <integer>0</integer>
   </map>
   <key>FSMeshLowestLodSuffix</key>
@@ -11538,6 +11621,32 @@ Change of this parameter will affect the layout of buttons in notification toast
     <key>Value</key>
     <integer>768</integer>
   </map>
+  <key>RenderMetalUIDev</key>
+  <map>
+    <key>Comment</key>
+    <string>[Viewer Lab] Metal UI development mode from --metal-ui-dev (a test flag): the world off, settings saved to their own file, no benchmark; the backend comes from --backend or GraphicsBackend as in a normal start, and MetalSessionOpen is neither read nor written. Read once at startup; development and test only.</string>
+    <key>Persist</key>
+    <integer>0</integer>
+    <key>HideFromEditor</key>
+    <integer>1</integer>
+    <key>Type</key>
+    <string>Boolean</string>
+    <key>Value</key>
+    <integer>0</integer>
+  </map>
+  <key>RenderMetalUIDevInjectRefusal</key>
+  <map>
+    <key>Comment</key>
+    <string>[Viewer Lab] Test only: in the Metal UI development mode, 1 refuses Metal at the startup check, 2 fails the Metal device after the window, so the viewer falls back to GL with the world still off, and 3 crashes the viewer on Metal right after RenderInitError is saved (a SIGSEGV, as a driver crash would). 0 for normal runs.</string>
+    <key>Persist</key>
+    <integer>0</integer>
+    <key>HideFromEditor</key>
+    <integer>1</integer>
+    <key>Type</key>
+    <string>U32</string>
+    <key>Value</key>
+    <integer>0</integer>
+  </map>
   <key>RenderTextureVRAMDivisor</key>
   <map>
       <key>Comment</key>
@@ -11553,6 +11662,17 @@ Change of this parameter will affect the layout of buttons in notification toast
   <map>
     <key>Comment</key>
     <string>If available free physical memory is below this value textures get agresively scaled down</string>
+    <key>Persist</key>
+    <integer>0</integer>
+    <key>Type</key>
+    <string>U32</string>
+    <key>Value</key>
+    <integer>512</integer>
+  </map>
+  <key>RenderMinFreeCommitMemoryThresholdMB</key>
+  <map>
+    <key>Comment</key>
+    <string>If available Windows commit memory is below this value textures get aggressively scaled down</string>
     <key>Persist</key>
     <integer>0</integer>
     <key>Type</key>
@@ -13540,7 +13660,7 @@ Change of this parameter will affect the layout of buttons in notification toast
     <key>RenderAvatarFriendsOnly</key>
     <map>
         <key>Comment</key>
-        <string>When enabled hides all avatars that aren't friends. Does not affect inworld control avatars (animeshes), nor self.</string>
+        <string>When enabled hides all avatars that aren't friends. Does not affect inworld control avatars (animeshes). Self is still drawn, but without its shadow, its loading cloud particles and its attachments' lights.</string>
         <key>Persist</key>
         <integer>0</integer>
         <key>Type</key>
@@ -14457,6 +14577,17 @@ Change of this parameter will affect the layout of buttons in notification toast
       <key>Backup</key>
       <integer>0</integer>
     </map>
+    <key>ShaderManifestFolder</key>
+    <map>
+      <key>Comment</key>
+      <string>[Viewer Lab] Folder for the shader manifest from --shadermanifest; empty for normal runs.</string>
+      <key>Persist</key>
+      <integer>0</integer>
+      <key>Type</key>
+      <string>String</string>
+      <key>Value</key>
+      <string />
+    </map>
     <key>ShowAllObjectHoverTip</key>
     <map>
       <key>Comment</key>
@@ -14928,6 +15059,314 @@ Change of this parameter will affect the layout of buttons in notification toast
       <string>Boolean</string>
       <key>Value</key>
       <integer>0</integer>
+  </map>
+  <key>LuminousMetalPhotoModeDev</key>
+    <map>
+      <key>Comment</key>
+      <string>Developer switch, Metal only, not in the interface: photo mode runs on the Metal renderer. Off, Metal draws as Second Life does. No effect on OpenGL.</string>
+      <key>Persist</key>
+      <integer>1</integer>
+      <key>Type</key>
+      <string>Boolean</string>
+      <key>Value</key>
+      <integer>1</integer>
+  </map>
+  <key>LuminousMetalSunShafts</key>
+    <map>
+      <key>Comment</key>
+      <string>Metal only: the sun shafts (native passes only). 0 off, 1 on. No effect on OpenGL.</string>
+      <key>Persist</key>
+      <integer>1</integer>
+      <key>Type</key>
+      <string>U32</string>
+      <key>Value</key>
+      <integer>1</integer>
+  </map>
+  <key>LuminousMetalVolumetricLight</key>
+    <map>
+      <key>Comment</key>
+      <string>Metal only: the volumetric light (native pass only). 0 off, 1 on. No effect on OpenGL.</string>
+      <key>Persist</key>
+      <integer>1</integer>
+      <key>Type</key>
+      <string>U32</string>
+      <key>Value</key>
+      <integer>1</integer>
+  </map>
+  <key>LuminousMetalProjectorBeams</key>
+    <map>
+      <key>Comment</key>
+      <string>Metal only: the projector beams (native pass only). 0 off, 1 on. No effect on OpenGL.</string>
+      <key>Persist</key>
+      <integer>1</integer>
+      <key>Type</key>
+      <string>U32</string>
+      <key>Value</key>
+      <integer>1</integer>
+  </map>
+  <key>LuminousMetalSoftShadows</key>
+    <map>
+      <key>Comment</key>
+      <string>Metal only: the soft shadows, translated with Second Life's shadow code. 0 off, 1 on. No effect on OpenGL.</string>
+      <key>Persist</key>
+      <integer>1</integer>
+      <key>Type</key>
+      <string>U32</string>
+      <key>Value</key>
+      <integer>1</integer>
+  </map>
+  <key>LuminousMetalContactShadows</key>
+    <map>
+      <key>Comment</key>
+      <string>Metal only: the contact shadows, translated with Second Life's sun and spot light passes. 0 off, 1 on. No effect on OpenGL.</string>
+      <key>Persist</key>
+      <integer>1</integer>
+      <key>Type</key>
+      <string>U32</string>
+      <key>Value</key>
+      <integer>1</integer>
+  </map>
+  <key>LuminousMetalGTAO</key>
+    <map>
+      <key>Comment</key>
+      <string>Metal only: GTAO, translated with Second Life's sun pass; at half size live only with its native pass. 0 off, 1 on. No effect on OpenGL.</string>
+      <key>Persist</key>
+      <integer>1</integer>
+      <key>Type</key>
+      <string>U32</string>
+      <key>Value</key>
+      <integer>1</integer>
+  </map>
+  <key>LuminousMetalAOLights</key>
+    <map>
+      <key>Comment</key>
+      <string>Metal only: the AO on lamps, translated with Second Life's light passes; needs GTAO. 0 off, 1 on. No effect on OpenGL.</string>
+      <key>Persist</key>
+      <integer>1</integer>
+      <key>Type</key>
+      <string>U32</string>
+      <key>Value</key>
+      <integer>1</integer>
+  </map>
+  <key>LuminousMetalReflections</key>
+    <map>
+      <key>Comment</key>
+      <string>Metal only: the enhanced reflections, translated with Second Life's reflection code. 0 off (in renders too), 1 on (default): drawn in renders, as on OpenGL. While they are drawn, the frame's mip chain is made each frame, and on Metal that makes a scratch texture of the frame's size with all its levels each time. No effect on OpenGL.</string>
+      <key>Persist</key>
+      <integer>1</integer>
+      <key>Type</key>
+      <string>U32</string>
+      <key>Value</key>
+      <integer>1</integer>
+  </map>
+  <key>LuminousMetalDepthOfField</key>
+    <map>
+      <key>Comment</key>
+      <string>Metal only: Enhance, photo mode's own depth of field (native passes only; Second Life's blur otherwise). 0 off, 1 on. No effect on OpenGL.</string>
+      <key>Persist</key>
+      <integer>1</integer>
+      <key>Type</key>
+      <string>U32</string>
+      <key>Value</key>
+      <integer>1</integer>
+  </map>
+  <key>LuminousMetalBloom</key>
+    <map>
+      <key>Comment</key>
+      <string>Metal only: bloom (native passes only). 0 off, 1 on. No effect on OpenGL.</string>
+      <key>Persist</key>
+      <integer>1</integer>
+      <key>Type</key>
+      <string>U32</string>
+      <key>Value</key>
+      <integer>1</integer>
+  </map>
+  <key>LuminousMetalClarity</key>
+    <map>
+      <key>Comment</key>
+      <string>Metal only: clarity (native passes only). 0 off, 1 on. No effect on OpenGL.</string>
+      <key>Persist</key>
+      <integer>1</integer>
+      <key>Type</key>
+      <string>U32</string>
+      <key>Value</key>
+      <integer>1</integer>
+  </map>
+  <key>LuminousMetalHalation</key>
+    <map>
+      <key>Comment</key>
+      <string>Metal only: halation (native passes only). 0 off, 1 on. No effect on OpenGL.</string>
+      <key>Persist</key>
+      <integer>1</integer>
+      <key>Type</key>
+      <string>U32</string>
+      <key>Value</key>
+      <integer>1</integer>
+  </map>
+  <key>LuminousMetalAnamorphic</key>
+    <map>
+      <key>Comment</key>
+      <string>Metal only: the anamorphic streaks (native pass only). 0 off, 1 on. No effect on OpenGL.</string>
+      <key>Persist</key>
+      <integer>1</integer>
+      <key>Type</key>
+      <string>U32</string>
+      <key>Value</key>
+      <integer>1</integer>
+  </map>
+  <key>LuminousMetalLensFlare</key>
+    <map>
+      <key>Comment</key>
+      <string>Metal only: the lens flare (native pass only). 0 off, 1 on. No effect on OpenGL.</string>
+      <key>Persist</key>
+      <integer>1</integer>
+      <key>Type</key>
+      <string>U32</string>
+      <key>Value</key>
+      <integer>1</integer>
+  </map>
+  <key>LuminousMetalChromaticAberration</key>
+    <map>
+      <key>Comment</key>
+      <string>Metal only: the chromatic aberration (native pass only). 0 off, 1 on. No effect on OpenGL.</string>
+      <key>Persist</key>
+      <integer>1</integer>
+      <key>Type</key>
+      <string>U32</string>
+      <key>Value</key>
+      <integer>1</integer>
+  </map>
+  <key>LuminousMetalDistortion</key>
+    <map>
+      <key>Comment</key>
+      <string>Metal only: the lens distortion (native pass only). 0 off, 1 on. No effect on OpenGL.</string>
+      <key>Persist</key>
+      <integer>1</integer>
+      <key>Type</key>
+      <string>U32</string>
+      <key>Value</key>
+      <integer>1</integer>
+  </map>
+  <key>LuminousMetalGlitch</key>
+    <map>
+      <key>Comment</key>
+      <string>Metal only: Glitch (native pass only). 0 off, 1 on. No effect on OpenGL.</string>
+      <key>Persist</key>
+      <integer>1</integer>
+      <key>Type</key>
+      <string>U32</string>
+      <key>Value</key>
+      <integer>1</integer>
+  </map>
+  <key>LuminousMetalVignette</key>
+    <map>
+      <key>Comment</key>
+      <string>Metal only: the vignette (native pass only). 0 off, 1 on. No effect on OpenGL.</string>
+      <key>Persist</key>
+      <integer>1</integer>
+      <key>Type</key>
+      <string>U32</string>
+      <key>Value</key>
+      <integer>1</integer>
+  </map>
+  <key>LuminousMetalLook</key>
+    <map>
+      <key>Comment</key>
+      <string>Metal only: the Look in the tonemap pass, translated, its 3D tables as RHI textures. 0 off, 1 on. No effect on OpenGL.</string>
+      <key>Persist</key>
+      <integer>1</integer>
+      <key>Type</key>
+      <string>U32</string>
+      <key>Value</key>
+      <integer>1</integer>
+  </map>
+  <key>LuminousMetalGrain</key>
+    <map>
+      <key>Comment</key>
+      <string>Metal only: film grain, translated with the tonemap and sharpening passes. 0 off, 1 on. No effect on OpenGL.</string>
+      <key>Persist</key>
+      <integer>1</integer>
+      <key>Type</key>
+      <string>U32</string>
+      <key>Value</key>
+      <integer>1</integer>
+  </map>
+  <key>LuminousMetalWorn</key>
+    <map>
+      <key>Comment</key>
+      <string>Metal only: Worn photo, translated with the tonemap and sharpening passes. 0 off, 1 on. No effect on OpenGL.</string>
+      <key>Persist</key>
+      <integer>1</integer>
+      <key>Type</key>
+      <string>U32</string>
+      <key>Value</key>
+      <integer>1</integer>
+  </map>
+  <key>LuminousMetalLightLeak</key>
+    <map>
+      <key>Comment</key>
+      <string>Metal only: the light leak, translated with the tonemap pass; needs the Look. 0 off, 1 on. No effect on OpenGL.</string>
+      <key>Persist</key>
+      <integer>1</integer>
+      <key>Type</key>
+      <string>U32</string>
+      <key>Value</key>
+      <integer>1</integer>
+  </map>
+  <key>LuminousMetalPictureFrame</key>
+    <map>
+      <key>Comment</key>
+      <string>Metal only: the live picture frame of a render's shape (native pass only). 0 off, 1 on. No effect on OpenGL.</string>
+      <key>Persist</key>
+      <integer>1</integer>
+      <key>Type</key>
+      <string>U32</string>
+      <key>Value</key>
+      <integer>1</integer>
+  </map>
+  <key>LuminousMetalUpscale</key>
+    <map>
+      <key>Comment</key>
+      <string>Metal only: a live view rendered smaller, scaled up to the window (native pass only; full size otherwise). 0 off, 1 on. No effect on OpenGL.</string>
+      <key>Persist</key>
+      <integer>1</integer>
+      <key>Type</key>
+      <string>U32</string>
+      <key>Value</key>
+      <integer>1</integer>
+  </map>
+  <key>LuminousMetalAlphaSort</key>
+    <map>
+      <key>Comment</key>
+      <string>Metal only: alpha sorting. 1 on (default): by hashed coverage; 0 off. No effect on OpenGL.</string>
+      <key>Persist</key>
+      <integer>1</integer>
+      <key>Type</key>
+      <string>U32</string>
+      <key>Value</key>
+      <integer>1</integer>
+  </map>
+  <key>LuminousMetalAccumulation</key>
+    <map>
+      <key>Comment</key>
+      <string>Metal only: a render's frames averaged as light (native pass only). 0 off, 1 on. No effect on OpenGL.</string>
+      <key>Persist</key>
+      <integer>1</integer>
+      <key>Type</key>
+      <string>U32</string>
+      <key>Value</key>
+      <integer>1</integer>
+  </map>
+  <key>LuminousMetalHDRSnapshot</key>
+    <map>
+      <key>Comment</key>
+      <string>Metal only: renders read back as light (native pass only; renders need it and Accumulation). 0 off, 1 on. No effect on OpenGL.</string>
+      <key>Persist</key>
+      <integer>1</integer>
+      <key>Type</key>
+      <string>U32</string>
+      <key>Value</key>
+      <integer>1</integer>
   </map>
   <key>LuminousLowMemoryWarned</key>
     <map>
@@ -16768,13 +17207,13 @@ Change of this parameter will affect the layout of buttons in notification toast
   <key>LuminousPhotoAORenderOnly</key>
     <map>
       <key>Comment</key>
-      <string>Photo mode: its ambient occlusion (the live view shows Linden's, if ambient occlusion is on) only in renders and snapshots, left out of the live view for its frame rate; off as Luminous ships (live).</string>
+      <string>Photo mode: its ambient occlusion (GTAO) only in renders and snapshots; the live view then has no ambient occlusion, as with it off. On as Luminous ships.</string>
       <key>Persist</key>
       <integer>1</integer>
       <key>Type</key>
       <string>Boolean</string>
       <key>Value</key>
-      <integer>0</integer>
+      <integer>1</integer>
   </map>
   <key>LuminousPhotoSunShaftsRenderOnly</key>
     <map>

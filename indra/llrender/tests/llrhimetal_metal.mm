@@ -1,0 +1,16950 @@
+/**
+ * @file llrhimetal_metal.mm
+ * @brief The Metal device's tests, which need Objective-C++ (P3-01a)
+ *
+ * $LicenseInfo:firstyear=2026&license=viewerlgpl$
+ * Second Life Viewer Source Code
+ * Copyright (C) 2026, Viewer Lab contributors
+ *
+ * This library is free software; you can redistribute it and/or
+ * modify it under the terms of the GNU Lesser General Public
+ * License as published by the Free Software Foundation;
+ * version 2.1 of the License only.
+ *
+ * This library is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
+ * Lesser General Public License for more details.
+ *
+ * You should have received a copy of the GNU Lesser General Public
+ * License along with this library; if not, write to the Free Software
+ * Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301  USA
+ *
+ * Linden Research, Inc., 945 Battery Street, San Francisco, CA  94111  USA
+ * $/LicenseInfo$
+ */
+
+#include "../llrhimetal-objc.h" // first: it settles BOOL
+
+#include "llrhiformatcases.h"
+#include "../llcubemap.h"
+#include "../llgl.h"
+#include "../llgltexture.h" // t143: LLGLTexture::OTHER, as doMediaTexUpdate passes it (P3-01g)
+#include "llsdserialize.h" // t135, t139: the CGL store (P3-01f)
+#include "llsdutil.h"
+#include "llsys.h"
+#include "../llglslshader.h"
+#include "../llimagegl.h"
+#include "../llnativeprogram.h"
+#include "../llrender.h"
+#include "../llrendertarget.h"
+#include "../llshadermgr.h"
+#include "../llvertexbuffer.h"
+
+#include "../test/lltut.h"
+#include "tests/wrapllerrs.h"
+
+#include <algorithm>
+#include <array>
+#include <atomic>
+#include <chrono>
+#include <cmath>
+#include <csignal>
+#include <cstdio>
+#include <cctype>
+#include <cfloat>
+#include <cstring>
+#include <exception>
+#include <filesystem>
+#include <functional>
+#include <map>
+#include <iostream>
+#include <fstream>
+#include <limits>
+#include <optional>
+#include <random>
+#include <regex>
+#include <span>
+#include <utility>
+#include <sstream>
+#include <thread>
+#include <vector>
+
+#include <pthread.h>
+#include <sys/sysctl.h>
+#include <unistd.h>
+
+// llrhimetal_test.cpp's tests call runMetalTest with their number; the device's tests are here,
+// because they read Metal's objects. They run under Metal API Validation (llrender/CMakeLists.txt).
+
+#if LL_RHI_METAL
+
+namespace
+{
+    using namespace LL::RHI;
+
+    /// P3-01d: createProgram's program is Pending until its job is done; a test that reads it waits.
+    Ref<Program> ready(Ref<Program> program)
+    {
+        if (program.notNull())
+        {
+            program->wait();
+        }
+        return program;
+    }
+
+    size_t occurrences(const CaptureLog& log, const std::string& what)
+    {
+        std::ostringstream caught;
+        log.streamto(caught);
+        const std::string text = caught.str();
+        size_t count = 0;
+        for (size_t at = text.find(what); at != std::string::npos; at = text.find(what, at + what.size()))
+        {
+            ++count;
+        }
+        return count;
+    }
+
+    /// tut::ensure with both values in the message.
+    template <class T>
+    void ensureEqual(const std::string& what, const T& actual, const T& expected)
+    {
+        std::ostringstream message;
+        message << what << ": " << actual << ", expected " << expected;
+        tut::ensure(message.str(), actual == expected);
+    }
+
+    /// setMetalDebug(false) for the devices made meanwhile; the tests run with the setting on.
+    struct MetalDebugOff
+    {
+        MetalDebugOff() { setMetalDebug(false); }
+        ~MetalDebugOff() { setMetalDebug(true); }
+    };
+
+    /// Another Metal device of the process, with the debug setting as it is now.
+    Ref<Device> anotherDevice()
+    {
+        DeviceCreateInfo info;
+        info.backend = chooseBackend(BackendType::Metal);
+        Ref<Device> made = Device::create(info);
+        tut::ensure("another Metal device", made.notNull());
+        return made;
+    }
+
+    TextureDesc textureDesc(Format format, U8 usage)
+    {
+        TextureDesc desc;
+        desc.format = format;
+        desc.width = 4;
+        desc.height = 4;
+        desc.usage = usage;
+        return desc;
+    }
+
+    /// A pass on a 4x4 color target and, with depth, a 4x4 depth target, both loading.
+    RenderPassDesc passOn(const Ref<Texture>& color, const Ref<Texture>& depth)
+    {
+        RenderPassDesc pass;
+        pass.color[0].texture = color;
+        pass.colorCount = 1;
+        pass.depth.texture = depth;
+        pass.name = "metal test";
+        return pass;
+    }
+
+    API_AVAILABLE(macos(26.0)) void deviceTest(MetalDevice& device)
+    {
+        tut::ensure("the backend is Metal", device.backend() == BackendType::Metal);
+        // MTL_DEBUG_LAYER=1 wraps the device in Metal API Validation's own class (a run-time probe on
+        // this Mac gave MTLDebugDevice), so the layer is live, not only asked for.
+        const std::string mtlClass = NSStringFromClass([device.mtlDevice() class]).UTF8String;
+        tut::ensure("Metal API Validation is live: " + mtlClass, mtlClass.find("Debug") != std::string::npos);
+        const Capabilities& caps = device.capabilities();
+        tut::ensure("the capabilities say Metal", caps.backend == BackendType::Metal);
+        tut::ensure("the renderer is named", !caps.renderer.empty());
+        ensureEqual("Apple7's texture size", caps.maxTextureSize, 16384u);
+        ensureEqual("Apple7's color attachments", caps.maxColorAttachments, 8u);
+        // C22: the fields validate(TextureDesc) reads.
+        ensureEqual("Apple7's array layers", caps.maxArrayLayers, 2048u);
+        tut::ensure("texture swizzle", caps.textureSwizzle);
+        tut::ensure("cube map arrays", caps.cubeMapArrays);
+        tut::ensure("BC compression as the device says", caps.bcCompression == bool([device.mtlDevice() supportsBCTextureCompression]));
+        ensureEqual("the first frame is 1", device.frameNumber(), U64(1));
+    }
+
+    API_AVAILABLE(macos(26.0)) void texturesTest(MetalDevice& device)
+    {
+        Ref<Texture> color = device.createTexture(textureDesc(Format::RGBA8Unorm, TEXTURE_SAMPLED | TEXTURE_RENDER_TARGET), "color");
+        tut::ensure("RGBA8Unorm is made", color.notNull());
+        id<MTLTexture> metal = metalTexture(color.get());
+        tut::ensure("RGBA8Unorm's format", metal.pixelFormat == MTLPixelFormatRGBA8Unorm);
+        tut::ensure("RGBA8Unorm is private", metal.storageMode == MTLStorageModePrivate);
+        tut::ensure("sampled render target's usage",
+                    metal.usage == (MTLTextureUsageShaderRead | MTLTextureUsageRenderTarget));
+
+        Ref<Texture> sampled = device.createTexture(textureDesc(Format::RGBA8Unorm, TEXTURE_SAMPLED), "sampled");
+        tut::ensure("sampled's usage", metalTexture(sampled.get()).usage == MTLTextureUsageShaderRead);
+
+        Ref<Texture> depth = device.createTexture(textureDesc(Format::Depth32Float, TEXTURE_RENDER_TARGET), "depth");
+        tut::ensure("Depth32Float is made", depth.notNull());
+        tut::ensure("Depth32Float's format", metalTexture(depth.get()).pixelFormat == MTLPixelFormatDepth32Float);
+        tut::ensure("Depth32Float is private", metalTexture(depth.get()).storageMode == MTLStorageModePrivate);
+        tut::ensure("render target's usage", metalTexture(depth.get()).usage == MTLTextureUsageRenderTarget);
+
+        // P3-01c: another format, levels and a swizzle are made. P3-01g G10: a 4x render target is made; read back or
+        // sampled, the backend refuses it (P3-08).
+        TextureDesc made[3] = { textureDesc(Format::RGBA16Float, TEXTURE_SAMPLED), textureDesc(Format::RGBA8Unorm, TEXTURE_SAMPLED),
+                                textureDesc(Format::RGBA8Unorm, TEXTURE_SAMPLED) };
+        made[1].mipLevels = 2;
+        made[2].swizzle.r = Swizzle::G;
+        const char* names[3] = { "RGBA16Float", "levels", "swizzle" };
+        for (int i = 0; i < 3; ++i)
+        {
+            CaptureLog log(LLError::LEVEL_WARN);
+            tut::ensure(std::string(names[i]) + ": made", device.createTexture(made[i], names[i]).notNull());
+            ensureEqual(std::string(names[i]) + ": no WARN line", occurrences(log, "WARNING #RHI#"), size_t(0));
+        }
+        {
+            TextureDesc samples = textureDesc(Format::RGBA8Unorm, TEXTURE_RENDER_TARGET);
+            samples.samples = 4;
+            CaptureLog log(LLError::LEVEL_WARN);
+            Ref<Texture> multisampled = device.createTexture(samples, "samples");
+            tut::ensure("samples 4 RenderTarget: made", multisampled.notNull());
+            id<MTLTexture> ms = metalTexture(multisampled.get());
+            tut::ensure("samples 4 RenderTarget: MTLTextureType2DMultisample", ms.textureType == MTLTextureType2DMultisample);
+            ensureEqual("samples 4 RenderTarget: sampleCount", NSUInteger(ms.sampleCount), NSUInteger(4));
+            tut::ensure("samples 4 RenderTarget: private", ms.storageMode == MTLStorageModePrivate);
+            tut::ensure("samples 4 RenderTarget: usage RenderTarget", ms.usage == MTLTextureUsageRenderTarget);
+            ensureEqual("samples 4 RenderTarget: no WARN line", occurrences(log, "WARNING #RHI#"), size_t(0));
+        }
+        const std::pair<U8, const char*> refused[2] = { { TEXTURE_READBACK, "READBACK" }, { TEXTURE_SAMPLED, "SAMPLED" } };
+        for (const auto& [usage, name] : refused)
+        {
+            TextureDesc samples = textureDesc(Format::RGBA8Unorm, U8(TEXTURE_RENDER_TARGET | usage));
+            samples.samples = 4;
+            const std::string what = std::string("samples 4 with ") + name;
+            CaptureLog log(LLError::LEVEL_WARN);
+            tut::ensure(what + ": null", device.createTexture(samples, "samples").isNull());
+            ensureEqual(what + ": one WARN line", occurrences(log, "WARNING #RHI#"), size_t(1));
+            ensureEqual(what + ": one 'Could not create texture'", occurrences(log, "Could not create texture"), size_t(1));
+            ensureEqual(what + ": the WARN names P3-08", occurrences(log, "P3-08"), size_t(1));
+        }
+    }
+
+    API_AVAILABLE(macos(26.0)) void residencyTest(MetalDevice& device)
+    {
+        Ref<Texture> texture = device.createTexture(textureDesc(Format::RGBA8Unorm, TEXTURE_RENDER_TARGET), "resident");
+        id<MTLTexture> metal = metalTexture(texture.get());
+        tut::ensure("a new texture is resident", device.residency().contains(metal));
+
+        // Frame N's commit waits on the queue for a gate the test opens, so frame N cannot finish
+        // before the test says so.
+        id<MTLSharedEvent> gate = [device.mtlDevice() newSharedEvent];
+        device.gateNextCommit(gate, 1);
+        const U64 frame = device.frameNumber();
+        texture = nullptr; // released in frame N
+        device.endFrame();
+        const bool gated = device.completedFrame() < frame;
+        const bool stays = device.residency().contains(metal);
+        gate.signaledValue = 1;
+        tut::ensure("frame N has not finished behind the gate", gated);
+        tut::ensure("the texture stays resident while frame N runs", stays);
+
+        tut::ensure("frame N finishes once the gate opens", device.waitForFrame(frame));
+        device.endFrame();
+        tut::ensure("frame N has finished", device.completedFrame() >= frame);
+        tut::ensure("the texture has left the residency set", !device.residency().contains(metal));
+    }
+
+    API_AVAILABLE(macos(26.0)) void framesTest(MetalDevice& device)
+    {
+        Ref<Texture> color = device.createTexture(textureDesc(Format::RGBA8Unorm, TEXTURE_RENDER_TARGET), "frames");
+        RenderPassDesc pass = passOn(color, nullptr);
+        pass.color[0].load = LoadAction::Clear;
+        pass.color[0].clear = { 0.f, 0.5f, 1.f, 1.f };
+
+        device.endFrame(); // an empty frame commits too
+        U64 completed = device.completedFrame();
+        for (int i = 0; i < 5; ++i)
+        {
+            tut::ensure("the pass begins", device.encoder().beginRenderPass(pass));
+            device.encoder().endRenderPass();
+            device.endFrame();
+            tut::ensure("completedFrame never goes back", device.completedFrame() >= completed);
+            completed = device.completedFrame();
+            tut::ensure("no frame finishes before it is sent", completed < device.frameNumber());
+            tut::ensure("at most 3 frames in flight",
+                        device.frameNumber() - completed <= FrameLifecycle::MAX_FRAMES_IN_FLIGHT);
+        }
+        ensureEqual("one submission per frame", device.submissions(), U64(6));
+        ensureEqual("every submission reported", device.feedbackReceived(), device.submissions());
+        ensureEqual("no GPU errors", device.gpuErrors(), U64(0));
+        tut::ensure("the last submission was received", device.lastSubmission()->received);
+        tut::ensure("the last submission did not fail", !device.lastSubmission()->failed);
+    }
+
+    API_AVAILABLE(macos(26.0)) void destroyAfterSubmitTest(Ref<Device>& owner, MetalDevice& device)
+    {
+        CaptureLog log(LLError::LEVEL_WARN);
+        std::shared_ptr<MetalDevice::FeedbackState> feedback = device.feedbackState();
+        {
+            Ref<Texture> color = device.createTexture(textureDesc(Format::RGBA8Unorm, TEXTURE_RENDER_TARGET), "gone");
+            RenderPassDesc pass = passOn(color, nullptr);
+            pass.color[0].load = LoadAction::Clear;
+            device.encoder().beginRenderPass(pass);
+            device.encoder().endRenderPass();
+        }
+        device.endFrame();
+        owner = nullptr; // right after the submit
+        std::lock_guard<std::mutex> lock(feedback->mutex);
+        ensureEqual("the destructor drained the feedback", feedback->outstanding, U64(0));
+        ensureEqual("the submission was reported", feedback->received, U64(1));
+        std::ostringstream warnings;
+        log.streamto(warnings);
+        tut::ensure("no WARN line: " + warnings.str(), warnings.str().empty());
+    }
+
+    API_AVAILABLE(macos(26.0)) void clearAsLoadActionTest(MetalDevice& device)
+    {
+        Ref<Texture> color = device.createTexture(textureDesc(Format::RGBA8Unorm, TEXTURE_RENDER_TARGET), "color");
+        Ref<Texture> depth = device.createTexture(textureDesc(Format::Depth32Float, TEXTURE_RENDER_TARGET), "depth");
+        Ref<DepthStencilState> state = device.getDepthStencilState({ true, true, CompareFunc::LessEqual });
+        Encoder& encoder = device.encoder();
+        tut::ensure("the pass begins", encoder.beginRenderPass(passOn(color, depth)));
+        encoder.setCullMode(CullMode::Back);
+        encoder.setScissor(false, 0, 0, 0, 0);
+        encoder.setDepthStencilState(state.get());
+        encoder.clear(true, { 0.25f, 0.5f, 0.75f, 1.f }, false, 1.f);
+        encoder.endRenderPass();
+
+        MTL4RenderPassDescriptor* descriptor = device.metalEncoder().lastPassDescriptor();
+        tut::ensure("the pass was materialized", descriptor != nil);
+        MTLRenderPassColorAttachmentDescriptor* attachment = descriptor.colorAttachments[0];
+        tut::ensure("the color clear is the load action", attachment.loadAction == MTLLoadActionClear);
+        ensureEqual("red", attachment.clearColor.red, 0.25);
+        ensureEqual("green", attachment.clearColor.green, 0.5);
+        ensureEqual("blue", attachment.clearColor.blue, 0.75);
+        ensureEqual("alpha", attachment.clearColor.alpha, 1.0);
+        tut::ensure("the color is stored", attachment.storeAction == MTLStoreActionStore);
+        tut::ensure("the depth keeps its load", descriptor.depthAttachment.loadAction == MTLLoadActionLoad);
+        device.endFrame();
+        ensureEqual("no GPU errors", device.gpuErrors(), U64(0));
+    }
+
+    API_AVAILABLE(macos(26.0)) void depthClearsTest(MetalDevice& device)
+    {
+        Ref<Texture> color = device.createTexture(textureDesc(Format::RGBA8Unorm, TEXTURE_RENDER_TARGET), "color");
+        Ref<Texture> depth = device.createTexture(textureDesc(Format::Depth32Float, TEXTURE_RENDER_TARGET), "depth");
+        struct Case
+        {
+            const char* name;
+            bool bind;
+            DepthStencilDesc desc;
+            MTLLoadAction load;
+        };
+        const Case cases[] = {
+            { "null state", false, {}, MTLLoadActionLoad },
+            { "test without writes", true, { true, false, CompareFunc::LessEqual }, MTLLoadActionLoad },
+            { "writes without test", true, { false, true, CompareFunc::LessEqual }, MTLLoadActionLoad },
+            { "test and writes", true, { true, true, CompareFunc::LessEqual }, MTLLoadActionClear },
+        };
+        for (const Case& c : cases)
+        {
+            // The pass's own color clear makes the segment materialize; the depth is the encoder's.
+            RenderPassDesc pass = passOn(color, depth);
+            pass.color[0].load = LoadAction::Clear;
+            Ref<DepthStencilState> state = c.bind ? device.getDepthStencilState(c.desc) : Ref<DepthStencilState>();
+            Encoder& encoder = device.encoder();
+            tut::ensure(std::string(c.name) + ": the pass begins", encoder.beginRenderPass(pass));
+            encoder.setDepthStencilState(state.get());
+            encoder.clear(false, { 0.f, 0.f, 0.f, 0.f }, true, 0.5f);
+            encoder.endRenderPass();
+            MTL4RenderPassDescriptor* descriptor = device.metalEncoder().lastPassDescriptor();
+            tut::ensure(std::string(c.name) + ": the depth's load action",
+                        descriptor.depthAttachment.loadAction == c.load);
+            if (c.load == MTLLoadActionClear)
+            {
+                ensureEqual(std::string(c.name) + ": the depth value", descriptor.depthAttachment.clearDepth, 0.5);
+            }
+        }
+        device.endFrame();
+        ensureEqual("no GPU errors", device.gpuErrors(), U64(0));
+    }
+
+    API_AVAILABLE(macos(26.0)) void scissorClearTest(MetalDevice& device)
+    {
+        Ref<Texture> color = device.createTexture(textureDesc(Format::RGBA8Unorm, TEXTURE_RENDER_TARGET), "color");
+        Encoder& encoder = device.encoder();
+        {
+            // P3-01e F6: a clear inside a scissor is a draw of the device's clear program.
+            CaptureLog log(LLError::LEVEL_WARN);
+            const U64 draws = device.metalEncoder().clearDraws();
+            encoder.beginRenderPass(passOn(color, nullptr));
+            encoder.setScissor(true, 0, 0, 2, 2);
+            encoder.clear(true, { 1.f, 0.f, 0.f, 1.f }, false, 1.f);
+            encoder.endRenderPass();
+            ensureEqual("a clear inside a scissor is a clear draw", device.metalEncoder().clearDraws(), draws + 1);
+            ensureEqual("a clear inside a scissor: no WARN line", occurrences(log, "WARNING #RHI#"), size_t(0));
+        }
+        CaptureLog log(LLError::LEVEL_WARN);
+        encoder.beginRenderPass(passOn(color, nullptr));
+        encoder.setScissor(true, 0, 0, 4, 4);
+        encoder.clear(true, { 1.f, 0.f, 0.f, 1.f }, false, 1.f);
+        encoder.endRenderPass();
+        ensureEqual("a scissor over the whole attachment does not limit", occurrences(log, "scissor"), size_t(0));
+        tut::ensure("the clear is the load action",
+                    device.metalEncoder().lastPassDescriptor().colorAttachments[0].loadAction == MTLLoadActionClear);
+        device.endFrame();
+    }
+
+    API_AVAILABLE(macos(26.0)) void depthStateTest(MetalDevice& device)
+    {
+        const DepthStencilDesc writesOnly{ false, true, CompareFunc::LessEqual };
+        const DepthStencilDesc testOnly{ true, false, CompareFunc::Equal };
+        const DepthStencilDesc both{ true, true, CompareFunc::Greater };
+        tut::ensure("null writes no depth", !metalWritesDepth(nullptr));
+        tut::ensure("writes without test write no depth", !metalWritesDepth(&writesOnly));
+        tut::ensure("test without writes writes no depth", !metalWritesDepth(&testOnly));
+        tut::ensure("test and writes write depth", metalWritesDepth(&both));
+
+        MTLDepthStencilDescriptor* metal = metalDepthStencilDescriptor(both);
+        tut::ensure("the test's function", metal.depthCompareFunction == MTLCompareFunctionGreater);
+        tut::ensure("writes on", metal.depthWriteEnabled);
+        metal = metalDepthStencilDescriptor(writesOnly);
+        tut::ensure("no test: always", metal.depthCompareFunction == MTLCompareFunctionAlways);
+        tut::ensure("no test: no writes", !metal.depthWriteEnabled);
+        metal = metalDepthStencilDescriptor(testOnly);
+        tut::ensure("test only: its function", metal.depthCompareFunction == MTLCompareFunctionEqual);
+        tut::ensure("test only: no writes", !metal.depthWriteEnabled);
+
+        Ref<DepthStencilState> first = device.getDepthStencilState(both);
+        tut::ensure("the state is made", first.notNull());
+        tut::ensure("the state is cached", first == device.getDepthStencilState(both));
+    }
+
+    // Readbacks (decision 9) ---------------------------------------------------------------------
+
+    constexpr std::array<F32, 4> CLEAR_COLOR = { 0.2f, 0.4f, 0.6f, 1.f };
+    constexpr std::array<U8, 4> CLEAR_BYTES = { 51, 102, 153, 255 };
+
+    TextureDesc sizedDesc(Format format, U8 usage, U32 width, U32 height)
+    {
+        TextureDesc desc = textureDesc(format, usage);
+        desc.width = width;
+        desc.height = height;
+        return desc;
+    }
+
+    /// A readback of width x height pixels that are all expected: ready, tight rows, every byte.
+    void ensurePixels(const std::string& what, const Ref<Readback>& readback, U32 width, U32 height,
+                      const std::array<U8, 4>& expected)
+    {
+        tut::ensure(what + ": ready", readback->ready());
+        ensureEqual(what + ": the row pitch", readback->rowPitch(), width * 4);
+        const std::span<const std::byte> data = readback->data();
+        ensureEqual(what + ": the size", data.size(), size_t(width) * 4 * height);
+        for (size_t i = 0; i < data.size(); ++i)
+        {
+            const U32 actual = std::to_integer<U32>(data[i]);
+            if (actual != expected[i % 4])
+            {
+                ensureEqual(what + ": byte " + std::to_string(i), actual, U32(expected[i % 4]));
+            }
+        }
+    }
+
+    /// t1: a clear read back whole after its pass, with a depth attachment in the pass.
+    API_AVAILABLE(macos(26.0)) void clearRoundTripTest(MetalDevice& device)
+    {
+        Ref<Texture> color = device.createTexture(sizedDesc(Format::RGBA8Unorm, TEXTURE_RENDER_TARGET | TEXTURE_READBACK, 64, 32), "color");
+        Ref<Texture> depth = device.createTexture(sizedDesc(Format::Depth32Float, TEXTURE_RENDER_TARGET, 64, 32), "depth");
+        RenderPassDesc pass = passOn(color, depth);
+        pass.color[0].load = LoadAction::Clear;
+        pass.color[0].clear = CLEAR_COLOR;
+        Encoder& encoder = device.encoder();
+        tut::ensure("the pass begins", encoder.beginRenderPass(pass));
+        encoder.endRenderPass();
+        Ref<Readback> readback = encoder.readback(color.get(), 0, 0, { 0, 0, 64, 32 }, PixelLayout());
+        tut::ensure("the readback is made", readback.notNull());
+        tut::ensure("not ready before it is sent", !readback->ready());
+        tut::ensure("no data before it is sent", readback->data().empty());
+        readback->wait();
+        ensurePixels("the clear color", readback, 64, 32, CLEAR_BYTES);
+        device.endFrame();
+        ensureEqual("no GPU errors", device.gpuErrors(), U64(0));
+    }
+
+    /// t2: Encoder::clear at the start of a pass that loads, and a clear after a readback in a pass.
+    API_AVAILABLE(macos(26.0)) void clearOverLoadTest(MetalDevice& device)
+    {
+        Ref<Texture> color = device.createTexture(sizedDesc(Format::RGBA8Unorm, TEXTURE_RENDER_TARGET | TEXTURE_READBACK, 64, 32), "color");
+        Encoder& encoder = device.encoder();
+        tut::ensure("the pass begins", encoder.beginRenderPass(passOn(color, nullptr)));
+        encoder.clear(true, CLEAR_COLOR, false, 1.f);
+        encoder.endRenderPass();
+        Ref<Readback> readback = encoder.readback(color.get(), 0, 0, { 0, 0, 64, 32 }, PixelLayout());
+        readback->wait();
+        ensurePixels("the clear over Load", readback, 64, 32, CLEAR_BYTES);
+
+        // D7: a readback before a clear in the same pass reads the pass without the clear, as
+        // glReadPixels does: the clear breaks the segment first.
+        RenderPassDesc red = passOn(color, nullptr);
+        red.color[0].load = LoadAction::Clear;
+        red.color[0].clear = { 1.f, 0.f, 0.f, 1.f };
+        tut::ensure("the red pass begins", encoder.beginRenderPass(red));
+        Ref<Readback> before = encoder.readback(color.get(), 0, 0, { 0, 0, 64, 32 }, PixelLayout());
+        encoder.clear(true, CLEAR_COLOR, false, 1.f);
+        encoder.endRenderPass();
+        Ref<Readback> after = encoder.readback(color.get(), 0, 0, { 0, 0, 64, 32 }, PixelLayout());
+        after->wait();
+        before->wait();
+        ensurePixels("a readback before the clear in its pass", before, 64, 32, { 255, 0, 0, 255 });
+        ensurePixels("a readback after that pass", after, 64, 32, CLEAR_BYTES);
+        device.endFrame();
+        ensureEqual("no GPU errors", device.gpuErrors(), U64(0));
+    }
+
+    /// t3 and t3b: a readback waited for inside its pass, under a debug group, with the pass's
+    /// store actions.
+    API_AVAILABLE(macos(26.0)) void readbackInPassTest(MetalDevice& device, StoreAction store)
+    {
+        CaptureLog log(LLError::LEVEL_WARN);
+        Ref<Texture> color = device.createTexture(sizedDesc(Format::RGBA8Unorm, TEXTURE_RENDER_TARGET | TEXTURE_READBACK, 64, 32), "color");
+        Ref<Texture> depth = device.createTexture(sizedDesc(Format::Depth32Float, TEXTURE_RENDER_TARGET, 64, 32), "depth");
+        RenderPassDesc pass = passOn(color, depth);
+        pass.color[0].load = LoadAction::Clear;
+        pass.color[0].clear = CLEAR_COLOR;
+        pass.color[0].store = store;
+        pass.depth.store = store;
+        Encoder& encoder = device.encoder();
+        tut::ensure("the pass begins", encoder.beginRenderPass(pass));
+        encoder.pushDebugGroup("readback in a pass");
+        Ref<Readback> readback = encoder.readback(color.get(), 0, 0, { 0, 0, 64, 32 }, PixelLayout());
+        tut::ensure("the readback is made", readback.notNull());
+        readback->wait();
+        ensurePixels("the pass's color before it ends", readback, 64, 32, CLEAR_BYTES);
+        encoder.popDebugGroup();
+        encoder.endRenderPass();
+        device.endFrame();
+        ensureEqual("no GPU errors", device.gpuErrors(), U64(0));
+        std::ostringstream warnings;
+        log.streamto(warnings);
+        tut::ensure("no WARN line: " + warnings.str(), warnings.str().empty());
+    }
+
+    /// t4: row order and region against an oracle that fills the texture through its own Metal 3
+    /// queue, not the backend: texel (x, y) is (16x, 16y, 7, 255), y from Metal's row 0, GL's row 0.
+    API_AVAILABLE(macos(26.0)) void rowOrderTest(MetalDevice& device)
+    {
+        Ref<Texture> texture = device.createTexture(sizedDesc(Format::RGBA8Unorm, TEXTURE_SAMPLED | TEXTURE_READBACK, 8, 8), "oracle");
+        id<MTLDevice> metal = device.mtlDevice();
+        std::vector<U8> texels(8 * 8 * 4);
+        for (U32 y = 0; y < 8; ++y)
+        {
+            for (U32 x = 0; x < 8; ++x)
+            {
+                U8* texel = &texels[(y * 8 + x) * 4];
+                texel[0] = U8(16 * x);
+                texel[1] = U8(16 * y);
+                texel[2] = 7;
+                texel[3] = 255;
+            }
+        }
+        id<MTLBuffer> source = [metal newBufferWithBytes:texels.data() length:texels.size() options:MTLResourceStorageModeShared];
+        id<MTLCommandQueue> queue = [metal newCommandQueue];
+        id<MTLCommandBuffer> commands = [queue commandBuffer];
+        id<MTLBlitCommandEncoder> blit = [commands blitCommandEncoder];
+        [blit copyFromBuffer:source
+                 sourceOffset:0
+            sourceBytesPerRow:8 * 4
+          sourceBytesPerImage:8 * 8 * 4
+                   sourceSize:MTLSizeMake(8, 8, 1)
+                    toTexture:metalTexture(texture.get())
+             destinationSlice:0
+             destinationLevel:0
+            destinationOrigin:MTLOriginMake(0, 0, 0)];
+        [blit endEncoding];
+        [commands commit];
+        [commands waitUntilCompleted];
+        tut::ensure("the oracle's fill completed", commands.status == MTLCommandBufferStatusCompleted);
+
+        // { 1, 2, 3, 4 } as the step says, and { 2, 0, 4, 3 }, whose rows would start elsewhere if
+        // only the origin were flipped (8 - 2 - 4 is 2 again for the first).
+        const Region regions[2] = { { 1, 2, 3, 4 }, { 2, 0, 4, 3 } };
+        for (const Region& region : regions)
+        {
+            Ref<Readback> readback = device.encoder().readback(texture.get(), 0, 0, region, PixelLayout());
+            tut::ensure("the readback is made", readback.notNull());
+            readback->wait();
+            tut::ensure("ready", readback->ready());
+            ensureEqual("the row pitch", readback->rowPitch(), region.width * 4);
+            const std::span<const std::byte> data = readback->data();
+            ensureEqual("the size", data.size(), size_t(region.width) * 4 * region.height);
+            for (U32 i = 0; i < region.height; ++i)
+            {
+                for (U32 j = 0; j < region.width; ++j)
+                {
+                    const std::byte* texel = &data[(i * region.width + j) * 4];
+                    const std::string at = "region at (" + std::to_string(region.x) + ", " + std::to_string(region.y) +
+                                           "), row " + std::to_string(i) + ", column " + std::to_string(j);
+                    ensureEqual(at + ": red", std::to_integer<U32>(texel[0]), 16 * (region.x + j));
+                    ensureEqual(at + ": green", std::to_integer<U32>(texel[1]), 16 * (region.y + i));
+                    ensureEqual(at + ": blue", std::to_integer<U32>(texel[2]), 7u);
+                    ensureEqual(at + ": alpha", std::to_integer<U32>(texel[3]), 255u);
+                }
+            }
+        }
+        device.endFrame();
+        ensureEqual("no GPU errors", device.gpuErrors(), U64(0));
+    }
+
+    /// t5: what P3-01a does not read back gives null and one WARN line.
+    API_AVAILABLE(macos(26.0)) void refusedReadbackTest(MetalDevice& device)
+    {
+        Ref<Texture> color = device.createTexture(sizedDesc(Format::RGBA8Unorm, TEXTURE_RENDER_TARGET | TEXTURE_READBACK, 4, 4), "color");
+        Ref<Texture> depth = device.createTexture(sizedDesc(Format::Depth32Float, TEXTURE_RENDER_TARGET | TEXTURE_READBACK, 4, 4), "depth");
+        Ref<Texture> hidden = device.createTexture(sizedDesc(Format::RGBA8Unorm, TEXTURE_RENDER_TARGET, 4, 4), "hidden");
+        PixelLayout layouts[5];
+        // RGB of U8 from an RGBA8 texture is read back since P3-05a1 (F10, t161); RGB of another type is not.
+        layouts[0].components = PixelLayout::Components::RGB;
+        layouts[0].type = PixelLayout::Type::F16;
+        layouts[1].components = PixelLayout::Components::BGRA;
+        layouts[2].swapBytes = true;
+        layouts[3].rowLength = 8;
+        layouts[4].components = PixelLayout::Components::Depth;
+        layouts[4].type = PixelLayout::Type::F32;
+        const char* names[5] = { "RGB of F16", "BGRA", "swapBytes", "rowLength", "Depth" };
+        Encoder& encoder = device.encoder();
+        for (int i = 0; i < 5; ++i)
+        {
+            CaptureLog log(LLError::LEVEL_WARN);
+            tut::ensure(std::string(names[i]) + ": null",
+                        encoder.readback(color.get(), 0, 0, { 0, 0, 4, 4 }, layouts[i]).isNull());
+            ensureEqual(std::string(names[i]) + ": one WARN line", occurrences(log, "readback"), size_t(1));
+        }
+        {
+            CaptureLog log(LLError::LEVEL_WARN);
+            tut::ensure("a Depth32Float source: null", encoder.readback(depth.get(), 0, 0, { 0, 0, 4, 4 }, PixelLayout()).isNull());
+            ensureEqual("a Depth32Float source: one WARN line", occurrences(log, "readback"), size_t(1));
+        }
+        {
+            CaptureLog log(LLError::LEVEL_WARN);
+            tut::ensure("no TEXTURE_READBACK: null", encoder.readback(hidden.get(), 0, 0, { 0, 0, 4, 4 }, PixelLayout()).isNull());
+            ensureEqual("no TEXTURE_READBACK: one WARN line", occurrences(log, "readback"), size_t(1));
+        }
+        {
+            CaptureLog log(LLError::LEVEL_WARN);
+            tut::ensure("a buffer: null", encoder.readback(static_cast<Buffer*>(nullptr), 0, 4).isNull());
+            ensureEqual("a buffer: one WARN line", occurrences(log, "readback"), size_t(1));
+        }
+        device.endFrame();
+    }
+
+    /// t6: frames of readbacks, waited before and after they are sent and dropped unwaited, then
+    /// submitAndWait and the device's end.
+    API_AVAILABLE(macos(26.0)) void readbackFramesTest(Ref<Device>& owner, MetalDevice& device)
+    {
+        CaptureLog log(LLError::LEVEL_WARN);
+        Ref<Texture> color = device.createTexture(sizedDesc(Format::RGBA8Unorm, TEXTURE_RENDER_TARGET | TEXTURE_READBACK, 4, 4), "color");
+        RenderPassDesc pass = passOn(color, nullptr);
+        pass.color[0].load = LoadAction::Clear;
+        Encoder& encoder = device.encoder();
+        const Region whole{ 0, 0, 4, 4 };
+        const U64 completed = device.completedFrame();
+        std::vector<id<MTLBuffer>> dropped;
+        Ref<Readback> sent;
+        std::array<U8, 4> sentBytes = {};
+        std::array<U8, 4> bytes = {};
+        for (U32 i = 0; i < 5; ++i)
+        {
+            bytes = { U8(50 * i), 0, 255, 255 };
+            pass.color[0].clear = { bytes[0] / 255.f, 0.f, 1.f, 1.f };
+            tut::ensure("the pass begins", encoder.beginRenderPass(pass));
+            encoder.endRenderPass();
+            Ref<Readback> waited = encoder.readback(color.get(), 0, 0, whole, PixelLayout());
+            Ref<Readback> unwaited = encoder.readback(color.get(), 0, 0, whole, PixelLayout());
+            dropped.push_back(metalBuffer(unwaited.get()));
+            unwaited = nullptr;
+            waited->wait();
+            ensurePixels("frame " + std::to_string(i) + "'s readback", waited, 4, 4, bytes);
+            if (sent.notNull())
+            {
+                // Sent by the last endFrame: wait() only waits.
+                const U64 submissions = device.submissions();
+                sent->wait();
+                ensureEqual("waiting for a sent readback submits nothing", device.submissions(), submissions);
+                ensurePixels("the readback sent by endFrame", sent, 4, 4, sentBytes);
+            }
+            sent = encoder.readback(color.get(), 0, 0, whole, PixelLayout());
+            sentBytes = bytes;
+            device.endFrame();
+        }
+        tut::ensure("completedFrame rises", device.completedFrame() > completed);
+
+        Ref<Readback> last = encoder.readback(color.get(), 0, 0, whole, PixelLayout());
+        device.submitAndWait();
+        tut::ensure("submitAndWait makes the readback ready without wait()", last->ready());
+        ensurePixels("the readback sent by submitAndWait", last, 4, 4, bytes);
+        ensurePixels("the last frame's sent readback", sent, 4, 4, sentBytes);
+        ensureEqual("every submission reported", device.feedbackReceived(), device.submissions());
+        ensureEqual("no GPU errors", device.gpuErrors(), U64(0));
+        for (id<MTLBuffer> buffer : dropped)
+        {
+            tut::ensure("an unwaited readback's buffer has left the residency set", !device.residency().contains(buffer));
+        }
+
+        // The readbacks and the textures go before the device (the device outlives them).
+        sent = nullptr;
+        last = nullptr;
+        pass = RenderPassDesc();
+        color = nullptr;
+        owner = nullptr;
+        std::ostringstream warnings;
+        log.streamto(warnings);
+        tut::ensure("no WARN line: " + warnings.str(), warnings.str().empty());
+    }
+
+    /// t7: D21's failed command buffer, made by the test hook: the readback is ready without data,
+    /// and wait() gives one WARN line.
+    API_AVAILABLE(macos(26.0)) void failedFeedbackTest(MetalDevice& device)
+    {
+        Ref<Texture> color = device.createTexture(sizedDesc(Format::RGBA8Unorm, TEXTURE_RENDER_TARGET | TEXTURE_READBACK, 4, 4), "failed");
+        RenderPassDesc pass = passOn(color, nullptr);
+        pass.color[0].load = LoadAction::Clear;
+        pass.color[0].clear = CLEAR_COLOR;
+        Encoder& encoder = device.encoder();
+        const Region whole{ 0, 0, 4, 4 };
+        tut::ensure("the pass begins", encoder.beginRenderPass(pass));
+        encoder.endRenderPass();
+        Ref<Readback> readback = encoder.readback(color.get(), 0, 0, whole, PixelLayout());
+        const U64 errors = device.gpuErrors();
+        device.failNextFeedback();
+        device.submitAndWait();
+        tut::ensure("the submission was received", device.lastSubmission()->received);
+        tut::ensure("the submission failed", device.lastSubmission()->failed);
+        tut::ensure("the readback is ready", readback->ready());
+        tut::ensure("before wait(): no data", readback->data().empty());
+        {
+            CaptureLog log(LLError::LEVEL_WARN);
+            readback->wait();
+            ensureEqual("wait(): one WARN line", occurrences(log, "WARNING #RHI#"), size_t(1));
+            ensureEqual("wait(): the command buffer failed", occurrences(log, "its command buffer failed"), size_t(1));
+        }
+        tut::ensure("after wait(): no data", readback->data().empty());
+        ensureEqual("the hook's failure is no GPU error", device.gpuErrors(), errors);
+
+        // The hook fails one submission only.
+        Ref<Readback> next = encoder.readback(color.get(), 0, 0, whole, PixelLayout());
+        next->wait();
+        tut::ensure("the next submission did not fail", !device.lastSubmission()->failed);
+        ensurePixels("the next readback", next, 4, 4, CLEAR_BYTES);
+    }
+
+    /// t8: a submitAndWait that times out leaves what the frames let go resident, because the GPU
+    /// can still use it; it goes once the GPU has finished.
+    API_AVAILABLE(macos(26.0)) void submitAndWaitTimeoutTest(MetalDevice& device)
+    {
+        Ref<Texture> texture = device.createTexture(textureDesc(Format::RGBA8Unorm, TEXTURE_RENDER_TARGET), "held");
+        id<MTLTexture> metal = metalTexture(texture.get());
+        id<MTLSharedEvent> gate = [device.mtlDevice() newSharedEvent];
+        device.gateNextCommit(gate, 1);
+        const U64 frame = device.frameNumber();
+        texture = nullptr; // released in frame N, whose commit waits for the gate
+        device.endFrame();
+        device.limitWaits(50);
+        bool stays = false;
+        bool unfinished = false;
+        size_t timeouts = 0;
+        {
+            CaptureLog log(LLError::LEVEL_WARN);
+            device.submitAndWait();
+            stays = device.residency().contains(metal);
+            unfinished = device.completedFrame() < frame;
+            timeouts = occurrences(log, "submitAndWait: the GPU did not finish");
+        }
+        gate.signaledValue = 1;
+        device.limitWaits(5000);
+        ensureEqual("one WARN line for the timeout", timeouts, size_t(1));
+        tut::ensure("frame N has not finished behind the gate", unfinished);
+        tut::ensure("the texture stays resident after the timeout", stays);
+
+        device.submitAndWait();
+        tut::ensure("frame N has finished", device.completedFrame() >= frame);
+        tut::ensure("the texture has left the residency set", !device.residency().contains(metal));
+    }
+
+    /// t165 (P3-01i S2): the device's GPU faults, each on a new device. (1) A real NSError in a commit feedback (the test
+    /// hook gives it to the handler as Metal would): one WARN line with the frame, the command buffer's label, the domain,
+    /// the code and its name; counted by gpuErrorCount() without a drain and by gpuErrors(); the submission failed; the
+    /// device lost for Metal 4's AccessRevoked (5) and NotPermitted (2) and MTLCommandBuffer's AccessRevoked (4), and
+    /// not for Metal 4's OutOfMemory (3) or MTLCommandBuffer's PageFault (3); the watchdog's Timeout (Metal 4's 1,
+    /// MTLCommandBuffer's 2) is counted only, and a second one in a row loses the device, while a command buffer without
+    /// one between them starts the count again (the review's m5). (2) A frame whose commit waits for a gate the test
+    /// holds, as a hung GPU: two waits of the shortened limit, the device lost, the frame not finished and what it
+    /// released still resident, no frame begun after; once the gate opens the GPU finishes it.
+    API_AVAILABLE(macos(26.0)) void gpuFaultsTest()
+    {
+        struct Case
+        {
+            NSErrorDomain domain;
+            NSInteger code;
+            bool lost;
+            const char* name;
+            bool timeout = false;
+        };
+        const Case cases[] = {
+            { MTL4CommandQueueErrorDomain, MTL4CommandQueueErrorAccessRevoked, true,
+              "MTL4CommandQueueErrorDomain 5 (AccessRevoked)" },
+            { MTL4CommandQueueErrorDomain, MTL4CommandQueueErrorTimeout, false, "MTL4CommandQueueErrorDomain 1 (Timeout)",
+              true },
+            { MTL4CommandQueueErrorDomain, MTL4CommandQueueErrorNotPermitted, true,
+              "MTL4CommandQueueErrorDomain 2 (NotPermitted)" },
+            { MTL4CommandQueueErrorDomain, MTL4CommandQueueErrorOutOfMemory, false,
+              "MTL4CommandQueueErrorDomain 3 (OutOfMemory)" },
+            { MTLCommandBufferErrorDomain, MTLCommandBufferErrorAccessRevoked, true,
+              "MTLCommandBufferErrorDomain 4 (AccessRevoked)" },
+            { MTLCommandBufferErrorDomain, MTLCommandBufferErrorTimeout, false, "MTLCommandBufferErrorDomain 2 (Timeout)",
+              true },
+            { MTLCommandBufferErrorDomain, MTLCommandBufferErrorPageFault, false,
+              "MTLCommandBufferErrorDomain 3 (PageFault)" },
+        };
+        for (const Case& c : cases)
+        {
+            const std::string at = std::string(c.name) + ": ";
+            Ref<Device> made = anotherDevice();
+            MetalDevice& device = *static_cast<MetalDevice*>(made.get());
+            tut::ensure(at + "a new device is not lost", !device.deviceLost());
+            const std::string frame = std::to_string(device.frameNumber());
+            CaptureLog log(LLError::LEVEL_WARN);
+            device.injectNextFeedbackError([NSError errorWithDomain:c.domain
+                                                               code:c.code
+                                                           userInfo:@{ NSLocalizedDescriptionKey: @"t165" }]);
+            device.endFrame();
+            device.drainFeedback();
+            ensureEqual(at + "counted, read without a drain", device.gpuErrorCount(), U64(1));
+            ensureEqual(at + "and with one", device.gpuErrors(), U64(1));
+            ensureEqual(at + "the device lost", device.deviceLost(), c.lost);
+            tut::ensure(at + "the submission failed", device.lastSubmission()->failed);
+            std::ostringstream lines;
+            log.streamto(lines);
+            ensureEqual(at + "one WARN line (" + lines.str() + ")", occurrences(log, "WARNING"), size_t(1));
+            ensureEqual(at + "with the frame and the command buffer",
+                        occurrences(log, "GPU error in frame " + frame + ", command buffer 'Frame " + frame), size_t(1));
+            const char* outcome = c.lost      ? ", the device is lost"
+                                  : c.timeout ? ", counted (a second in a row loses the device)"
+                                              : "";
+            ensureEqual(at + "the domain, the code and its name",
+                        occurrences(log, std::string("': ") + c.name + outcome + ": t165"), size_t(1));
+            device.submitAndWait();
+        }
+
+        {
+            // The review's m5: a Timeout, a command buffer without one, a Timeout: counted, not lost; one more in a row
+            // loses the device.
+            Ref<Device> made = anotherDevice();
+            MetalDevice& device = *static_cast<MetalDevice*>(made.get());
+            NSError* timeout = [NSError errorWithDomain:MTL4CommandQueueErrorDomain
+                                                   code:MTL4CommandQueueErrorTimeout
+                                               userInfo:@{ NSLocalizedDescriptionKey: @"t165" }];
+            device.injectNextFeedbackError(timeout);
+            device.endFrame();
+            device.endFrame();
+            device.injectNextFeedbackError(timeout);
+            device.endFrame();
+            device.drainFeedback();
+            tut::ensure("Timeout, none, Timeout: not lost", !device.deviceLost());
+            ensureEqual("Timeout, none, Timeout: both counted", device.gpuErrorCount(), U64(2));
+            CaptureLog log(LLError::LEVEL_WARN);
+            device.injectNextFeedbackError(timeout);
+            device.endFrame();
+            device.drainFeedback();
+            tut::ensure("a second Timeout in a row: the device lost", device.deviceLost());
+            ensureEqual("a second Timeout in a row: one line says so",
+                        occurrences(log, "MTL4CommandQueueErrorDomain 1 (Timeout), the device is lost: t165"), size_t(1));
+            device.submitAndWait();
+        }
+
+        {
+            Ref<Device> made = anotherDevice();
+            MetalDevice& device = *static_cast<MetalDevice*>(made.get());
+            Ref<Texture> texture = device.createTexture(textureDesc(Format::RGBA8Unorm, TEXTURE_RENDER_TARGET), "hung");
+            id<MTLTexture> metal = metalTexture(texture.get());
+            id<MTLSharedEvent> gate = [device.mtlDevice() newSharedEvent];
+            device.gateNextCommit(gate, 1);
+            const U64 frame = device.frameNumber();
+            texture = nullptr; // released in the frame whose commit waits for the gate
+            device.limitWaits(50);
+            bool stays = false;
+            bool unfinished = false;
+            size_t waits = 0;
+            size_t lostLines = 0;
+            U64 current = 0;
+            U64 after = 0;
+            {
+                CaptureLog log(LLError::LEVEL_WARN);
+                for (int i = 0; i < 4 && !device.deviceLost(); ++i)
+                {
+                    device.endFrame();
+                }
+                stays = device.residency().contains(metal);
+                unfinished = device.completedFrame() < frame;
+                waits = occurrences(log, "Frame " + std::to_string(frame) + " did not finish on the GPU within 50 ms");
+                lostLines = occurrences(log, "did not finish on the GPU within two waits; the device is lost");
+                current = device.frameNumber();
+                device.endFrame();
+                after = device.frameNumber();
+            }
+            gate.signaledValue = 1;
+            device.limitWaits(5000);
+            tut::ensure("the hung frame: the device lost", device.deviceLost());
+            ensureEqual("two waits of 50 ms", waits, size_t(2));
+            ensureEqual("one line for the lost device", lostLines, size_t(1));
+            tut::ensure("the frame has not finished", unfinished);
+            tut::ensure("what it released stays resident", stays);
+            ensureEqual("no frame begins on a lost device", after, current);
+            ensureEqual("no GPU error from the hang", device.gpuErrorCount(), U64(0));
+            tut::ensure("the GPU finishes once the gate opens", device.waitForFrame(frame));
+        }
+    }
+
+    /// t19: every Format but Unknown has a Metal format, and the table's samples are right.
+    API_AVAILABLE(macos(26.0)) void formatTableTest()
+    {
+        ensureEqual("Unknown", metalPixelFormat(Format::Unknown), MTLPixelFormatInvalid);
+        for (size_t i = 1; i < size_t(Format::Count); ++i)
+        {
+            tut::ensure("Format " + std::to_string(i) + " has a Metal format",
+                        metalPixelFormat(Format(i)) != MTLPixelFormatInvalid);
+        }
+        const std::pair<Format, MTLPixelFormat> samples[] = {
+            { Format::RGBA8Unorm, MTLPixelFormatRGBA8Unorm },
+            { Format::RGBA8Unorm_sRGB, MTLPixelFormatRGBA8Unorm_sRGB },
+            { Format::BGRA8Unorm, MTLPixelFormatBGRA8Unorm },
+            { Format::RGBA16Unorm, MTLPixelFormatRGBA16Unorm },
+            { Format::RG11B10Float, MTLPixelFormatRG11B10Float },
+            { Format::BC5_RG, MTLPixelFormatBC5_RGUnorm },
+            { Format::BC7_RGBA_sRGB, MTLPixelFormatBC7_RGBAUnorm_sRGB },
+            { Format::Depth32Float, MTLPixelFormatDepth32Float },
+            { Format::Depth32Float_Stencil8, MTLPixelFormatDepth32Float_Stencil8 },
+        };
+        for (const auto& [format, metal] : samples)
+        {
+            ensureEqual("Format " + std::to_string(size_t(format)), metalPixelFormat(format), metal);
+        }
+    }
+
+    /// t20: a buffer is Shared with its bytes, labelled with the debug setting and not on a device
+    /// made without it, resident from
+    /// creation and until its frame has finished; size 0 and dynamic buffers are refused.
+    API_AVAILABLE(macos(26.0)) void buffersTest(MetalDevice& device)
+    {
+        std::array<std::byte, 64> bytes;
+        for (size_t i = 0; i < bytes.size(); ++i)
+        {
+            bytes[i] = std::byte(i * 7 + 3);
+        }
+        BufferDesc desc;
+        desc.size = bytes.size();
+        Ref<Buffer> buffer = device.createBuffer(desc, bytes, "known bytes");
+        tut::ensure("the buffer is made", buffer.notNull());
+        id<MTLBuffer> metal = metalBuffer(buffer.get());
+        tut::ensure("Shared", metal.storageMode == MTLStorageModeShared);
+        ensureEqual("the length", U64(metal.length), U64(bytes.size()));
+        tut::ensure("the bytes", memcmp(metal.contents, bytes.data(), bytes.size()) == 0);
+        tut::ensure("labelled with the debug setting", metal.label != nil && std::string(metal.label.UTF8String) == "known bytes");
+        {
+            MetalDebugOff off;
+            Ref<Device> quiet = anotherDevice();
+            Ref<Buffer> unlabelled = quiet->createBuffer(desc, bytes, "known bytes");
+            tut::ensure("no label on a device made without the debug setting", metalBuffer(unlabelled.get()).label == nil);
+        }
+        tut::ensure("resident from creation", device.residency().contains(metal));
+
+        // As residencyTest: frame N waits for a gate the test opens.
+        id<MTLSharedEvent> gate = [device.mtlDevice() newSharedEvent];
+        device.gateNextCommit(gate, 1);
+        const U64 frame = device.frameNumber();
+        buffer = nullptr; // released in frame N
+        device.endFrame();
+        const bool stays = device.residency().contains(metal);
+        gate.signaledValue = 1;
+        tut::ensure("the buffer stays resident while frame N runs", stays);
+        tut::ensure("frame N finishes once the gate opens", device.waitForFrame(frame));
+        device.endFrame();
+        tut::ensure("the buffer has left the residency set", !device.residency().contains(metal));
+
+        BufferDesc empty;
+        BufferDesc dynamic = desc;
+        dynamic.dynamic = true;
+        {
+            CaptureLog log(LLError::LEVEL_WARN);
+            tut::ensure("size 0: null", device.createBuffer(empty, {}, "empty").isNull());
+            ensureEqual("size 0: one WARN line", occurrences(log, "WARNING #RHI#"), size_t(1));
+        }
+        {
+            // S3 (C11): a dynamic buffer is made, in a pool block with its bytes.
+            CaptureLog log(LLError::LEVEL_WARN);
+            Ref<Buffer> made = device.createBuffer(dynamic, bytes, "dynamic");
+            tut::ensure("dynamic: made", made.notNull());
+            tut::ensure("dynamic: its bytes", memcmp(metalAllocation(made.get()).cpu, bytes.data(), bytes.size()) == 0);
+            ensureEqual("dynamic: no WARN line", occurrences(log, "WARNING #RHI#"), size_t(0));
+        }
+    }
+
+    using Bytes16 = std::array<U8, 16>;
+
+    std::span<const std::byte> asBytes(const Bytes16& bytes)
+    {
+        return std::as_bytes(std::span<const U8>(bytes));
+    }
+
+    /// The 2x2 readback's 16 bytes in order.
+    void ensureBytes(const std::string& what, Ref<Readback> readback, const Bytes16& expected)
+    {
+        tut::ensure(what + ": made", readback.notNull());
+        readback->wait();
+        const std::span<const std::byte> data = readback->data();
+        ensureEqual(what + ": the size", data.size(), expected.size());
+        for (size_t i = 0; i < data.size(); ++i)
+        {
+            ensureEqual(what + ": byte " + std::to_string(i), std::to_integer<U32>(data[i]), U32(expected[i]));
+        }
+    }
+
+    /// t21: an upload outside a pass is read back as its bytes in their order; a readback before an
+    /// upload keeps the bytes from before it, because the upload's copy has an encoder of its own;
+    /// an upload in a pass breaks it and is taken with no WARN line (F5, t96 draws around one); BGRA
+    /// and depth uploads are taken.
+    API_AVAILABLE(macos(26.0)) void uploadTest(MetalDevice& device)
+    {
+        constexpr Bytes16 first = { 255, 0, 0, 255, 0, 255, 0, 255, 0, 0, 255, 255, 10, 20, 30, 40 };
+        constexpr Bytes16 second = { 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16 };
+        Ref<Texture> texture = device.createTexture(sizedDesc(Format::RGBA8Unorm, TEXTURE_SAMPLED | TEXTURE_READBACK, 2, 2), "upload");
+        Encoder& encoder = device.encoder();
+        const Region whole{ 0, 0, 2, 2 };
+        encoder.uploadTexture(texture.get(), 0, 0, whole, PixelLayout(), asBytes(first));
+        ensureBytes("the upload", encoder.readback(texture.get(), 0, 0, whole, PixelLayout()), first);
+
+        Ref<Readback> before = encoder.readback(texture.get(), 0, 0, whole, PixelLayout());
+        const U64 begun = device.copyEncodersBegun();
+        encoder.uploadTexture(texture.get(), 0, 0, whole, PixelLayout(), asBytes(second));
+        ensureEqual("the upload began one encoder of copies", device.copyEncodersBegun(), begun + 1);
+        ensureBytes("the readback before the upload", before, first);
+        ensureBytes("the second upload", encoder.readback(texture.get(), 0, 0, whole, PixelLayout()), second);
+
+        Ref<Texture> color = device.createTexture(sizedDesc(Format::RGBA8Unorm, TEXTURE_RENDER_TARGET, 2, 2), "target");
+        {
+            CaptureLog log(LLError::LEVEL_WARN);
+            tut::ensure("the pass begins", encoder.beginRenderPass(passOn(color, nullptr)));
+            encoder.uploadTexture(texture.get(), 0, 0, whole, PixelLayout(), asBytes(first));
+            encoder.endRenderPass();
+            ensureEqual("in a pass: no WARN line", occurrences(log, "WARNING #RHI#"), size_t(0));
+        }
+        ensureBytes("after the upload in a pass", encoder.readback(texture.get(), 0, 0, whole, PixelLayout()), first);
+        {
+            // P3-01c: BGRA into RGBA8 is read back as RGBA, and Depth/F32 into Depth32Float is taken.
+            CaptureLog log(LLError::LEVEL_WARN);
+            PixelLayout bgra;
+            bgra.components = PixelLayout::Components::BGRA;
+            encoder.uploadTexture(texture.get(), 0, 0, whole, bgra, asBytes(first));
+            Bytes16 rgba = first;
+            for (size_t i = 0; i < rgba.size(); i += 4)
+            {
+                std::swap(rgba[i], rgba[i + 2]);
+            }
+            ensureBytes("BGRA read back as RGBA", encoder.readback(texture.get(), 0, 0, whole, PixelLayout()), rgba);
+            Ref<Texture> depth = device.createTexture(sizedDesc(Format::Depth32Float, TEXTURE_SAMPLED, 2, 2), "depth");
+            PixelLayout floats;
+            floats.components = PixelLayout::Components::Depth;
+            floats.type = PixelLayout::Type::F32;
+            constexpr std::array<F32, 4> depths = { 0.f, 0.25f, 0.5f, 1.f };
+            encoder.uploadTexture(depth.get(), 0, 0, whole, floats, std::as_bytes(std::span(depths)));
+            ensureEqual("BGRA and depth: no WARN line", occurrences(log, "WARNING #RHI#"), size_t(0));
+        }
+    }
+
+    /// t22: a point sampler with clamp has the expected description and a gpuResourceID, the same
+    /// description gives the same object, and a comparing sampler is refused (P3-02); a device that
+    /// still caches a sampler lets go of it before its releases run (B19).
+    API_AVAILABLE(macos(26.0)) void samplerTest(Ref<Device>& owner, MetalDevice& device)
+    {
+        SamplerDesc point;
+        point.filter = Filter::Point;
+        point.mipmapped = false; // the flag in effect for a texture of one level
+        point.addressU = point.addressV = point.addressW = AddressMode::ClampToEdge;
+        MTLSamplerDescriptor* metal = metalSamplerDescriptor(point, true);
+        tut::ensure("min nearest", metal.minFilter == MTLSamplerMinMagFilterNearest);
+        tut::ensure("mag nearest", metal.magFilter == MTLSamplerMinMagFilterNearest);
+        tut::ensure("no mip filter", metal.mipFilter == MTLSamplerMipFilterNotMipmapped);
+        tut::ensure("clamp on s, t and r", metal.sAddressMode == MTLSamplerAddressModeClampToEdge
+                                               && metal.tAddressMode == MTLSamplerAddressModeClampToEdge
+                                               && metal.rAddressMode == MTLSamplerAddressModeClampToEdge);
+        tut::ensure("anisotropy 1", metal.maxAnisotropy == 1);
+        tut::ensure("GL's whole mip chain", metal.lodMinClamp == 0.f && metal.lodMaxClamp == FLT_MAX);
+        tut::ensure("no comparison", metal.compareFunction == MTLCompareFunctionNever);
+        tut::ensure("for argument tables", metal.supportArgumentBuffers);
+        SamplerDesc mixed = point;
+        mixed.addressU = AddressMode::Repeat;
+        mixed.addressV = AddressMode::MirroredRepeat;
+        metal = metalSamplerDescriptor(mixed, true);
+        tut::ensure("repeat and mirrored repeat", metal.sAddressMode == MTLSamplerAddressModeRepeat
+                                                      && metal.tAddressMode == MTLSamplerAddressModeMirrorRepeat);
+        // P3-01e F1: an explicit magFilter overrides the filter's mag, as in toGLSampling (P2-11a).
+        SamplerDesc magNearest = point;
+        magNearest.filter = Filter::Bilinear;
+        magNearest.magFilter = MagFilter::Nearest;
+        metal = metalSamplerDescriptor(magNearest, true);
+        tut::ensure("Bilinear with mag Nearest", metal.magFilter == MTLSamplerMinMagFilterNearest
+                                                     && metal.minFilter == MTLSamplerMinMagFilterLinear);
+        SamplerDesc magLinear = point;
+        magLinear.magFilter = MagFilter::Linear;
+        metal = metalSamplerDescriptor(magLinear, true);
+        tut::ensure("Point with mag Linear", metal.magFilter == MTLSamplerMinMagFilterLinear
+                                                 && metal.minFilter == MTLSamplerMinMagFilterNearest);
+
+        Ref<Sampler> sampler = device.getSampler(point);
+        tut::ensure("the sampler is made", sampler.notNull());
+        tut::ensure("a gpuResourceID", metalSampler(sampler.get()).gpuResourceID._impl != 0);
+        tut::ensure("the same description gives the same sampler", device.getSampler(point) == sampler);
+        {
+            // P3-01e F1: anisotropy on every filter where the device has it, rounded and at most 16;
+            // 1 for NaN, below 1 and without the capability.
+            tut::ensure("the device filters anisotropically", device.capabilities().anisotropicFiltering);
+            ensureEqual("up to 16 samples", device.capabilities().maxAnisotropy, METAL_MAX_ANISOTROPY);
+            const auto samples = [&](F32 anisotropy, bool anisotropic)
+            {
+                SamplerDesc desc = point;
+                desc.maxAnisotropy = anisotropy;
+                return NSUInteger(metalSamplerDescriptor(desc, anisotropic).maxAnisotropy);
+            };
+            ensureEqual("Point with 4: 4 samples", samples(4.f, true), NSUInteger(4));
+            ensureEqual("2.6 rounds to 3", samples(2.6f, true), NSUInteger(3));
+            ensureEqual("64 is cut to 16", samples(64.f, true), NSUInteger(16));
+            ensureEqual("NaN gives 1", samples(std::numeric_limits<F32>::quiet_NaN(), true), NSUInteger(1));
+            ensureEqual("0.5 gives 1", samples(0.5f, true), NSUInteger(1));
+            ensureEqual("without the capability 1", samples(4.f, false), NSUInteger(1));
+            SamplerDesc anisotropicPoint = point;
+            anisotropicPoint.maxAnisotropy = 4.f;
+            CaptureLog log(LLError::LEVEL_WARN);
+            tut::ensure("Point with anisotropy 4 is made", device.getSampler(anisotropicPoint).notNull());
+            // P3-02 D2 (SH-11): a comparing sampler is made with its compare function; one without compares never.
+            SamplerDesc shadow = point;
+            shadow.compare = true;
+            tut::ensure("a comparing sampler is made", device.getSampler(shadow).notNull());
+            ensureEqual("LessEqual unless set", metalSamplerDescriptor(shadow, true).compareFunction,
+                        MTLCompareFunctionLessEqual);
+            shadow.compareFunc = CompareFunc::Greater;
+            ensureEqual("Greater", metalSamplerDescriptor(shadow, true).compareFunction, MTLCompareFunctionGreater);
+            ensureEqual("not comparing: Never", metalSamplerDescriptor(point, true).compareFunction,
+                        MTLCompareFunctionNever);
+            ensureEqual("no WARN line", occurrences(log, "WARNING #RHI#"), size_t(0));
+        }
+
+        sampler = nullptr; // the device's cache still holds it
+        CaptureLog log(LLError::LEVEL_WARN);
+        owner = nullptr;
+        ensureEqual("no releases left unfreed", occurrences(log, "never freed"), size_t(0));
+        std::ostringstream warnings;
+        log.streamto(warnings);
+        tut::ensure("no WARN line: " + warnings.str(), warnings.str().empty());
+    }
+
+    // Programs and pipelines (P3-01b's S2) ----------------------------------------------------------
+
+    // LLShaderMgr::mReservedAttribs (llshadermgr.cpp:1642-1655): the attribute's index is
+    // LLVertexBuffer's type.
+    const std::vector<std::string> RESERVED_ATTRIBUTES = { "position", "normal", "texcoord0", "texcoord1",
+                                                           "texcoord2", "texcoord3", "diffuse_color", "emissive",
+                                                           "tangent", "weight", "weight4", "clothing",
+                                                           "joint", "texture_index" };
+
+    // LLVertexBuffer's MAP_VERTEX | MAP_TEXCOORD0 | MAP_COLOR: what the UI program reads.
+    constexpr U32 UI_MASK = (1u << 0) | (1u << 2) | (1u << 6);
+
+    // interface/uiV.glsl and interface/uiF.glsl as the shader manager assembles them.
+    const char* UI_VERTEX = R"(#version 400
+#define VERTEX_SHADER 1
+uniform mat4 texture_matrix0;
+uniform mat4 modelview_projection_matrix;
+
+in vec3 position;
+in vec4 diffuse_color;
+in vec2 texcoord0;
+
+out vec4 vertex_color;
+out vec2 vary_texcoord0;
+
+void main()
+{
+    gl_Position = modelview_projection_matrix * vec4(position, 1);
+    vary_texcoord0 =  (texture_matrix0 * vec4(texcoord0,0,1)).xy;
+    vertex_color = diffuse_color;
+}
+)";
+    const char* UI_FRAGMENT = R"(#version 400
+#define FRAGMENT_SHADER 1
+out vec4 frag_color;
+
+uniform sampler2D diffuseMap;
+
+in vec2 vary_texcoord0;
+in vec4 vertex_color;
+
+void main()
+{
+    frag_color = vertex_color*texture(diffuseMap, vary_texcoord0.xy);
+}
+)";
+
+    ProgramDesc programDesc(const std::string& name, const char* vertex, const char* fragment)
+    {
+        ProgramDesc desc;
+        desc.name = name;
+        desc.stages = { { ShaderStage::Vertex, { vertex } }, { ShaderStage::Fragment, { fragment } } };
+        desc.reservedAttributes = RESERVED_ATTRIBUTES;
+        return desc;
+    }
+
+    ProgramDesc uiProgramDesc()
+    {
+        return programDesc("UI test", UI_VERTEX, UI_FRAGMENT);
+    }
+
+    /// The packing program (t24; S3's t30 uses it again): a scalar, a vec3, a mat3 and a float
+    /// array in the vertex stage, and tint in both stages.
+    ProgramDesc packingProgramDesc()
+    {
+        return programDesc("packing test", R"(#version 400
+#define VERTEX_SHADER 1
+uniform float f;
+uniform vec3 v;
+uniform mat3 m;
+uniform float a[2];
+uniform vec4 tint;
+in vec3 position;
+out vec4 color;
+void main()
+{
+    gl_Position = vec4(m * (position * v) + vec3(f + a[0] + a[1]), 1.0);
+    color = tint;
+}
+)", R"(#version 400
+#define FRAGMENT_SHADER 1
+uniform vec4 tint;
+in vec4 color;
+out vec4 frag_color;
+void main()
+{
+    frag_color = color * tint;
+}
+)");
+    }
+
+    /// The interface index of a uniform; the uniforms' count when there is none.
+    size_t uniformIndex(const ProgramReflection& reflection, const std::string& name)
+    {
+        size_t i = 0;
+        while (i < reflection.uniforms.size() && reflection.uniforms[i].name != name)
+        {
+            ++i;
+        }
+        return i;
+    }
+
+    /// Each default-block member of the translation has the same place in the program's layout.
+    void ensurePlaces(const std::string& what, const MSL::StageResult& translated, const ProgramReflection& reflection,
+                      const MetalStageLayout& layout)
+    {
+        ensureEqual(what + ": blockSize", layout.blockSize, translated.reflection.defaultBlockSize);
+        ensureEqual(what + ": a place for each uniform", layout.places.size(), reflection.uniforms.size());
+        for (const MSL::Uniform& uniform : translated.reflection.uniforms)
+        {
+            if (!uniform.active)
+            {
+                continue; // not in the reflection, as on GL (P3-01d)
+            }
+            const size_t index = uniformIndex(reflection, uniform.name);
+            tut::ensure(what + ": " + uniform.name + " is in the reflection", index < reflection.uniforms.size());
+            const MetalUniformPlace& place = layout.places[index];
+            ensureEqual(what + ": " + uniform.name + "'s offset", place.offset, uniform.offset);
+            ensureEqual(what + ": " + uniform.name + "'s size", place.size, uniform.size);
+            ensureEqual(what + ": " + uniform.name + "'s arrayStride", place.arrayStride, uniform.arrayStride);
+            ensureEqual(what + ": " + uniform.name + "'s matrixStride", place.matrixStride, uniform.matrixStride);
+        }
+    }
+
+    API_AVAILABLE(macos(26.0)) void programTest(MetalDevice& device)
+    {
+        const ProgramDesc desc = uiProgramDesc();
+        Ref<Program> program = ready(device.createProgram(desc));
+        tut::ensure("the UI program is made", program.notNull());
+        tut::ensure("the UI program is Ready", program->status() == CompileStatus::Ready);
+        program->wait();
+        const ProgramReflection& reflection = program->reflection();
+        ensureEqual("the UI program's uniforms", reflection.uniforms.size(), size_t(3));
+        const std::pair<const char*, UniformType> expected[] = { { "modelview_projection_matrix", UniformType::Mat4 },
+                                                                 { "texture_matrix0", UniformType::Mat4 },
+                                                                 { "diffuseMap", UniformType::Sampler2D } };
+        for (const auto& [name, type] : expected)
+        {
+            const size_t index = uniformIndex(reflection, name);
+            tut::ensure(std::string(name) + " is reflected", index < reflection.uniforms.size());
+            ensureEqual(std::string(name) + "'s type", int(reflection.uniforms[index].type), int(type));
+            ensureEqual(std::string(name) + "'s arraySize", reflection.uniforms[index].arraySize, 1u);
+        }
+        tut::ensure("the sampler comes after the default block", uniformIndex(reflection, "diffuseMap") == 2);
+        ensureEqual("attributeMask is MAP_VERTEX | MAP_TEXCOORD0 | MAP_COLOR", reflection.attributeMask, UI_MASK);
+        tut::ensure("no blocks", reflection.blocks.empty());
+
+        const MSL::Result translated = MSL::translate(metalProgramSource(desc));
+        tut::ensure("the UI program translates: " + translated.error, translated.ok && translated.stages.size() == 2);
+        const MetalProgramLayout* layout = metalProgramLayout(program.get());
+        tut::ensure("the program has a layout", layout != nullptr);
+        ensurePlaces("vertex", translated.stages[0], reflection, layout->vertex);
+        ensureEqual("the fragment stage has no default block", layout->fragment.blockSize, 0u);
+        ensureEqual("one fragment texture", layout->fragment.textureUniforms.size(), size_t(1));
+        ensureEqual("fragment texture 0 is diffuseMap", size_t(layout->fragment.textureUniforms[0]),
+                    uniformIndex(reflection, "diffuseMap"));
+        tut::ensure("no vertex texture", layout->vertex.textureUniforms.empty());
+        const MetalProgramFunctions functions = metalProgramFunctions(program.get());
+        tut::ensure("both stages have a function", functions.vertex && functions.fragment);
+        // E8: the program is the only member of its group, so its entry points are in v0 and f0.
+        tut::ensure("the entry point is main0 in the group's namespace v0",
+                    [((MTL4LibraryFunctionDescriptor*)functions.vertex).name isEqualToString:@"v0::main0"]);
+        tut::ensure("and f0::main0", [((MTL4LibraryFunctionDescriptor*)functions.fragment).name isEqualToString:@"f0::main0"]);
+    }
+
+    API_AVAILABLE(macos(26.0)) void layoutTest(MetalDevice& device)
+    {
+        const ProgramDesc desc = packingProgramDesc();
+        Ref<Program> program = ready(device.createProgram(desc));
+        tut::ensure("the packing program is Ready", program.notNull() && program->status() == CompileStatus::Ready);
+        const ProgramReflection& reflection = program->reflection();
+        ensureEqual("five uniforms", reflection.uniforms.size(), size_t(5));
+        const size_t a = uniformIndex(reflection, "a");
+        tut::ensure("a is reflected", a < reflection.uniforms.size());
+        ensureEqual("a is Float", int(reflection.uniforms[a].type), int(UniformType::Float));
+        ensureEqual("a's arraySize", reflection.uniforms[a].arraySize, 2u);
+        ensureEqual("m is Mat3", int(reflection.uniforms[uniformIndex(reflection, "m")].type), int(UniformType::Mat3));
+        ensureEqual("v is Vec3", int(reflection.uniforms[uniformIndex(reflection, "v")].type), int(UniformType::Vec3));
+
+        const MSL::Result translated = MSL::translate(metalProgramSource(desc));
+        tut::ensure("the packing program translates: " + translated.error, translated.ok);
+        const MetalProgramLayout& layout = *metalProgramLayout(program.get());
+        ensurePlaces("vertex", translated.stages[0], reflection, layout.vertex);
+        ensurePlaces("fragment", translated.stages[1], reflection, layout.fragment);
+        const size_t tint = uniformIndex(reflection, "tint");
+        size_t named = 0;
+        for (const UniformInfo& uniform : reflection.uniforms)
+        {
+            named += uniform.name == "tint" ? 1 : 0;
+        }
+        ensureEqual("tint has one index", named, size_t(1));
+        tut::ensure("tint has a place in the vertex stage", layout.vertex.places[tint].size == 16);
+        tut::ensure("tint has a place in the fragment stage", layout.fragment.places[tint].size == 16);
+        tut::ensure("f has no place in the fragment stage", layout.fragment.places[uniformIndex(reflection, "f")].size == 0);
+    }
+
+    /// A translator whose fragment MSL does not compile.
+    MSL::Result brokenTranslator(const MSL::Program& program, const MSL::Options& options)
+    {
+        MSL::Result result = MSL::translate(program, options);
+        if (result.stages.size() == 2)
+        {
+            result.stages[1].msl = "this is not MSL";
+        }
+        return result;
+    }
+
+    API_AVAILABLE(macos(26.0)) void programFailuresTest(MetalDevice& device)
+    {
+        const auto ensureFails = [&device](const std::string& what, const ProgramDesc& desc, const std::string& reason)
+        {
+            CaptureLog log(LLError::LEVEL_WARN);
+            Ref<Program> program = ready(device.createProgram(desc));
+            tut::ensure(what + ": a program", program.notNull());
+            ensureEqual(what + ": Failed", int(program->status()), int(CompileStatus::Failed));
+            program->wait();
+            ensureEqual(what + ": one WARN line", occurrences(log, "WARNING #RHI#"), size_t(1));
+            ensureEqual(what + ": the WARN names the program", occurrences(log, "createProgram " + desc.name + ": "),
+                        size_t(1));
+            std::ostringstream warning;
+            log.streamto(warning);
+            tut::ensure(what + ": the WARN gives the reason: " + warning.str(), occurrences(log, reason) > 0);
+            Ref<Pipeline> none;
+            {
+                CaptureLog refused(LLError::LEVEL_WARN);
+                PipelineDesc pipeline;
+                pipeline.attributeMask = UI_MASK;
+                pipeline.colorFormats[0] = Format::RGBA8Unorm;
+                none = device.getPipeline(*program, pipeline);
+                ensureEqual(what + ": no pipeline, one WARN line", occurrences(refused, "WARNING #RHI#"), size_t(1));
+            }
+            tut::ensure(what + ": no pipeline", none.isNull());
+        };
+        ensureFails("syntax", programDesc("syntax test", "#version 400\nvoid main() { this is not GLSL }\n", UI_FRAGMENT),
+                    "vertex unit 0");
+        const ProgramDesc block = programDesc("block test", UI_VERTEX, R"(#version 400
+layout(std140) uniform Tints { vec4 tint; };
+in vec4 vertex_color;
+in vec2 vary_texcoord0;
+out vec4 frag_color;
+void main() { frag_color = vertex_color * tint; }
+)");
+        // A block that is not one of ProgramDesc::uniformBlocks fails in the translation (P3-01d; t56 has
+        // the program's blocks).
+        ensureFails("uniform block", block, "uniform block Tints has no GL binding");
+        ProgramDesc geometry = uiProgramDesc();
+        geometry.name = "geometry test";
+        geometry.stages.push_back({ ShaderStage::Geometry, { "#version 400\nvoid main() {}\n" } });
+        ensureFails("geometry", geometry, "geometry stage, which Metal does not have");
+
+        setMetalTranslator(nullptr);
+        ensureFails("no translator", programDesc("untranslated test", UI_VERTEX, UI_FRAGMENT),
+                    "no shader translator registered (P3-01f)");
+        setMetalTranslator(&brokenTranslator);
+        const U64 failedBefore = metalCompileStats(device).failedPrograms;
+        ensureFails("MSL that does not compile", programDesc("broken test", UI_VERTEX, UI_FRAGMENT),
+                    "the fragment stage does not compile: ");
+        // P3-04a's review (M1): the failed job is counted for measured.rhi.compile, which golden level 2 holds to 0
+        ensureEqual("the failed program is counted", metalCompileStats(device).failedPrograms, failedBefore + 1);
+        setMetalTranslator(&MSL::translate);
+        tut::ensure("the translator is back", ready(device.createProgram(uiProgramDesc()))->status() == CompileStatus::Ready);
+    }
+
+    API_AVAILABLE(macos(26.0)) void compileOptionsTest(MetalDevice& device)
+    {
+        MTLCompileOptions* options = metalCompileOptions();
+        tut::ensure("MSL 4.0", options.languageVersion == MTLLanguageVersion4_0);
+        tut::ensure("the math mode is the constant", options.mathMode == METAL_MATH_MODE);
+        tut::ensure("the math functions are the constant", options.mathFloatingPointFunctions == METAL_MATH_FUNCTIONS);
+        tut::ensure("Relaxed, after the probe (B6)", METAL_MATH_MODE == MTLMathModeRelaxed);
+        tut::ensure("Fast functions, after the probe (B6)", METAL_MATH_FUNCTIONS == MTLMathFloatingPointFunctionsFast);
+
+        CaptureLog log(LLError::LEVEL_INFO);
+        Ref<Program> first = ready(device.createProgram(uiProgramDesc()));
+        Ref<Program> second = ready(device.createProgram(packingProgramDesc()));
+        tut::ensure("both programs are Ready",
+                    first->status() == CompileStatus::Ready && second->status() == CompileStatus::Ready);
+        ensureEqual("the INFO line once",
+                    occurrences(log, "Metal shaders: MSL 4.0, math mode Relaxed, functions Fast (P3-01b)"), size_t(1));
+    }
+
+    API_AVAILABLE(macos(26.0)) void pipelineTest(Ref<Device>& owner, MetalDevice& device)
+    {
+        Ref<Program> program = ready(device.createProgram(uiProgramDesc()));
+        tut::ensure("the UI program is Ready", program->status() == CompileStatus::Ready);
+        PipelineDesc desc;
+        desc.attributeMask = UI_MASK;
+        desc.colorFormats[0] = Format::RGBA8Unorm;
+        desc.depthFormat = Format::Depth32Float;
+        Ref<Pipeline> pipeline = device.getPipeline(*program, desc);
+        tut::ensure("the pipeline is made", pipeline.notNull());
+        ensureEqual("the pipeline's program", pipeline->programId(), program->id());
+        // P3-01d E14: it is made in the background; its state waits for it.
+        tut::ensure("the pipeline has a state", metalPipelineState(pipeline.get()) != nil);
+        tut::ensure("the pipeline is Ready", pipeline->status() == CompileStatus::Ready);
+        tut::ensure("the state is labelled with the program",
+                    [metalPipelineState(pipeline.get()).label isEqualToString:@"UI test"]);
+        tut::ensure("the same key gives the same pipeline", device.getPipeline(*program, desc) == pipeline);
+
+        // The table against LLVertexBuffer: setupVertexAttributes (llvertexbuffer.cpp:2683) and
+        // sTypeSize (llvertexbuffer.cpp:1343-1359), by attribute type.
+        const std::pair<MTLVertexFormat, U32> buffers[VertexStreams::MAX_ATTRIBUTES] = {
+            { MTLVertexFormatFloat3, 16 }, { MTLVertexFormatFloat3, 16 }, { MTLVertexFormatFloat2, 8 },
+            { MTLVertexFormatFloat2, 8 }, { MTLVertexFormatFloat2, 8 }, { MTLVertexFormatFloat2, 8 },
+            { MTLVertexFormatUChar4Normalized, 4 }, { MTLVertexFormatUChar4Normalized, 4 },
+            { MTLVertexFormatFloat4, 16 }, { MTLVertexFormatFloat, 4 }, { MTLVertexFormatFloat4, 16 },
+            { MTLVertexFormatFloat4, 16 }, { MTLVertexFormatUShort4, 8 }, { MTLVertexFormatInt, 16 }
+        };
+        MTLVertexDescriptor* all = metalVertexDescriptor((1u << VertexStreams::MAX_ATTRIBUTES) - 1);
+        for (U32 i = 0; i < VertexStreams::MAX_ATTRIBUTES; ++i)
+        {
+            const std::string row = "attribute " + std::to_string(i);
+            ensureEqual(row + "'s format", U32(all.attributes[i].format), U32(buffers[i].first));
+            ensureEqual(row + "'s buffer", U32(all.attributes[i].bufferIndex), 16 + i);
+            ensureEqual(row + "'s offset", U32(all.attributes[i].offset), 0u);
+            ensureEqual(row + "'s stride", U32(all.layouts[16 + i].stride), buffers[i].second);
+            tut::ensure(row + " per vertex", all.layouts[16 + i].stepFunction == MTLVertexStepFunctionPerVertex);
+        }
+        MTLVertexDescriptor* ui = metalVertexDescriptor(UI_MASK);
+        tut::ensure("UI: attribute 0 is Float3 in buffer 16 with stride 16",
+                    ui.attributes[0].format == MTLVertexFormatFloat3 && ui.attributes[0].bufferIndex == 16
+                        && ui.layouts[16].stride == 16);
+        tut::ensure("UI: attribute 2 is Float2 in buffer 18 with stride 8",
+                    ui.attributes[2].format == MTLVertexFormatFloat2 && ui.attributes[2].bufferIndex == 18
+                        && ui.layouts[18].stride == 8);
+        tut::ensure("UI: attribute 6 is UChar4Normalized in buffer 22 with stride 4",
+                    ui.attributes[6].format == MTLVertexFormatUChar4Normalized && ui.attributes[6].bufferIndex == 22
+                        && ui.layouts[22].stride == 4);
+        tut::ensure("UI: no normal", ui.attributes[1].format == MTLVertexFormatInvalid);
+
+        // P3-01d made blend, lines and samples (t76, t79); P3-01e S8 points (t119).
+        PipelineDesc point = desc;
+        point.primitiveClass = PrimitiveClass::Point;
+        {
+            CaptureLog log(LLError::LEVEL_WARN);
+            tut::ensure("points: made", device.getPipeline(*program, point).notNull());
+            ensureEqual("points: no WARN line", occurrences(log, "WARNING #RHI#"), size_t(0));
+        }
+        ensureEqual("two pipelines cached", device.pipelines().size(), size_t(2));
+
+        // A program that dies takes its pipelines with it (decision 6).
+        Ref<Program> other = ready(device.createProgram(packingProgramDesc()));
+        PipelineDesc packing = desc;
+        packing.attributeMask = 1;
+        tut::ensure("the packing pipeline is made", device.getPipeline(*other, packing).notNull());
+        ensureEqual("three pipelines cached", device.pipelines().size(), size_t(3));
+        other = nullptr;
+        ensureEqual("the packing program's pipeline is forgotten", device.pipelines().size(), size_t(2));
+
+        // The device ends in the frame in which the program, its libraries and its cached pipeline
+        // went: every release still runs (B19).
+        pipeline = nullptr;
+        CaptureLog log(LLError::LEVEL_WARN);
+        program = nullptr;
+        owner = nullptr;
+        ensureEqual("no releases left unfreed", occurrences(log, "never freed"), size_t(0));
+        std::ostringstream warnings;
+        log.streamto(warnings);
+        tut::ensure("no WARN line: " + warnings.str(), warnings.str().empty());
+    }
+
+    // Draws on the encoder (P3-01b's S3) -------------------------------------------------------------
+
+    using Rgba = std::array<U8, 4>;
+    constexpr Rgba RED = { 255, 0, 0, 255 };
+    constexpr Rgba GREEN = { 0, 255, 0, 255 };
+    constexpr Rgba BLUE = { 0, 0, 255, 255 };
+    constexpr Rgba YELLOW = { 255, 255, 0, 255 };
+    constexpr Rgba CLEAR_RGBA = { CLEAR_BYTES[0], CLEAR_BYTES[1], CLEAR_BYTES[2], CLEAR_BYTES[3] };
+    constexpr U32 DRAW_SIZE = 64;
+
+    using Matrix = std::array<F32, 16>;
+
+    /// A column-major mat4 that moves by (x, y).
+    Matrix translation(F32 x, F32 y)
+    {
+        Matrix matrix = { 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1 };
+        matrix[12] = x;
+        matrix[13] = y;
+        return matrix;
+    }
+
+    template <class T, size_t N>
+    std::span<const std::byte> bytesOf(const std::array<T, N>& values)
+    {
+        return std::as_bytes(std::span<const T>(values));
+    }
+
+    /// Clip-space vertices with their colors; their texcoords are 0 (the white texture is clamped).
+    struct DrawVertices
+    {
+        std::vector<std::array<F32, 4>> positions;
+        std::vector<Rgba> colors;
+    };
+
+    /// A rectangle of two triangles in one color.
+    void addRect(DrawVertices& vertices, F32 x0, F32 y0, F32 x1, F32 y1, const Rgba& color)
+    {
+        const std::array<F32, 4> corners[6] = { { x0, y0, 0, 1 }, { x1, y0, 0, 1 }, { x1, y1, 0, 1 },
+                                                { x0, y0, 0, 1 }, { x1, y1, 0, 1 }, { x0, y1, 0, 1 } };
+        for (const std::array<F32, 4>& corner : corners)
+        {
+            vertices.positions.push_back(corner);
+            vertices.colors.push_back(color);
+        }
+    }
+
+    /// LLVertexBuffer's separate streams in one buffer: positions (stride 16), then texcoord0 (8),
+    /// then color (4); streams gets the UI mask and the offsets.
+    API_AVAILABLE(macos(26.0)) Ref<Buffer> vertexBuffer(MetalDevice& device, const DrawVertices& vertices,
+                                                        VertexStreams& streams)
+    {
+        const size_t count = vertices.positions.size();
+        std::vector<std::byte> bytes(count * (16 + 8 + 4));
+        streams.attributeMask = UI_MASK;
+        streams.offset[2] = U32(count * 16);
+        streams.offset[6] = U32(count * 24);
+        std::memcpy(bytes.data(), vertices.positions.data(), count * 16);
+        std::memcpy(bytes.data() + streams.offset[6], vertices.colors.data(), count * 4);
+        BufferDesc desc;
+        desc.size = bytes.size();
+        return device.createBuffer(desc, bytes, "draw test vertices");
+    }
+
+    SamplerDesc pointClamp()
+    {
+        SamplerDesc sampling;
+        sampling.filter = Filter::Point;
+        sampling.addressU = sampling.addressV = sampling.addressW = AddressMode::ClampToEdge;
+        return sampling;
+    }
+
+    /// t23's program and its pipeline, a 64x64 RGBA8Unorm target with Depth32Float, and t21's
+    /// upload of a white 1x1 texture.
+    struct DrawTarget
+    {
+        Ref<Texture> color;
+        Ref<Texture> depth;
+        Ref<Texture> white;
+        Ref<Program> program;
+        Ref<Pipeline> pipeline;
+    };
+
+    PipelineDesc uiPipelineDesc()
+    {
+        PipelineDesc desc;
+        desc.attributeMask = UI_MASK;
+        desc.colorFormats[0] = Format::RGBA8Unorm;
+        desc.depthFormat = Format::Depth32Float;
+        return desc;
+    }
+
+    API_AVAILABLE(macos(26.0)) DrawTarget drawTarget(MetalDevice& device)
+    {
+        DrawTarget target;
+        target.color = device.createTexture(
+            sizedDesc(Format::RGBA8Unorm, TEXTURE_RENDER_TARGET | TEXTURE_READBACK, DRAW_SIZE, DRAW_SIZE), "draw color");
+        target.depth = device.createTexture(sizedDesc(Format::Depth32Float, TEXTURE_RENDER_TARGET, DRAW_SIZE, DRAW_SIZE),
+                                            "draw depth");
+        target.white = device.createTexture(sizedDesc(Format::RGBA8Unorm, TEXTURE_SAMPLED, 1, 1), "white");
+        constexpr Rgba WHITE = { 255, 255, 255, 255 };
+        device.encoder().uploadTexture(target.white.get(), 0, 0, { 0, 0, 1, 1 }, PixelLayout(), bytesOf(WHITE));
+        target.program = ready(device.createProgram(uiProgramDesc()));
+        target.pipeline = device.getPipeline(*target.program, uiPipelineDesc());
+        tut::ensure("the draw target is made", target.color.notNull() && target.depth.notNull()
+                                                   && target.white.notNull() && target.pipeline.notNull());
+        return target;
+    }
+
+    /// The UI program's uniforms: the matrix given, texture_matrix0 the identity, diffuseMap on 0.
+    void setUiUniforms(Encoder& encoder, Program* program, const Matrix& mvp)
+    {
+        const ProgramReflection& reflection = program->reflection();
+        encoder.setUniform(program, U32(uniformIndex(reflection, "modelview_projection_matrix")), bytesOf(mvp));
+        encoder.setUniform(program, U32(uniformIndex(reflection, "texture_matrix0")), bytesOf(translation(0, 0)));
+        encoder.setSamplerChannel(program, U32(uniformIndex(reflection, "diffuseMap")), 0);
+    }
+
+    /// A pass on the target that clears color to CLEAR_COLOR and depth to 1.
+    RenderPassDesc drawPass(const DrawTarget& target)
+    {
+        RenderPassDesc pass = passOn(target.color, target.depth);
+        pass.color[0].load = LoadAction::Clear;
+        pass.color[0].clear = CLEAR_COLOR;
+        pass.depth.load = LoadAction::Clear;
+        pass.depth.clear = 1.f;
+        return pass;
+    }
+
+    /// Binds the target's pipeline, the vertices and the white texture.
+    API_AVAILABLE(macos(26.0)) void bindDraw(Encoder& encoder, const DrawTarget& target, const Ref<Buffer>& buffer,
+                                             const VertexStreams& streams)
+    {
+        encoder.setPipeline(target.pipeline.get());
+        encoder.setVertexBuffer(buffer.get(), streams);
+        encoder.setTexture(0, target.white.get(), pointClamp());
+    }
+
+    /// The whole target, read back and waited for.
+    API_AVAILABLE(macos(26.0)) Ref<Readback> readTarget(MetalDevice& device, const DrawTarget& target)
+    {
+        Ref<Readback> readback =
+            device.encoder().readback(target.color.get(), 0, 0, { 0, 0, DRAW_SIZE, DRAW_SIZE }, PixelLayout());
+        tut::ensure("the target's readback is made", readback.notNull());
+        readback->wait();
+        return readback;
+    }
+
+    /// The pixel in column x of memory row y (GL's row y) of a whole readback of the target.
+    Rgba pixelAt(const Ref<Readback>& readback, U32 x, U32 y)
+    {
+        const std::span<const std::byte> data = readback->data();
+        const size_t at = (size_t(y) * DRAW_SIZE + x) * 4;
+        Rgba pixel = {};
+        for (size_t i = 0; i < 4 && at + i < data.size(); ++i)
+        {
+            pixel[i] = std::to_integer<U8>(data[at + i]);
+        }
+        return pixel;
+    }
+
+    std::string describe(const Rgba& pixel)
+    {
+        return std::to_string(pixel[0]) + " " + std::to_string(pixel[1]) + " " + std::to_string(pixel[2]) + " " +
+               std::to_string(pixel[3]);
+    }
+
+    /// Every pixel the predicate gives is that color; checks only where it gives one.
+    template <class Expect>
+    void ensureImage(const std::string& what, const Ref<Readback>& readback, Expect expect)
+    {
+        ensureEqual(what + ": the size", readback->data().size(), size_t(DRAW_SIZE) * DRAW_SIZE * 4);
+        for (U32 y = 0; y < DRAW_SIZE; ++y)
+        {
+            for (U32 x = 0; x < DRAW_SIZE; ++x)
+            {
+                const std::optional<Rgba> expected = expect(x, y);
+                const Rgba actual = pixelAt(readback, x, y);
+                if (expected && actual != *expected)
+                {
+                    tut::fail(what + ": pixel (" + std::to_string(x) + ", " + std::to_string(y) + ") is " +
+                              describe(actual) + ", expected " + describe(*expected));
+                }
+            }
+        }
+    }
+
+    /// Inside one of the rectangles [x0, x1) x [y0, y1) yellow, elsewhere the clear color.
+    auto yellowIn(std::vector<std::array<U32, 4>> rects)
+    {
+        return [rects](U32 x, U32 y) -> std::optional<Rgba>
+        {
+            for (const std::array<U32, 4>& rect : rects)
+            {
+                if (x >= rect[0] && x < rect[2] && y >= rect[1] && y < rect[3])
+                {
+                    return YELLOW;
+                }
+            }
+            return CLEAR_RGBA;
+        };
+    }
+
+    /// The frame ends with no GPU error and the log has no WARN line.
+    API_AVAILABLE(macos(26.0)) void endCleanly(MetalDevice& device, const CaptureLog& log)
+    {
+        device.endFrame();
+        ensureEqual("no GPU errors", device.gpuErrors(), U64(0));
+        std::ostringstream warnings;
+        log.streamto(warnings);
+        tut::ensure("no WARN line: " + warnings.str(), warnings.str().empty());
+    }
+
+    /// t28: one draw of a triangle with red, green and blue corners and a yellow square.
+    API_AVAILABLE(macos(26.0)) void drawTest(MetalDevice& device)
+    {
+        CaptureLog log(LLError::LEVEL_WARN);
+        DrawTarget target = drawTarget(device);
+        DrawVertices vertices;
+        // Pixels: the triangle's corners near (3.2, 35.2), (28.8, 35.2) and (16, 60.8); the square
+        // covers columns 40-55 of GL's rows 8-23, so a y that is not flipped shows.
+        vertices.positions = { { -0.9f, 0.1f, 0, 1 }, { -0.1f, 0.1f, 0, 1 }, { -0.5f, 0.9f, 0, 1 } };
+        vertices.colors = { RED, GREEN, BLUE };
+        addRect(vertices, 0.25f, -0.75f, 0.75f, -0.25f, YELLOW);
+        VertexStreams streams;
+        Ref<Buffer> buffer = vertexBuffer(device, vertices, streams);
+        Encoder& encoder = device.encoder();
+        setUiUniforms(encoder, target.program.get(), translation(0, 0));
+        tut::ensure("the pass begins", encoder.beginRenderPass(drawPass(target)));
+        bindDraw(encoder, target, buffer, streams);
+        tut::ensure("no encoder before the draw", device.metalEncoder().openEncoder() == nil);
+        encoder.draw(PrimitiveType::Triangles, 0, 9);
+        tut::ensure("the draw opened the segment's encoder", device.metalEncoder().openEncoder() != nil);
+        encoder.endRenderPass();
+        tut::ensure("the pass's end closed it", device.metalEncoder().openEncoder() == nil);
+
+        Ref<Readback> image = readTarget(device, target);
+        ensureImage("the square and the clear color", image, [](U32 x, U32 y) -> std::optional<Rgba>
+        {
+            if (x >= 40 && x < 56 && y >= 8 && y < 24)
+            {
+                return YELLOW;
+            }
+            const bool nearTriangle = x >= 3 && x <= 29 && y >= 35 && y <= 61;
+            return nearTriangle ? std::nullopt : std::optional<Rgba>(CLEAR_RGBA);
+        });
+        const std::pair<std::array<U32, 2>, size_t> corners[3] = { { { 5, 36 }, 0 }, { { 26, 36 }, 1 }, { { 16, 58 }, 2 } };
+        for (const auto& [at, channel] : corners)
+        {
+            const Rgba pixel = pixelAt(image, at[0], at[1]);
+            const std::string what = "corner (" + std::to_string(at[0]) + ", " + std::to_string(at[1]) + ") is " + describe(pixel);
+            for (size_t i = 0; i < 3; ++i)
+            {
+                tut::ensure(what, i == channel ? pixel[i] > 200 : pixel[i] < 40);
+            }
+        }
+
+        // The program and its pipeline go in the frame that drew with them.
+        target.pipeline = nullptr;
+        target.program = nullptr;
+        endCleanly(device, log);
+    }
+
+    /// t29: a viewport and a scissor in GL's numbers color exactly their rows and columns, also a
+    /// viewport set on an open encoder.
+    API_AVAILABLE(macos(26.0)) void viewportScissorTest(MetalDevice& device)
+    {
+        CaptureLog log(LLError::LEVEL_WARN);
+        DrawTarget target = drawTarget(device);
+        DrawVertices vertices;
+        addRect(vertices, -1, -1, 1, 1, YELLOW);
+        VertexStreams streams;
+        Ref<Buffer> buffer = vertexBuffer(device, vertices, streams);
+        Encoder& encoder = device.encoder();
+        setUiUniforms(encoder, target.program.get(), translation(0, 0));
+
+        tut::ensure("the viewport's pass begins", encoder.beginRenderPass(drawPass(target)));
+        bindDraw(encoder, target, buffer, streams);
+        encoder.setViewport(0, 0, 32, 32);
+        encoder.draw(PrimitiveType::Triangles, 0, 6);
+        encoder.endRenderPass();
+        ensureImage("the viewport", readTarget(device, target), yellowIn({ { 0, 0, 32, 32 } }));
+
+        tut::ensure("the scissor's pass begins", encoder.beginRenderPass(drawPass(target)));
+        encoder.setScissor(true, 8, 16, 24, 8);
+        encoder.draw(PrimitiveType::Triangles, 0, 6);
+        encoder.endRenderPass();
+        ensureImage("the scissor", readTarget(device, target), yellowIn({ { 8, 16, 32, 24 } }));
+
+        tut::ensure("the open encoder's pass begins", encoder.beginRenderPass(drawPass(target)));
+        encoder.setViewport(0, 0, 32, 32);
+        encoder.draw(PrimitiveType::Triangles, 0, 6);
+        encoder.setViewport(32, 32, 32, 32);
+        encoder.setScissor(true, 0, 0, 48, 64);
+        encoder.draw(PrimitiveType::Triangles, 0, 6);
+        encoder.endRenderPass();
+        ensureImage("a viewport and a scissor on the open encoder", readTarget(device, target),
+                    yellowIn({ { 0, 0, 32, 32 }, { 32, 32, 48, 64 } }));
+        endCleanly(device, log);
+    }
+
+    /// The packing program's uniforms as the GPU reads them (t30, after the review of P3-01b): one
+    /// component of each of f, v, m and a is the color, and v.x, v.z, a[0] and m's first two columns
+    /// place the rectangle, so a place that differs from the MSL struct shows in the pixels. The
+    /// fragment stage multiplies by its own tint, from the same draw buffer as the vertex block.
+    ProgramDesc scatterProgramDesc()
+    {
+        return programDesc("scatter draw test", R"(#version 400
+#define VERTEX_SHADER 1
+uniform float f;
+uniform vec3 v;
+uniform mat3 m;
+uniform float a[2];
+in vec3 position;
+out vec4 color;
+void main()
+{
+    gl_Position = vec4((m * position).xy * v.x + vec2(a[0], v.z), 0.0, 1.0);
+    color = vec4(m[1].z, v.y, a[1], f);
+}
+)", R"(#version 400
+#define FRAGMENT_SHADER 1
+uniform vec4 tint;
+in vec4 color;
+out vec4 frag_color;
+void main()
+{
+    frag_color = color * tint;
+}
+)");
+    }
+
+    /// t30's draw with the scatter program: the values are k/255 and powers of two, so each channel
+    /// is exact. Not the translation's reflection: the expected pixels follow from the GLSL alone.
+    API_AVAILABLE(macos(26.0)) void scatterDrawCheck(MetalDevice& device, const DrawTarget& target)
+    {
+        Ref<Program> program = ready(device.createProgram(scatterProgramDesc()));
+        tut::ensure("the scatter program is made", program.notNull());
+        Ref<Pipeline> pipeline = device.getPipeline(*program, uiPipelineDesc());
+        tut::ensure("the scatter program's pipeline is made", pipeline.notNull());
+        const ProgramReflection& reflection = program->reflection();
+        const std::array<F32, 1> f = { 170.f / 255 };
+        const std::array<F32, 3> v = { 1, 100.f / 255, 0.5f };
+        const std::array<F32, 9> m = { 1, 0, 0.25f, 0, 1, 200.f / 255, 0.75f, 0.5f, 0.125f }; // column-major
+        const std::array<F32, 2> a = { 0.5f, 60.f / 255 };
+        const std::array<F32, 4> tint = { 1, 0.5f, 0.25f, 0.5f };
+        Encoder& encoder = device.encoder();
+        encoder.setUniform(program.get(), U32(uniformIndex(reflection, "f")), bytesOf(f));
+        encoder.setUniform(program.get(), U32(uniformIndex(reflection, "v")), bytesOf(v));
+        encoder.setUniform(program.get(), U32(uniformIndex(reflection, "m")), bytesOf(m));
+        encoder.setUniform(program.get(), U32(uniformIndex(reflection, "a")), bytesOf(a), 2);
+        encoder.setUniform(program.get(), U32(uniformIndex(reflection, "tint")), bytesOf(tint));
+        DrawVertices vertices;
+        addRect(vertices, -0.5f, -0.5f, 0, 0, YELLOW); // moved by (a[0], v.z): columns and rows 32-47
+        VertexStreams streams;
+        Ref<Buffer> buffer = vertexBuffer(device, vertices, streams);
+        tut::ensure("the scatter pass begins", encoder.beginRenderPass(drawPass(target)));
+        encoder.setPipeline(pipeline.get());
+        encoder.setVertexBuffer(buffer.get(), streams);
+        encoder.draw(PrimitiveType::Triangles, 0, 6);
+        encoder.endRenderPass();
+        static constexpr Rgba EXPECTED = { 200, 50, 15, 85 }; // (m[1].z, v.y, a[1], f) * tint
+        ensureImage("the scatter program's uniforms on the GPU", readTarget(device, target),
+                    [](U32 x, U32 y) -> std::optional<Rgba>
+                    { return x >= 32 && x < 48 && y >= 32 && y < 48 ? EXPECTED : CLEAR_RGBA; });
+    }
+
+    /// t33: a program that reads texture_index gets it from the position's fourth component, at
+    /// the vertex stream's offset + 12 as LLVertexBuffer::setupVertexAttributes binds it, whatever
+    /// streams.offset[13] says (LLVertexBuffer sets it to the same place; the encoder does not read it).
+    API_AVAILABLE(macos(26.0)) void textureIndexTest(MetalDevice& device)
+    {
+        CaptureLog log(LLError::LEVEL_WARN);
+        DrawTarget target = drawTarget(device);
+        Ref<Program> program = ready(device.createProgram(programDesc("texture index test", R"(#version 400
+#define VERTEX_SHADER 1
+in vec3 position;
+in int texture_index;
+out vec4 color;
+void main()
+{
+    gl_Position = vec4(position, 1.0);
+    color = vec4(float(texture_index) / 255.0, 0.0, 0.0, 1.0);
+}
+)", R"(#version 400
+#define FRAGMENT_SHADER 1
+in vec4 color;
+out vec4 frag_color;
+void main()
+{
+    frag_color = color;
+}
+)")));
+        tut::ensure("the texture index program is made", program.notNull());
+        constexpr U32 MASK = (1u << 0) | (1u << 13); // MAP_VERTEX | MAP_TEXTURE_INDEX
+        tut::ensure("the program reads the position and the texture index",
+                    program->reflection().attributeMask == MASK);
+        PipelineDesc desc = uiPipelineDesc();
+        desc.attributeMask = MASK;
+        Ref<Pipeline> pipeline = device.getPipeline(*program, desc);
+        std::ostringstream refusal;
+        log.streamto(refusal);
+        tut::ensure("the texture index program's pipeline is made: " + refusal.str(), pipeline.notNull());
+
+        // 64 bytes of 0xff (an index of -1, so red 0) before the vertex stream, whose fourth
+        // components hold the index 77 as an integer.
+        DrawVertices vertices;
+        addRect(vertices, -1, -1, -0.5f, -0.5f, YELLOW); // columns and rows 0-15
+        constexpr U32 FIRST = 64;
+        constexpr S32 INDEX = 77;
+        std::vector<std::byte> bytes(FIRST + vertices.positions.size() * 16, std::byte(0xff));
+        for (size_t i = 0; i < vertices.positions.size(); ++i)
+        {
+            std::memcpy(bytes.data() + FIRST + i * 16, vertices.positions[i].data(), 12);
+            std::memcpy(bytes.data() + FIRST + i * 16 + 12, &INDEX, 4);
+        }
+        BufferDesc bufferDesc;
+        bufferDesc.size = bytes.size();
+        Ref<Buffer> buffer = device.createBuffer(bufferDesc, bytes, "texture index vertices");
+        VertexStreams streams;
+        streams.attributeMask = MASK;
+        streams.offset[0] = FIRST;
+        streams.offset[13] = 0;
+
+        Encoder& encoder = device.encoder();
+        tut::ensure("the pass begins", encoder.beginRenderPass(drawPass(target)));
+        encoder.setPipeline(pipeline.get());
+        encoder.setVertexBuffer(buffer.get(), streams);
+        encoder.draw(PrimitiveType::Triangles, 0, 6);
+        encoder.endRenderPass();
+        static constexpr Rgba EXPECTED = { U8(INDEX), 0, 0, 255 };
+        ensureImage("the texture index of each vertex", readTarget(device, target),
+                    [](U32 x, U32 y) -> std::optional<Rgba> { return x < 16 && y < 16 ? EXPECTED : CLEAR_RGBA; });
+        endCleanly(device, log);
+    }
+
+    /// t30: each draw takes the blocks as they are then, a program keeps its values across another
+    /// program's draw and from before the pass, and the setters spread arrays and matrix columns to
+    /// the translation's places.
+    API_AVAILABLE(macos(26.0)) void uniformsTest(MetalDevice& device)
+    {
+        CaptureLog log(LLError::LEVEL_WARN);
+        DrawTarget target = drawTarget(device);
+        Ref<Program> other = ready(device.createProgram(uiProgramDesc()));
+        Ref<Pipeline> otherPipeline = device.getPipeline(*other, uiPipelineDesc());
+        tut::ensure("the second program's pipeline is made", otherPipeline.notNull());
+        DrawVertices vertices;
+        addRect(vertices, -1, -1, -0.5f, -0.5f, YELLOW); // columns and rows 0-15
+        VertexStreams streams;
+        Ref<Buffer> buffer = vertexBuffer(device, vertices, streams);
+        Encoder& encoder = device.encoder();
+        Program* program = target.program.get();
+        const U32 mvp = U32(uniformIndex(program->reflection(), "modelview_projection_matrix"));
+
+        setUiUniforms(encoder, program, translation(0, 0)); // before the pass
+        tut::ensure("the pass begins", encoder.beginRenderPass(drawPass(target)));
+        bindDraw(encoder, target, buffer, streams);
+        encoder.draw(PrimitiveType::Triangles, 0, 6);
+        encoder.setUniform(program, mvp, bytesOf(translation(1, 0))); // columns 32-47
+        encoder.draw(PrimitiveType::Triangles, 0, 6);
+        encoder.setUniform(program, mvp, bytesOf(translation(0, 1))); // rows 32-47
+        setUiUniforms(encoder, other.get(), translation(1, 1));
+        encoder.setPipeline(otherPipeline.get());
+        encoder.draw(PrimitiveType::Triangles, 0, 6);
+        encoder.setPipeline(target.pipeline.get());
+        encoder.draw(PrimitiveType::Triangles, 0, 6);
+        encoder.endRenderPass();
+        ensureImage("four draws in one segment", readTarget(device, target),
+                    yellowIn({ { 0, 0, 16, 16 }, { 32, 0, 48, 16 }, { 32, 32, 48, 48 }, { 0, 32, 16, 48 } }));
+        scatterDrawCheck(device, target);
+
+        // The setters' bytes against the translation's reflection, which the layout comes from too;
+        // scatterDrawCheck above is the check that does not depend on it.
+        const ProgramDesc desc = packingProgramDesc();
+        Ref<Program> packing = ready(device.createProgram(desc));
+        const ProgramReflection& reflection = packing->reflection();
+        const std::array<F32, 1> f = { 1.5f };
+        const std::array<F32, 3> v = { 2, 3, 4 };
+        const std::array<F32, 9> m = { 10, 11, 12, 13, 14, 15, 16, 17, 18 }; // column-major
+        const std::array<F32, 2> a = { 20, 21 };
+        encoder.setUniform(packing.get(), U32(uniformIndex(reflection, "f")), bytesOf(f));
+        encoder.setUniform(packing.get(), U32(uniformIndex(reflection, "v")), bytesOf(v));
+        encoder.setUniform(packing.get(), U32(uniformIndex(reflection, "m")), bytesOf(m));
+        encoder.setUniform(packing.get(), U32(uniformIndex(reflection, "a")), bytesOf(a), 2);
+
+        const MSL::Result translated = MSL::translate(metalProgramSource(desc));
+        tut::ensure("the packing program translates: " + translated.error, translated.ok);
+        const MSL::Reflection& places = translated.stages[0].reflection;
+        std::vector<std::byte> expected(places.defaultBlockSize);
+        const auto write = [&expected](size_t at, const F32* values, size_t count)
+        {
+            std::memcpy(expected.data() + at, values, count * sizeof(F32));
+        };
+        for (const MSL::Uniform& uniform : places.uniforms)
+        {
+            if (uniform.name == "f")
+            {
+                write(uniform.offset, f.data(), 1);
+            }
+            else if (uniform.name == "v")
+            {
+                write(uniform.offset, v.data(), 3);
+            }
+            else if (uniform.name == "m")
+            {
+                ensureEqual(std::string("m's columns are padded"), uniform.matrixStride, 16u);
+                for (size_t c = 0; c < 3; ++c)
+                {
+                    write(uniform.offset + c * uniform.matrixStride, m.data() + 3 * c, 3);
+                }
+            }
+            else if (uniform.name == "a")
+            {
+                for (size_t i = 0; i < 2; ++i)
+                {
+                    write(uniform.offset + i * uniform.arrayStride, a.data() + i, 1);
+                }
+            }
+        }
+        const std::span<const std::byte> block = device.metalEncoder().uniformBlock(packing.get(), ShaderStage::Vertex);
+        ensureEqual("the vertex block's size", block.size(), expected.size());
+        for (size_t i = 0; i < block.size(); ++i)
+        {
+            ensureEqual("vertex block byte " + std::to_string(i), std::to_integer<U32>(block[i]),
+                        std::to_integer<U32>(expected[i]));
+        }
+        const std::span<const std::byte> fragment = device.metalEncoder().uniformBlock(packing.get(), ShaderStage::Fragment);
+        ensureEqual("the fragment block's size", fragment.size(), size_t(translated.stages[1].reflection.defaultBlockSize));
+        tut::ensure("tint was not set, so the fragment block is zeros",
+                    std::all_of(fragment.begin(), fragment.end(), [](std::byte b) { return b == std::byte(0); }));
+        endCleanly(device, log);
+    }
+
+    /// t31: a readback in the pass breaks the segment before the next draw, so it has only the
+    /// first draw; a segment that is not the last stores depth, the last one the pass's DontCare.
+    API_AVAILABLE(macos(26.0)) void segmentsTest(MetalDevice& device)
+    {
+        CaptureLog log(LLError::LEVEL_WARN);
+        DrawTarget target = drawTarget(device);
+        DrawVertices vertices;
+        addRect(vertices, -1, -1, -0.5f, -0.5f, YELLOW); // columns and rows 0-15
+        addRect(vertices, 0.5f, 0.5f, 1, 1, YELLOW);     // columns and rows 48-63
+        VertexStreams streams;
+        Ref<Buffer> buffer = vertexBuffer(device, vertices, streams);
+        Encoder& encoder = device.encoder();
+        setUiUniforms(encoder, target.program.get(), translation(0, 0));
+        RenderPassDesc pass = drawPass(target);
+        pass.depth.store = StoreAction::DontCare;
+        tut::ensure("the pass begins", encoder.beginRenderPass(pass));
+        bindDraw(encoder, target, buffer, streams);
+        encoder.draw(PrimitiveType::Triangles, 0, 6);
+        Ref<Readback> inside = encoder.readback(target.color.get(), 0, 0, { 0, 0, DRAW_SIZE, DRAW_SIZE }, PixelLayout());
+        tut::ensure("the readback in the pass is made", inside.notNull());
+        encoder.draw(PrimitiveType::Triangles, 6, 6);
+        MTL4RenderPassDescriptor* first = device.metalEncoder().lastPassDescriptor();
+        tut::ensure("the readback closed the first segment", first != nil);
+        tut::ensure("the first segment stores color", first.colorAttachments[0].storeAction == MTLStoreActionStore);
+        tut::ensure("the first segment stores depth", first.depthAttachment.storeAction == MTLStoreActionStore);
+        tut::ensure("the second draw opened another encoder", device.metalEncoder().openEncoder() != nil);
+        encoder.endRenderPass();
+        MTL4RenderPassDescriptor* last = device.metalEncoder().lastPassDescriptor();
+        tut::ensure("the second segment is another", last != first);
+        tut::ensure("the last segment loads color", last.colorAttachments[0].loadAction == MTLLoadActionLoad);
+        tut::ensure("the last segment stores color", last.colorAttachments[0].storeAction == MTLStoreActionStore);
+        tut::ensure("the last segment's depth is DontCare", last.depthAttachment.storeAction == MTLStoreActionDontCare);
+
+        inside->wait();
+        ensureImage("the readback in the pass", inside, yellowIn({ { 0, 0, 16, 16 } }));
+        ensureImage("the pass's end", readTarget(device, target), yellowIn({ { 0, 0, 16, 16 }, { 48, 48, 64, 64 } }));
+        endCleanly(device, log);
+    }
+
+    /// t32: points and streams without a stream the program reads each give one WARN line and no
+    /// draw. A sampled channel without a texture and a refused sampler are t86's (P3-01e F3).
+    API_AVAILABLE(macos(26.0)) void drawRefusalsTest(MetalDevice& device)
+    {
+        DrawTarget target = drawTarget(device);
+        DrawVertices vertices;
+        addRect(vertices, -1, -1, 1, 1, YELLOW);
+        VertexStreams streams;
+        Ref<Buffer> buffer = vertexBuffer(device, vertices, streams);
+        Encoder& encoder = device.encoder();
+        setUiUniforms(encoder, target.program.get(), translation(0, 0));
+        tut::ensure("the pass begins", encoder.beginRenderPass(drawPass(target)));
+        bindDraw(encoder, target, buffer, streams);
+        const auto ensureRefused = [&](const std::string& what, PrimitiveType type, const std::string& names = {})
+        {
+            CaptureLog log(LLError::LEVEL_WARN);
+            encoder.draw(type, 0, 6);
+            ensureEqual(what + ": one WARN line", occurrences(log, "WARNING #RHI#"), size_t(1));
+            if (!names.empty())
+            {
+                ensureEqual(what + ": the WARN names " + names, occurrences(log, names), size_t(1));
+            }
+            tut::ensure(what + ": no draw", device.metalEncoder().openEncoder() == nil);
+        };
+        ensureRefused("points", PrimitiveType::Points);
+
+        VertexStreams noColor = streams;
+        noColor.attributeMask &= ~(1u << 6);
+        encoder.setVertexBuffer(buffer.get(), noColor);
+        // The tracker's own check (llrhi.cpp, with its checks on here) refuses these streams first,
+        // with its own line; bindForDraw's, which names the program, is for the tracker without checks.
+        ensureRefused("streams without color", PrimitiveType::Triangles);
+        encoder.setVertexBuffer(buffer.get(), streams);
+
+        CaptureLog log(LLError::LEVEL_WARN);
+        encoder.endRenderPass();
+        ensureImage("nothing was drawn", readTarget(device, target), yellowIn({}));
+        endCleanly(device, log);
+    }
+}
+
+namespace
+{
+    using namespace LL::RHI;
+
+    /// A readback's bytes in order.
+    void ensureRead(const std::string& what, Ref<Readback> readback, const std::vector<U8>& expected)
+    {
+        tut::ensure(what + ": read back", readback.notNull());
+        readback->wait();
+        const std::span<const std::byte> data = readback->data();
+        ensureEqual(what + ": the size", data.size(), expected.size());
+        for (size_t i = 0; i < data.size() && i < expected.size(); ++i)
+        {
+            ensureEqual(what + ": byte " + std::to_string(i), std::to_integer<U32>(data[i]), U32(expected[i]));
+        }
+    }
+
+    std::vector<U8> numbered(size_t count, U32 first)
+    {
+        std::vector<U8> bytes(count);
+        for (size_t i = 0; i < count; ++i)
+        {
+            bytes[i] = U8(first + i);
+        }
+        return bytes;
+    }
+
+    std::span<const std::byte> asBytes(const std::vector<U8>& bytes)
+    {
+        return std::as_bytes(std::span<const U8>(bytes));
+    }
+
+    /// t34: storage and usage per usage row, Private for all and never memoryless (P2-08); the
+    /// formats and types P3-01c adds are made with their swizzle, levels and slices.
+    API_AVAILABLE(macos(26.0)) void storageTest(MetalDevice& device)
+    {
+        CaptureLog log(LLError::LEVEL_WARN);
+        const U8 usages[4] = { TEXTURE_SAMPLED, TEXTURE_RENDER_TARGET, TEXTURE_READBACK,
+                               TEXTURE_SAMPLED | TEXTURE_RENDER_TARGET | TEXTURE_READBACK };
+        const MTLTextureUsage expected[4] = { MTLTextureUsageShaderRead, MTLTextureUsageRenderTarget, MTLTextureUsageUnknown,
+                                              MTLTextureUsageShaderRead | MTLTextureUsageRenderTarget };
+        for (int i = 0; i < 4; ++i)
+        {
+            const std::string row = "usage " + std::to_string(usages[i]);
+            const TextureDesc desc = textureDesc(Format::RGBA8Unorm, usages[i]);
+            const MetalTextureStorage storage = metalTextureStorage(desc);
+            tut::ensure(row + ": Private", storage.mode == MTLStorageModePrivate);
+            tut::ensure(row + ": the usage", storage.usage == expected[i]);
+            Ref<Texture> texture = device.createTexture(desc, row);
+            tut::ensure(row + ": made", texture.notNull());
+            id<MTLTexture> metal = metalTexture(texture.get());
+            tut::ensure(row + ": the texture is Private", metal.storageMode == MTLStorageModePrivate);
+            tut::ensure(row + ": not memoryless", metal.storageMode != MTLStorageModeMemoryless);
+            // Metal reports a usage of its own for MTLTextureUsageUnknown, so only the others are compared.
+            tut::ensure(row + ": the texture's usage", expected[i] == MTLTextureUsageUnknown || metal.usage == expected[i]);
+        }
+        Ref<Texture> stencil = device.createTexture(textureDesc(Format::Depth32Float_Stencil8, TEXTURE_RENDER_TARGET), "stencil");
+        tut::ensure("Depth32Float_Stencil8 is made", stencil.notNull());
+        tut::ensure("Depth32Float_Stencil8's format", metalTexture(stencil.get()).pixelFormat == MTLPixelFormatDepth32Float_Stencil8);
+        Ref<Texture> unorm16 = device.createTexture(textureDesc(Format::RGBA16Unorm, TEXTURE_SAMPLED), "rgba16");
+        tut::ensure("RGBA16Unorm is made", unorm16.notNull());
+        tut::ensure("RGBA16Unorm's format", metalTexture(unorm16.get()).pixelFormat == MTLPixelFormatRGBA16Unorm);
+        TextureDesc luminance = textureDesc(Format::R8Unorm, TEXTURE_SAMPLED);
+        luminance.swizzle = { Swizzle::R, Swizzle::R, Swizzle::Zero, Swizzle::One };
+        Ref<Texture> swizzled = device.createTexture(luminance, "luminance");
+        tut::ensure("the swizzled R8 is made", swizzled.notNull());
+        const MTLTextureSwizzleChannels channels = metalTexture(swizzled.get()).swizzle;
+        tut::ensure("the swizzle is on the texture",
+                    channels.red == MTLTextureSwizzleRed && channels.green == MTLTextureSwizzleRed
+                        && channels.blue == MTLTextureSwizzleZero && channels.alpha == MTLTextureSwizzleOne);
+        TextureDesc cubeDesc = textureDesc(Format::RGBA8Unorm, TEXTURE_SAMPLED);
+        cubeDesc.type = TextureType::Cube;
+        cubeDesc.mipLevels = 3;
+        Ref<Texture> cube = device.createTexture(cubeDesc, "cube");
+        tut::ensure("the cube is made", cube.notNull());
+        tut::ensure("a cube", metalTexture(cube.get()).textureType == MTLTextureTypeCube);
+        ensureEqual("the cube's levels", NSUInteger(metalTexture(cube.get()).mipmapLevelCount), NSUInteger(3));
+        TextureDesc arrayDesc = textureDesc(Format::RGBA8Unorm, TEXTURE_SAMPLED);
+        arrayDesc.type = TextureType::CubeArray;
+        arrayDesc.layers = 2;
+        Ref<Texture> cubes = device.createTexture(arrayDesc, "cubes");
+        tut::ensure("the cube array is made", cubes.notNull());
+        tut::ensure("a cube array", metalTexture(cubes.get()).textureType == MTLTextureTypeCubeArray);
+        ensureEqual("the cube array's cubes", NSUInteger(metalTexture(cubes.get()).arrayLength), NSUInteger(2));
+        ensureEqual("no WARN line", occurrences(log, "WARNING #RHI#"), size_t(0));
+    }
+
+    /// t35, the Metal half of the shared format cases: each row uploaded and read back through a
+    /// Metal device gives exactly its bytes, GL's for the Both rows.
+    API_AVAILABLE(macos(26.0)) void formatCasesTest(MetalDevice& device)
+    {
+        Encoder& encoder = device.encoder();
+        for (const FormatCases::FormatCase& row : FormatCases::formatCases())
+        {
+            CaptureLog log(LLError::LEVEL_WARN);
+            Ref<Texture> texture = device.createTexture(row.desc, row.name);
+            tut::ensure(row.name + ": made", texture.notNull());
+            const Region whole{ 0, 0, row.desc.width, row.desc.height };
+            encoder.uploadTexture(texture.get(), 0, 0, whole, row.upload, asBytes(row.input));
+            ensureRead(row.name, encoder.readback(texture.get(), 0, 0, whole, row.readback), row.expected);
+            ensureEqual(row.name + ": no WARN line", occurrences(log, "WARNING #RHI#"), size_t(0));
+        }
+        device.endFrame();
+    }
+
+    /// t36: a cube's faces, a cube array's layers and a cube array of one cube keep their bytes per
+    /// slice; uploads to levels 1..n and to a region with a row length land where GL puts them;
+    /// generateMipmaps on a cube with one level changes nothing and warns of nothing; mipmaps of
+    /// level 0's uniform 2x2 blocks are the blocks at level 1 with any filter (the row proves the
+    /// levels, not the filter, which the header does not define: MTL4ComputeCommandEncoder.h:535-543).
+    API_AVAILABLE(macos(26.0)) void levelsSlicesTest(MetalDevice& device)
+    {
+        CaptureLog log(LLError::LEVEL_WARN);
+        Encoder& encoder = device.encoder();
+        const Region face{ 0, 0, 2, 2 };
+        struct Kind
+        {
+            TextureType type;
+            U32 layers;
+            const char* name;
+        };
+        const Kind kinds[3] = { { TextureType::Cube, 1, "cube" }, { TextureType::CubeArray, 2, "cube array" },
+                                { TextureType::CubeArray, 1, "cube array of one cube" } };
+        for (const Kind& kind : kinds)
+        {
+            TextureDesc desc = sizedDesc(Format::RGBA8Unorm, TEXTURE_SAMPLED | TEXTURE_READBACK, 2, 2);
+            desc.type = kind.type;
+            desc.layers = kind.layers;
+            Ref<Texture> texture = device.createTexture(desc, kind.name);
+            tut::ensure(std::string(kind.name) + ": made", texture.notNull());
+            const U32 slices = kind.layers * 6;
+            for (U32 slice = 0; slice < slices; ++slice)
+            {
+                encoder.uploadTexture(texture.get(), 0, slice, face, PixelLayout(), asBytes(numbered(16, slice * 16)));
+            }
+            for (U32 slice = 0; slice < slices; ++slice)
+            {
+                ensureRead(std::string(kind.name) + " slice " + std::to_string(slice),
+                           encoder.readback(texture.get(), 0, slice, face, PixelLayout()), numbered(16, slice * 16));
+            }
+            if (kind.layers == 1 && kind.type == TextureType::Cube)
+            {
+                encoder.generateMipmaps(texture.get());
+                ensureRead("a cube with one level after generateMipmaps", encoder.readback(texture.get(), 0, 3, face, PixelLayout()),
+                           numbered(16, 48));
+            }
+        }
+
+        TextureDesc levels = sizedDesc(Format::RGBA8Unorm, TEXTURE_SAMPLED | TEXTURE_READBACK, 4, 4);
+        levels.mipLevels = 3;
+        Ref<Texture> mipped = device.createTexture(levels, "levels");
+        tut::ensure("levels: made", mipped.notNull());
+        encoder.uploadTexture(mipped.get(), 1, 0, { 0, 0, 2, 2 }, PixelLayout(), asBytes(numbered(16, 100)));
+        encoder.uploadTexture(mipped.get(), 2, 0, { 0, 0, 1, 1 }, PixelLayout(), asBytes(numbered(4, 200)));
+        ensureRead("level 1", encoder.readback(mipped.get(), 1, 0, { 0, 0, 2, 2 }, PixelLayout()), numbered(16, 100));
+        ensureRead("level 2", encoder.readback(mipped.get(), 2, 0, { 0, 0, 1, 1 }, PixelLayout()), numbered(4, 200));
+
+        // The 2x2 region at (1, 1) from rows of 3 pixels: source pixels 0, 1, 3 and 4.
+        std::vector<U8> base = numbered(64, 0);
+        encoder.uploadTexture(mipped.get(), 0, 0, { 0, 0, 4, 4 }, PixelLayout(), asBytes(base));
+        PixelLayout rows;
+        rows.rowLength = 3;
+        const std::vector<U8> source = numbered(20, 150);
+        encoder.uploadTexture(mipped.get(), 0, 0, { 1, 1, 2, 2 }, rows, asBytes(source));
+        const int from[4][2] = { { 1 * 4 + 1, 0 }, { 1 * 4 + 2, 1 }, { 2 * 4 + 1, 3 }, { 2 * 4 + 2, 4 } };
+        for (const auto& pixel : from)
+        {
+            std::copy(source.begin() + pixel[1] * 4, source.begin() + pixel[1] * 4 + 4, base.begin() + pixel[0] * 4);
+        }
+        ensureRead("a region with a row length", encoder.readback(mipped.get(), 0, 0, { 0, 0, 4, 4 }, PixelLayout()), base);
+
+        const std::array<std::array<U8, 4>, 4> blocks = { { { 0, 0, 0, 255 }, { 4, 8, 12, 255 }, { 8, 16, 24, 255 }, { 12, 24, 36, 255 } } };
+        std::vector<U8> level0(64);
+        for (U32 y = 0; y < 4; ++y)
+        {
+            for (U32 x = 0; x < 4; ++x)
+            {
+                const std::array<U8, 4>& block = blocks[x / 2 + 2 * (y / 2)];
+                std::copy(block.begin(), block.end(), level0.begin() + (y * 4 + x) * 4);
+            }
+        }
+        Ref<Texture> boxes = device.createTexture(levels, "boxes");
+        encoder.uploadTexture(boxes.get(), 0, 0, { 0, 0, 4, 4 }, PixelLayout(), asBytes(level0));
+        encoder.generateMipmaps(boxes.get());
+        std::vector<U8> level1;
+        for (const std::array<U8, 4>& block : blocks)
+        {
+            level1.insert(level1.end(), block.begin(), block.end());
+        }
+        ensureRead("mipmaps: level 0", encoder.readback(boxes.get(), 0, 0, { 0, 0, 4, 4 }, PixelLayout()), level0);
+        ensureRead("mipmaps: level 1 is the blocks", encoder.readback(boxes.get(), 1, 0, { 0, 0, 2, 2 }, PixelLayout()), level1);
+        // P3-01e F22: level 2 is the blocks' mean, as GL's (Metal 4's generateMipmapsForTexture: gave the last block).
+        ensureRead("mipmaps: level 2 is the blocks' mean", encoder.readback(boxes.get(), 2, 0, { 0, 0, 1, 1 }, PixelLayout()),
+                   std::vector<U8>{ 6, 12, 18, 255 });
+        ensureEqual("no WARN line", occurrences(log, "WARNING #RHI#"), size_t(0));
+        device.endFrame();
+    }
+
+    /// t37: copyTexture between textures of one format gives the source's bytes and counts a transfer; between
+    /// formats copyRefusal refuses (here into sRGB, P3-08b S2's C4; t191 has the copies it takes) it gives one WARN line
+    /// naming P3-08b and counts none (P2-R2, R31); copyTexture in a pass breaks it with no WARN line (F5, t97 draws around
+    /// one), and so does generateMipmaps in a pass (P3-01e F22).
+    API_AVAILABLE(macos(26.0)) void copyTest(MetalDevice& device)
+    {
+        Encoder& encoder = device.encoder();
+        const Region whole{ 0, 0, 2, 2 };
+        const U8 usage = TEXTURE_SAMPLED | TEXTURE_READBACK;
+        Ref<Texture> src = device.createTexture(sizedDesc(Format::RGBA8Unorm, usage, 2, 2), "src");
+        Ref<Texture> dst = device.createTexture(sizedDesc(Format::RGBA8Unorm, usage, 2, 2), "dst");
+        Ref<Texture> srcR8 = device.createTexture(sizedDesc(Format::R8Unorm, usage, 2, 2), "src r8");
+        Ref<Texture> dstR8 = device.createTexture(sizedDesc(Format::R8Unorm, usage, 2, 2), "dst r8");
+        PixelLayout r8;
+        r8.components = PixelLayout::Components::R;
+        {
+            CaptureLog log(LLError::LEVEL_WARN);
+            encoder.uploadTexture(src.get(), 0, 0, whole, PixelLayout(), asBytes(numbered(16, 40)));
+            encoder.uploadTexture(srcR8.get(), 0, 0, whole, r8, asBytes(numbered(4, 90)));
+            const U64 transfers = encoder.state().transfers();
+            encoder.copyTexture(src.get(), 0, 0, whole, dst.get(), 0, 0, 0, 0);
+            encoder.copyTexture(srcR8.get(), 0, 0, whole, dstR8.get(), 0, 0, 0, 0);
+            ensureEqual("same format: two transfers", encoder.state().transfers() - transfers, U64(2));
+            ensureRead("RGBA8 to RGBA8", encoder.readback(dst.get(), 0, 0, whole, PixelLayout()), numbered(16, 40));
+            ensureRead("R8 to R8", encoder.readback(dstR8.get(), 0, 0, whole, r8), numbered(4, 90));
+            ensureEqual("same format: no WARN line", occurrences(log, "WARNING #RHI#"), size_t(0));
+        }
+        {
+            Ref<Texture> dstSRGB = device.createTexture(sizedDesc(Format::RGBA8Unorm_sRGB, usage, 2, 2), "dst srgb");
+            CaptureLog log(LLError::LEVEL_WARN);
+            const U64 transfers = encoder.state().transfers();
+            encoder.copyTexture(src.get(), 0, 0, whole, dstSRGB.get(), 0, 0, 0, 0);
+            ensureEqual("between formats: one WARN line", occurrences(log, "WARNING #RHI#"), size_t(1));
+            ensureEqual("between formats: the WARN names P3-08b", occurrences(log, "P3-08b"), size_t(1));
+            // The tracker does not count the refused copy, so LLGPUCopy reports it as not delivered (P2-R2, R31)
+            ensureEqual("between formats: not a transfer", encoder.state().transfers() - transfers, U64(0));
+        }
+        TextureDesc mippedDesc = sizedDesc(Format::RGBA8Unorm, usage, 2, 2);
+        mippedDesc.mipLevels = 2;
+        Ref<Texture> mipped = device.createTexture(mippedDesc, "mipped");
+        Ref<Texture> color = device.createTexture(sizedDesc(Format::RGBA8Unorm, TEXTURE_RENDER_TARGET, 2, 2), "target");
+        for (int call = 0; call < 2; ++call)
+        {
+            const std::string what = call == 0 ? "copyTexture in a pass" : "generateMipmaps in a pass";
+            CaptureLog log(LLError::LEVEL_WARN);
+            tut::ensure(what + ": the pass begins", encoder.beginRenderPass(passOn(color, nullptr)));
+            if (call == 0)
+            {
+                encoder.copyTexture(src.get(), 0, 0, whole, dst.get(), 0, 0, 0, 0);
+            }
+            else
+            {
+                encoder.generateMipmaps(mipped.get());
+            }
+            encoder.endRenderPass();
+            // P3-01e F22: generateMipmaps in a pass breaks it as the copy does.
+            ensureEqual(what + ": no WARN line", occurrences(log, "WARNING #RHI#"), size_t(0));
+        }
+        ensureRead("the copy in a pass", encoder.readback(dst.get(), 0, 0, whole, PixelLayout()), numbered(16, 40));
+        device.endFrame();
+    }
+
+    /// t38: a readback in a layout that is not the format's texels (C6) gives null and one WARN line
+    /// naming P3-08: RGBA8 as BGRA, R8 as RGBA and the BC formats, whose uploads in block rows are
+    /// taken.
+    API_AVAILABLE(macos(26.0)) void refusedLayoutTest(MetalDevice& device)
+    {
+        Encoder& encoder = device.encoder();
+        const U8 usage = TEXTURE_SAMPLED | TEXTURE_READBACK;
+        Ref<Texture> rgba = device.createTexture(sizedDesc(Format::RGBA8Unorm, usage, 4, 4), "rgba");
+        Ref<Texture> red = device.createTexture(sizedDesc(Format::R8Unorm, usage, 4, 4), "r8");
+        PixelLayout bgra;
+        bgra.components = PixelLayout::Components::BGRA;
+        const std::pair<Texture*, const char*> sources[2] = { { rgba.get(), "RGBA8 as BGRA" }, { red.get(), "R8 as RGBA" } };
+        const PixelLayout layouts[2] = { bgra, PixelLayout() };
+        for (int i = 0; i < 2; ++i)
+        {
+            CaptureLog log(LLError::LEVEL_WARN);
+            tut::ensure(std::string(sources[i].second) + ": null",
+                        encoder.readback(sources[i].first, 0, 0, { 0, 0, 4, 4 }, layouts[i]).isNull());
+            ensureEqual(std::string(sources[i].second) + ": one WARN line", occurrences(log, "WARNING #RHI#"), size_t(1));
+            ensureEqual(std::string(sources[i].second) + ": the WARN names P3-08", occurrences(log, "P3-08"), size_t(1));
+        }
+        const Format compressed[3] = { Format::BC1_RGBA, Format::BC3_RGBA, Format::BC7_RGBA };
+        for (Format format : compressed)
+        {
+            const std::string what = "BC format " + std::to_string(U32(format));
+            Ref<Texture> texture = device.createTexture(sizedDesc(format, usage, 4, 4), what);
+            tut::ensure(what + ": made", texture.notNull());
+            {
+                CaptureLog log(LLError::LEVEL_WARN);
+                encoder.uploadTexture(texture.get(), 0, 0, { 0, 0, 4, 4 }, PixelLayout(), asBytes(numbered(blockBytes(format), 1)));
+                ensureEqual(what + ": the upload, no WARN line", occurrences(log, "WARNING #RHI#"), size_t(0));
+            }
+            CaptureLog log(LLError::LEVEL_WARN);
+            tut::ensure(what + ": null", encoder.readback(texture.get(), 0, 0, { 0, 0, 4, 4 }, PixelLayout()).isNull());
+            ensureEqual(what + ": one WARN line", occurrences(log, "WARNING #RHI#"), size_t(1));
+            ensureEqual(what + ": the WARN names P3-08", occurrences(log, "P3-08"), size_t(1));
+        }
+        device.endFrame();
+    }
+}
+
+namespace
+{
+    /// t39 (C13): with the Metal debug setting, a draw whose texture or vertex buffer has left the
+    /// residency set is refused with one WARN line that names it; on a device made under
+    /// setMetalDebug(false) the check is skipped and the draw is recorded. Also the frame's uniform
+    /// ring, which holds the draw's uniform blocks (S3), and a buffer setUniformBuffer recorded.
+    API_AVAILABLE(macos(26.0)) void residencyCheck(MetalDevice& device, bool checks)
+    {
+        DrawTarget target = drawTarget(device);
+        DrawVertices vertices;
+        addRect(vertices, -1, -1, 1, 1, YELLOW);
+        VertexStreams streams;
+        Ref<Buffer> buffer = vertexBuffer(device, vertices, streams);
+        Encoder& encoder = device.encoder();
+        setUiUniforms(encoder, target.program.get(), translation(0, 0));
+        tut::ensure("the pass begins", encoder.beginRenderPass(drawPass(target)));
+        bindDraw(encoder, target, buffer, streams);
+        BufferDesc blockDesc;
+        blockDesc.size = 256;
+        blockDesc.usage = BUFFER_UNIFORM;
+        Ref<Buffer> block = device.createBuffer(blockDesc, {}, "tints");
+        encoder.setUniformBuffer(0, block.get(), 0, blockDesc.size);
+        MetalResidency& residency = device.residency();
+        tut::ensure("the white texture's upload made the frame's ring", device.ringChunk(0) != nil);
+        const std::pair<id<MTLAllocation>, std::string> dropped[] = {
+            { metalTexture(target.white.get()), "texture 'white'" },
+            { metalBuffer(buffer.get()), "vertex buffer 'draw test vertices'" },
+            { device.ringChunk(0), "uniform ring" },
+            { metalBuffer(block.get()), "uniform buffer 'tints'" },
+        };
+        for (const auto& [allocation, name] : dropped)
+        {
+            const U64 admitted = residency.count();
+            residency.dropForTest(allocation);
+            ensureEqual(name + ": one allocation less", residency.count(), admitted - 1);
+            CaptureLog log(LLError::LEVEL_WARN);
+            encoder.draw(PrimitiveType::Triangles, 0, 6);
+            if (checks)
+            {
+                ensureEqual(name + ": one WARN line", occurrences(log, "WARNING #RHI#"), size_t(1));
+                ensureEqual(name + ": the WARN names it", occurrences(log, "draw: " + name + " is not resident"), size_t(1));
+                tut::ensure(name + ": no draw", device.metalEncoder().openEncoder() == nil);
+            }
+            else
+            {
+                ensureEqual(name + ": without the setting no WARN line", occurrences(log, "WARNING #RHI#"), size_t(0));
+                tut::ensure(name + ": without the setting the draw is recorded", device.metalEncoder().openEncoder() != nil);
+            }
+            // Back before the submit, which commits the set, so the GPU never runs without it.
+            residency.admit(allocation, name);
+        }
+        CaptureLog log(LLError::LEVEL_WARN);
+        encoder.draw(PrimitiveType::Triangles, 0, 6);
+        tut::ensure("admitted again, the draw is recorded", device.metalEncoder().openEncoder() != nil);
+        encoder.endRenderPass();
+        ensureImage("the draw", readTarget(device, target), yellowIn({ { 0, 0, DRAW_SIZE, DRAW_SIZE } }));
+        endCleanly(device, log);
+    }
+
+    API_AVAILABLE(macos(26.0)) void residencyChecksTest(MetalDevice& device)
+    {
+        tut::ensure("the tests run with the Metal debug setting (LL_METAL_DEBUG=1)", metalDebug() && device.debugChecks());
+        residencyCheck(device, true);
+        MetalDebugOff off;
+        Ref<Device> quiet = anotherDevice();
+        MetalDevice& unchecked = *static_cast<MetalDevice*>(quiet.get());
+        tut::ensure("a device made without the setting has no checks", !unchecked.debugChecks());
+        residencyCheck(unchecked, false);
+    }
+
+    /// t40 (C13): a draw whose vertices run past the end of a stream it reads is refused with one
+    /// WARN line that names the buffer; the draw that ends at the last vertex is recorded.
+    API_AVAILABLE(macos(26.0)) void vertexRangeTest(MetalDevice& device)
+    {
+        DrawTarget target = drawTarget(device);
+        DrawVertices vertices;
+        addRect(vertices, -1, -1, 1, 1, YELLOW);
+        VertexStreams streams;
+        Ref<Buffer> buffer = vertexBuffer(device, vertices, streams);
+        Encoder& encoder = device.encoder();
+        setUiUniforms(encoder, target.program.get(), translation(0, 0));
+        tut::ensure("the pass begins", encoder.beginRenderPass(drawPass(target)));
+        bindDraw(encoder, target, buffer, streams);
+        {
+            CaptureLog log(LLError::LEVEL_WARN);
+            encoder.draw(PrimitiveType::Triangles, 1, 6);
+            ensureEqual("one vertex past the end: one WARN line", occurrences(log, "WARNING #RHI#"), size_t(1));
+            ensureEqual("the WARN names the buffer", occurrences(log, "draw: vertex buffer 'draw test vertices': vertices 1-6"),
+                        size_t(1));
+            tut::ensure("no draw", device.metalEncoder().openEncoder() == nil);
+        }
+        CaptureLog log(LLError::LEVEL_WARN);
+        encoder.draw(PrimitiveType::Triangles, 0, 6);
+        tut::ensure("the draw to the last vertex is recorded", device.metalEncoder().openEncoder() != nil);
+        encoder.endRenderPass();
+        ensureImage("the draw", readTarget(device, target), yellowIn({ { 0, 0, DRAW_SIZE, DRAW_SIZE } }));
+        endCleanly(device, log);
+    }
+
+    /// t41 (flag H): metalCheckIndexRange names indices past the index buffer and an index value at
+    /// or past the vertex count, for 16- and 32-bit indices; a range that fits gives no reason.
+    API_AVAILABLE(macos(26.0)) void indexRangeTest(MetalDevice& device)
+    {
+        const std::array<U16, 6> shorts = { 0, 1, 2, 2, 1, 9 };
+        const std::array<U32, 3> longs = { 0, 70000, 2 };
+        const std::span<const std::byte> shortBytes = std::as_bytes(std::span(shorts));
+        const std::span<const std::byte> longBytes = std::as_bytes(std::span(longs));
+        BufferDesc desc;
+        desc.size = shortBytes.size();
+        Ref<Buffer> u16 = device.createBuffer(desc, shortBytes, "short indices");
+        desc.size = longBytes.size();
+        Ref<Buffer> u32 = device.createBuffer(desc, longBytes, "long indices");
+        tut::ensure("the index buffers are made", u16.notNull() && u32.notNull());
+        const auto ensureReason = [](const std::string& what, const std::string& reason, const std::string& names)
+        {
+            tut::ensure(what + ": " + reason, reason.find(names) != std::string::npos);
+        };
+        tut::ensure("16-bit: a range that fits", metalCheckIndexRange(*u16, IndexType::U16, 0, 6, 10, shortBytes).empty());
+        ensureReason("16-bit: past the buffer", metalCheckIndexRange(*u16, IndexType::U16, 4, 3, 10, shortBytes),
+                     "indices 4-6 are past the end of index buffer 'short indices'");
+        ensureReason("16-bit: a value past the vertices", metalCheckIndexRange(*u16, IndexType::U16, 0, 6, 9, shortBytes),
+                     "index 5 of index buffer 'short indices' is 9, past the 9 vertices");
+        tut::ensure("16-bit: the values below it", metalCheckIndexRange(*u16, IndexType::U16, 0, 5, 9, shortBytes).empty());
+        tut::ensure("32-bit: a range that fits", metalCheckIndexRange(*u32, IndexType::U32, 0, 3, 70001, longBytes).empty());
+        ensureReason("32-bit: past the buffer", metalCheckIndexRange(*u32, IndexType::U32, 1, 3, 70001, longBytes),
+                     "indices 1-3 are past the end of index buffer 'long indices'");
+        ensureReason("32-bit: a value past the vertices", metalCheckIndexRange(*u32, IndexType::U32, 0, 3, 70000, longBytes),
+                     "index 1 of index buffer 'long indices' is 70000");
+        tut::ensure("without the CPU copy only the range", metalCheckIndexRange(*u16, IndexType::U16, 0, 6, 9, {}).empty());
+        device.endFrame();
+    }
+}
+
+namespace
+{
+    // S3: buffers, updates with GL's semantics, the frame rings, the pool and frames in flight.
+
+    /// The UI vertex stage with a fragment stage that multiplies the vertex color by a uniform tint.
+    const char* TINT_FRAGMENT = R"(#version 400
+#define FRAGMENT_SHADER 1
+out vec4 frag_color;
+uniform vec4 tint;
+in vec2 vary_texcoord0;
+in vec4 vertex_color;
+void main() { frag_color = vertex_color * tint; }
+)";
+
+    constexpr Rgba WHITE_RGBA = { 255, 255, 255, 255 };
+    constexpr Rgba GREEN_RGBA = { 0, 255, 0, 255 };
+    constexpr Rgba BLUE_RGBA = { 0, 0, 255, 255 };
+    constexpr Rgba MAGENTA_RGBA = { 255, 0, 255, 255 };
+
+    /// Two triangles over columns 16 * column to 16 * column + 15 of rows 0-15.
+    DrawVertices squareAt(U32 column, const Rgba& color)
+    {
+        DrawVertices vertices;
+        const F32 x0 = -1.f + 0.5f * F32(column);
+        addRect(vertices, x0, -1, x0 + 0.5f, -0.5f, color);
+        return vertices;
+    }
+
+    /// A 64x64 target and the tint program's pipeline; nothing is uploaded, so a frame's first
+    /// command can be a draw.
+    struct TintTarget
+    {
+        Ref<Texture> color;
+        Ref<Texture> depth;
+        Ref<Program> program;
+        Ref<Pipeline> pipeline;
+        Ref<Buffer> square; ///< the square of columns and rows 0-15, white
+    };
+
+    API_AVAILABLE(macos(26.0)) TintTarget tintTarget(MetalDevice& device)
+    {
+        TintTarget target;
+        target.color = device.createTexture(
+            sizedDesc(Format::RGBA8Unorm, TEXTURE_RENDER_TARGET | TEXTURE_READBACK, DRAW_SIZE, DRAW_SIZE), "tint color");
+        target.depth = device.createTexture(sizedDesc(Format::Depth32Float, TEXTURE_RENDER_TARGET, DRAW_SIZE, DRAW_SIZE),
+                                            "tint depth");
+        target.program = ready(device.createProgram(programDesc("tint test", UI_VERTEX, TINT_FRAGMENT)));
+        target.pipeline = target.program.notNull() ? device.getPipeline(*target.program, uiPipelineDesc()) : nullptr;
+        VertexStreams streams;
+        target.square = vertexBuffer(device, squareAt(0, WHITE_RGBA), streams);
+        tut::ensure("the tint target is made", target.color.notNull() && target.depth.notNull() && target.pipeline.notNull()
+                                                   && target.square.notNull());
+        return target;
+    }
+
+    /// The streams of a vertex buffer made by vertexBuffer for count vertices.
+    VertexStreams uiStreams(size_t count)
+    {
+        VertexStreams streams;
+        streams.attributeMask = UI_MASK;
+        streams.offset[2] = U32(count * 16);
+        streams.offset[6] = U32(count * 24);
+        return streams;
+    }
+
+    /// vertexBuffer's bytes, for a buffer of another kind or an update.
+    std::vector<std::byte> vertexBytes(const DrawVertices& vertices)
+    {
+        const size_t count = vertices.positions.size();
+        std::vector<std::byte> bytes(count * (16 + 8 + 4));
+        std::memcpy(bytes.data(), vertices.positions.data(), count * 16);
+        std::memcpy(bytes.data() + count * 24, vertices.colors.data(), count * 4);
+        return bytes;
+    }
+
+    std::array<F32, 4> tintOf(const Rgba& color)
+    {
+        return { color[0] / 255.f, color[1] / 255.f, color[2] / 255.f, color[3] / 255.f };
+    }
+
+    /// One draw of the six vertices with the tint and the matrix that moves the square to the column.
+    API_AVAILABLE(macos(26.0)) void tintDraw(Encoder& encoder, const TintTarget& target, Buffer* buffer, U32 column,
+                                             const Rgba& tint)
+    {
+        Program* program = target.program.get();
+        const ProgramReflection& reflection = program->reflection();
+        encoder.setUniform(program, U32(uniformIndex(reflection, "modelview_projection_matrix")),
+                           bytesOf(translation(0.5f * F32(column), 0)));
+        encoder.setUniform(program, U32(uniformIndex(reflection, "texture_matrix0")), bytesOf(translation(0, 0)));
+        encoder.setUniform(program, U32(uniformIndex(reflection, "tint")), bytesOf(tintOf(tint)));
+        encoder.setPipeline(target.pipeline.get());
+        encoder.setVertexBuffer(buffer, uiStreams(6));
+        encoder.draw(PrimitiveType::Triangles, 0, 6);
+    }
+
+    API_AVAILABLE(macos(26.0)) Ref<Readback> readTint(MetalDevice& device, const TintTarget& target)
+    {
+        DrawTarget as;
+        as.color = target.color;
+        return readTarget(device, as);
+    }
+
+    RenderPassDesc tintPass(const TintTarget& target, LoadAction load)
+    {
+        RenderPassDesc pass = passOn(target.color, target.depth);
+        pass.color[0].load = load;
+        pass.color[0].clear = CLEAR_COLOR;
+        pass.depth.load = load;
+        pass.depth.clear = 1.f;
+        return pass;
+    }
+
+    /// Rows 0-15 of column i hold columns[i] (unchecked when none); everything else the clear color.
+    void ensureColumns(const std::string& what, const Ref<Readback>& readback, std::vector<std::optional<Rgba>> columns)
+    {
+        ensureImage(what, readback, [columns](U32 x, U32 y) -> std::optional<Rgba>
+        {
+            const size_t column = x / 16;
+            if (y < 16 && column < columns.size())
+            {
+                return columns[column];
+            }
+            return CLEAR_RGBA;
+        });
+    }
+
+    /// t42 (C8, C11): a buffer of each usage is Shared with the default cache mode and has its bytes
+    /// from creation; a dynamic one is a pool block up to 64 KiB and a buffer of its own past it;
+    /// size 0 is refused.
+    API_AVAILABLE(macos(26.0)) void bufferStorageTest(MetalDevice& device)
+    {
+        const std::vector<U8> bytes = numbered(300, 5);
+        const U8 usages[] = { BUFFER_VERTEX, BUFFER_INDEX, BUFFER_UNIFORM, BUFFER_STAGING, BUFFER_READBACK,
+                              U8(BUFFER_VERTEX | BUFFER_INDEX) };
+        {
+            CaptureLog log(LLError::LEVEL_WARN);
+            for (const bool dynamic : { false, true })
+            {
+                for (const U8 usage : usages)
+                {
+                    BufferDesc desc;
+                    desc.size = bytes.size();
+                    desc.usage = usage;
+                    desc.dynamic = dynamic;
+                    const std::string what = std::string(dynamic ? "dynamic" : "static") + " usage " + std::to_string(usage);
+                    tut::ensure(what + ": Shared, default cache mode",
+                                metalBufferStorage(desc) == (MTLResourceStorageModeShared | MTLResourceCPUCacheModeDefaultCache));
+                    Ref<Buffer> buffer = device.createBuffer(desc, asBytes(bytes), "usage test");
+                    tut::ensure(what + ": made", buffer.notNull());
+                    const MetalAllocation memory = metalAllocation(buffer.get());
+                    tut::ensure(what + ": Shared", memory.buffer.storageMode == MTLStorageModeShared);
+                    tut::ensure(what + ": default cache mode", memory.buffer.cpuCacheMode == MTLCPUCacheModeDefaultCache);
+                    tut::ensure(what + ": the bytes from creation", memcmp(memory.cpu, bytes.data(), bytes.size()) == 0);
+                    tut::ensure(what + ": the CPU address is the buffer's",
+                                memory.cpu == static_cast<std::byte*>(memory.buffer.contents) + memory.offset);
+                    tut::ensure(what + ": resident", device.residency().contains(memory.buffer));
+                    ensureEqual(what + ": the buffer's length", U64(memory.buffer.length),
+                                dynamic ? MetalBufferPool::CHUNK_BYTES : U64(bytes.size()));
+                }
+            }
+            BufferDesc large;
+            large.size = METAL_POOL_MAX_BLOCK + 4;
+            large.dynamic = true;
+            Ref<Buffer> own = device.createBuffer(large, asBytes(bytes), "large dynamic");
+            tut::ensure("past 64 KiB a dynamic buffer has its own buffer",
+                        own.notNull() && metalBuffer(own.get()).length == large.size && metalAllocation(own.get()).offset == 0);
+            BufferDesc partial;
+            partial.size = 1024;
+            partial.dynamic = true;
+            Ref<Buffer> half = device.createBuffer(partial, asBytes(bytes), "partial dynamic");
+            const std::byte* cpu = metalAllocation(half.get()).cpu;
+            tut::ensure("partial data: the bytes given", memcmp(cpu, bytes.data(), bytes.size()) == 0);
+            tut::ensure("partial data: zeros after them",
+                        std::all_of(cpu + bytes.size(), cpu + partial.size, [](std::byte b) { return b == std::byte(0); }));
+            endCleanly(device, log);
+        }
+        CaptureLog log(LLError::LEVEL_WARN);
+        BufferDesc empty;
+        empty.dynamic = true;
+        tut::ensure("size 0: null", device.createBuffer(empty, {}, "empty").isNull());
+        ensureEqual("size 0: one WARN line", occurrences(log, "WARNING #RHI#"), size_t(1));
+    }
+
+    /// t43 (C9, decision 2): updates with GL's semantics.
+    API_AVAILABLE(macos(26.0)) void updateSemanticsTest(MetalDevice& device)
+    {
+        TintTarget target = tintTarget(device);
+        Encoder& encoder = device.encoder();
+        const std::vector<std::byte> v1 = vertexBytes(squareAt(0, WHITE_RGBA));
+        const std::vector<std::byte> v2 = vertexBytes(squareAt(1, WHITE_RGBA));
+        {
+            CaptureLog log(LLError::LEVEL_WARN);
+            // A draw binds the memory current at the draw: A reads V1, B reads V2, in one pass.
+            BufferDesc dynamic;
+            dynamic.size = v1.size();
+            dynamic.dynamic = true;
+            Ref<Buffer> buffer = device.createBuffer(dynamic, v1, "dynamic vertices");
+            tut::ensure("the pass begins", encoder.beginRenderPass(tintPass(target, LoadAction::Clear)));
+            tintDraw(encoder, target, buffer.get(), 0, RED);
+            encoder.updateBuffer(buffer.get(), 0, v2);
+            tintDraw(encoder, target, buffer.get(), 0, GREEN_RGBA);
+            encoder.endRenderPass();
+            ensureColumns("draw A with V1, draw B with V2", readTint(device, target), { RED, GREEN_RGBA });
+
+            // A partial update keeps the other bytes.
+            std::vector<std::byte> expected = v2;
+            std::array<Rgba, 6> blue;
+            blue.fill(BLUE_RGBA);
+            const U64 colors = uiStreams(6).offset[6];
+            encoder.updateBuffer(buffer.get(), colors, bytesOf(blue));
+            std::memcpy(expected.data() + colors, blue.data(), sizeof(blue));
+            tut::ensure("a partial update keeps the other bytes",
+                        memcmp(metalAllocation(buffer.get()).cpu, expected.data(), expected.size()) == 0);
+            tut::ensure("the pass begins", encoder.beginRenderPass(tintPass(target, LoadAction::Clear)));
+            tintDraw(encoder, target, buffer.get(), 0, WHITE_RGBA);
+            encoder.endRenderPass();
+            ensureColumns("after the partial update", readTint(device, target), { CLEAR_RGBA, BLUE_RGBA });
+
+            // A static buffer updated outside a pass: the draw before reads the old bytes, the next
+            // draw the new ones (the bytes go in the ring at the call, the GPU copies them).
+            BufferDesc fixed;
+            fixed.size = v1.size();
+            fixed.usage = BUFFER_VERTEX | BUFFER_UNIFORM;
+            Ref<Buffer> still = device.createBuffer(fixed, v1, "static vertices");
+            tut::ensure("the pass begins", encoder.beginRenderPass(tintPass(target, LoadAction::Clear)));
+            tintDraw(encoder, target, still.get(), 0, RED);
+            encoder.endRenderPass();
+            encoder.updateBuffer(still.get(), 0, v2);
+            tut::ensure("the static buffer keeps its memory", metalAllocation(still.get()).offset == 0);
+            tut::ensure("the pass begins", encoder.beginRenderPass(tintPass(target, LoadAction::Load)));
+            tintDraw(encoder, target, still.get(), 0, GREEN_RGBA);
+            encoder.endRenderPass();
+            ensureColumns("the draw before the static update and the one after", readTint(device, target),
+                          { RED, GREEN_RGBA });
+
+            // A static uniform buffer: a partial update lands once the GPU has copied it.
+            BufferDesc uniformDesc;
+            uniformDesc.size = 256;
+            uniformDesc.usage = BUFFER_UNIFORM;
+            const std::vector<U8> before = numbered(256, 1);
+            const std::vector<U8> part = numbered(32, 200);
+            Ref<Buffer> uniforms = device.createBuffer(uniformDesc, asBytes(before), "static uniforms");
+            encoder.updateBuffer(uniforms.get(), 64, asBytes(part));
+            std::vector<U8> after = before;
+            std::copy(part.begin(), part.end(), after.begin() + 64);
+            tut::ensure("the static update is not made on the CPU", memcmp(metalAllocation(uniforms.get()).cpu, before.data(), 256) == 0);
+            device.submitAndWait();
+            tut::ensure("the GPU copied the static update", memcmp(metalAllocation(uniforms.get()).cpu, after.data(), 256) == 0);
+
+            // Inside a pass a static update breaks it and lands (F5; t94 draws around one).
+            tut::ensure("the pass begins", encoder.beginRenderPass(tintPass(target, LoadAction::Clear)));
+            {
+                CaptureLog inPass(LLError::LEVEL_WARN);
+                encoder.updateBuffer(uniforms.get(), 0, asBytes(part));
+                ensureEqual("inside a pass: no WARN line", occurrences(inPass, "WARNING #RHI#"), size_t(0));
+            }
+            encoder.endRenderPass();
+            device.submitAndWait();
+            std::copy(part.begin(), part.end(), after.begin());
+            tut::ensure("inside a pass the GPU copied the update", memcmp(metalAllocation(uniforms.get()).cpu, after.data(), 256) == 0);
+        }
+    }
+
+    /// t44 (C10, FN13): frame 1 draws A from its ring part while the GPU is held; frames 2 and 3
+    /// record B; frame 4's recording waits until another thread opens the gate.
+    API_AVAILABLE(macos(26.0)) void framesInFlightTest(MetalDevice& device)
+    {
+        CaptureLog log(LLError::LEVEL_WARN);
+        TintTarget target = tintTarget(device);
+        Encoder& encoder = device.encoder();
+        ensureEqual("frame 1", device.frameNumber(), U64(1));
+        id<MTLSharedEvent> gate = [device.mtlDevice() newSharedEvent];
+        device.gateNextCommit(gate, 1);
+        tut::ensure("the pass begins", encoder.beginRenderPass(tintPass(target, LoadAction::Clear)));
+        for (U32 column = 0; column < 4; ++column)
+        {
+            tintDraw(encoder, target, target.square.get(), column, RED);
+        }
+        encoder.endRenderPass();
+        Ref<Readback> first = encoder.readback(target.color.get(), 0, 0, { 0, 0, DRAW_SIZE, DRAW_SIZE }, PixelLayout());
+        device.endFrame();
+        for (int frame = 2; frame <= 3; ++frame)
+        {
+            tut::ensure("the pass begins", encoder.beginRenderPass(tintPass(target, LoadAction::Clear)));
+            for (U32 column = 0; column < 4; ++column)
+            {
+                tintDraw(encoder, target, target.square.get(), column, GREEN_RGBA);
+            }
+            encoder.endRenderPass();
+            if (frame == 2)
+            {
+                device.endFrame();
+            }
+        }
+        tut::ensure("frame 1 has not finished behind the gate", device.completedFrame() == 0);
+        std::atomic<bool> opened{ false };
+        std::thread opener([&opened, gate]()
+        {
+            std::this_thread::sleep_for(std::chrono::milliseconds(200));
+            opened = true;
+            gate.signaledValue = 1;
+        });
+        const auto start = std::chrono::steady_clock::now();
+        device.endFrame(); // frame 4 begins once frame 1 has finished
+        const bool afterSignal = opened.load();
+        const auto waited = std::chrono::steady_clock::now() - start;
+        opener.join();
+        tut::ensure("frame 4's recording returned after the gate's signal", afterSignal);
+        tut::ensure("frame 4's recording waited", waited >= std::chrono::milliseconds(150));
+        ensureEqual("frame 4", device.frameNumber(), U64(4));
+        first->wait();
+        ensureColumns("frame 1 drew A from its ring part", first, { RED, RED, RED, RED });
+        endCleanly(device, log);
+    }
+
+    /// t44b (C10, FN13): the ring is rewound at the frame's end, not at its first command buffer: a
+    /// frame's first draw or upload takes ring bytes before the frame has a command buffer.
+    API_AVAILABLE(macos(26.0)) void ringRewindTest(MetalDevice& device)
+    {
+        CaptureLog log(LLError::LEVEL_WARN);
+        TintTarget target = tintTarget(device);
+        Encoder& encoder = device.encoder();
+        Buffer* square = target.square.get();
+        const auto frameOf = [&](std::vector<Rgba> colors)
+        {
+            tut::ensure("the pass begins", encoder.beginRenderPass(tintPass(target, LoadAction::Clear)));
+            for (U32 column = 0; column < colors.size(); ++column)
+            {
+                tintDraw(encoder, target, square, column, colors[column]);
+            }
+            encoder.endRenderPass();
+        };
+        frameOf({ RED, GREEN_RGBA, BLUE_RGBA });
+        ensureColumns("frame 1's three draws", readTint(device, target), { RED, GREEN_RGBA, BLUE_RGBA });
+        device.endFrame();
+        frameOf({ YELLOW }); // frame 2: one draw
+        device.endFrame();
+        frameOf({ YELLOW }); // frame 3: one draw
+        device.endFrame();
+        device.endFrame(); // frame 4: empty
+        ensureEqual("frame 5", device.frameNumber(), U64(5));
+        frameOf({ MAGENTA_RGBA, RED, GREEN_RGBA, BLUE_RGBA }); // a draw first, then three
+        ensureColumns("frame 5: a draw first, then three", readTint(device, target),
+                      { MAGENTA_RGBA, RED, GREEN_RGBA, BLUE_RGBA });
+        device.endFrame();
+
+        // Frame 6: an upload first, then three draws.
+        Ref<Texture> uploaded = device.createTexture(sizedDesc(Format::RGBA8Unorm, TEXTURE_SAMPLED | TEXTURE_READBACK, 4, 4),
+                                                     "ring upload");
+        const std::vector<U8> texels = numbered(64, 9);
+        encoder.uploadTexture(uploaded.get(), 0, 0, { 0, 0, 4, 4 }, PixelLayout(), asBytes(texels));
+        frameOf({ BLUE_RGBA, MAGENTA_RGBA, RED });
+        ensureColumns("frame 6: an upload first, then three draws", readTint(device, target),
+                      { BLUE_RGBA, MAGENTA_RGBA, RED });
+        ensureRead("frame 6's upload", encoder.readback(uploaded.get(), 0, 0, { 0, 0, 4, 4 }, PixelLayout()), texels);
+        endCleanly(device, log);
+    }
+
+    /// t45 (C11, D10, FN12; P3-03c m3: the overflow above MetalRing::KEEP_MAX): a released buffer, ring overflow buffer and texture stay resident until
+    /// their frame's event and then leave the set; a freed pool block is handed out again only once
+    /// its frame has finished, and its chunk stays resident.
+    API_AVAILABLE(macos(26.0)) void releaseTest(MetalDevice& device)
+    {
+        CaptureLog log(LLError::LEVEL_WARN);
+        MetalResidency& residency = device.residency();
+        BufferDesc own;
+        own.size = 4096;
+        Ref<Buffer> buffer = device.createBuffer(own, {}, "released buffer");
+        BufferDesc small;
+        small.size = 1000;
+        small.dynamic = true;
+        Ref<Buffer> pooled = device.createBuffer(small, {}, "released block");
+        Ref<Texture> texture = device.createTexture(textureDesc(Format::RGBA8Unorm, TEXTURE_SAMPLED), "released texture");
+        // P3-03c D3 (m3): above KEEP_MAX, so a buffer of its own that retires with its frame; t179 has the kept ones
+        const MetalAllocation overflow = device.frameAllocation(MetalRing::KEEP_MAX + 256);
+        const MetalAllocation block = metalAllocation(pooled.get());
+        id<MTLBuffer> ownBuffer = metalBuffer(buffer.get());
+        id<MTLTexture> metal = metalTexture(texture.get());
+        tut::ensure("the overflow has a buffer of its own",
+                    overflow.buffer && overflow.buffer.length == MetalRing::KEEP_MAX + 256 && overflow.buffer != device.ringChunk(0));
+        tut::ensure("all resident", residency.contains(ownBuffer) && residency.contains(block.buffer)
+                                        && residency.contains(metal) && residency.contains(overflow.buffer));
+        const auto same = [&block](Buffer* other)
+        {
+            const MetalAllocation memory = metalAllocation(other);
+            return memory.buffer == block.buffer && memory.offset == block.offset;
+        };
+
+        id<MTLSharedEvent> gate = [device.mtlDevice() newSharedEvent];
+        device.gateNextCommit(gate, 1);
+        const U64 frame = device.frameNumber();
+        buffer = nullptr; // all released in frame N
+        pooled = nullptr;
+        texture = nullptr;
+        Ref<Buffer> during = device.createBuffer(small, {}, "during");
+        const bool notInItsFrame = !same(during.get());
+        device.endFrame();
+        const bool stay = residency.contains(ownBuffer) && residency.contains(metal) && residency.contains(overflow.buffer);
+        Ref<Buffer> gated = device.createBuffer(small, {}, "gated");
+        const bool notWhileItRuns = !same(gated.get());
+        gate.signaledValue = 1;
+        tut::ensure("a freed block is not handed out in its frame", notInItsFrame);
+        tut::ensure("the released stay resident while frame N runs", stay);
+        tut::ensure("a freed block is not handed out while its frame runs", notWhileItRuns);
+        tut::ensure("frame N finishes once the gate opens", device.waitForFrame(frame));
+        device.endFrame();
+        tut::ensure("the buffer has left the set", !residency.contains(ownBuffer));
+        tut::ensure("the texture has left the set", !residency.contains(metal));
+        tut::ensure("the ring overflow buffer has left the set", !residency.contains(overflow.buffer));
+        tut::ensure("the pool's chunk stays resident", residency.contains(block.buffer));
+        Ref<Buffer> after = device.createBuffer(small, {}, "after");
+        tut::ensure("the freed block is handed out again once its frame has finished (same offset, later frame)",
+                    same(after.get()));
+        endCleanly(device, log);
+    }
+
+    struct ChurnEnd
+    {
+        U64 resident = 0;
+        U64 allocated = 0;
+        size_t mostPending = 0;
+    };
+
+    /// One run of t46's churn: 2000 textures in mixed sizes and formats and 4000 dynamic updates in
+    /// mixed sizes over 300 frames, with 3 in flight; every 100th texture is 1024x1024 RGBA8, so its
+    /// 4 MiB staging is a ring overflow buffer. Then submitAndWait and three empty frames.
+    API_AVAILABLE(macos(26.0)) ChurnEnd churnRun(MetalDevice& device)
+    {
+        std::mt19937 random(46); // the same in both runs, so the second needs no new chunks
+        const Format formats[] = { Format::RGBA8Unorm, Format::R8Unorm, Format::RG8Unorm, Format::RGBA16Float, Format::R32Float };
+        const U64 sizes[] = { 16, 200, 256, 1000, 4096, 20000, METAL_POOL_MAX_BLOCK, METAL_POOL_MAX_BLOCK + 1000, 200000 };
+        std::vector<Ref<Texture>> textures(48);
+        std::vector<Ref<Buffer>> buffers;
+        for (const U64 size : sizes)
+        {
+            for (int i = 0; i < 4; ++i)
+            {
+                BufferDesc desc;
+                desc.size = size;
+                desc.dynamic = true;
+                buffers.push_back(device.createBuffer(desc, {}, "churn buffer"));
+            }
+        }
+        std::vector<std::byte> bytes(4 * 1024 * 1024);
+        for (size_t i = 0; i < bytes.size(); ++i)
+        {
+            bytes[i] = std::byte(i * 31 + 7);
+        }
+        Encoder& encoder = device.encoder();
+        ChurnEnd end;
+        U32 made = 0;
+        U32 updates = 0;
+        // The viewer's run loop drains an autorelease pool around each frame. Metal gives its encoders
+        // autoreleased, and with API Validation they keep what they used until the pool drains, so
+        // each frame of the churn has a pool of its own, as in the viewer.
+        for (U32 frame = 0; frame < 300; ++frame) @autoreleasepool
+        {
+            const U32 madeBy = (frame + 1) * 2000 / 300;
+            for (; made < madeBy; ++made)
+            {
+                const bool large = made % 100 == 99;
+                const Format format = large ? Format::RGBA8Unorm : formats[random() % std::size(formats)];
+                const U32 width = large ? 1024 : 1 + random() % 200;
+                const U32 height = large ? 1024 : 1 + random() % 200;
+                Ref<Texture>& slot = textures[random() % textures.size()];
+                slot = device.createTexture(sizedDesc(format, TEXTURE_SAMPLED, width, height), "churn texture");
+                const PixelLayout layout = *metalReadbackLayout(format);
+                const size_t length = size_t(width) * height * layout.bytesPerPixel();
+                encoder.uploadTexture(slot.get(), 0, 0, { 0, 0, width, height }, layout, std::span(bytes).first(length));
+            }
+            const U32 updatesBy = (frame + 1) * 4000 / 300;
+            for (; updates < updatesBy; ++updates)
+            {
+                Ref<Buffer>& buffer = buffers[random() % buffers.size()];
+                const U64 size = buffer->desc().size;
+                const U64 offset = (random() % 2) ? (random() % size) / 4 * 4 : 0;
+                const U64 length = std::max<U64>(1, (random() % (size - offset + 1)));
+                encoder.updateBuffer(buffer.get(), offset, std::span(bytes).first(length));
+            }
+            device.endFrame();
+            end.mostPending = std::max(end.mostPending, device.lifecycle().pendingReleases());
+        }
+        @autoreleasepool
+        {
+            textures.clear();
+            buffers.clear();
+            device.submitAndWait();
+            for (int i = 0; i < 3; ++i)
+            {
+                device.endFrame();
+            }
+        }
+        // MTLResidencySet's allocationCount includes changes not yet committed (MTLResidencySet.h:127), and a run-time
+        // probe shows a removal still counted until the next commit. Whether the last frame's releases were freed before
+        // or after the last endFrame's submit (which commits) depends on when the GPU's finish is seen, so the set is
+        // committed before it is counted, as the next submit would.
+        device.residency().commitIfChanged();
+        end.resident = device.residency().count();
+        end.allocated = device.mtlDevice().currentAllocatedSize;
+        ensureEqual("churn: nothing pending at the end", device.lifecycle().pendingReleases(), size_t(0));
+        return end;
+    }
+
+    /// t46 (C10, C11, FN12): the churn twice; the second run ends with the first's residency count and
+    /// at most one ring chunk per slot more memory, with bounded releases, no WARN line and no GPU
+    /// error (validated() fails on a validation line).
+    API_AVAILABLE(macos(26.0)) void churnTest(MetalDevice& device)
+    {
+        ChurnEnd warm;
+        ChurnEnd second;
+        {
+            CaptureLog log(LLError::LEVEL_WARN);
+            warm = churnRun(device); // pool and ring chunks stay on purpose
+            second = churnRun(device);
+            ensureEqual("the second run ends with the first's residency count", second.resident, warm.resident);
+            tut::ensure("the second run's memory is at most 12 MiB above the first's: " + std::to_string(second.allocated) +
+                            " against " + std::to_string(warm.allocated),
+                        second.allocated <= warm.allocated + 12 * 1024 * 1024);
+            tut::ensure("pending releases stay bounded: " + std::to_string(second.mostPending),
+                        warm.mostPending <= 400 && second.mostPending <= 400);
+            endCleanly(device, log);
+        }
+        // After the capture, which keeps INFO lines from the test's log.
+        LL_INFOS("RHI") << "t46: resident " << warm.resident << " then " << second.resident << ", allocated "
+                        << warm.allocated << " then " << second.allocated << " bytes, most pending releases "
+                        << warm.mostPending << " and " << second.mostPending << ", pool chunks " << device.poolChunks()
+                        << LL_ENDL;
+    }
+}
+
+namespace
+{
+    /// S4: the viewer's device on Metal, as ViewerDeviceRun (llrhigl_test.cpp) makes GL's: the backend is chosen first, so
+    /// LLVertexBuffer's pool is the device's copy pool, and LLGLManager is told the render context exists (P3-01c).
+    struct API_AVAILABLE(macos(26.0)) MetalViewerRun
+    {
+        MetalDevice* device = nullptr;
+
+        MetalViewerRun()
+        {
+            setViewerBackend(BackendType::Metal);
+            DeviceCreateInfo info;
+            info.backend = chooseBackend(BackendType::Metal);
+            info.width = 64;
+            info.height = 32;
+            device = static_cast<MetalDevice*>(createViewerDevice(info));
+            tut::ensure("the viewer's Metal device", device != nullptr);
+            gGLManager.initForDevice(device->capabilities());
+            gGL.init(false);
+            LLVertexBuffer::initClass(nullptr);
+        }
+
+        ~MetalViewerRun()
+        {
+            LLVertexBuffer::cleanupClass();
+            gGL.getTexUnit(0)->unbind(LLTexUnit::TT_TEXTURE);
+            releaseViewerDevice();
+            setViewerBackend(BackendType::GL);
+            gGLManager.mInited = false;
+        }
+    };
+
+    /// S4: the frame ends, the GPU finishes it, and the next frame end releases what it held.
+    API_AVAILABLE(macos(26.0)) void finishFrame(MetalDevice& device)
+    {
+        const U64 frame = device.frameNumber();
+        device.endFrame();
+        tut::ensure("the frame finishes", device.waitForFrame(frame));
+        device.endFrame();
+    }
+
+    U64 bufferBytes(LL::RHI::Buffer* buffer)
+    {
+        return buffer ? buffer->desc().size : 0;
+    }
+
+    /// t47 (C15, C24): LLVertexBuffer on the viewer's Metal device: CPU copies without the VBO pool, the whole copy at
+    /// unmap, new storage at a re-size and getBytesAllocated() from the copies.
+    API_AVAILABLE(macos(26.0)) void vertexBufferTest()
+    {
+        MetalViewerRun run;
+        MetalDevice& device = *run.device;
+        CaptureLog log(LLError::LEVEL_WARN);
+        const U64 start = LLVertexBuffer::getBytesAllocated();
+        const auto sameAsCopy = [](LLVertexBuffer* vb)
+        {
+            const MetalAllocation memory = metalAllocation(vb->getRHIBuffer());
+            return memory.cpu && std::memcmp(memory.cpu, vb->getMappedData(), vb->getSize()) == 0;
+        };
+        @autoreleasepool
+        {
+            LLPointer<LLVertexBuffer> vb = new LLVertexBuffer(LLVertexBuffer::MAP_VERTEX | LLVertexBuffer::MAP_COLOR);
+            tut::ensure("allocateBuffer", vb->allocateBuffer(4, 6));
+            tut::ensure("storage on the device", vb->getRHIBuffer() && vb->getRHIIndices());
+            LLVector4a positions[4];
+            LLColor4U colors[4];
+            for (U32 i = 0; i < 4; ++i)
+            {
+                positions[i].set(F32(i), F32(i) + 0.5f, F32(i) * 2.f, 1.f);
+                colors[i].set(U8(10 * i), U8(20 * i), U8(30 * i), 255);
+            }
+            vb->setPositionData(positions);
+            vb->setColorData(colors);
+            const U16 indices[6] = { 0, 1, 2, 2, 1, 3 };
+            vb->setIndexData(indices);
+            LLStrider<LLVector3> vertices;
+            tut::ensure("a strider", vb->getVertexStrider(vertices));
+            vertices[3] = LLVector3(7.f, 8.f, 9.f);
+            vb->unmapBuffer();
+            tut::ensure("the allocation is the CPU copy", sameAsCopy(vb.get()));
+
+            // Two mapped ranges that do not touch, in a buffer without indices: one whole update of the copy, counted
+            // by the pool block each dynamic update gives back
+            LLPointer<LLVertexBuffer> ranges = new LLVertexBuffer(LLVertexBuffer::MAP_VERTEX | LLVertexBuffer::MAP_COLOR);
+            tut::ensure("a buffer without indices", ranges->allocateBuffer(4, 0));
+            ranges->setPositionData(positions);
+            ranges->setColorData(colors);
+            ranges->unmapBuffer();
+            const size_t before = device.lifecycle().pendingReleases();
+            LLStrider<LLVector3> one;
+            LLStrider<LLColor4U> two;
+            tut::ensure("the vertex range", ranges->getVertexStrider(one, 1, 1));
+            tut::ensure("the colour range", ranges->getColorStrider(two, 3, 1));
+            *one = LLVector3(4.f, 5.f, 6.f);
+            *two = LLColor4U(1, 2, 3, 4);
+            ranges->unmapBuffer();
+            ensureEqual("a map of two ranges sends one whole update", device.lifecycle().pendingReleases() - before, size_t(1));
+            tut::ensure("the allocation is the CPU copy after the ranges", sameAsCopy(ranges.get()));
+            ranges = nullptr;
+
+            const U64 oldVertices = vb->getRHIBuffer()->id();
+            tut::ensure("a re-size", vb->allocateBuffer(8, 6));
+            tut::ensure("a re-size has new storage", vb->getRHIBuffer() && vb->getRHIBuffer()->id() != oldVertices);
+
+            // Index re-sizes 0 -> n -> m with buffers of their own (over the pool's 64 KiB blocks)
+            LLPointer<LLVertexBuffer> other = new LLVertexBuffer(LLVertexBuffer::MAP_VERTEX);
+            tut::ensure("no indices", other->allocateBuffer(4, 0));
+            tut::ensure("n indices", other->allocateBuffer(4, 40000));
+            // Every frame slot has had its ring made before the count, so only the index buffers change it
+            for (U32 i = 0; i < 3; ++i)
+            {
+                finishFrame(device);
+            }
+            device.residency().commitIfChanged(); // counted as committed, as below
+            const U64 resident = device.residency().count();
+            tut::ensure("m indices", other->allocateBuffer(4, 50000));
+            ensureEqual("the index size", other->getIndicesSize(), 100000u);
+            const U64 live = bufferBytes(vb->getRHIBuffer()) + bufferBytes(vb->getRHIIndices())
+                             + bufferBytes(other->getRHIBuffer()) + bufferBytes(other->getRHIIndices());
+            ensureEqual("getBytesAllocated() is the live buffers' sizes", LLVertexBuffer::getBytesAllocated() - start, live);
+            // The rule (as releaseTest): the old index buffer is released in its frame, and the endFrame after the GPU has
+            // finished that frame retires it from the set, so one finishFrame takes it out. count() is MTLResidencySet's
+            // allocationCount, which includes changes not yet committed (MTLResidencySet.h:127) and still counts a removal
+            // until the next commit (run-time probe); the device commits before each submit, so without the commit here
+            // the count drops only in the next finishFrame (the "two finishFrame" seen in S4).
+            finishFrame(device);
+            device.residency().commitIfChanged();
+            ensureEqual("the old indices left the residency set", device.residency().count(), resident);
+
+            const U64 withOther = LLVertexBuffer::getBytesAllocated();
+            const U64 otherBytes = bufferBytes(other->getRHIBuffer()) + bufferBytes(other->getRHIIndices());
+            other = nullptr;
+            ensureEqual("getBytesAllocated() drops at release", withOther - LLVertexBuffer::getBytesAllocated(), otherBytes);
+            vb = nullptr;
+            ensureEqual("getBytesAllocated() back at the start", LLVertexBuffer::getBytesAllocated(), start);
+            finishFrame(device);
+        }
+        ensureEqual("t47: no WARN", occurrences(log, "WARNING"), size_t(0));
+    }
+
+    /// t48 (C16, L9 on Metal): createTextureNames draws no names, and its textures have storage and their data.
+    API_AVAILABLE(macos(26.0)) void textureNamesTest()
+    {
+        MetalViewerRun run;
+        MetalDevice& device = *run.device;
+        CaptureLog log(LLError::LEVEL_WARN);
+        @autoreleasepool
+        {
+            const LLImageGL::NameDraws before = LLImageGL::nameDraws();
+            std::vector<LLPointer<Texture>> textures;
+            tut::ensure("createTextureNames(3)",
+                        LLImageGL::createTextureNames(textures, 3, LLTexUnit::TT_TEXTURE, GL_RGB16F, GL_RGB, GL_FLOAT, 4, 4,
+                                                      TEXTURE_SAMPLED | TEXTURE_READBACK, false));
+            const LLImageGL::NameDraws after = LLImageGL::nameDraws();
+            ensureEqual("no generateTextures call", after.calls, before.calls);
+            ensureEqual("no name drawn", after.names, before.names);
+            ensureEqual("three textures", textures.size(), size_t(3));
+            for (const LLPointer<Texture>& texture : textures)
+            {
+                tut::ensure("a texture with storage", texture.notNull() && metalTexture(texture.get()) != nil);
+                ensureEqual("RGB/F32 is RGBA16Float", U32(texture->desc().format), U32(Format::RGBA16Float));
+            }
+            // GL_RGB/GL_FLOAT through specifyTexture: halves, alpha 1
+            const F32 values[6] = { 0.f, 0.25f, 0.5f, 0.75f, 1.f, 2.f };
+            const U16 halves[6] = { 0x0000, 0x3400, 0x3800, 0x3A00, 0x3C00, 0x4000 };
+            std::vector<F32> pixels(16 * 3);
+            std::vector<U8> expected;
+            for (U32 i = 0; i < 16; ++i)
+            {
+                for (U32 c = 0; c < 4; ++c)
+                {
+                    const U16 half = c < 3 ? halves[(i * 3 + c * 5) % 6] : U16(0x3C00);
+                    if (c < 3)
+                    {
+                        pixels[i * 3 + c] = values[(i * 3 + c * 5) % 6];
+                    }
+                    expected.push_back(U8(half & 0xFF));
+                    expected.push_back(U8(half >> 8));
+                }
+            }
+            gGL.getTexUnit(0)->bindTexture(LLTexUnit::TT_TEXTURE, textures[1].get());
+            LLImageGL::specifyTexture(textures[1].get(), 0, GL_RGB16F, 4, 4, GL_RGB, GL_FLOAT, pixels.data(), false);
+            ensureRead("specifyTexture's RGB/F32",
+                       device.encoder().readback(textures[1].get(), 0, 0, { 0, 0, 4, 4 },
+                                                 *metalReadbackLayout(Format::RGBA16Float)),
+                       expected);
+
+            const U8 rgba[4 * 4 * 4] = {};
+            LLPointer<Texture> made = LLImageGL::createTextureWithData(LLTexUnit::TT_TEXTURE, GL_RGBA8, GL_RGBA,
+                                                                        GL_UNSIGNED_BYTE, 4, 4, TEXTURE_SAMPLED, rgba);
+            tut::ensure("createTextureWithData", made.notNull());
+            ensureEqual("LLTexUnit's GL binding stays 0", gGL.getTexUnit(0)->getCurrTexture(), 0u);
+            ensureEqual("LLTexUnit records the texture's id", gGL.getTexUnit(0)->getCurrTextureId(), made->id());
+            ensureEqual("still no name drawn", LLImageGL::nameDraws().names, before.names);
+            gGL.getTexUnit(0)->unbind(LLTexUnit::TT_TEXTURE);
+            textures.clear();
+            made = nullptr;
+            finishFrame(device);
+        }
+        ensureEqual("t48: no WARN", occurrences(log, "WARNING"), size_t(0));
+    }
+
+    /// t49 (C17): respecifyEmptyTexture on Metal is a new texture at the new size; 0 or over the maximum keeps the old one.
+    API_AVAILABLE(macos(26.0)) void respecifyTest()
+    {
+        MetalViewerRun run;
+        MetalDevice& device = *run.device;
+        CaptureLog log(LLError::LEVEL_WARN);
+        @autoreleasepool
+        {
+            std::vector<LLPointer<Texture>> textures;
+            tut::ensure("a texture", LLImageGL::createTextureNames(textures, 1, LLTexUnit::TT_TEXTURE, GL_RGBA8, GL_RGBA,
+                                                                   GL_UNSIGNED_BYTE, 16, 16, TEXTURE_SAMPLED, false));
+            LLPointer<Texture> texture = textures[0];
+            textures.clear();
+            const TextureDesc old = texture->desc();
+            const U64 oldId = texture->id();
+            id<MTLTexture> oldMetal = metalTexture(texture.get());
+            tut::ensure("the old texture is resident", device.residency().contains(oldMetal));
+            Texture* respecified = LLImageGL::respecifyEmptyTexture(texture, 0, 32, 8);
+            tut::ensure("a texture back", respecified && respecified == texture.get());
+            tut::ensure("a new texture id", texture->id() != oldId);
+            TextureDesc wanted = old;
+            wanted.width = 32;
+            wanted.height = 8;
+            tut::ensure("the old description at the new size", texture->desc() == wanted);
+            tut::ensure("the new texture has storage", metalTexture(texture.get()) != nil);
+            finishFrame(device);
+            tut::ensure("the old texture left the residency set after its frame", !device.residency().contains(oldMetal));
+            oldMetal = nil;
+
+            const U64 kept = texture->id();
+            tut::ensure("width 0", LLImageGL::respecifyEmptyTexture(texture, 0, 0, 8) == texture.get());
+            tut::ensure("height 0", LLImageGL::respecifyEmptyTexture(texture, 0, 32, 0) == texture.get());
+            const S32 over = S32(device.capabilities().maxTextureSize) + 1;
+            tut::ensure("over the maximum", LLImageGL::respecifyEmptyTexture(texture, 0, over, 8) == texture.get());
+            ensureEqual("size 0 and over the maximum keep the texture", texture->id(), kept);
+            texture = nullptr;
+            finishFrame(device);
+        }
+        ensureEqual("t49: no WARN", occurrences(log, "WARNING"), size_t(0));
+    }
+
+    /// t50 (C23): the accounting of LLImageGL's textures on Metal is keyed by the device texture's id and counts GL's sizes.
+    API_AVAILABLE(macos(26.0)) void accountingTest()
+    {
+        MetalViewerRun run;
+        MetalDevice& device = *run.device;
+        CaptureLog log(LLError::LEVEL_WARN);
+        @autoreleasepool
+        {
+            const U64 start = LLImageGL::getTextureBytesAllocated();
+            struct Made
+            {
+                S32 format;
+                S32 width;
+                S32 height;
+            };
+            const Made made[3] = { { GL_RGBA8, 16, 16 }, { GL_COMPRESSED_RGBA, 16, 8 }, { GL_RGBA16F, 8, 8 } };
+            std::vector<LLPointer<LLImageGL>> images;
+            U64 expected = 0;
+            for (const Made& m : made)
+            {
+                LLPointer<LLImageGL> image = new LLImageGL(m.width, m.height, 4, false);
+                tut::ensure("createOwnTexture", image->createOwnTexture(LLTexUnit::TT_TEXTURE, m.format, GL_RGBA,
+                                                                       GL_UNSIGNED_BYTE, TEXTURE_SAMPLED, 1, 1, false));
+                // t48 shows that images on Metal draw no GL names, so the accounting below is keyed by the texture's id
+                tut::ensure("bound", gGL.getTexUnit(0)->bindTexture(LLTexUnit::TT_TEXTURE, image.get()));
+                if (m.format == GL_COMPRESSED_RGBA)
+                {
+                    TextureDesc desc;
+                    tut::ensure("GL_COMPRESSED_RGBA's description",
+                                LLImageGL::describeTexture(desc, LLTexUnit::TT_TEXTURE, TEXTURE_SAMPLED, m.format, GL_RGBA,
+                                                           GL_UNSIGNED_BYTE, false, m.width, m.height, 1));
+                    ensureEqual("GL_COMPRESSED_RGBA is RGBA8Unorm", U32(desc.format), U32(Format::RGBA8Unorm));
+                }
+                // LLImageGL's own path for its own texture: specifyTexture's setManualImage on the bound texture, with no
+                // pixels no upload (P2-98's review, F2)
+                image->specifyOwnLevel(0, m.format, m.width, m.height, GL_RGBA, GL_UNSIGNED_BYTE, nullptr, false);
+                expected += U64(LLImageGL::dataFormatBytes(m.format, m.width, m.height));
+                images.push_back(image);
+            }
+            gGL.getTexUnit(0)->unbind(LLTexUnit::TT_TEXTURE);
+            ensureEqual("three textures count GL's sizes", LLImageGL::getTextureBytesAllocated() - start, expected);
+
+            // A re-specification moves the bytes to the new size
+            {
+                LLPointer<Texture> texture = LLImageGL::createTextureWithData(LLTexUnit::TT_TEXTURE, GL_RGBA8, GL_RGBA,
+                                                                              GL_UNSIGNED_BYTE, 16, 16, TEXTURE_SAMPLED,
+                                                                              nullptr);
+                tut::ensure("a texture", texture.notNull());
+                gGL.getTexUnit(0)->unbind(LLTexUnit::TT_TEXTURE);
+                const U64 with = LLImageGL::getTextureBytesAllocated();
+                ensureEqual("createTextureWithData counts its bytes", with - start - expected,
+                            U64(LLImageGL::dataFormatBytes(GL_RGBA8, 16, 16)));
+                tut::ensure("re-specified", LLImageGL::respecifyEmptyTexture(texture, 0, 32, 16) != nullptr);
+                ensureEqual("the bytes move to the new size", LLImageGL::getTextureBytesAllocated() - start - expected,
+                            U64(LLImageGL::dataFormatBytes(GL_RGBA8, 32, 16)));
+                // A texture without an image keeps its entry until the GL backend's deletion lists, so free_cur_tex_image
+                // takes it back by the bound id
+                gGL.getTexUnit(0)->bindTexture(LLTexUnit::TT_TEXTURE, texture.get());
+                LLImageGLMemory::free_cur_tex_image();
+                gGL.getTexUnit(0)->unbind(LLTexUnit::TT_TEXTURE);
+                ensureEqual("free_cur_tex_image frees by the bound id", LLImageGL::getTextureBytesAllocated() - start, expected);
+                texture = nullptr;
+            }
+            const U64 afterRespecify = LLImageGL::getTextureBytesAllocated();
+
+            const U64 first = U64(LLImageGL::dataFormatBytes(made[0].format, made[0].width, made[0].height));
+            images[0]->destroyGLTexture();
+            ensureEqual("releasing one drops its bytes", afterRespecify - LLImageGL::getTextureBytesAllocated(), first);
+            images.clear();
+            ensureEqual("after all are released the count is back at the start", LLImageGL::getTextureBytesAllocated(), start);
+            finishFrame(device);
+        }
+        ensureEqual("t50: no WARN", occurrences(log, "WARNING"), size_t(0));
+    }
+
+    /// t51 (S4c): LLCubeMap with one level on the viewer's Metal device: initGL makes one Cube texture of the device for the
+    /// six faces and draws no GL name (the test has no GL context, so a GL call would crash), initGLData's six uploads go
+    /// to the faces' layers in GL's order (+X, -X, +Y, -Y, +Z, -Z, while LLCubeMap's images start at -X), and
+    /// generateMipMaps on one level warns about nothing.
+    API_AVAILABLE(macos(26.0)) void cubeMapTest()
+    {
+        MetalViewerRun run;
+        MetalDevice& device = *run.device;
+        CaptureLog log(LLError::LEVEL_WARN);
+        @autoreleasepool
+        {
+            struct TestCubeMap : public LLCubeMap
+            {
+                TestCubeMap() : LLCubeMap(false) {}
+                LLImageGL* face(int i) const { return mImages[i].get(); }
+                LLImageRaw* raw(int i) const { return mRawImages[i].get(); }
+                NSUInteger layer(int i) const { return NSUInteger(mTargets[i] - GL_TEXTURE_CUBE_MAP_POSITIVE_X); }
+            };
+            LLPointer<TestCubeMap> cube = new TestCubeMap();
+            cube->initGL();
+            Texture* texture = cube->face(0)->getRHITexture();
+            tut::ensure("the cube has a texture of the device", texture != nullptr);
+            tut::ensure("no GL name", !cube->face(0)->getHasGLTexture()); // the first face's name, the cube's (P2-98's review, F2)
+            ensureEqual("a Cube", U32(texture->desc().type), U32(TextureType::Cube));
+            ensureEqual("one level", texture->desc().mipLevels, U32(1));
+            ensureEqual("64 wide", texture->desc().width, U32(64));
+            for (int i = 1; i < 6; ++i)
+            {
+                tut::ensure("face " + std::to_string(i) + " shares the cube's texture", cube->face(i)->getRHITexture() == texture);
+            }
+
+            // Each face's own bytes: texel (x, y) of face f is (4x, 4y, 40f + 1, 255 - f)
+            const U32 size = 64;
+            for (int f = 0; f < 6; ++f)
+            {
+                U8* data = cube->raw(f)->getData();
+                for (U32 y = 0; y < size; ++y)
+                {
+                    for (U32 x = 0; x < size; ++x)
+                    {
+                        U8* texel = &data[(y * size + x) * 4];
+                        texel[0] = U8(4 * x);
+                        texel[1] = U8(4 * y);
+                        texel[2] = U8(40 * f + 1);
+                        texel[3] = U8(255 - f);
+                    }
+                }
+            }
+            cube->initGLData();
+            cube->generateMipMaps();
+            device.submitAndWait();
+
+            // Read every layer back through the test's own queue, as t4's oracle fills it
+            id<MTLDevice> metal = device.mtlDevice();
+            const NSUInteger faceBytes = size * size * 4;
+            id<MTLBuffer> target = [metal newBufferWithLength:6 * faceBytes options:MTLResourceStorageModeShared];
+            id<MTLCommandQueue> queue = [metal newCommandQueue];
+            id<MTLCommandBuffer> commands = [queue commandBuffer];
+            id<MTLBlitCommandEncoder> blit = [commands blitCommandEncoder];
+            for (NSUInteger f = 0; f < 6; ++f)
+            {
+                [blit copyFromTexture:metalTexture(texture)
+                             sourceSlice:f
+                             sourceLevel:0
+                            sourceOrigin:MTLOriginMake(0, 0, 0)
+                              sourceSize:MTLSizeMake(size, size, 1)
+                                toBuffer:target
+                       destinationOffset:f * faceBytes
+                  destinationBytesPerRow:size * 4
+                destinationBytesPerImage:faceBytes];
+            }
+            [blit endEncoding];
+            [commands commit];
+            [commands waitUntilCompleted];
+            tut::ensure("the readback completed", commands.status == MTLCommandBufferStatusCompleted);
+            const U8* read = static_cast<const U8*>(target.contents);
+            for (int f = 0; f < 6; ++f)
+            {
+                tut::ensure("face " + std::to_string(f) + " reads back its uploaded bytes from layer " +
+                                std::to_string(cube->layer(f)),
+                            std::memcmp(read + cube->layer(f) * faceBytes, cube->raw(f)->getData(), faceBytes) == 0);
+            }
+            cube = nullptr;
+            finishFrame(device);
+        }
+        ensureEqual("t51: no WARN", occurrences(log, "WARNING"), size_t(0));
+    }
+
+    /// S5: a texture's level 0 through the test's own queue, after the device's work has finished, as t51 reads its cube.
+    API_AVAILABLE(macos(26.0)) std::vector<U8> levelBytes(MetalDevice& device, Texture* texture, NSUInteger bytesPerPixel)
+    {
+        id<MTLTexture> metal = metalTexture(texture);
+        const NSUInteger rowBytes = metal.width * bytesPerPixel;
+        const NSUInteger imageBytes = rowBytes * metal.height;
+        id<MTLBuffer> target = [device.mtlDevice() newBufferWithLength:imageBytes options:MTLResourceStorageModeShared];
+        id<MTLCommandQueue> queue = [device.mtlDevice() newCommandQueue];
+        id<MTLCommandBuffer> commands = [queue commandBuffer];
+        id<MTLBlitCommandEncoder> blit = [commands blitCommandEncoder];
+        [blit copyFromTexture:metal
+                     sourceSlice:0
+                     sourceLevel:0
+                    sourceOrigin:MTLOriginMake(0, 0, 0)
+                      sourceSize:MTLSizeMake(metal.width, metal.height, 1)
+                        toBuffer:target
+               destinationOffset:0
+          destinationBytesPerRow:rowBytes
+        destinationBytesPerImage:imageBytes];
+        [blit endEncoding];
+        [commands commit];
+        [commands waitUntilCompleted];
+        tut::ensure("the readback completed", commands.status == MTLCommandBufferStatusCompleted);
+        const U8* data = static_cast<const U8*>(target.contents);
+        return std::vector<U8>(data, data + imageBytes);
+    }
+
+    /// S5: a depth set to 0 through the test's own queue, so that only a clear of the device can make it 1 again.
+    API_AVAILABLE(macos(26.0)) void fillDepth(MetalDevice& device, Texture* depth, F64 value)
+    {
+        MTLRenderPassDescriptor* pass = [MTLRenderPassDescriptor renderPassDescriptor];
+        pass.depthAttachment.texture = metalTexture(depth);
+        pass.depthAttachment.loadAction = MTLLoadActionClear;
+        pass.depthAttachment.storeAction = MTLStoreActionStore;
+        pass.depthAttachment.clearDepth = value;
+        id<MTLCommandQueue> queue = [device.mtlDevice() newCommandQueue];
+        id<MTLCommandBuffer> commands = [queue commandBuffer];
+        [[commands renderCommandEncoderWithDescriptor:pass] endEncoding];
+        [commands commit];
+        [commands waitUntilCompleted];
+        tut::ensure("the depth is set to " + std::to_string(value), commands.status == MTLCommandBufferStatusCompleted);
+    }
+
+    API_AVAILABLE(macos(26.0)) void zeroDepth(MetalDevice& device, Texture* depth)
+    {
+        fillDepth(device, depth, 0.0);
+    }
+
+    /// S5: CLEAR_COLOR in a colour attachment's own layout: RGBA8Unorm as CLEAR_BYTES, RGBA16Unorm as 16-bit unorms and
+    /// RGBA16Float as halves (0.2, 0.4, 0.6 and 1.0 round to these), every value little-endian.
+    std::vector<U8> clearTexel(Format format)
+    {
+        std::vector<U16> wide;
+        switch (format)
+        {
+        case Format::RGBA8Unorm: return std::vector<U8>(CLEAR_BYTES.begin(), CLEAR_BYTES.end());
+        case Format::RGBA16Unorm: wide = { 13107, 26214, 39321, 65535 }; break;
+        case Format::RGBA16Float: wide = { 0x3266, 0x3666, 0x38cd, 0x3c00 }; break;
+        default: tut::fail("no clear texel for format " + std::to_string(U32(format)));
+        }
+        std::vector<U8> texel;
+        for (U16 value : wide)
+        {
+            texel.push_back(U8(value & 0xff));
+            texel.push_back(U8(value >> 8));
+        }
+        return texel;
+    }
+
+    /// S5: every pixel of a colour attachment is CLEAR_COLOR in its own layout.
+    API_AVAILABLE(macos(26.0)) void ensureCleared(const std::string& what, MetalDevice& device, Texture* texture)
+    {
+        const std::vector<U8> texel = clearTexel(texture->desc().format);
+        const std::vector<U8> bytes = levelBytes(device, texture, texel.size());
+        for (size_t i = 0; i < bytes.size(); ++i)
+        {
+            if (bytes[i] != texel[i % texel.size()])
+            {
+                tut::fail(what + ": byte " + std::to_string(i) + " is " + std::to_string(bytes[i]) + ", not " +
+                          std::to_string(texel[i % texel.size()]));
+            }
+        }
+    }
+
+    /// S5: every texel of a Depth32Float is the depth clear's 1.0.
+    API_AVAILABLE(macos(26.0)) void ensureDepthCleared(const std::string& what, MetalDevice& device, Texture* depth)
+    {
+        ensureEqual(what + ": Depth32Float", U32(depth->desc().format), U32(Format::Depth32Float));
+        const std::vector<U8> bytes = levelBytes(device, depth, sizeof(F32));
+        for (size_t i = 0; i < bytes.size(); i += sizeof(F32))
+        {
+            F32 value = 0.f;
+            std::memcpy(&value, &bytes[i], sizeof(F32));
+            if (value != 1.f)
+            {
+                tut::fail(what + ": texel " + std::to_string(i / sizeof(F32)) + " is " + std::to_string(value) + ", not 1");
+            }
+        }
+    }
+
+    /// S5: a target's clear in its own pass on the device: bound, cleared without a dynamic-state call (the clear's branch
+    /// without a framebuffer would set the scissor through LLRender), flushed and finished. The encoder clears a depth only
+    /// under a bound state that writes it (D22, metalWritesDepth), which LLVertexBuffer binds at its draws; the test binds
+    /// one, as GL's depth mask is on for glClear.
+    API_AVAILABLE(macos(26.0)) void clearTarget(const std::string& what, MetalDevice& device, LLRenderTarget& target)
+    {
+        target.bindTarget();
+        Ref<DepthStencilState> writes = device.getDepthStencilState({ true, true, CompareFunc::LessEqual });
+        device.encoder().setDepthStencilState(writes.get());
+        const U64 calls = device.encoder().state().dynamicCalls();
+        target.clear();
+        ensureEqual(what + ": the clear makes no dynamic-state call", device.encoder().state().dynamicCalls(), calls);
+        target.flush();
+        device.submitAndWait();
+    }
+
+    /// t52 (S5, C18, FN16): allocateScreenBufferInternal's LLRenderTarget sequence on the viewer's Metal device: deferredScreen
+    /// RGBA with depth and three further attachments, screen RGBA16F, shareDepthBuffer and a clear of each, first with Metal's
+    /// formats without HDR (mGLVersion 1.0 gives GL_RGB10_A2 and GL_RGB, pipeline.cpp), then with HDR's; and a target with
+    /// only a depth. No LL_ERRS (the test's fatal function fails it) and no WARN.
+    API_AVAILABLE(macos(26.0)) void screenBufferTest()
+    {
+        MetalViewerRun run;
+        MetalDevice& device = *run.device;
+        CaptureLog log(LLError::LEVEL_WARN);
+        @autoreleasepool
+        {
+            const U32 targetStart = LLRenderTarget::sBytesAllocated;
+            const U64 textureStart = LLImageGL::getTextureBytesAllocated();
+            const U32 width = 64;
+            const U32 height = 32;
+            struct Variant
+            {
+                const char* what;
+                U32 normal;
+                U32 emissive;
+            };
+            const Variant variants[2] = { { "without HDR: ", GL_RGB10_A2, GL_RGB }, { "HDR: ", GL_RGBA16, GL_RGB16F } };
+            LLRenderTarget::setClearColor(CLEAR_COLOR[0], CLEAR_COLOR[1], CLEAR_COLOR[2], CLEAR_COLOR[3]);
+            for (const Variant& variant : variants)
+            {
+                const std::string on = variant.what;
+                LLRenderTarget deferredScreen;
+                LLRenderTarget screen;
+                tut::ensure(on + "deferredScreen", deferredScreen.allocate(width, height, GL_RGBA, true));
+                tut::ensure(on + "GL_RGBA", deferredScreen.addColorAttachment(GL_RGBA));
+                tut::ensure(on + "the normals' attachment", deferredScreen.addColorAttachment(variant.normal));
+                tut::ensure(on + "the emissive attachment", deferredScreen.addColorAttachment(variant.emissive));
+                tut::ensure(on + "screen", screen.allocate(width, height, GL_RGBA16F));
+                deferredScreen.shareDepthBuffer(screen);
+                ensureEqual(on + "four colours", deferredScreen.getNumTextures(), U32(4));
+                Texture* depth = deferredScreen.getRHIDepth();
+                tut::ensure(on + "a depth of the device", depth != nullptr);
+                ensureEqual(on + "no GL depth name", deferredScreen.getDepth(), U32(0));
+                tut::ensure(on + "screen has no depth of its own", screen.getRHIDepth() == nullptr);
+
+                RenderPassDesc pass;
+                tut::ensure(on + "deferredScreen's pass", deferredScreen.describePass(pass));
+                tut::ensure(on + "deferredScreen's pass has its depth", pass.depth.texture.get() == depth);
+                ensureEqual(on + "deferredScreen's pass has four colours", pass.colorCount, U32(4));
+                RenderPassDesc shared;
+                tut::ensure(on + "screen's pass", screen.describePass(shared));
+                tut::ensure(on + "screen's pass has deferredScreen's depth", shared.depth.texture.get() == depth);
+
+                if (variant.normal == GL_RGB10_A2)
+                {
+                    // Its readback is P3-08's: the description, and the clear below without a refusal or a WARN
+                    const TextureDesc desc = deferredScreen.getRHITexture(2)->desc();
+                    ensureEqual(on + "GL_RGB10_A2 is RGB10A2Unorm", U32(desc.format), U32(Format::RGB10A2Unorm));
+                    ensureEqual(on + "GL_RGB10_A2's width", desc.width, width);
+                    ensureEqual(on + "GL_RGB10_A2's height", desc.height, height);
+                }
+
+                zeroDepth(device, depth);
+                clearTarget(on + "deferredScreen", device, deferredScreen);
+                for (U32 i = 0; i < 4; ++i)
+                {
+                    if (i == 2 && variant.normal == GL_RGB10_A2)
+                    {
+                        continue;
+                    }
+                    ensureCleared(on + "deferredScreen's colour " + std::to_string(i), device,
+                                  deferredScreen.getRHITexture(i));
+                }
+                ensureDepthCleared(on + "deferredScreen's depth", device, depth);
+
+                zeroDepth(device, depth);
+                clearTarget(on + "screen", device, screen);
+                ensureCleared(on + "screen's colour", device, screen.getRHITexture(0));
+                ensureDepthCleared(on + "screen's depth, the shared one", device, depth);
+
+                screen.release();
+                deferredScreen.release();
+                finishFrame(device);
+            }
+
+            // A target with only a depth (colour format 0)
+            {
+                LLRenderTarget depthOnly;
+                tut::ensure("the depth-only target", depthOnly.allocate(width, height, 0, true));
+                ensureEqual("no colour", depthOnly.getNumTextures(), U32(0));
+                tut::ensure("the depth-only target is complete", depthOnly.isComplete());
+                Texture* depth = depthOnly.getRHIDepth();
+                tut::ensure("its depth of the device", depth != nullptr);
+                zeroDepth(device, depth);
+                clearTarget("the depth-only target", device, depthOnly);
+                ensureDepthCleared("the depth-only target's depth", device, depth);
+                depthOnly.release();
+                finishFrame(device);
+            }
+            ensureEqual("LLRenderTarget's bytes back at the start", LLRenderTarget::sBytesAllocated, targetStart);
+            ensureEqual("LLImageGL's bytes back at the start", LLImageGL::getTextureBytesAllocated(), textureStart);
+        }
+        std::ostringstream warnings;
+        log.streamto(warnings);
+        // P3-01f: the stack bottom asks for a windowless device's surface, which is null with no WARN line
+        ensureEqual("t52: no 'not ported (P3-01f)' line", occurrences(log, "not ported to Metal yet (P3-01f)"), size_t(0));
+        tut::ensure("t52: no WARN line: " + warnings.str(), occurrences(log, "WARNING") == 0);
+    }
+
+    /// t53 (S5, C17, C23, FN16): resize on the viewer's Metal device: every attachment of deferredScreen and screen is a new
+    /// texture at the new size, the old ones leave the residency set after the frame, the sharer's pass uses the owner's new
+    /// depth, and after the release both byte counts are back at the start.
+    API_AVAILABLE(macos(26.0)) void resizeTargetTest()
+    {
+        MetalViewerRun run;
+        MetalDevice& device = *run.device;
+        CaptureLog log(LLError::LEVEL_WARN);
+        @autoreleasepool
+        {
+            const U32 targetStart = LLRenderTarget::sBytesAllocated;
+            const U64 textureStart = LLImageGL::getTextureBytesAllocated();
+            {
+                LLRenderTarget deferredScreen;
+                LLRenderTarget screen;
+                tut::ensure("deferredScreen", deferredScreen.allocate(64, 32, GL_RGBA, true));
+                tut::ensure("GL_RGBA", deferredScreen.addColorAttachment(GL_RGBA));
+                tut::ensure("GL_RGB10_A2", deferredScreen.addColorAttachment(GL_RGB10_A2));
+                tut::ensure("GL_RGB", deferredScreen.addColorAttachment(GL_RGB));
+                tut::ensure("screen", screen.allocate(64, 32, GL_RGBA16F));
+                deferredScreen.shareDepthBuffer(screen);
+
+                struct Old
+                {
+                    std::string what;
+                    U64 textureId;
+                    id<MTLTexture> metal;
+                };
+                std::vector<Old> olds;
+                for (U32 i = 0; i < deferredScreen.getNumTextures(); ++i)
+                {
+                    Texture* texture = deferredScreen.getRHITexture(i);
+                    olds.push_back({ "deferredScreen's colour " + std::to_string(i), texture->id(), metalTexture(texture) });
+                }
+                olds.push_back({ "deferredScreen's depth", deferredScreen.getRHIDepth()->id(),
+                                 metalTexture(deferredScreen.getRHIDepth()) });
+                olds.push_back({ "screen's colour", screen.getRHITexture(0)->id(), metalTexture(screen.getRHITexture(0)) });
+                for (const Old& old : olds)
+                {
+                    tut::ensure(old.what + " is resident", device.residency().contains(old.metal));
+                }
+
+                deferredScreen.resize(32, 16);
+                screen.resize(32, 16);
+                std::vector<Texture*> made;
+                for (U32 i = 0; i < deferredScreen.getNumTextures(); ++i)
+                {
+                    made.push_back(deferredScreen.getRHITexture(i));
+                }
+                made.push_back(deferredScreen.getRHIDepth());
+                made.push_back(screen.getRHITexture(0));
+                ensureEqual("as many textures", made.size(), olds.size());
+                for (size_t i = 0; i < made.size(); ++i)
+                {
+                    tut::ensure(olds[i].what + ": a texture", made[i] != nullptr);
+                    tut::ensure(olds[i].what + ": a new texture id", made[i]->id() != olds[i].textureId);
+                    ensureEqual(olds[i].what + ": the new width", made[i]->desc().width, U32(32));
+                    ensureEqual(olds[i].what + ": the new height", made[i]->desc().height, U32(16));
+                }
+                RenderPassDesc pass;
+                tut::ensure("screen's pass", screen.describePass(pass));
+                tut::ensure("screen's pass uses deferredScreen's new depth", pass.depth.texture.get() == deferredScreen.getRHIDepth());
+
+                finishFrame(device);
+                for (Old& old : olds)
+                {
+                    tut::ensure(old.what + ": the old texture left the residency set after the frame",
+                                !device.residency().contains(old.metal));
+                    old.metal = nil;
+                }
+                screen.release();
+                deferredScreen.release();
+            }
+            ensureEqual("LLRenderTarget's bytes back at the start", LLRenderTarget::sBytesAllocated, targetStart);
+            ensureEqual("LLImageGL's bytes back at the start", LLImageGL::getTextureBytesAllocated(), textureStart);
+            finishFrame(device);
+        }
+        std::ostringstream warnings;
+        log.streamto(warnings);
+        tut::ensure("t53: no WARN: " + warnings.str(), occurrences(log, "WARNING") == 0);
+    }
+
+    /// t54 (the review's R1): a 2D LLImageGL that createGLTexture makes on the viewer's Metal device, as the font atlas is
+    /// made (llfontbitmapcache.cpp), has the device's texture and no GL name; setSubImage on a region uploads the region to
+    /// that texture and leaves the rest, and a whole-image setSubImage, as each glyph's (llfontfreetype.cpp), replaces it.
+    API_AVAILABLE(macos(26.0)) void subImageTest()
+    {
+        MetalViewerRun run;
+        MetalDevice& device = *run.device;
+        CaptureLog log(LLError::LEVEL_WARN);
+        @autoreleasepool
+        {
+            const S32 size = 16;
+            auto filled = [](U8 salt)
+            {
+                LLPointer<LLImageRaw> raw = new LLImageRaw(size, size, 4);
+                U8* data = raw->getData();
+                for (S32 y = 0; y < size; ++y)
+                {
+                    for (S32 x = 0; x < size; ++x)
+                    {
+                        U8* texel = &data[(y * size + x) * 4];
+                        texel[0] = U8(8 * x + salt);
+                        texel[1] = U8(8 * y);
+                        texel[2] = salt;
+                        texel[3] = U8(255 - salt);
+                    }
+                }
+                return raw;
+            };
+            LLPointer<LLImageRaw> first = filled(1);
+            // No mipmaps and no compression, as the font atlas's
+            LLPointer<LLImageGL> image = new LLImageGL(size, size, 4, false, false);
+            tut::ensure("createGLTexture", image->createGLTexture(0, first.get()));
+            tut::ensure("no GL name", !image->getHasGLTexture());
+            tut::ensure("hasTexture without a GL name (P2-R3's F02)", image->hasTexture());
+            Texture* texture = image->getRHITexture();
+            tut::ensure("the image has its texture of the device", texture != nullptr);
+            ensureEqual("its id as the key (P2-07f)", image->getTextureKey(), texture->id());
+            ensureEqual("a 2D texture", U32(texture->desc().type), U32(TextureType::Tex2D));
+            ensureEqual("16 wide", texture->desc().width, U32(size));
+
+            // The region (4, 2) to (12, 10) of the second bytes, at the same place in a source as wide as the image
+            LLPointer<LLImageRaw> second = filled(101);
+            const S32 x0 = 4, y0 = 2, width = 8, height = 8;
+            tut::ensure("setSubImage on a region", image->setSubImage(second->getData(), size, size, x0, y0, width, height));
+            tut::ensure("the same texture", image->getRHITexture() == texture);
+            ensureEqual("the key unchanged by the region's upload", image->getTextureKey(), texture->id());
+            device.submitAndWait();
+            const std::vector<U8> read = levelBytes(device, texture, 4);
+            ensureEqual("the whole level", read.size(), size_t(size * size * 4));
+            for (S32 y = 0; y < size; ++y)
+            {
+                for (S32 x = 0; x < size; ++x)
+                {
+                    const bool inside = x >= x0 && x < x0 + width && y >= y0 && y < y0 + height;
+                    const size_t at = size_t((y * size + x) * 4);
+                    const U8* expected = (inside ? second : first)->getData() + at;
+                    tut::ensure("texel (" + std::to_string(x) + ", " + std::to_string(y) + ") is the " +
+                                    (inside ? "region's upload" : "first upload"),
+                                std::memcmp(read.data() + at, expected, 4) == 0);
+                }
+            }
+
+            // The whole image through setSubImage, as a glyph goes into the font atlas
+            LLPointer<LLImageRaw> third = filled(201);
+            tut::ensure("setSubImage on the whole image", image->setSubImage(third.get(), 0, 0, size, size));
+            tut::ensure("still a texture of the device", image->getRHITexture() != nullptr);
+            ensureEqual("the key is its texture's id after the whole image", image->getTextureKey(),
+                        image->getRHITexture()->id());
+            device.submitAndWait();
+            const std::vector<U8> whole = levelBytes(device, image->getRHITexture(), 4);
+            tut::ensure("the whole image reads back its upload",
+                        whole.size() == size_t(size * size * 4) && std::memcmp(whole.data(), third->getData(), whole.size()) == 0);
+            image = nullptr;
+            finishFrame(device);
+        }
+        std::ostringstream warnings;
+        log.streamto(warnings);
+        tut::ensure("t54: no WARN: " + warnings.str(), occurrences(log, "WARNING") == 0);
+    }
+
+    /// LLImageGL::respecifyForScale, which the class keeps private: an explicit instantiation may name a private member, as
+    /// llrhigl_test.cpp's ImageTextureAccess does for mRHITexture, and this one gives respecifyForScale the member
+    /// function's pointer (t54b).
+    template <LL::RHI::Texture* (LLImageGL::*Member)(S32)>
+    struct RespecifyForScaleAccess
+    {
+        friend LL::RHI::Texture* respecifyForScale(LLImageGL& image, S32 desired_discard)
+        {
+            return (image.*Member)(desired_discard);
+        }
+    };
+    template struct RespecifyForScaleAccess<&LLImageGL::respecifyForScale>;
+    LL::RHI::Texture* respecifyForScale(LLImageGL& image, S32 desired_discard);
+
+    /// t54b (P2-07f's S1, option B): LLImageGL::getTextureKey on the viewer's Metal device, whose textures have no GL name
+    /// (P3-01c), is the id of the image's own texture and follows it: createGLTexture's 2D texture's id, a new texture and
+    /// key at a second createGLTexture, the new texture's id after setImage's re-specification (setSize grew the image in
+    /// place, no createGLTexture in between) and after respecifyForScale's (scaleDown's, called directly: the challenge's
+    /// D2), the cube's id on every face after LLCubeMap::initGL's own uploads, and 0 after destroyGLTexture. A key that
+    /// changes only with the GL name would stay 0 here.
+    API_AVAILABLE(macos(26.0)) void textureKeyTest()
+    {
+        MetalViewerRun run;
+        MetalDevice& device = *run.device;
+        CaptureLog log(LLError::LEVEL_WARN);
+        @autoreleasepool
+        {
+            // The Metal invariant after every step (the challenge's D3: no GL name read here)
+            auto invariant = [](const std::string& at, const LLImageGL* image)
+            {
+                tut::ensure(at + ": no GL name", !image->getHasGLTexture());
+                const Texture* texture = image->getRHITexture();
+                tut::ensure(at + ": hasTexture is the own texture (P2-R3's F02)", image->hasTexture() == (texture != nullptr));
+                ensureEqual(at + ": the key is the own texture's id, else 0", image->getTextureKey(),
+                            texture ? texture->id() : U64(0));
+            };
+            // The image's own texture, and the key its id below the raw keys
+            auto ownKey = [&invariant](const std::string& at, const LLImageGL* image)
+            {
+                invariant(at, image);
+                const Texture* texture = image->getRHITexture();
+                tut::ensure(at + ": a texture of the device", texture != nullptr);
+                tut::ensure(at + ": below the raw keys", texture->id() != 0 && texture->id() < LLImageGLMemory::RAW_NAME_KEY);
+                return texture->id();
+            };
+            auto filled = [](S32 size)
+            {
+                LLPointer<LLImageRaw> raw = new LLImageRaw(size, size, 4);
+                std::memset(raw->getData(), 0x5a, size_t(size * size * 4));
+                return raw;
+            };
+            // No mipmaps and no compression, as t54's font atlas
+            LLPointer<LLImageGL> image = new LLImageGL(false, false);
+            ensureEqual("new: 0", image->getTextureKey(), U64(0));
+            invariant("new", image.get());
+            tut::ensure("createGLTexture", image->createGLTexture(0, filled(16).get()));
+            const U64 first = ownKey("createGLTexture", image.get());
+            tut::ensure("createGLTexture again", image->createGLTexture(0, filled(16).get()));
+            const U64 second = ownKey("a second createGLTexture", image.get());
+            tut::ensure("a second createGLTexture: a new key", second != first);
+
+            // setImage re-specifies the image's own texture when setSize has grown the image in place
+            tut::ensure("setSize", image->setSize(32, 32, 4));
+            const LLImageGL::DeviceCounts before = LLImageGL::deviceCounts();
+            tut::ensure("setImage", image->setImage(filled(32)->getData(), false));
+            ensureEqual("setImage: one re-specification", LLImageGL::deviceCounts().respecifications - before.respecifications,
+                        U64(1));
+            const U64 grown = ownKey("setImage's re-specification", image.get());
+            tut::ensure("setImage's re-specification: a new key", grown != second);
+            ensureEqual("setImage's re-specification: 32 wide", image->getRHITexture()->desc().width, U32(32));
+            image->destroyGLTexture();
+            tut::ensure("destroyGLTexture: no texture", image->getRHITexture() == nullptr);
+            ensureEqual("destroyGLTexture: 0", image->getTextureKey(), U64(0));
+            invariant("destroyGLTexture", image.get());
+            image = nullptr;
+
+            // scaleDown's re-specification on a mipmapped image, through respecifyForScale itself
+            {
+                LLPointer<LLImageGL> mipped = new LLImageGL(true, false);
+                tut::ensure("mipmapped: createGLTexture", mipped->createGLTexture(0, filled(16).get()));
+                const U64 made = ownKey("mipmapped: createGLTexture", mipped.get());
+                const LLImageGL::DeviceCounts counts = LLImageGL::deviceCounts();
+                Texture* respecified = respecifyForScale(*mipped, 1);
+                ensureEqual("respecifyForScale: one re-specification",
+                            LLImageGL::deviceCounts().respecifications - counts.respecifications, U64(1));
+                tut::ensure("respecifyForScale: a texture", respecified != nullptr);
+                tut::ensure("respecifyForScale: the image's", mipped->getRHITexture() == respecified);
+                const U64 scaled = ownKey("respecifyForScale", mipped.get());
+                ensureEqual("respecifyForScale: the key is the returned texture's id", scaled, respecified->id());
+                tut::ensure("respecifyForScale: a new key", scaled != made);
+                ensureEqual("respecifyForScale: 8 wide", respecified->desc().width, U32(8));
+                mipped->destroyGLTexture();
+                invariant("mipmapped: destroyGLTexture", mipped.get());
+                ensureEqual("mipmapped: destroyGLTexture: 0", mipped->getTextureKey(), U64(0));
+            }
+
+            // A cube's six faces after initGL, whose faces' own createGLTexture uploads come after createOwnTexture and
+            // shareTexture: t51's one Cube texture, and its id as every face's key
+            {
+                struct TestCubeMap : public LLCubeMap
+                {
+                    TestCubeMap() : LLCubeMap(false) {}
+                    LLImageGL* face(int i) const { return mImages[i].get(); }
+                };
+                LLPointer<TestCubeMap> cube = new TestCubeMap();
+                cube->initGL();
+                Texture* texture = cube->face(0)->getRHITexture();
+                tut::ensure("the cube's texture", texture != nullptr);
+                for (int i = 0; i < 6; ++i)
+                {
+                    const std::string at = "face " + std::to_string(i);
+                    invariant(at, cube->face(i));
+                    ensureEqual(at + ": the cube's id", cube->face(i)->getTextureKey(), texture->id());
+                }
+                cube = nullptr;
+            }
+            finishFrame(device);
+        }
+        std::ostringstream warnings;
+        log.streamto(warnings);
+        tut::ensure("t54b: no WARN: " + warnings.str(), occurrences(log, "WARNING") == 0);
+    }
+}
+
+namespace
+{
+    using namespace LL::RHI;
+
+    const MSL::Uniform* translatedUniform(const MSL::StageResult& stage, const std::string& name)
+    {
+        for (const MSL::Uniform& uniform : stage.reflection.uniforms)
+        {
+            if (uniform.name == name)
+            {
+                return &uniform;
+            }
+        }
+        return nullptr;
+    }
+
+    // The program's blocks as LLShaderMgr gives them (LLGLSLShader::uniformBlockNames).
+    const char* const BLOCK_NAMES[] = { "ReflectionProbes", "GLTFJoints", "GLTFNodes", "GLTFMaterials" };
+
+    /// t55: a uniform no stage reads is not in the reflection, as GL gives it no location (P3-01d E2).
+    API_AVAILABLE(macos(26.0)) void inactiveUniformTest(MetalDevice& device)
+    {
+        const ProgramDesc desc = programDesc("inactive test", R"(#version 400
+#define VERTEX_SHADER 1
+uniform mat4 modelview_projection_matrix;
+uniform vec4 unread;
+in vec3 position;
+in vec4 diffuse_color;
+in vec2 texcoord0;
+out vec4 vertex_color;
+out vec2 vary_texcoord0;
+void main()
+{
+    gl_Position = modelview_projection_matrix * vec4(position, 1);
+    vary_texcoord0 = texcoord0;
+    vertex_color = diffuse_color;
+}
+)", UI_FRAGMENT);
+        CaptureLog log(LLError::LEVEL_WARN);
+        Ref<Program> program = ready(device.createProgram(desc));
+        tut::ensure("the program is Ready", program.notNull() && program->status() == CompileStatus::Ready);
+        const ProgramReflection& reflection = program->reflection();
+        const MSL::Result translated = MSL::translate(metalProgramSource(desc));
+        tut::ensure("it translates: " + translated.error, translated.ok && translated.stages.size() == 2);
+        const MSL::Uniform* unread = translatedUniform(translated.stages[0], "unread");
+        tut::ensure("the vertex stage's block has unread, inactive", unread && !unread->active);
+        ensureEqual("two uniforms, as on GL", reflection.uniforms.size(), size_t(2));
+        tut::ensure("modelview_projection_matrix is reflected",
+                    uniformIndex(reflection, "modelview_projection_matrix") < reflection.uniforms.size());
+        const size_t index = uniformIndex(reflection, "unread");
+        ensureEqual("unread's index is the facade's no such uniform", index, reflection.uniforms.size());
+        tut::ensure("and the setters' check refuses it",
+                    validateUniform(reflection, U32(index), 16, 1).find("does not exist") != std::string::npos);
+        const MetalProgramLayout& layout = *metalProgramLayout(program.get());
+        ensurePlaces("vertex", translated.stages[0], reflection, layout.vertex);
+        ensureEqual("no WARN line", occurrences(log, "WARNING #RHI#"), size_t(0));
+    }
+
+    /// t56: the blocks of ProgramDesc::uniformBlocks have GL's reflection {name, size} and their slot's
+    /// bit in each stage that reads them; another block fails with one WARN (P3-01d E1).
+    API_AVAILABLE(macos(26.0)) void uniformBlockTest(MetalDevice& device)
+    {
+        const char* vertex = R"(#version 400
+#define VERTEX_SHADER 1
+layout(std140) uniform ReflectionProbes { vec4 probe[2]; };
+uniform mat4 modelview_projection_matrix;
+in vec3 position;
+in vec4 diffuse_color;
+in vec2 texcoord0;
+out vec4 vertex_color;
+out vec2 vary_texcoord0;
+void main()
+{
+    gl_Position = modelview_projection_matrix * vec4(position, 1);
+    vary_texcoord0 = texcoord0;
+    vertex_color = diffuse_color * probe[1];
+}
+)";
+        const char* fragment = R"(#version 400
+#define FRAGMENT_SHADER 1
+layout(std140) uniform ReflectionProbes { vec4 probe[2]; };
+layout(std140) uniform GLTFNodes { mat4 node[3]; };
+out vec4 frag_color;
+in vec2 vary_texcoord0;
+in vec4 vertex_color;
+void main()
+{
+    frag_color = vertex_color * probe[0] * node[2][0];
+}
+)";
+        ProgramDesc desc = programDesc("block test", vertex, fragment);
+        desc.uniformBlocks = BLOCK_NAMES;
+        {
+            CaptureLog log(LLError::LEVEL_WARN);
+            Ref<Program> program = ready(device.createProgram(desc));
+            tut::ensure("the program is Ready", program.notNull() && program->status() == CompileStatus::Ready);
+            const ProgramReflection& reflection = program->reflection();
+            ensureEqual("two blocks", reflection.blocks.size(), size_t(2));
+            ensureEqual("ReflectionProbes first, from the vertex stage", reflection.blocks[0].name, std::string("ReflectionProbes"));
+            ensureEqual("its size", reflection.blocks[0].size, 32u);
+            ensureEqual("then GLTFNodes", reflection.blocks[1].name, std::string("GLTFNodes"));
+            ensureEqual("its size", reflection.blocks[1].size, 192u);
+            const MetalProgramLayout& layout = *metalProgramLayout(program.get());
+            ensureEqual("the vertex stage reads slot 0", layout.vertex.uniformBlocks, 1u << 0);
+            ensureEqual("the fragment stage reads slots 0 and 2", layout.fragment.uniformBlocks, (1u << 0) | (1u << 2));
+            ensureEqual("no WARN line", occurrences(log, "WARNING #RHI#"), size_t(0));
+        }
+        {
+            CaptureLog log(LLError::LEVEL_WARN);
+            ProgramDesc other = programDesc("other block test", UI_VERTEX, R"(#version 400
+#define FRAGMENT_SHADER 1
+layout(std140) uniform Tints { vec4 tint; };
+in vec4 vertex_color;
+in vec2 vary_texcoord0;
+out vec4 frag_color;
+void main() { frag_color = vertex_color * tint; }
+)");
+            other.uniformBlocks = BLOCK_NAMES;
+            Ref<Program> program = ready(device.createProgram(other));
+            tut::ensure("a block past the list fails", program.notNull() && program->status() == CompileStatus::Failed);
+            ensureEqual("one WARN line", occurrences(log, "WARNING #RHI#"), size_t(1));
+            ensureEqual("it names the block", occurrences(log, "createProgram other block test: uniform block Tints"), size_t(1));
+        }
+    }
+
+    /// A translator that gives the fragment stage 17 textures (t57).
+    MSL::Result manyTexturesTranslator(const MSL::Program& program, const MSL::Options& options)
+    {
+        MSL::Result result = MSL::translate(program, options);
+        if (result.stages.size() == 2)
+        {
+            std::vector<MSL::Texture>& textures = result.stages[1].reflection.textures;
+            for (U32 i = U32(textures.size()); i < 17; ++i)
+            {
+                textures.push_back({ "extra" + std::to_string(i), "2d", i });
+            }
+        }
+        return result;
+    }
+
+    /// A translator whose fragment stage has 16 textures, the most the tables bind (t57).
+    MSL::Result sixteenTexturesTranslator(const MSL::Program& program, const MSL::Options& options)
+    {
+        MSL::Result result = manyTexturesTranslator(program, options);
+        if (result.stages.size() == 2)
+        {
+            result.stages[1].reflection.textures.pop_back();
+        }
+        return result;
+    }
+
+    /// A translator that puts a block in buffer 8 (t57).
+    MSL::Result buffer8Translator(const MSL::Program& program, const MSL::Options& options)
+    {
+        MSL::Result result = MSL::translate(program, options);
+        if (result.stages.size() == 2)
+        {
+            result.stages[1].reflection.blocks.push_back({ "GLTFMaterials", 16, 8 });
+        }
+        return result;
+    }
+
+    /// t57: a stage past the argument tables' 16 textures and samplers, or a block past buffer 7, fails at
+    /// createProgram with one WARN, so LLShaderMgr can fall back (P3-01d E3).
+    API_AVAILABLE(macos(26.0)) void stageLimitsTest(MetalDevice& device)
+    {
+        const auto status = [&device](const char* name, MetalTranslator translator, size_t& warnings, std::string& text)
+        {
+            setMetalTranslator(translator);
+            CaptureLog log(LLError::LEVEL_WARN);
+            ProgramDesc desc = uiProgramDesc();
+            desc.name = name;
+            desc.uniformBlocks = BLOCK_NAMES;
+            Ref<Program> program = ready(device.createProgram(desc));
+            warnings = occurrences(log, "WARNING #RHI#");
+            std::ostringstream caught;
+            log.streamto(caught);
+            text = caught.str();
+            return program.notNull() ? program->status() : CompileStatus::Failed;
+        };
+        size_t warnings = 0;
+        std::string text;
+        tut::ensure("17 textures fail", status("seventeen test", &manyTexturesTranslator, warnings, text) == CompileStatus::Failed);
+        ensureEqual("17 textures: one WARN line", warnings, size_t(1));
+        tut::ensure("17 textures: the WARN gives the stage and the count: " + text,
+                    text.find("createProgram seventeen test: the fragment stage uses 17 textures and samplers; Metal's "
+                              "argument tables bind 16 (decision 4: 128 textures, 16 samplers)") != std::string::npos);
+        tut::ensure("16 textures are Ready", status("sixteen test", &sixteenTexturesTranslator, warnings, text) == CompileStatus::Ready);
+        ensureEqual("16 textures: no WARN line", warnings, size_t(0));
+        tut::ensure("a block in buffer 8 fails", status("buffer 8 test", &buffer8Translator, warnings, text) == CompileStatus::Failed);
+        ensureEqual("buffer 8: one WARN line", warnings, size_t(1));
+        tut::ensure("buffer 8: the WARN names the block: " + text,
+                    text.find("createProgram buffer 8 test: uniform block GLTFMaterials is in buffer 8") != std::string::npos);
+        setMetalTranslator(&MSL::translate);
+    }
+
+    /// t58: an array read as a[1] in the vertex stage and a[4] in the fragment stage has arraySize 5,
+    /// the larger of the stages' active sizes, as GL reports it (P3-01d E17).
+    API_AVAILABLE(macos(26.0)) void stageArraySizeTest(MetalDevice& device)
+    {
+        const ProgramDesc desc = programDesc("array test", R"(#version 400
+#define VERTEX_SHADER 1
+uniform mat4 modelview_projection_matrix;
+uniform vec4 a[8];
+in vec3 position;
+in vec4 diffuse_color;
+in vec2 texcoord0;
+out vec4 vertex_color;
+out vec2 vary_texcoord0;
+void main()
+{
+    gl_Position = modelview_projection_matrix * vec4(position, 1);
+    vary_texcoord0 = texcoord0;
+    vertex_color = diffuse_color * a[1];
+}
+)", R"(#version 400
+#define FRAGMENT_SHADER 1
+uniform vec4 a[8];
+in vec2 vary_texcoord0;
+in vec4 vertex_color;
+out vec4 frag_color;
+void main() { frag_color = vertex_color * a[4]; }
+)");
+        Ref<Program> program = ready(device.createProgram(desc));
+        tut::ensure("the program is Ready", program.notNull() && program->status() == CompileStatus::Ready);
+        const ProgramReflection& reflection = program->reflection();
+        const size_t a = uniformIndex(reflection, "a");
+        tut::ensure("a is reflected", a < reflection.uniforms.size());
+        ensureEqual("a's arraySize is the fragment stage's 5", reflection.uniforms[a].arraySize, 5u);
+        const MetalProgramLayout& layout = *metalProgramLayout(program.get());
+        ensureEqual("the vertex place keeps the declared array", layout.vertex.places[a].size, 8u * 16u);
+        ensureEqual("the fragment place keeps the declared array", layout.fragment.places[a].size, 8u * 16u);
+    }
+
+    // P3-01d S5: programs in the background ------------------------------------------------------
+
+    /// Polls the program until it is no longer Pending, at most ms, without wait().
+    bool settlesWithin(Program& program, int ms)
+    {
+        const auto until = std::chrono::steady_clock::now() + std::chrono::milliseconds(ms);
+        while (program.status() == CompileStatus::Pending)
+        {
+            if (std::chrono::steady_clock::now() > until)
+            {
+                return false;
+            }
+            std::this_thread::sleep_for(std::chrono::milliseconds(2));
+        }
+        return true;
+    }
+
+    /// Polls the handlers' state until none is outstanding, at most ms.
+    bool handlersDoneWithin(const std::shared_ptr<MetalCompileState>& state, int ms)
+    {
+        std::unique_lock<std::mutex> lock(state->mutex);
+        return state->changed.wait_for(lock, std::chrono::milliseconds(ms), [&state]() { return state->outstanding == 0; });
+    }
+
+    /// A factor for a vertex text of its own: an integer that a float holds exactly, from 2 to
+    /// 2^24 - 1, drawn at random. Metal keeps compiled libraries across processes and then runs
+    /// the handler inside newLibraryWithDescriptor:completionHandler: (a run-time probe, P3-01e S4:
+    /// a text compiled by an earlier process returned after 206 ms with its sleeping handler done,
+    /// a new one after 3 ms). The clock's factor before took 2400 values on this Mac (steady_clock
+    /// moves in steps of 125/3 ns), so a later run met an earlier run's text (t66).
+    U32 uniqueFactor()
+    {
+        std::random_device entropy;
+        return std::uniform_int_distribution<U32>(2u, (1u << 24) - 1u)(entropy);
+    }
+
+    // The recording translator: how many translations, and whether a login program was translated
+    // on the creating thread before createProgram returned.
+    std::atomic<int> sTranslations{ 0 };
+    std::atomic<int> sLoginOnCreator{ 0 };
+    std::atomic<bool> sCreating{ false };
+    std::atomic<pthread_t> sCreator{ nullptr };
+
+    MSL::Result recordingTranslator(const MSL::Program& program, const MSL::Options& options)
+    {
+        ++sTranslations;
+        if (program.name.find("login") != std::string::npos && sCreating.load() &&
+            pthread_equal(pthread_self(), sCreator.load()))
+        {
+            ++sLoginOnCreator;
+        }
+        return MSL::translate(program, options);
+    }
+
+    void recordTranslations()
+    {
+        sTranslations = 0;
+        sLoginOnCreator = 0;
+        sCreator = pthread_self();
+        setMetalTranslator(&recordingTranslator);
+    }
+
+    /// t59 (R8): with the pool paused, a login screen program made after three others is translated
+    /// on the creating thread inside createProgram, and is Ready without wait() while they are Pending.
+    API_AVAILABLE(macos(26.0)) void loginFirstTest(MetalDevice& device)
+    {
+        recordTranslations();
+        device.pausePrograms(true);
+        std::vector<Ref<Program>> others;
+        for (int i = 0; i < 3; ++i)
+        {
+            others.push_back(device.createProgram(programDesc("other " + std::to_string(i) + " test", UI_VERTEX, UI_FRAGMENT)));
+        }
+        ProgramDesc login = programDesc("login test", UI_VERTEX, UI_FRAGMENT);
+        login.loginScreen = true;
+        sCreating = true;
+        Ref<Program> first = device.createProgram(login);
+        sCreating = false;
+        tut::ensure("the login program is Ready within 5 s without wait()", settlesWithin(*first.get(), 5000));
+        ensureEqual("the login program is Ready", int(first->status()), int(CompileStatus::Ready));
+        ensureEqual("it was translated on the creating thread, inside createProgram", sLoginOnCreator.load(), 1);
+        for (const Ref<Program>& other : others)
+        {
+            ensureEqual("a program in the paused pool is Pending", int(other->status()), int(CompileStatus::Pending));
+        }
+        ensureEqual("only the login program is translated", sTranslations.load(), 1);
+        device.pausePrograms(false);
+        device.endFrame(); // E8: the frame's end closes their group
+        for (const Ref<Program>& other : others)
+        {
+            tut::ensure("resumed: Ready within 5 s", settlesWithin(*other.get(), 5000));
+            ensureEqual("resumed: Ready", int(other->status()), int(CompileStatus::Ready));
+        }
+        ensureEqual("the pool translated the three", sTranslations.load(), 4);
+        ensureEqual("one translation on the calling thread", device.translatedOnCaller(), U64(1));
+        setMetalTranslator(&MSL::translate);
+    }
+
+    /// t60 (E9): wait() on a program in the paused pool's queue takes it and is Ready within 5 s.
+    API_AVAILABLE(macos(26.0)) void pullForwardTest(MetalDevice& device)
+    {
+        device.pausePrograms(true);
+        Ref<Program> program = device.createProgram(programDesc("queued test", UI_VERTEX, UI_FRAGMENT));
+        ensureEqual("Pending in the paused pool", int(program->status()), int(CompileStatus::Pending));
+        const U64 before = device.translatedOnCaller();
+        std::atomic<bool> done{ false };
+        std::thread waiter([&program, &done]()
+        {
+            program->wait();
+            done = true;
+        });
+        const auto until = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+        while (!done.load() && std::chrono::steady_clock::now() < until)
+        {
+            std::this_thread::sleep_for(std::chrono::milliseconds(2));
+        }
+        const bool inTime = done.load();
+        device.pausePrograms(false); // a wait() that did not take its job ends now
+        waiter.join();
+        tut::ensure("wait() on a queued program returns within 5 s", inTime);
+        ensureEqual("Ready", int(program->status()), int(CompileStatus::Ready));
+        ensureEqual("translated on the waiting thread", device.translatedOnCaller(), before + 1);
+    }
+
+    /// t61 (flag E): createProgram copies the description; its strings and the uniform blocks' names
+    /// are overwritten after it returns, and the program is Ready with the right reflection.
+    API_AVAILABLE(macos(26.0)) void descCopyTest(MetalDevice& device)
+    {
+        device.pausePrograms(true);
+        char nodes[16] = "GLTFNodes";
+        const char* names[3] = { "ReflectionProbes", "GLTFJoints", nodes };
+        ProgramDesc desc = programDesc("copy test", UI_VERTEX, R"(#version 400
+#define FRAGMENT_SHADER 1
+layout(std140) uniform GLTFNodes { mat4 node[3]; };
+out vec4 frag_color;
+in vec2 vary_texcoord0;
+in vec4 vertex_color;
+void main()
+{
+    frag_color = vertex_color * node[2][0];
+}
+)");
+        desc.uniformBlocks = names;
+        Ref<Program> program = device.createProgram(desc);
+        std::strcpy(nodes, "Overwritten");
+        names[0] = names[1] = names[2] = "Wrong";
+        desc.name.assign(desc.name.size(), 'x');
+        for (StageSource& stage : desc.stages)
+        {
+            for (std::string& unit : stage.units)
+            {
+                unit.assign(unit.size(), ' ');
+            }
+        }
+        desc.reservedAttributes.clear();
+        device.pausePrograms(false);
+        CaptureLog log(LLError::LEVEL_WARN);
+        program->wait();
+        ensureEqual("Ready", int(program->status()), int(CompileStatus::Ready));
+        ensureEqual("no WARN line", occurrences(log, "WARNING #RHI#"), size_t(0));
+        ensureEqual("one block", program->reflection().blocks.size(), size_t(1));
+        ensureEqual("GLTFNodes", program->reflection().blocks[0].name, std::string("GLTFNodes"));
+        ensureEqual("its size", program->reflection().blocks[0].size, 192u);
+        ensureEqual("at slot 2", metalProgramLayout(program.get())->fragment.uniformBlocks, 1u << 2);
+        tut::ensure("the vertex stage reads position", (program->reflection().attributeMask & 1u) != 0);
+    }
+
+    /// t62 (R10): the translator is the one createProgram saw, not the one when the pool takes the job.
+    API_AVAILABLE(macos(26.0)) void translatorAtCreateTest(MetalDevice& device)
+    {
+        device.pausePrograms(true);
+        setMetalTranslator(&brokenTranslator);
+        Ref<Program> program = device.createProgram(programDesc("translator test", UI_VERTEX, UI_FRAGMENT));
+        setMetalTranslator(&MSL::translate);
+        CaptureLog log(LLError::LEVEL_WARN);
+        device.pausePrograms(false);
+        program->wait();
+        ensureEqual("Failed with the translator createProgram saw", int(program->status()), int(CompileStatus::Failed));
+        ensureEqual("one WARN line", occurrences(log, "WARNING #RHI#"), size_t(1));
+        ensureEqual("the fragment stage", occurrences(log, "createProgram translator test: the fragment stage does not compile: "),
+                    size_t(1));
+    }
+
+    /// R13's scan: the text with comments blanked as gl-ratchet.py blanks them, and string and
+    /// character literals too unless strings is true.
+    std::string blanked(const std::string& text, bool strings)
+    {
+        std::string out = text;
+        const size_t n = text.size();
+        size_t i = 0;
+        const auto blank = [&out, &text](size_t from, size_t to)
+        {
+            for (size_t k = from; k < to; ++k)
+            {
+                out[k] = text[k] == '\n' ? '\n' : ' ';
+            }
+        };
+        while (i < n)
+        {
+            const char c = text[i];
+            const bool word = i > 0 && (std::isalnum(static_cast<unsigned char>(text[i - 1])) || text[i - 1] == '_');
+            if (c == '/' && i + 1 < n && text[i + 1] == '/')
+            {
+                const size_t end = std::min(text.find('\n', i), n);
+                blank(i, end);
+                i = end;
+            }
+            else if (c == '/' && i + 1 < n && text[i + 1] == '*')
+            {
+                const size_t close = text.find("*/", i + 2);
+                const size_t end = close == std::string::npos ? n : close + 2;
+                blank(i, end);
+                i = end;
+            }
+            else if (c == 'R' && !word && i + 1 < n && text[i + 1] == '"')
+            {
+                const size_t open = text.find('(', i + 2);
+                const std::string close = ")" + text.substr(i + 2, open - i - 2) + "\"";
+                const size_t at = open == std::string::npos ? std::string::npos : text.find(close, open);
+                const size_t end = at == std::string::npos ? n : at + close.size();
+                if (!strings)
+                {
+                    blank(i, end);
+                }
+                i = end;
+            }
+            else if (c == '"' || (c == '\'' && !word))
+            {
+                size_t j = i + 1;
+                while (j < n && text[j] != c && text[j] != '\n')
+                {
+                    j += text[j] == '\\' ? 2 : 1;
+                }
+                const size_t end = std::min(j + 1, n);
+                if (!strings)
+                {
+                    blank(i, end);
+                }
+                i = end;
+            }
+            else
+            {
+                ++i;
+            }
+        }
+        return out;
+    }
+
+    /// What of LLGLSLShader, LLShaderMgr and the settings the code of a file uses (R13).
+    std::vector<std::string> lockHits(const std::string& text)
+    {
+        static const char* const HEADERS[] = { "llglslshader.h", "llshadermgr.h", "llviewercontrol.h", "llcontrol.h" };
+        static const char* const NAMES[] = { "LLGLSLShader::", "LLShaderMgr::", "gSavedSettings", "LLCachedControl<",
+                                             "LLControlGroup" };
+        std::vector<std::string> hits;
+        const std::regex include(R"(^[ \t]*#[ \t]*(include|import)[ \t]*[<"]([^>"]*)[>"])");
+        const std::string withStrings = blanked(text, true);
+        std::istringstream lines(withStrings);
+        for (std::string line; std::getline(lines, line);)
+        {
+            std::smatch match;
+            if (std::regex_search(line, match, include))
+            {
+                const std::string path = match[2].str();
+                const std::string base = path.substr(path.find_last_of('/') == std::string::npos ? 0 : path.find_last_of('/') + 1);
+                for (const char* header : HEADERS)
+                {
+                    if (base == header)
+                    {
+                        hits.push_back("#include " + path);
+                    }
+                }
+            }
+        }
+        const std::string code = blanked(text, false);
+        for (const char* name : NAMES)
+        {
+            if (code.find(name) != std::string::npos)
+            {
+                hits.push_back(name);
+            }
+        }
+        return hits;
+    }
+
+    /// t63 (R13): the backend's code and the translator's include and use nothing of LLGLSLShader,
+    /// LLShaderMgr or the settings; a scratch copy that does is caught. This process links neither
+    /// LLShaderMgr nor a settings group, and its programs are made all the same.
+    void lockTest()
+    {
+        const std::filesystem::path dir = std::filesystem::path(__FILE__).parent_path().parent_path();
+        size_t files = 0;
+        bool pipeline = false;
+        for (const std::filesystem::directory_entry& entry : std::filesystem::directory_iterator(dir))
+        {
+            const std::string name = entry.path().filename().string();
+            const std::string ext = entry.path().extension().string();
+            const bool metal = name.rfind("llrhimetal", 0) == 0 && (ext == ".mm" || ext == ".h");
+            if (!metal && name != "llrhimsl.cpp" && name != "llrhimsl.h")
+            {
+                continue;
+            }
+            std::ifstream file(entry.path());
+            std::stringstream text;
+            text << file.rdbuf();
+            tut::ensure(name + " can be read", file.good() && !text.str().empty());
+            const std::vector<std::string> hits = lockHits(text.str());
+            tut::ensure(name + " uses " + (hits.empty() ? std::string() : hits.front()), hits.empty());
+            ++files;
+            pipeline = pipeline || name == "llrhimetalpipeline-objc.mm";
+        }
+        tut::ensure("the scan has llrhimetalpipeline-objc.mm in " + dir.string(), pipeline);
+        tut::ensure("the scan has the backend's files and the translator's", files >= 10);
+        const std::string scratch = "#include \"linden_common.h\"\nvoid f()\n{\n    LLShaderMgr::instance()->setShaders();\n}\n";
+        ensureEqual("a scratch copy with LLShaderMgr::instance() is caught", lockHits(scratch).size(), size_t(1));
+        ensureEqual("an include is caught", lockHits("#include \"../llshadermgr.h\"\n").size(), size_t(1));
+        ensureEqual("a comment is not", lockHits("// LLShaderMgr::instance(), gSavedSettings\n").size(), size_t(0));
+        ensureEqual("a string is not", lockHits("const char* s = \"LLGLSLShader::bind\";\n").size(), size_t(0));
+    }
+
+    /// t64 (E9): a fragment stage that does not compile, a geometry stage and a vertex library
+    /// Metal refuses are Failed after wait() with one WARN line each; the last has Metal's text.
+    API_AVAILABLE(macos(26.0)) void failedPathsTest(MetalDevice& device)
+    {
+        const auto ensureFailed = [&device](const std::string& what, const ProgramDesc& desc, const std::string& reason)
+        {
+            CaptureLog log(LLError::LEVEL_WARN);
+            Ref<Program> program = device.createProgram(desc);
+            program->wait(); // the capture is read after it (flag J)
+            ensureEqual(what + ": Failed", int(program->status()), int(CompileStatus::Failed));
+            ensureEqual(what + ": one WARN line", occurrences(log, "WARNING #RHI#"), size_t(1));
+            std::ostringstream warning;
+            log.streamto(warning);
+            tut::ensure(what + ": the WARN names the program and why: " + warning.str(),
+                        occurrences(log, "createProgram " + desc.name + ": ") == 1 && occurrences(log, reason) == 1);
+            return warning.str();
+        };
+        setMetalTranslator(&brokenTranslator);
+        ensureFailed("fragment", programDesc("broken fragment test", UI_VERTEX, UI_FRAGMENT),
+                     "the fragment stage does not compile: ");
+        setMetalTranslator(&MSL::translate);
+        ProgramDesc geometry = programDesc("geometry stage test", UI_VERTEX, UI_FRAGMENT);
+        geometry.stages.push_back({ ShaderStage::Geometry, { "#version 400\nvoid main() {}\n" } });
+        ensureFailed("geometry", geometry, "geometry stage, which Metal does not have");
+        device.failNextCompile();
+        const std::string warning = ensureFailed("compile", programDesc("vertex compile test", UI_VERTEX, UI_FRAGMENT),
+                                                 "the vertex stage does not compile: ");
+        const std::string metal = warning.substr(warning.find("does not compile: ") + 18);
+        tut::ensure("the compile WARN has Metal's text: " + warning, metal.find("error") != std::string::npos);
+        tut::ensure("the next program compiles again",
+                    ready(device.createProgram(uiProgramDesc()))->status() == CompileStatus::Ready);
+    }
+
+    /// t65 (E5): a released program in the queue is never translated, and one released while its
+    /// libraries compile drops the result, here a failure, without a WARN line.
+    API_AVAILABLE(macos(26.0)) void cancelTest(MetalDevice& device)
+    {
+        recordTranslations();
+        device.pausePrograms(true);
+        Ref<Program> gone = device.createProgram(programDesc("released test", UI_VERTEX, UI_FRAGMENT));
+        gone = nullptr;
+        device.pausePrograms(false);
+        Ref<Program> kept = ready(device.createProgram(programDesc("kept test", UI_VERTEX, UI_FRAGMENT)));
+        ensureEqual("the kept program is Ready", int(kept->status()), int(CompileStatus::Ready));
+        std::this_thread::sleep_for(std::chrono::milliseconds(100)); // the pool has taken the released job
+        ensureEqual("the released program was never translated", sTranslations.load(), 1);
+
+        CaptureLog log(LLError::LEVEL_WARN);
+        ProgramDesc login = programDesc("compiling login test", UI_VERTEX, UI_FRAGMENT);
+        login.loginScreen = true;
+        device.failNextCompile();
+        device.sleepNextHandlerMs(200);
+        Ref<Program> compiling = device.createProgram(login);
+        ensureEqual("compiling: Pending", int(compiling->status()), int(CompileStatus::Pending));
+        compiling = nullptr;
+        tut::ensure("the handlers report within 5 s", handlersDoneWithin(device.compileState(), 5000));
+        ensureEqual("the dropped failure gives no WARN line", occurrences(log, "WARNING #RHI#"), size_t(0));
+        ensureEqual("two translations", sTranslations.load(), 2);
+        setMetalTranslator(&MSL::translate);
+    }
+
+    /// t66 (E18): ~MetalDevice with jobs in the queue and a library handler asleep for 200 ms
+    /// returns after every handler has reported, and none reports after it.
+    API_AVAILABLE(macos(26.0)) void shutdownTest(Ref<Device>& owner, MetalDevice& device)
+    {
+        const std::shared_ptr<MetalCompileState> state = device.compileState();
+        device.pausePrograms(true);
+        {
+            std::vector<Ref<Program>> programs;
+            for (int i = 0; i < 3; ++i)
+            {
+                programs.push_back(device.createProgram(programDesc("queued " + std::to_string(i) + " test", UI_VERTEX, UI_FRAGMENT)));
+            }
+            // A vertex text of its own: with the UI program's, compiled before in the process, Metal
+            // ran the asleep handler inside createProgram (S6, a run-time observation: 232 ms, Ready;
+            // with this text 2.5-3.3 ms and one handler outstanding). Also new to earlier processes
+            // (uniqueFactor).
+            std::string vertex = UI_VERTEX;
+            const std::string plain = "vertex_color = diffuse_color;";
+            const U32 unique = uniqueFactor();
+            vertex.replace(vertex.find(plain), plain.size(), "vertex_color = diffuse_color * " + std::to_string(unique) + ".0;");
+            ProgramDesc login = programDesc("shutdown login test", vertex.c_str(), UI_FRAGMENT);
+            login.loginScreen = true;
+            device.sleepNextHandlerMs(200);
+            programs.push_back(device.createProgram(login));
+            std::lock_guard<std::mutex> lock(state->mutex);
+            tut::ensure("a handler is outstanding", state->outstanding > 0);
+        }
+        CaptureLog log(LLError::LEVEL_WARN);
+        owner = nullptr;
+        U64 outstanding = 0;
+        {
+            std::lock_guard<std::mutex> lock(state->mutex);
+            outstanding = state->outstanding;
+        }
+        ensureEqual("no handler is outstanding when ~MetalDevice returns", outstanding, U64(0));
+        std::this_thread::sleep_for(std::chrono::milliseconds(400));
+        std::lock_guard<std::mutex> lock(state->mutex);
+        tut::ensure("the device closed", state->closing);
+        ensureEqual("no handler after the device closed", state->handlersAfterClose, U64(0));
+        ensureEqual("no WARN line", occurrences(log, "WARNING #RHI#"), size_t(0));
+    }
+
+    // E8: stable groups with a fall-back to single programs (P3-01d S6) ----------------------------
+
+    size_t occurrences(const std::string& text, const std::string& what)
+    {
+        size_t count = 0;
+        for (size_t at = text.find(what); at != std::string::npos; at = text.find(what, at + what.size()))
+        {
+            ++count;
+        }
+        return count;
+    }
+
+    /// The program's vertex and fragment MSL, as the translator gives them.
+    std::array<std::string, 2> stagesOf(const ProgramDesc& desc)
+    {
+        const MSL::Result translated = MSL::translate(metalProgramSource(desc));
+        tut::ensure(desc.name + " translates: " + translated.error, translated.ok && translated.stages.size() == 2);
+        tut::ensure("vertex, then fragment", translated.stages[0].stage == MSL::Stage::Vertex &&
+                                                 translated.stages[1].stage == MSL::Stage::Fragment);
+        return { translated.stages[0].msl, translated.stages[1].msl };
+    }
+
+    /// Program i of t69-t73: the UI program with a fragment constant of its own.
+    ProgramDesc memberDesc(const std::string& name, size_t i)
+    {
+        static std::vector<std::string> fragments;
+        while (fragments.size() <= i)
+        {
+            fragments.push_back(std::string(R"(#version 400
+#define FRAGMENT_SHADER 1
+out vec4 frag_color;
+uniform sampler2D diffuseMap;
+in vec2 vary_texcoord0;
+in vec4 vertex_color;
+void main()
+{
+    frag_color = vertex_color * texture(diffuseMap, vary_texcoord0.xy) * )") + std::to_string(fragments.size() + 1) + ".0;\n}\n");
+        }
+        return programDesc(name, UI_VERTEX, fragments[i].c_str());
+    }
+
+    /// A program named "broken ..." gets fragment MSL that does not compile, as brokenTranslator.
+    MSL::Result namedBrokenTranslator(const MSL::Program& program, const MSL::Options& options)
+    {
+        return program.name.starts_with("broken") ? brokenTranslator(program, options) : MSL::translate(program, options);
+    }
+
+    /// t69: "stable 0 test" is translated 150 ms late while sSlowFirst is set.
+    std::atomic<bool> sSlowFirst{ false };
+
+    MSL::Result slowFirstTranslator(const MSL::Program& program, const MSL::Options& options)
+    {
+        if (sSlowFirst.load() && program.name == "stable 0 test")
+        {
+            std::this_thread::sleep_for(std::chrono::milliseconds(150));
+        }
+        return MSL::translate(program, options);
+    }
+
+    /// t67: a program whose stages index local arrays, which SPIRV-Cross gives spvUnsafeArray.
+    ProgramDesc helperProgramDesc()
+    {
+        return programDesc("helper test", R"(#version 400
+#define VERTEX_SHADER 1
+uniform mat4 modelview_projection_matrix;
+in vec3 position;
+in vec4 diffuse_color;
+out vec4 vertex_color;
+void main()
+{
+    vec4 w[3] = vec4[3](vec4(1.0), vec4(0.5), diffuse_color);
+    gl_Position = modelview_projection_matrix * vec4(position, 1);
+    vertex_color = w[int(position.x) & 1];
+}
+)", R"(#version 400
+#define FRAGMENT_SHADER 1
+out vec4 frag_color;
+in vec4 vertex_color;
+void main()
+{
+    vec4 w[3] = vec4[3](vec4(1.0), vec4(0.5), vertex_color);
+    frag_color = w[int(vertex_color.x * 2.0)];
+}
+)");
+    }
+
+    API_AVAILABLE(macos(26.0)) IdMTLLibrary compileProbe(MetalDevice& device, const std::string& text, std::string& error)
+    {
+        MTL4LibraryDescriptor* descriptor = [MTL4LibraryDescriptor new];
+        descriptor.source = metalString(text);
+        descriptor.options = metalCompileOptions();
+        descriptor.name = @"group probe";
+        dispatch_semaphore_t done = dispatch_semaphore_create(0);
+        __block IdMTLLibrary made = nil;
+        __block std::string said;
+        [device.compiler() newLibraryWithDescriptor:descriptor completionHandler:^(id<MTLLibrary> library, NSError* failure)
+        {
+            made = library;
+            said = failure ? failure.localizedDescription.UTF8String : "";
+            dispatch_semaphore_signal(done);
+        }];
+        tut::ensure("the probe's library reports within 10 s",
+                    dispatch_semaphore_wait(done, dispatch_time(DISPATCH_TIME_NOW, 10 * NSEC_PER_SEC)) == 0);
+        error = said;
+        return made;
+    }
+
+    /// t67 (flag A): the UI and the packing programs' real MSL in one MTL4LibraryDescriptor, each
+    /// stage in a namespace of its own, compiles under the binary's validation without a word from
+    /// Metal; SPIRV-Cross's helpers compile in more than one namespace; the library's functionNames
+    /// (MTLLibrary.h:564, the names :509 takes) are v0::main0 to f1::main0, and they resolve by
+    /// MTL4LibraryFunctionDescriptor (MTL4LibraryFunctionDescriptor.h:24-28) into pipelines.
+    API_AVAILABLE(macos(26.0)) void groupProbeTest(MetalDevice& device)
+    {
+        // UI and packing have no SPIRV-Cross helper (spvUnsafeArray 0 times in the first run), so a
+        // third member whose stages have local arrays brings one into two namespaces.
+        const std::array<std::string, 2> stages[3] = { stagesOf(uiProgramDesc()), stagesOf(packingProgramDesc()),
+                                                       stagesOf(helperProgramDesc()) };
+        const std::string text = metalGroupSource(stages);
+        const size_t first = text.find("namespace v0\n{\n");
+        tut::ensure("the namespaces follow the lifted lines", first != std::string::npos);
+        ensureEqual("<metal_stdlib> once", occurrences(text, "#include <metal_stdlib>"), size_t(1));
+        ensureEqual("using namespace metal; once", occurrences(text, "using namespace metal;"), size_t(1));
+        tut::ensure("no #include or #pragma inside a namespace",
+                    text.find("#include", first) == std::string::npos && text.find("#pragma", first) == std::string::npos);
+        const size_t helpers = occurrences(text, "struct spvUnsafeArray");
+        std::string error;
+        IdMTLLibrary library = compileProbe(device, text, error);
+        std::string names;
+        for (NSString* name in library.functionNames)
+        {
+            names += std::string(names.empty() ? "" : ", ") + name.UTF8String;
+        }
+        std::fprintf(stderr, "Group probe (t67): %zu bytes, spvUnsafeArray %zu times, library %s, %zu functions\n", text.size(),
+                     helpers, library ? "made" : "not made", size_t(library.functionNames.count));
+        LL_INFOS("RHI") << "Group probe: " << text.size() << " bytes, spvUnsafeArray " << helpers
+                        << " times, library " << (library ? "made" : "not made") << ", functionNames " << names
+                        << ", Metal said '" << error << "'" << LL_ENDL;
+        tut::ensure("the helpers both programs have are in two namespaces at least", helpers >= 2);
+        tut::ensure("the group's library is made: " + error, library != nil);
+        ensureEqual("Metal says nothing about it", error, std::string());
+        ensureEqual("six functions", size_t(library.functionNames.count), size_t(6));
+        ensureEqual("main0_out in each namespace", occurrences(text, "struct main0_out"), size_t(6));
+        for (size_t i = 0; i < 3; ++i)
+        {
+            const std::string vertex = "v" + std::to_string(i) + "::main0";
+            const std::string fragment = "f" + std::to_string(i) + "::main0";
+            for (const std::string& name : { vertex, fragment })
+            {
+                tut::ensure(name + " is among functionNames: " + names, occurrences(", " + names + ",", ", " + name + ",") == 1);
+            }
+            const ProgramDesc desc = i == 0 ? uiProgramDesc() : i == 1 ? packingProgramDesc() : helperProgramDesc();
+            Ref<Program> program = ready(device.createProgram(desc));
+            MTL4LibraryFunctionDescriptor* vertexFunction = [MTL4LibraryFunctionDescriptor new];
+            vertexFunction.name = metalString(vertex);
+            vertexFunction.library = library;
+            MTL4LibraryFunctionDescriptor* fragmentFunction = [MTL4LibraryFunctionDescriptor new];
+            fragmentFunction.name = metalString(fragment);
+            fragmentFunction.library = library;
+            MTL4RenderPipelineDescriptor* descriptor = [MTL4RenderPipelineDescriptor new];
+            descriptor.label = metalString("group probe " + desc.name);
+            descriptor.vertexFunctionDescriptor = vertexFunction;
+            descriptor.fragmentFunctionDescriptor = fragmentFunction;
+            descriptor.vertexDescriptor = metalVertexDescriptor(program->reflection().attributeMask);
+            descriptor.rasterSampleCount = 1;
+            descriptor.inputPrimitiveTopology = MTLPrimitiveTopologyClassTriangle;
+            descriptor.colorAttachments[0].pixelFormat = MTLPixelFormatRGBA8Unorm;
+            NSError* failure = nil;
+            id<MTLRenderPipelineState> state = [device.compiler() newRenderPipelineStateWithDescriptor:descriptor
+                                                                                   compilerTaskOptions:nil
+                                                                                                 error:&failure];
+            tut::ensure(vertex + " and " + fragment + " make a pipeline: " +
+                            (failure ? failure.localizedDescription.UTF8String : ""),
+                        state != nil);
+        }
+    }
+
+    API_AVAILABLE(macos(26.0)) Ref<Device> metalDevice()
+    {
+        DeviceCreateInfo info;
+        info.backend = chooseBackend(BackendType::Metal);
+        Ref<Device> device = Device::create(info);
+        tut::ensure("a second Metal device", device.notNull());
+        return device;
+    }
+
+    /// t69 (E8): 20 ordinary programs made twice in the same order, each time on a new device, with
+    /// other timing in the pool (the second time held around members 10-13 and member 0 translated
+    /// 150 ms late), give the same two groups, of 16 and 4.
+    API_AVAILABLE(macos(26.0)) void stableGroupsTest(MetalDevice& device)
+    {
+        setMetalTranslator(&slowFirstTranslator);
+        const auto run = [](MetalDevice& on, bool other)
+        {
+            sSlowFirst = other;
+            const auto start = std::chrono::steady_clock::now();
+            std::vector<Ref<Program>> programs;
+            for (size_t i = 0; i < 20; ++i)
+            {
+                on.pausePrograms(other && i >= 10 && i < 14);
+                programs.push_back(on.createProgram(memberDesc("stable " + std::to_string(i) + " test", i)));
+            }
+            on.pausePrograms(false);
+            for (Ref<Program>& program : programs)
+            {
+                program->wait();
+                ensureEqual(program->debugName() + " is Ready", int(program->status()), int(CompileStatus::Ready));
+            }
+            const double ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - start).count();
+            const std::vector<MetalGroupRecord> groups = on.groupSources();
+            std::fprintf(stderr, "Groups (t69): 20 programs Ready in %.1f ms%s, %zu groups of %u and %u\n", ms,
+                         other ? " (held at 10-13, member 0 late)" : "", groups.size(), groups.empty() ? 0u : groups[0].members,
+                         groups.size() < 2 ? 0u : groups[1].members);
+            sSlowFirst = false;
+            return groups;
+        };
+        const std::vector<MetalGroupRecord> once = run(device, false);
+        Ref<Device> owner = metalDevice();
+        const std::vector<MetalGroupRecord> again = run(*static_cast<MetalDevice*>(owner.get()), true);
+        owner = nullptr;
+        setMetalTranslator(&MSL::translate);
+        ensureEqual("two groups", once.size(), size_t(2));
+        ensureEqual("two groups again", again.size(), size_t(2));
+        ensureEqual("16 members", once[0].members, 16u);
+        ensureEqual("4 members", once[1].members, 4u);
+        for (size_t i = 0; i < 2; ++i)
+        {
+            ensureEqual("the same members", again[i].members, once[i].members);
+            tut::ensure("group " + std::to_string(i) + "'s source is the same", again[i].digest == once[i].digest);
+        }
+    }
+
+    /// t70 (E8): wait() on member 3 of an open group closes it with members 0-3, which are Ready;
+    /// the next program opens a new group.
+    API_AVAILABLE(macos(26.0)) void closeAtWaitTest(MetalDevice& device)
+    {
+        std::vector<Ref<Program>> programs;
+        for (size_t i = 0; i < 4; ++i)
+        {
+            programs.push_back(device.createProgram(memberDesc("wait " + std::to_string(i) + " test", i)));
+        }
+        programs[3]->wait();
+        for (const Ref<Program>& program : programs)
+        {
+            ensureEqual(program->debugName() + " is Ready", int(program->status()), int(CompileStatus::Ready));
+        }
+        std::vector<MetalGroupRecord> groups = device.groupSources();
+        ensureEqual("one group", groups.size(), size_t(1));
+        ensureEqual("of members 0-3", groups[0].members, 4u);
+        Ref<Program> next = ready(device.createProgram(memberDesc("wait 4 test", 4)));
+        ensureEqual("the next is Ready", int(next->status()), int(CompileStatus::Ready));
+        groups = device.groupSources();
+        ensureEqual("a new group", groups.size(), size_t(2));
+        ensureEqual("the next group's number", groups[1].number, U64(1));
+        ensureEqual("of the next program", groups[1].members, 1u);
+    }
+
+    /// t71 (E8): an open group of 5 is not sent before endFrame closes it; then its members become
+    /// Ready without wait().
+    API_AVAILABLE(macos(26.0)) void closeAtEndFrameTest(MetalDevice& device)
+    {
+        std::vector<Ref<Program>> programs;
+        for (size_t i = 0; i < 5; ++i)
+        {
+            programs.push_back(device.createProgram(memberDesc("frame " + std::to_string(i) + " test", i)));
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds(200)); // the pool translates them
+        ensureEqual("the open group is not sent", device.groupSources().size(), size_t(0));
+        for (const Ref<Program>& program : programs)
+        {
+            ensureEqual("Pending in the open group", int(program->status()), int(CompileStatus::Pending));
+        }
+        device.endFrame();
+        for (const Ref<Program>& program : programs)
+        {
+            tut::ensure(program->debugName() + " is Ready within 5 s without wait()", settlesWithin(*program.get(), 5000));
+            ensureEqual(program->debugName() + " is Ready", int(program->status()), int(CompileStatus::Ready));
+        }
+        const std::vector<MetalGroupRecord> groups = device.groupSources();
+        ensureEqual("one group", groups.size(), size_t(1));
+        ensureEqual("of 5", groups[0].members, 5u);
+    }
+
+    /// t72 (E8): a group with a member whose MSL does not compile falls back to single programs; the
+    /// others are Ready, and the broken one is Failed with one WARN line with its name and Metal's
+    /// text. The group writes none.
+    API_AVAILABLE(macos(26.0)) void fallBackTest(MetalDevice& device)
+    {
+        setMetalTranslator(&namedBrokenTranslator);
+        std::vector<Ref<Program>> programs;
+        for (const char* name : { "good 0 test", "broken 1 test", "good 2 test" })
+        {
+            programs.push_back(device.createProgram(memberDesc(name, programs.size())));
+        }
+        setMetalTranslator(&MSL::translate);
+        CaptureLog log(LLError::LEVEL_WARN);
+        for (Ref<Program>& program : programs)
+        {
+            program->wait(); // the capture is read after them (flag J)
+        }
+        ensureEqual("the good are Ready", int(programs[0]->status()), int(CompileStatus::Ready));
+        ensureEqual("the good are Ready ", int(programs[2]->status()), int(CompileStatus::Ready));
+        ensureEqual("the broken one is Failed", int(programs[1]->status()), int(CompileStatus::Failed));
+        ensureEqual("one WARN line", occurrences(log, "WARNING #RHI#"), size_t(1));
+        std::ostringstream warning;
+        log.streamto(warning);
+        const std::string line = warning.str();
+        tut::ensure("it names the program and its stage: " + line,
+                    occurrences(log, "createProgram broken 1 test: the fragment stage does not compile: ") == 1);
+        tut::ensure("it has Metal's text: " + line, line.find("error") != std::string::npos);
+        ensureEqual("one group fell back", device.groupFallBacks(), U64(1));
+        const std::vector<MetalGroupRecord> groups = device.groupSources();
+        ensureEqual("one group", groups.size(), size_t(1));
+        ensureEqual("of the three", groups[0].members, 3u);
+    }
+
+    template <typename Condition>
+    bool within(int ms, Condition condition)
+    {
+        const auto until = std::chrono::steady_clock::now() + std::chrono::milliseconds(ms);
+        while (!condition())
+        {
+            if (std::chrono::steady_clock::now() > until)
+            {
+                return false;
+            }
+            std::this_thread::sleep_for(std::chrono::milliseconds(1));
+        }
+        return true;
+    }
+
+    /// t73 (E8, E18): ~MetalDevice with one group compiling (its handler asleep) and another's
+    /// fall-back on its way (a member's handler asleep) returns after every handler has reported,
+    /// and none reports after it.
+    API_AVAILABLE(macos(26.0)) void shutdownGroupsTest(Ref<Device>& owner, MetalDevice& device)
+    {
+        const std::shared_ptr<MetalCompileState> state = device.compileState();
+        device.limitWaits(3000);
+        {
+            std::vector<Ref<Program>> programs;
+            setMetalTranslator(&namedBrokenTranslator);
+            programs.push_back(device.createProgram(memberDesc("good 0 test", 0)));
+            device.sleepNextHandlerMs(300); // the group's handler, then the member's own first
+            programs.push_back(device.createProgram(memberDesc("broken 1 test", 1)));
+            setMetalTranslator(&MSL::translate);
+            device.endFrame();
+            tut::ensure("the group falls back within 5 s", within(5000, [&device]() { return device.groupFallBacks() == 1; }));
+            device.sleepNextHandlerMs(300);
+            programs.push_back(device.createProgram(memberDesc("good 2 test", 2)));
+            programs.push_back(device.createProgram(memberDesc("good 3 test", 3)));
+            device.endFrame();
+            tut::ensure("the second group is sent within 5 s", within(5000, [&device]() { return device.groupSources().size() == 2; }));
+            std::lock_guard<std::mutex> lock(state->mutex);
+            tut::ensure("the group and the fall-back are outstanding: " + std::to_string(state->outstanding),
+                        state->outstanding >= 2);
+        }
+        // P3-R4 (B-1): a failed program's line is held for the main thread. The broken program's, when its fall-back
+        // failed after the last endFrame, is written here, before the capture; its job was cancelled with the program,
+        // so no line of it comes after.
+        device.writeFailureLines();
+        CaptureLog log(LLError::LEVEL_WARN);
+        owner = nullptr;
+        U64 outstanding = 0;
+        {
+            std::lock_guard<std::mutex> lock(state->mutex);
+            outstanding = state->outstanding;
+        }
+        ensureEqual("no handler is outstanding when ~MetalDevice returns", outstanding, U64(0));
+        std::this_thread::sleep_for(std::chrono::milliseconds(700));
+        std::lock_guard<std::mutex> lock(state->mutex);
+        tut::ensure("the device closed", state->closing);
+        ensureEqual("no handler after the device closed", state->handlersAfterClose, U64(0));
+        ensureEqual("no WARN line", occurrences(log, "WARNING #RHI#"), size_t(0));
+    }
+
+    // P3-04c: the first start's compile stalls (A, A2, B) ---------------------------------------------
+
+    std::atomic<U32> sPoolQos{ 0 };
+    std::atomic<pthread_t> sQosCaller{ nullptr };
+
+    /// Notes the QoS class of a translation off the calling thread: the pool's (P3-04c A). The class is the requested
+    /// one (qos_class_self), which build.sh's utility clamp does not change.
+    MSL::Result qosTranslator(const MSL::Program& program, const MSL::Options& options)
+    {
+        if (!pthread_equal(pthread_self(), sQosCaller.load()))
+        {
+            sPoolQos = U32(qos_class_self());
+        }
+        return MSL::translate(program, options);
+    }
+
+    /// Program i of t189 and t186: memberDesc's program with a factor of uniqueFactor's in its fragment too, so its
+    /// group's library is in no cache of Metal's from an earlier run, and its handler runs on Metal's threads instead of
+    /// inside the send (uniqueFactor's note): a wait for it waits. fragment holds the text until createProgram has
+    /// copied it.
+    ProgramDesc uniqueMemberDesc(const std::string& name, size_t i, U32 factor, std::string& fragment)
+    {
+        fragment = std::string(R"(#version 400
+#define FRAGMENT_SHADER 1
+out vec4 frag_color;
+uniform sampler2D diffuseMap;
+in vec2 vary_texcoord0;
+in vec4 vertex_color;
+void main()
+{
+    frag_color = vertex_color * texture(diffuseMap, vary_texcoord0.xy) * )") + std::to_string(i + 1) + ".0 / " +
+                   std::to_string(factor) + ".0;\n}\n";
+        return programDesc(name, UI_VERTEX, fragment.c_str());
+    }
+
+    /// The QoS class the device's pool translates a new program at (P3-04c A).
+    API_AVAILABLE(macos(26.0)) U32 poolQosOf(MetalDevice& device)
+    {
+        sPoolQos = 0;
+        sQosCaller = pthread_self();
+        setMetalTranslator(&qosTranslator);
+        Ref<Program> program = device.createProgram(programDesc("qos test", UI_VERTEX, UI_FRAGMENT));
+        tut::ensure("the pool translates it within 5 s", within(5000, []() { return sPoolQos.load() != 0; }));
+        setMetalTranslator(&MSL::translate);
+        device.endFrame(); // E8: the frame's end closes its group
+        tut::ensure("the QoS program is Ready within 5 s", settlesWithin(*program.get(), 5000));
+        return sPoolQos.load();
+    }
+
+    /// t189's case on one device: 40 programs in no cache of Metal's made with the pool paused (groups of 16, 16 and an
+    /// open one of 8), then one wait on program 0, whose group's handler sleeps 300 ms (P3-04c A2; with `slow`,
+    /// LL_METAL_COMPILE_SLOW, the behaviour before P3-04c), then the pool's QoS (A).
+    API_AVAILABLE(macos(26.0)) void drainCase(MetalDevice& device, bool slow)
+    {
+        const std::string knob = slow ? " (LL_METAL_COMPILE_SLOW)" : "";
+        device.setCompileSlow(slow); // before the device's first program
+        recordTranslations();
+        device.pausePrograms(true);
+        std::vector<Ref<Program>> programs;
+        const U32 factor = uniqueFactor();
+        std::string fragment;
+        for (size_t i = 0; i < 40; ++i)
+        {
+            device.sleepNextHandlerMs(i == 0 ? 300 : 0); // program 0's group handler, on Metal's threads
+            programs.push_back(device.createProgram(
+                uniqueMemberDesc((slow ? "slow " : "drain ") + std::to_string(i) + " test", i, factor, fragment)));
+        }
+        programs[0]->wait();
+        ensureEqual("program 0 is Ready" + knob, int(programs[0]->status()), int(CompileStatus::Ready));
+        const int translated = slow ? 16 : 40; // its own group only, or the whole queue
+        ensureEqual("translated by the one wait" + knob, sTranslations.load(), translated);
+        ensureEqual("all on the waiting thread" + knob, device.translatedOnCaller(), U64(translated));
+        const std::vector<MetalGroupRecord> groups = device.groupSources();
+        ensureEqual("the closed groups sent by the one wait" + knob, groups.size(), size_t(slow ? 1 : 2));
+        for (const MetalGroupRecord& group : groups)
+        {
+            ensureEqual("a group of 16" + knob, group.members, 16u);
+        }
+        const MetalCompileStats stats = metalCompileStats(device);
+        ensureEqual("B: the groups sent" + knob, stats.groupsSent, U64(groups.size()));
+        ensureEqual("B: sent from the main thread when the test runs on it" + knob, stats.groupsFromMain,
+                    pthread_main_np() ? U64(groups.size()) : U64(0));
+        ensureEqual("B: the knob" + knob, stats.compileSlow, slow);
+        if (slow)
+        {
+            ensureEqual("the second group waits for the paused pool" + knob, int(programs[16]->status()),
+                        int(CompileStatus::Pending));
+        }
+        else
+        {
+            tut::ensure("the second group's member is Ready within 5 s without a wait of its own",
+                        settlesWithin(*programs[16].get(), 5000));
+        }
+        ensureEqual("the open group is not sent before the frame's end" + knob, int(programs[32]->status()),
+                    int(CompileStatus::Pending));
+        device.pausePrograms(false);
+        device.endFrame(); // closes the open group
+        for (const Ref<Program>& program : programs)
+        {
+            tut::ensure(program->debugName() + " is Ready within 5 s", settlesWithin(*program.get(), 5000));
+            ensureEqual(program->debugName() + " is Ready", int(program->status()), int(CompileStatus::Ready));
+        }
+        ensureEqual("each program translated once" + knob, sTranslations.load(), 40);
+        setMetalTranslator(&MSL::translate);
+        const U32 qos = slow ? U32(QOS_CLASS_UTILITY) : U32(QOS_CLASS_USER_INITIATED);
+        ensureEqual("A: the pool's QoS class" + knob, device.programPool().qos(), qos);
+        ensureEqual("A: a pool thread translates at it" + knob, poolQosOf(device), qos);
+        ensureEqual("B: the pool's QoS in the counts" + knob, metalCompileStats(device).poolQos, qos);
+    }
+
+    /// t189 (P3-04c A, A2 and the knob; its t185 before batch 4's merge): with the pool paused, one wait on program 0
+    /// translates all 40 queued programs on the waiting thread and sends both closed groups at once, the open one not
+    /// before the frame's end, and the pool runs at user-initiated QoS; on a second device with LL_METAL_COMPILE_SLOW the
+    /// wait translates and sends its own group only and the pool runs at utility, as before P3-04c.
+    API_AVAILABLE(macos(26.0)) void compileDrainTest(MetalDevice& device)
+    {
+        ensureEqual("the knob is off without LL_METAL_COMPILE_SLOW", device.compileSlow(), false);
+        drainCase(device, false);
+        Ref<Device> owner = metalDevice();
+        drainCase(*static_cast<MetalDevice*>(owner.get()), true);
+        owner = nullptr;
+    }
+
+    /// t186 (P3-04c B): a program's wait for its group, whose handler sleeps 300 ms, is counted by its kind with its
+    /// longest single wait (R08's total is the kind's sum); metalCompileStalled holds it to a threshold (100 ms yes, the
+    /// 10 s default no); the groups' handlers, latency, QoS and hash are counted; metalCompileStallText names them all.
+    API_AVAILABLE(macos(26.0)) void compileCountsTest(MetalDevice& device)
+    {
+        const U32 factor = uniqueFactor();
+        std::string fragment;
+        Ref<Program> first = ready(device.createProgram(uniqueMemberDesc("counts 0 test", 0, factor, fragment)));
+        const MetalCompileStats before = metalCompileStats(device);
+        device.sleepNextHandlerMs(300); // the group's handler, on Metal's threads
+        Ref<Program> program = device.createProgram(uniqueMemberDesc("counts 1 test", 1, factor, fragment));
+        program->wait();
+        ensureEqual("the program is Ready", int(program->status()), int(CompileStatus::Ready));
+        const MetalCompileStats stats = metalCompileStats(device);
+        const MetalWaits& waits = stats.waits[size_t(MetalWaitKind::Program)];
+        ensureEqual("B: the wait is counted", waits.count, before.waits[size_t(MetalWaitKind::Program)].count + 1);
+        tut::ensure("B: the longest program wait is the handler's sleep: " + std::to_string(waits.longestUs) + " us",
+                    waits.longestUs >= 150000 && waits.longestUs < 5000000);
+        ensureEqual("B: R08's program total is the kind's", stats.programWaitUs, waits.totalUs);
+        ensureEqual("B: no point wait", stats.waits[size_t(MetalWaitKind::Point)].count, U64(0));
+        tut::ensure("B: a stall at a 100 ms threshold", metalCompileStalled(stats, 100000));
+        tut::ensure("B: no stall at the 10 s default", !metalCompileStalled(stats));
+        ensureEqual("B: two groups sent", stats.groupsSent, U64(2));
+        tut::ensure("B: both group handlers have run within 5 s",
+                    within(5000, [&device]() { return metalCompileStats(device).groupsDone == 2; }));
+        const MetalCompileStats done = metalCompileStats(device);
+        tut::ensure("B: the groups' latency is counted, the longest under 5 s: " + std::to_string(done.groupLatencyMaxUs) +
+                        " us",
+                    done.groupLatencyMaxUs > 0 && done.groupLatencyMaxUs < 5000000 &&
+                        done.groupLatencyUs >= done.groupLatencyMaxUs);
+        tut::ensure("B: the handlers' QoS is noted", done.groupHandlerQos != 0);
+        U64 hash = 0;
+        for (const MetalGroupRecord& record : device.groupSources())
+        {
+            hash += U64(record.digest);
+        }
+        tut::ensure("B: the hash is the sent groups' digests' sum", done.groupHash == hash && hash != 0);
+        ensureEqual("B: the pool at user-initiated", done.poolQos, U32(QOS_CLASS_USER_INITIATED));
+        ensureEqual("the mask's text", metalQosMaskText(metalQosBit(QOS_CLASS_UTILITY) | metalQosBit(QOS_CLASS_USER_INITIATED)),
+                    std::string("user-initiated+utility"));
+        ensureEqual("an empty mask's text", metalQosMaskText(0), std::string("none"));
+        const std::string text = metalCompileStallText(done);
+        for (const char* part : { "waits (count/total ms/longest ms): program ", ", point 0/0.0/0.0", ", specialized ",
+                                  ", full ", ", variant ", "; translations on the caller ", "; groups 2 sent (",
+                                  " 2 done, latency ", ", handlers at ", ", hash ",
+                                  "; translation threads at user-initiated, LL_METAL_COMPILE_SLOW off" })
+        {
+            tut::ensure("the stall text has '" + std::string(part) + "': " + text, text.find(part) != std::string::npos);
+        }
+    }
+}
+
+namespace
+{
+    /// One device test on a device of its own; false when there is none.
+    // E14: pipelines with specialization, shared, asynchronous and gone with their program (P3-01d S7)
+
+    /// The UI program with a vertex text of its own, so neither its libraries nor its pipelines are
+    /// in Metal's system cache and their handlers run on Metal's threads (S6, t66). vertex holds the
+    /// text until createProgram has copied it.
+    ProgramDesc uniqueUiDesc(const std::string& name, std::string& vertex)
+    {
+        vertex = UI_VERTEX;
+        const std::string plain = "vertex_color = diffuse_color;";
+        const U32 unique = uniqueFactor();
+        vertex.replace(vertex.find(plain), plain.size(), "vertex_color = diffuse_color * " + std::to_string(unique) + ".0;");
+        return programDesc(name, vertex.c_str(), UI_FRAGMENT);
+    }
+
+    /// t28's yellow square drawn with the target's pipeline, read back.
+    API_AVAILABLE(macos(26.0)) Ref<Readback> drawSquare(MetalDevice& device, const DrawTarget& target)
+    {
+        DrawVertices vertices;
+        addRect(vertices, 0.25f, -0.75f, 0.75f, -0.25f, YELLOW);
+        VertexStreams streams;
+        Ref<Buffer> buffer = vertexBuffer(device, vertices, streams);
+        Encoder& encoder = device.encoder();
+        setUiUniforms(encoder, target.program.get(), translation(0, 0));
+        tut::ensure("the pass begins", encoder.beginRenderPass(drawPass(target)));
+        bindDraw(encoder, target, buffer, streams);
+        encoder.draw(PrimitiveType::Triangles, 0, 6);
+        encoder.endRenderPass();
+        return readTarget(device, target);
+    }
+
+    /// The UI pipeline with alpha blending (SourceAlpha and OneMinusSourceAlpha for color).
+    PipelineDesc alphaPipelineDesc()
+    {
+        PipelineDesc desc = uiPipelineDesc();
+        desc.blend.enabled = true;
+        desc.blend.srcColor = BlendFactor::SourceAlpha;
+        desc.blend.dstColor = BlendFactor::OneMinusSourceAlpha;
+        return desc;
+    }
+
+    /// t74, flag B with choice (f): blending off on RGBA8 is a full state, sent with
+    /// blending Disabled, and draws; the unspecialized state has blending Enabled and the rest
+    /// unspecialized on all eight color attachments while the fragment writes one, and specialized
+    /// for one RGBA8 attachment with alpha blending it is Ready and draws. Four attachments with
+    /// blending off (all four Disabled) and on, and an R32Uint attachment beside a blended one (a
+    /// full state with only R32Uint Disabled: GL does not blend integers), are Ready. All under
+    /// validation in assert mode.
+    API_AVAILABLE(macos(26.0)) void flagBTest(MetalDevice& device)
+    {
+        CaptureLog log(LLError::LEVEL_WARN);
+        DrawTarget target = drawTarget(device);
+        tut::ensure("blending off: the full state is made", metalPipelineState(target.pipeline.get()) != nil);
+        tut::ensure("blending off: Ready", target.pipeline->status() == CompileStatus::Ready);
+        ensureEqual("blending off: full states", device.fullPipelines(), size_t(1));
+        ensureEqual("blending off: unspecialized states", device.unspecializedPipelines(), size_t(0));
+        ensureEqual("blending off: RGBA8 is sent Disabled", device.lastFullDisabledAttachments(), U32(0x1));
+        ensureImage("blending off: the square", drawSquare(device, target), yellowIn({ { 40, 8, 56, 24 } }));
+        target.pipeline = device.getPipeline(*target.program, alphaPipelineDesc());
+        tut::ensure("blending on: the specialized state is made", metalPipelineState(target.pipeline.get()) != nil);
+        tut::ensure("blending on: Ready", target.pipeline->status() == CompileStatus::Ready);
+        ensureEqual("blending on: unspecialized states", device.unspecializedPipelines(), size_t(1));
+        ensureEqual("blending on: specialized states", device.specializedPipelines(), size_t(1));
+        ensureImage("blending on: the square", drawSquare(device, target), yellowIn({ { 40, 8, 56, 24 } }));
+        PipelineDesc four = uiPipelineDesc();
+        four.colorCount = 4;
+        four.colorFormats = { Format::RGBA8Unorm, Format::RGBA16Float, Format::BGRA8Unorm, Format::RGBA8Unorm };
+        PipelineDesc fourBlended = four;
+        fourBlended.blend = alphaPipelineDesc().blend;
+        PipelineDesc integer = alphaPipelineDesc();
+        integer.colorCount = 2;
+        integer.colorFormats[1] = Format::R32Uint;
+        // The attachments the last full state was sent with blending Disabled; a specialization
+        // sends none, so four blended leaves four's.
+        const std::pair<PipelineDesc, U32> cases[3] = { { four, 0xFu }, { fourBlended, 0xFu }, { integer, 0x2u } };
+        for (const auto& [desc, disabled] : cases)
+        {
+            const std::string what = desc.colorCount == 2 ? "R32Uint" : desc.blend.enabled ? "four blended" : "four";
+            Ref<Pipeline> pipeline = device.getPipeline(*target.program, desc);
+            tut::ensure(what + ": made", pipeline.notNull());
+            tut::ensure(what + ": a state", metalPipelineState(pipeline.get()) != nil);
+            tut::ensure(what + ": Ready", pipeline->status() == CompileStatus::Ready);
+            ensureEqual(what + ": the attachments sent Disabled", device.lastFullDisabledAttachments(), disabled);
+        }
+        ensureEqual("unspecialized states", device.unspecializedPipelines(), size_t(1));
+        ensureEqual("specialized states: one and four blended", device.specializedPipelines(), size_t(2));
+        ensureEqual("full states: off, four and R32Uint", device.fullPipelines(), size_t(3));
+        // P3-04a S3 (R08): the same as states sent; E14 alone would have one unspecialized state for all five keys.
+        const MetalCompileStats stats = metalCompileStats(device);
+        ensureEqual("R08: unspecialized sent", stats.unspecialized, U64(1));
+        ensureEqual("R08: specialized sent", stats.specialized, U64(2));
+        ensureEqual("R08: full sent", stats.full, U64(3));
+        ensureEqual("R08: E14 alone, unspecialized", stats.e14Unspecialized, U64(1));
+        ensureEqual("R08: no alpha variant, no refusal", stats.alphaVariants + stats.refused, U64(0));
+        endCleanly(device, log);
+    }
+
+    /// t75: one program, two attribute masks that differ only outside the program's, two depth
+    /// formats, and three color formats x blend on and off x two color masks: with choice
+    /// (f) one unspecialized state, 6 specializations (blend on) and 6 full states (blend off), which
+    /// PipelineCache's 48 pipelines share.
+    API_AVAILABLE(macos(26.0)) void sharedStatesTest(MetalDevice& device)
+    {
+        CaptureLog log(LLError::LEVEL_WARN);
+        Ref<Program> program = ready(device.createProgram(uiProgramDesc()));
+        const U32 masks[2] = { UI_MASK, UI_MASK | (1u << 1) }; // the UI program reads no normal
+        const Format depths[2] = { Format::Unknown, Format::Depth32Float };
+        const Format colors[3] = { Format::RGBA8Unorm, Format::RGBA16Float, Format::BGRA8Unorm };
+        const U8 colorMasks[2] = { COLOR_MASK_ALL, COLOR_MASK_R | COLOR_MASK_A };
+        std::vector<Ref<Pipeline>> pipelines; // the last 12 vary fastest: colors x blend x masks
+        for (U32 mask : masks)
+        {
+            for (Format depth : depths)
+            {
+                for (Format color : colors)
+                {
+                    for (bool blend : { false, true })
+                    {
+                        for (U8 colorMask : colorMasks)
+                        {
+                            PipelineDesc desc;
+                            desc.attributeMask = mask;
+                            desc.depthFormat = depth;
+                            desc.colorFormats[0] = color;
+                            desc.blend.enabled = blend;
+                            desc.blend.srcColor = BlendFactor::SourceAlpha;
+                            desc.blend.dstColor = BlendFactor::OneMinusSourceAlpha;
+                            desc.colorMask = colorMask;
+                            pipelines.push_back(device.getPipeline(*program, desc));
+                            tut::ensure("pipeline " + std::to_string(pipelines.size()) + " is made",
+                                        pipelines.back().notNull());
+                        }
+                    }
+                }
+            }
+        }
+        ensureEqual("pipelines cached", device.pipelines().size(), size_t(48));
+        ensureEqual("unspecialized states", device.unspecializedPipelines(), size_t(1));
+        ensureEqual("specialized states", device.specializedPipelines(), size_t(6));
+        ensureEqual("full states", device.fullPipelines(), size_t(6));
+        // P3-04a S3 (R08): the 48 pipelines cost 7 full compilations under (f); E14 alone would make 1 and 12
+        // specializations.
+        const MetalCompileStats stats = metalCompileStats(device);
+        ensureEqual("R08: cached", stats.cached, U64(48));
+        ensureEqual("R08: unspecialized sent", stats.unspecialized, U64(1));
+        ensureEqual("R08: specialized sent", stats.specialized, U64(6));
+        ensureEqual("R08: full sent", stats.full, U64(6));
+        ensureEqual("R08: E14 alone, unspecialized", stats.e14Unspecialized, U64(1));
+        std::vector<IdMTLRenderPipelineState> states;
+        for (size_t i = 0; i < pipelines.size(); ++i)
+        {
+            const std::string what = "pipeline " + std::to_string(i);
+            IdMTLRenderPipelineState state = metalPipelineState(pipelines[i].get());
+            tut::ensure(what + " is Ready", state != nil && pipelines[i]->status() == CompileStatus::Ready);
+            if (i < 12)
+            {
+                for (IdMTLRenderPipelineState other : states)
+                {
+                    tut::ensure(what + " has a state of its own", state != other);
+                }
+                states.push_back(state);
+            }
+            else
+            {
+                tut::ensure(what + " shares pipeline " + std::to_string(i % 12) + "'s state", state == states[i % 12]);
+            }
+        }
+        endCleanly(device, log);
+    }
+
+    /// t76: alpha blending (SourceAlpha and OneMinusSourceAlpha for color, One and
+    /// OneMinusSourceAlpha for alpha) and additive blending (One, One) on RGBA8 give the bytes the
+    /// CPU computes, and color mask R+A leaves G and B as they were cleared.
+    API_AVAILABLE(macos(26.0)) void blendTest(MetalDevice& device)
+    {
+        CaptureLog log(LLError::LEVEL_WARN);
+        DrawTarget target = drawTarget(device);
+        PipelineDesc alpha = uiPipelineDesc();
+        alpha.blend.enabled = true;
+        alpha.blend.srcColor = BlendFactor::SourceAlpha;
+        alpha.blend.dstColor = BlendFactor::OneMinusSourceAlpha;
+        alpha.blend.srcAlpha = BlendFactor::One;
+        alpha.blend.dstAlpha = BlendFactor::OneMinusSourceAlpha;
+        PipelineDesc additive = uiPipelineDesc();
+        additive.blend.enabled = true;
+        additive.blend.dstColor = BlendFactor::One;
+        additive.blend.dstAlpha = BlendFactor::One;
+        PipelineDesc masked = uiPipelineDesc();
+        masked.colorMask = COLOR_MASK_R | COLOR_MASK_A;
+        const Ref<Pipeline> pipelines[3] = { device.getPipeline(*target.program, alpha),
+                                             device.getPipeline(*target.program, additive),
+                                             device.getPipeline(*target.program, masked) };
+        // Columns 0-15, 16-31 and 32-47, one per pipeline; 48-63 keep the clear color.
+        const Rgba sources[3] = { { 255, 0, 100, 51 }, { 20, 30, 40, 51 }, { 10, 20, 30, 40 } };
+        constexpr Rgba CLEARED = { 0, 100, 200, 255 };
+        DrawVertices vertices;
+        for (U32 i = 0; i < 3; ++i)
+        {
+            addRect(vertices, -1.f + 0.5f * i, -1.f, -0.5f + 0.5f * i, 1.f, sources[i]);
+        }
+        VertexStreams streams;
+        Ref<Buffer> buffer = vertexBuffer(device, vertices, streams);
+        Encoder& encoder = device.encoder();
+        setUiUniforms(encoder, target.program.get(), translation(0, 0));
+        RenderPassDesc pass = drawPass(target);
+        pass.color[0].clear = { 0.f, 100.f / 255.f, 200.f / 255.f, 1.f };
+        tut::ensure("the pass begins", encoder.beginRenderPass(pass));
+        bindDraw(encoder, target, buffer, streams);
+        for (U32 i = 0; i < 3; ++i)
+        {
+            tut::ensure("pipeline " + std::to_string(i) + " is made", pipelines[i].notNull());
+            encoder.setPipeline(pipelines[i].get());
+            encoder.draw(PrimitiveType::Triangles, 6 * i, 6);
+        }
+        encoder.endRenderPass();
+        // The CPU's bytes: s * fs + d * fd per channel, rounded and clamped as unorm8.
+        const auto blended = [](U8 s, U8 d, F64 fs, F64 fd) { return U8(std::min(255.0, std::round(s * fs + d * fd))); };
+        const F64 a = sources[0][3] / 255.0;
+        Rgba expected[3];
+        for (size_t c = 0; c < 4; ++c)
+        {
+            expected[0][c] = blended(sources[0][c], CLEARED[c], c < 3 ? a : 1.0, 1.0 - a);
+            expected[1][c] = blended(sources[1][c], CLEARED[c], 1.0, 1.0);
+        }
+        expected[2] = { sources[2][0], CLEARED[1], CLEARED[2], sources[2][3] };
+        ensureEqual("alpha blending on the CPU", describe(expected[0]), std::string("51 80 180 255"));
+        ensureEqual("additive blending on the CPU", describe(expected[1]), std::string("20 130 240 255"));
+        ensureImage("alpha, additive and R+A", readTarget(device, target), [&](U32 x, U32) -> std::optional<Rgba>
+        {
+            return x < 48 ? expected[x / 16] : CLEARED;
+        });
+        ensureEqual("unspecialized states", device.unspecializedPipelines(), size_t(1));
+        ensureEqual("specialized states: alpha and additive", device.specializedPipelines(), size_t(2));
+        ensureEqual("full states: the target's and R+A", device.fullPipelines(), size_t(2));
+        endCleanly(device, log);
+    }
+
+    /// t77: getPipeline comes back at once while the unspecialized state's handler sleeps, and a
+    /// draw with the pipeline waits and draws; a refused key gives one WARN line, and asking again
+    /// gives none.
+    API_AVAILABLE(macos(26.0)) void asyncPipelineTest(MetalDevice& device)
+    {
+        DrawTarget target = drawTarget(device);
+        {
+            CaptureLog log(LLError::LEVEL_WARN);
+            std::string vertex;
+            target.program = ready(device.createProgram(uniqueUiDesc("async pipeline test", vertex)));
+            device.sleepNextHandlerMs(300);
+            const auto start = std::chrono::steady_clock::now();
+            target.pipeline = device.getPipeline(*target.program, uiPipelineDesc());
+            const auto took = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - start);
+            tut::ensure("the pipeline is made", target.pipeline.notNull());
+            const CompileStatus status = target.pipeline->status();
+            tut::ensure("getPipeline comes back before the handler: " + std::to_string(took.count()) + " ms",
+                        took.count() < 200);
+            tut::ensure("Pending or Ready", status == CompileStatus::Pending || status == CompileStatus::Ready);
+            const U64 waitedBefore = metalCompileStats(device).pipelineWaitUs;
+            ensureImage("the square drawn after the wait", drawSquare(device, target), yellowIn({ { 40, 8, 56, 24 } }));
+            tut::ensure("Ready after the draw", target.pipeline->status() == CompileStatus::Ready);
+            // P3-04a S3 (R08): the draw waited for the rest of the handler's 300 ms, at least 100 ms
+            const U64 waited = metalCompileStats(device).pipelineWaitUs - waitedBefore;
+            tut::ensure("R08: the draw's pipeline wait is counted: " + std::to_string(waited) + " us",
+                        waited >= 50000 && waited < 5000000);
+            // P3-04c B: by its kind, E14's specialized or (f)'s full state, with its longest single wait
+            const MetalCompileStats kinds = metalCompileStats(device);
+            const U64 longest = std::max(kinds.waits[size_t(MetalWaitKind::Specialized)].longestUs,
+                                         kinds.waits[size_t(MetalWaitKind::Full)].longestUs);
+            tut::ensure("B: the draw's wait by its kind: " + std::to_string(longest) + " us",
+                        longest >= 50000 && longest < 5000000);
+            endCleanly(device, log);
+        }
+        CaptureLog log(LLError::LEVEL_WARN);
+        PipelineDesc refused = uiPipelineDesc();
+        refused.colorFormats[0] = Format::Unknown;
+        tut::ensure("refused: null", device.getPipeline(*target.program, refused).isNull());
+        ensureEqual("refused: one WARN line", occurrences(log, "WARNING #RHI#"), size_t(1));
+        tut::ensure("refused again: null", device.getPipeline(*target.program, refused).isNull());
+        refused.depthFormat = Format::Unknown; // not part of the key
+        tut::ensure("refused without depth: null", device.getPipeline(*target.program, refused).isNull());
+        ensureEqual("refused again: no other WARN line", occurrences(log, "WARNING #RHI#"), size_t(1));
+        ensureEqual("refused keys", device.refusedPipelines(), size_t(1));
+        ensureEqual("R08: refusals counted once", metalCompileStats(device).refused, U64(1)); // (P3-04a S3)
+        device.endFrame();
+    }
+
+    /// t78: when the program goes, its PipelineCache entries, its states and its refusals go; a
+    /// reload (a new program with the same name) makes new ones.
+    API_AVAILABLE(macos(26.0)) void forgetStatesTest(MetalDevice& device)
+    {
+        CaptureLog log(LLError::LEVEL_WARN);
+        Ref<Program> program = ready(device.createProgram(uiProgramDesc()));
+        const PipelineDesc rgba8 = uiPipelineDesc();
+        PipelineDesc rgba16 = alphaPipelineDesc(); // specialized; rgba8 is a full state
+        rgba16.colorFormats[0] = Format::RGBA16Float;
+        PipelineDesc point = uiPipelineDesc();
+        point.primitiveClass = PrimitiveClass::Point;
+        Ref<Pipeline> first = device.getPipeline(*program, rgba8);
+        Ref<Pipeline> second = device.getPipeline(*program, rgba16);
+        tut::ensure("both are made", first.notNull() && second.notNull() && metalPipelineState(first.get()) != nil &&
+                                         metalPipelineState(second.get()) != nil);
+        Ref<Pipeline> third = device.getPipeline(*program, point); // P3-01e S8: a full state of its own
+        tut::ensure("points are made", third.notNull() && metalPipelineState(third.get()) != nil);
+        ensureEqual("pipelines cached", device.pipelines().size(), size_t(3));
+        ensureEqual("unspecialized states", device.unspecializedPipelines(), size_t(1));
+        ensureEqual("specialized states", device.specializedPipelines(), size_t(1));
+        ensureEqual("full states", device.fullPipelines(), size_t(2));
+        ensureEqual("refused keys", device.refusedPipelines(), size_t(0));
+        const U64 gone = program->id();
+        program = nullptr;
+        ensureEqual("after the program: pipelines cached", device.pipelines().size(), size_t(0));
+        ensureEqual("after the program: unspecialized states", device.unspecializedPipelines(), size_t(0));
+        ensureEqual("after the program: specialized states", device.specializedPipelines(), size_t(0));
+        ensureEqual("after the program: full states", device.fullPipelines(), size_t(0));
+        ensureEqual("after the program: refused keys", device.refusedPipelines(), size_t(0));
+        tut::ensure("a pipeline still held keeps its state", metalPipelineState(first.get()) != nil);
+
+        program = ready(device.createProgram(uiProgramDesc())); // the reload
+        tut::ensure("the reload has an id of its own", program->id() != gone);
+        Ref<Pipeline> reloaded = device.getPipeline(*program, rgba8);
+        tut::ensure("the reload's pipeline is new", reloaded.notNull() && reloaded != first);
+        tut::ensure("the reload's pipeline has a state", metalPipelineState(reloaded.get()) != nil);
+        ensureEqual("after the reload: pipelines cached", device.pipelines().size(), size_t(1));
+        ensureEqual("after the reload: unspecialized states", device.unspecializedPipelines(), size_t(0));
+        ensureEqual("after the reload: full states", device.fullPipelines(), size_t(1));
+        first = nullptr;
+        second = nullptr;
+        third = nullptr;
+        reloaded = nullptr;
+        program = nullptr;
+        device.endFrame();
+        ensureEqual("no WARN line", occurrences(log, "WARNING #RHI#"), size_t(0));
+    }
+
+    /// t79: PrimitiveClass::Point (since P3-01e S8), Line and 4 samples, with blending off (full states)
+    /// and on (specialized), make pipelines that become Ready, with no draw and no WARN line.
+    API_AVAILABLE(macos(26.0)) void primitiveClassesTest(MetalDevice& device)
+    {
+        CaptureLog log(LLError::LEVEL_WARN);
+        Ref<Program> program = ready(device.createProgram(uiProgramDesc()));
+        PipelineDesc point = uiPipelineDesc();
+        point.primitiveClass = PrimitiveClass::Point;
+        Ref<Pipeline> points = device.getPipeline(*program, point);
+        tut::ensure("points: made", points.notNull() && metalPipelineState(points.get()) != nil);
+        tut::ensure("points: Ready", points->status() == CompileStatus::Ready);
+        tut::ensure("points again: the same", device.getPipeline(*program, point) == points);
+        PipelineDesc line = uiPipelineDesc();
+        line.primitiveClass = PrimitiveClass::Line;
+        PipelineDesc samples = uiPipelineDesc();
+        samples.samples = 4;
+        PipelineDesc lineBlended = line;
+        lineBlended.blend = alphaPipelineDesc().blend;
+        PipelineDesc samplesBlended = samples;
+        samplesBlended.blend = lineBlended.blend;
+        for (const PipelineDesc& desc : { line, samples, lineBlended, samplesBlended })
+        {
+            const std::string what =
+                std::string(desc.samples == 4 ? "4 samples" : "lines") + (desc.blend.enabled ? ", blended" : "");
+            Ref<Pipeline> pipeline = device.getPipeline(*program, desc);
+            tut::ensure(what + ": made", pipeline.notNull());
+            tut::ensure(what + ": a state", metalPipelineState(pipeline.get()) != nil);
+            tut::ensure(what + ": Ready", pipeline->status() == CompileStatus::Ready);
+        }
+        ensureEqual("unspecialized states: lines, and triangles with 4 samples", device.unspecializedPipelines(), size_t(2));
+        ensureEqual("specialized states", device.specializedPipelines(), size_t(2));
+        ensureEqual("full states: points, lines, 4 samples", device.fullPipelines(), size_t(3));
+        ensureEqual("no WARN line", occurrences(log, "WARNING #RHI#"), size_t(0));
+        device.endFrame();
+    }
+
+    /// t80: ~MetalDevice with an unspecialized state compiling, whose handler sleeps, two
+    /// specializations chained to it and a full state returns after every handler has reported, and
+    /// none reports after it.
+    API_AVAILABLE(macos(26.0)) void shutdownPipelinesTest(Ref<Device>& owner, MetalDevice& device)
+    {
+        const std::shared_ptr<MetalCompileState> state = device.compileState();
+        {
+            std::string vertex;
+            Ref<Program> program = ready(device.createProgram(uniqueUiDesc("shutdown pipeline test", vertex)));
+            device.sleepNextHandlerMs(300);
+            PipelineDesc rgba16 = alphaPipelineDesc();
+            rgba16.colorFormats[0] = Format::RGBA16Float;
+            const Ref<Pipeline> pipelines[3] = { device.getPipeline(*program, alphaPipelineDesc()),
+                                                 device.getPipeline(*program, rgba16),
+                                                 device.getPipeline(*program, uiPipelineDesc()) };
+            tut::ensure("all are made", pipelines[0].notNull() && pipelines[1].notNull() && pipelines[2].notNull());
+            tut::ensure("the specialized are Pending", pipelines[0]->status() == CompileStatus::Pending &&
+                                                           pipelines[1]->status() == CompileStatus::Pending);
+            ensureEqual("unspecialized states", device.unspecializedPipelines(), size_t(1));
+            ensureEqual("specialized states", device.specializedPipelines(), size_t(2));
+            ensureEqual("full states", device.fullPipelines(), size_t(1));
+            std::lock_guard<std::mutex> lock(state->mutex);
+            tut::ensure("a handler is outstanding", state->outstanding > 0);
+        }
+        CaptureLog log(LLError::LEVEL_WARN);
+        owner = nullptr;
+        U64 outstanding = 0;
+        {
+            std::lock_guard<std::mutex> lock(state->mutex);
+            outstanding = state->outstanding;
+        }
+        ensureEqual("no handler is outstanding when ~MetalDevice returns", outstanding, U64(0));
+        std::this_thread::sleep_for(std::chrono::milliseconds(400));
+        std::lock_guard<std::mutex> lock(state->mutex);
+        tut::ensure("the device closed", state->closing);
+        ensureEqual("no handler after the device closed", state->handlersAfterClose, U64(0));
+        ensureEqual("no WARN line", occurrences(log, "WARNING #RHI#"), size_t(0));
+    }
+
+    // Blocks, changed blocks and channels at the draw (P3-01d S8) ---------------------------------
+
+    /// UI_VERTEX's uniforms: the matrix given and texture_matrix0 the identity.
+    void setVertexUniforms(Encoder& encoder, Program* program, const Matrix& mvp)
+    {
+        const ProgramReflection& reflection = program->reflection();
+        encoder.setUniform(program, U32(uniformIndex(reflection, "modelview_projection_matrix")), bytesOf(mvp));
+        encoder.setUniform(program, U32(uniformIndex(reflection, "texture_matrix0")), bytesOf(translation(0, 0)));
+    }
+
+    /// A Ready program of UI_VERTEX and the fragment stage given, with BLOCK_NAMES, and its pipeline
+    /// on the draw target's formats.
+    struct StageProgram
+    {
+        Ref<Program> program;
+        Ref<Pipeline> pipeline;
+    };
+
+    API_AVAILABLE(macos(26.0)) StageProgram fragmentProgram(MetalDevice& device, const std::string& name,
+                                                            const char* fragment)
+    {
+        ProgramDesc desc = programDesc(name, UI_VERTEX, fragment);
+        desc.uniformBlocks = BLOCK_NAMES;
+        StageProgram made;
+        made.program = ready(device.createProgram(desc));
+        tut::ensure(name + ": Ready", made.program.notNull() && made.program->status() == CompileStatus::Ready);
+        made.pipeline = device.getPipeline(*made.program, uiPipelineDesc());
+        tut::ensure(name + ": its pipeline", made.pipeline.notNull());
+        return made;
+    }
+
+    template <class T>
+    std::vector<std::byte> bytesAt(std::vector<std::byte> bytes, size_t offset, const T& value)
+    {
+        std::memcpy(bytes.data() + offset, &value, sizeof(value));
+        return bytes;
+    }
+
+    /// t81 (E4, R2, flag K): a program that reads a block on slot 0 draws with the uniform buffer's
+    /// bytes at the offset setUniformBuffer gave; with no buffer on the slot, or with the Metal debug
+    /// setting a range smaller than the block, the draw is refused with one WARN line that names the
+    /// program and the slot; a buffer on another slot leaves slot 0's range.
+    API_AVAILABLE(macos(26.0)) void blockBindingTest(MetalDevice& device)
+    {
+        StageProgram probes = fragmentProgram(device, "block draw test", R"(#version 400
+#define FRAGMENT_SHADER 1
+layout(std140) uniform ReflectionProbes { vec4 probe[2]; };
+in vec4 vertex_color;
+in vec2 vary_texcoord0;
+out vec4 frag_color;
+void main() { frag_color = vertex_color * probe[1]; }
+)");
+        ensureEqual("the fragment stage reads slot 0", metalProgramLayout(probes.program.get())->fragment.uniformBlocks,
+                    1u << 0);
+        // probe[1] is red at offset 16 and green at 256 + 16.
+        const std::array<F32, 4> red = { 1, 0, 0, 1 };
+        const std::array<F32, 4> green = { 0, 1, 0, 1 };
+        BufferDesc blockDesc;
+        blockDesc.size = 512;
+        blockDesc.usage = BUFFER_UNIFORM;
+        Ref<Buffer> block =
+            device.createBuffer(blockDesc, bytesAt(bytesAt(std::vector<std::byte>(512), 16, red), 256 + 16, green), "probes");
+        blockDesc.size = 256;
+        Ref<Buffer> other = device.createBuffer(blockDesc, {}, "other block");
+        tut::ensure("the uniform buffers are made", block.notNull() && other.notNull());
+
+        DrawTarget target = drawTarget(device);
+        DrawVertices vertices;
+        addRect(vertices, -1, -1, 1, 1, WHITE_RGBA);
+        VertexStreams streams;
+        Ref<Buffer> buffer = vertexBuffer(device, vertices, streams);
+        Encoder& encoder = device.encoder();
+        setVertexUniforms(encoder, probes.program.get(), translation(0, 0));
+        tut::ensure("the pass begins", encoder.beginRenderPass(drawPass(target)));
+        encoder.setPipeline(probes.pipeline.get());
+        encoder.setVertexBuffer(buffer.get(), streams);
+        const std::string where = "draw: program 'block draw test' reads the uniform block in slot 0";
+        const auto ensureRefused = [&](const std::string& what, const std::string& names)
+        {
+            CaptureLog log(LLError::LEVEL_WARN);
+            encoder.draw(PrimitiveType::Triangles, 0, 6);
+            ensureEqual(what + ": one WARN line", occurrences(log, "WARNING #RHI#"), size_t(1));
+            ensureEqual(what + ": the WARN names the program and the slot", occurrences(log, names), size_t(1));
+            tut::ensure(what + ": no draw", device.metalEncoder().openEncoder() == nil);
+        };
+        ensureRefused("no buffer on the slot", where + ", which has no uniform buffer");
+        encoder.setUniformBuffer(0, block.get(), 256, 16);
+        ensureRefused("16 bytes of a 32-byte block",
+                      where + ": uniform buffer 'probes' is bound with 16 bytes, and the block has 32");
+
+        encoder.setUniformBuffer(0, block.get(), 256, 32);
+        encoder.setUniformBuffer(1, other.get(), 0, 256);
+        CaptureLog log(LLError::LEVEL_WARN);
+        encoder.draw(PrimitiveType::Triangles, 0, 6);
+        tut::ensure("the draw is recorded", device.metalEncoder().openEncoder() != nil);
+        encoder.endRenderPass();
+        ensureImage("probe[1] from offset 256", readTarget(device, target),
+                    [](U32, U32) -> std::optional<Rgba> { return GREEN; });
+        endCleanly(device, log);
+    }
+
+    /// t82 (E13): two draws of one program in a frame copy each stage's block to the ring once; a
+    /// setter with the same bytes marks nothing; a changed value copies only its stage; a new frame
+    /// copies both again.
+    API_AVAILABLE(macos(26.0)) void changedBlocksTest(MetalDevice& device)
+    {
+        StageProgram tinted = fragmentProgram(device, "tint test", R"(#version 400
+#define FRAGMENT_SHADER 1
+uniform vec4 tint;
+in vec4 vertex_color;
+in vec2 vary_texcoord0;
+out vec4 frag_color;
+void main() { frag_color = vertex_color * tint; }
+)");
+        Program* program = tinted.program.get();
+        const MetalProgramLayout& layout = *metalProgramLayout(program);
+        tut::ensure("both stages have a default block", layout.vertex.blockSize > 0 && layout.fragment.blockSize > 0);
+        DrawTarget target = drawTarget(device);
+        DrawVertices vertices;
+        addRect(vertices, -1, -1, 1, 1, WHITE_RGBA);
+        VertexStreams streams;
+        Ref<Buffer> buffer = vertexBuffer(device, vertices, streams);
+        Encoder& encoder = device.encoder();
+        MetalEncoder& metal = device.metalEncoder();
+        const U32 tint = U32(uniformIndex(program->reflection(), "tint"));
+        const std::array<F32, 4> yellow = { 1, 1, 0, 1 };
+        const std::array<F32, 4> red = { 1, 0, 0, 1 };
+        setVertexUniforms(encoder, program, translation(0, 0));
+        encoder.setUniform(program, tint, bytesOf(yellow));
+        // Each draw's copies, compared after the pass has ended, so a failure leaves no native
+        // encoder open for ~MetalDevice.
+        struct Copies
+        {
+            std::string what;
+            U64 expected;
+            U64 actual;
+            bool drawn;
+        };
+        std::vector<Copies> copies;
+        const auto ensureCopies = [&](const std::string& what, U64 expected)
+        {
+            const U64 before = metal.ringBlockCopies();
+            encoder.draw(PrimitiveType::Triangles, 0, 6);
+            copies.push_back({ what, expected, metal.ringBlockCopies() - before, metal.openEncoder() != nil });
+        };
+        const auto compareCopies = [&]()
+        {
+            for (const Copies& one : copies)
+            {
+                tut::ensure(one.what + ": drawn", one.drawn);
+                ensureEqual(one.what + ": stage blocks copied to the ring", one.actual, one.expected);
+            }
+            copies.clear();
+        };
+        CaptureLog log(LLError::LEVEL_WARN);
+        tut::ensure("the pass begins", encoder.beginRenderPass(drawPass(target)));
+        encoder.setPipeline(tinted.pipeline.get());
+        encoder.setVertexBuffer(buffer.get(), streams);
+        ensureCopies("the first draw", 2);
+        ensureCopies("a second draw without a setter", 0);
+        setVertexUniforms(encoder, program, translation(0, 0));
+        encoder.setUniform(program, tint, bytesOf(yellow));
+        ensureCopies("setters with the same bytes", 0);
+        encoder.setUniform(program, tint, bytesOf(red));
+        ensureCopies("a changed tint", 1);
+        encoder.setUniform(program, tint, bytesOf(yellow));
+        ensureCopies("the tint back", 1);
+        encoder.endRenderPass();
+        compareCopies();
+        ensureImage("the last tint", readTarget(device, target), yellowIn({ { 0, 0, DRAW_SIZE, DRAW_SIZE } }));
+        device.endFrame();
+
+        tut::ensure("the next frame's pass begins", encoder.beginRenderPass(drawPass(target)));
+        encoder.setPipeline(tinted.pipeline.get());
+        encoder.setVertexBuffer(buffer.get(), streams);
+        ensureCopies("a new frame", 2);
+        ensureCopies("the new frame's second draw", 0);
+        encoder.endRenderPass();
+        compareCopies();
+        ensureImage("the new frame", readTarget(device, target), yellowIn({ { 0, 0, DRAW_SIZE, DRAW_SIZE } }));
+        endCleanly(device, log);
+    }
+
+    /// t83 (R5): channel to place. texture0 and texture1 of real GLSL, sorted by name in the
+    /// reflection, get channels as uniform1i gives them (texture0 on 1, texture1 on 0), and each
+    /// samples the texture of its channel: the left half texture0's, the right half texture1's.
+    API_AVAILABLE(macos(26.0)) void channelPlacesTest(MetalDevice& device)
+    {
+        StageProgram sampling = fragmentProgram(device, "two samplers test", R"(#version 400
+#define FRAGMENT_SHADER 1
+uniform sampler2D texture0;
+uniform sampler2D texture1;
+in vec4 vertex_color;
+in vec2 vary_texcoord0;
+out vec4 frag_color;
+void main()
+{
+    frag_color = texture(texture0, vary_texcoord0) * vertex_color.r + texture(texture1, vary_texcoord0) * vertex_color.g;
+}
+)");
+        Program* program = sampling.program.get();
+        ensureEqual("two textures in the fragment stage", metalProgramLayout(program)->fragment.textureUniforms.size(),
+                    size_t(2));
+        Encoder& encoder = device.encoder();
+        const auto texel = [&](const std::string& name, const Rgba& color)
+        {
+            Ref<Texture> texture = device.createTexture(sizedDesc(Format::RGBA8Unorm, TEXTURE_SAMPLED, 1, 1), name);
+            tut::ensure(name + ": made", texture.notNull());
+            encoder.uploadTexture(texture.get(), 0, 0, { 0, 0, 1, 1 }, PixelLayout(), bytesOf(color));
+            return texture;
+        };
+        Ref<Texture> red = texel("red", RED);
+        Ref<Texture> blue = texel("blue", BLUE);
+        DrawTarget target = drawTarget(device);
+        DrawVertices vertices;
+        addRect(vertices, -1, -1, 0, 1, { 255, 0, 0, 255 }); // texture0: columns 0-31
+        addRect(vertices, 0, -1, 1, 1, { 0, 255, 0, 255 });  // texture1: columns 32-63
+        VertexStreams streams;
+        Ref<Buffer> buffer = vertexBuffer(device, vertices, streams);
+        setVertexUniforms(encoder, program, translation(0, 0));
+        encoder.setSamplerChannel(program, U32(uniformIndex(program->reflection(), "texture0")), 1);
+        encoder.setSamplerChannel(program, U32(uniformIndex(program->reflection(), "texture1")), 0);
+        CaptureLog log(LLError::LEVEL_WARN);
+        tut::ensure("the pass begins", encoder.beginRenderPass(drawPass(target)));
+        encoder.setPipeline(sampling.pipeline.get());
+        encoder.setVertexBuffer(buffer.get(), streams);
+        encoder.setTexture(0, red.get(), pointClamp());
+        encoder.setTexture(1, blue.get(), pointClamp());
+        encoder.draw(PrimitiveType::Triangles, 0, 12);
+        encoder.endRenderPass();
+        ensureImage("texture0 samples channel 1 and texture1 channel 0", readTarget(device, target),
+                    [](U32 x, U32) -> std::optional<Rgba> { return x < DRAW_SIZE / 2 ? BLUE : RED; });
+        endCleanly(device, log);
+    }
+
+    /// t84 (flag F): a program's state on the encoder goes with the program.
+    API_AVAILABLE(macos(26.0)) void forgetProgramStateTest(MetalDevice& device)
+    {
+        CaptureLog log(LLError::LEVEL_WARN);
+        Ref<Program> program = ready(device.createProgram(uiProgramDesc()));
+        tut::ensure("the program is Ready", program.notNull() && program->status() == CompileStatus::Ready);
+        const U64 id = program->id();
+        setVertexUniforms(device.encoder(), program.get(), translation(0, 0));
+        tut::ensure("a setter made the program's state", device.metalEncoder().hasProgramState(id));
+        program = nullptr;
+        tut::ensure("the state went with the program", !device.metalEncoder().hasProgramState(id));
+        endCleanly(device, log);
+    }
+
+    /// LLVertexBuffer's streams for one quad over the whole target, with texcoords from 0 to 1, so the
+    /// target's pixel centres are the centres of a 64x64 texture's texels, and white vertex colors.
+    API_AVAILABLE(macos(26.0)) Ref<Buffer> texturedQuad(MetalDevice& device, VertexStreams& streams)
+    {
+        DrawVertices vertices;
+        addRect(vertices, -1, -1, 1, 1, { 255, 255, 255, 255 });
+        const size_t count = vertices.positions.size();
+        std::vector<std::byte> bytes(count * (16 + 8 + 4));
+        streams.attributeMask = UI_MASK;
+        streams.offset[2] = U32(count * 16);
+        streams.offset[6] = U32(count * 24);
+        std::memcpy(bytes.data(), vertices.positions.data(), count * 16);
+        for (size_t i = 0; i < count; ++i)
+        {
+            const std::array<F32, 2> uv = { (vertices.positions[i][0] + 1) / 2, (vertices.positions[i][1] + 1) / 2 };
+            std::memcpy(bytes.data() + streams.offset[2] + i * 8, uv.data(), 8);
+        }
+        std::memcpy(bytes.data() + streams.offset[6], vertices.colors.data(), count * 4);
+        BufferDesc desc;
+        desc.size = bytes.size();
+        return device.createBuffer(desc, bytes, "textured quad");
+    }
+
+    /// t85 (P3-01e F1, R14): the sampler a draw chooses, read through lastSamplerDesc, has toGLSampling's
+    /// filters on Metal: Point, Bilinear and Trilinear on a texture with mips, Point and Bilinear with mips,
+    /// Bilinear with mips on a texture of one level (the flag in effect is off, as on GL) and Trilinear with
+    /// anisotropy 4 (4 samples). Every pixel is at a texel's centre, so each draw gives the texels.
+    API_AVAILABLE(macos(26.0)) void samplerChoiceTest(MetalDevice& device)
+    {
+        DrawTarget target = drawTarget(device);
+        Program* program = target.program.get();
+        Encoder& encoder = device.encoder();
+        const auto texel = [](U32 x, U32 y) -> Rgba { return { U8(x * 4), U8(y * 4), U8((x ^ y) * 4), 255 }; };
+        const auto filled = [&](U32 levels, const std::string& name)
+        {
+            TextureDesc desc = sizedDesc(Format::RGBA8Unorm, TEXTURE_SAMPLED, DRAW_SIZE, DRAW_SIZE);
+            desc.mipLevels = levels;
+            Ref<Texture> texture = device.createTexture(desc, name);
+            tut::ensure(name + ": made", texture.notNull());
+            for (U32 level = 0; level < levels; ++level)
+            {
+                const U32 size = DRAW_SIZE >> level;
+                std::vector<Rgba> texels;
+                for (U32 y = 0; y < size; ++y)
+                {
+                    for (U32 x = 0; x < size; ++x)
+                    {
+                        texels.push_back(texel(x << level, y << level));
+                    }
+                }
+                encoder.uploadTexture(texture.get(), level, 0, { 0, 0, size, size }, PixelLayout(),
+                                      std::as_bytes(std::span<const Rgba>(texels)));
+            }
+            return texture;
+        };
+        Ref<Texture> mips = filled(7, "sampler test mips");
+        Ref<Texture> single = filled(1, "sampler test one level");
+        VertexStreams streams;
+        Ref<Buffer> buffer = texturedQuad(device, streams);
+        setUiUniforms(encoder, program, translation(0, 0));
+        tut::ensure("no sampler before a draw", !device.metalEncoder().lastSamplerDesc(0).has_value());
+        struct Case
+        {
+            const char* name;
+            Texture* texture;
+            Filter filter;
+            bool mipmapped;
+            F32 anisotropy;
+            MTLSamplerMinMagFilter minMag;
+            MTLSamplerMipFilter mip;
+            NSUInteger samples;
+        };
+        constexpr MTLSamplerMinMagFilter NEAREST = MTLSamplerMinMagFilterNearest;
+        constexpr MTLSamplerMinMagFilter LINEAR = MTLSamplerMinMagFilterLinear;
+        const Case cases[] = {
+            { "Point", mips.get(), Filter::Point, false, 1.f, NEAREST, MTLSamplerMipFilterNotMipmapped, 1 },
+            { "Bilinear", mips.get(), Filter::Bilinear, false, 1.f, LINEAR, MTLSamplerMipFilterNotMipmapped, 1 },
+            { "Trilinear", mips.get(), Filter::Trilinear, true, 1.f, LINEAR, MTLSamplerMipFilterLinear, 1 },
+            { "Point with mips", mips.get(), Filter::Point, true, 1.f, NEAREST, MTLSamplerMipFilterNearest, 1 },
+            { "Bilinear with mips", mips.get(), Filter::Bilinear, true, 1.f, LINEAR, MTLSamplerMipFilterNearest, 1 },
+            { "Bilinear with mips on one level", single.get(), Filter::Bilinear, true, 1.f, LINEAR,
+              MTLSamplerMipFilterNotMipmapped, 1 },
+            { "Trilinear with anisotropy 4", mips.get(), Filter::Trilinear, true, 4.f, LINEAR, MTLSamplerMipFilterLinear,
+              4 },
+        };
+        CaptureLog log(LLError::LEVEL_WARN);
+        for (const Case& one : cases)
+        {
+            const std::string name = one.name;
+            SamplerDesc sampling;
+            sampling.filter = one.filter;
+            sampling.mipmapped = one.mipmapped;
+            sampling.maxAnisotropy = one.anisotropy;
+            sampling.addressU = sampling.addressV = sampling.addressW = AddressMode::ClampToEdge;
+            tut::ensure(name + ": the pass begins", encoder.beginRenderPass(drawPass(target)));
+            encoder.setPipeline(target.pipeline.get());
+            encoder.setVertexBuffer(buffer.get(), streams);
+            encoder.setTexture(0, one.texture, sampling);
+            encoder.draw(PrimitiveType::Triangles, 0, 6);
+            encoder.endRenderPass();
+            const std::optional<SamplerDesc> chosen = device.metalEncoder().lastSamplerDesc(0);
+            tut::ensure(name + ": the draw chose a sampler", chosen.has_value());
+            ensureEqual(name + ": mips in effect", chosen->mipmapped, one.mip != MTLSamplerMipFilterNotMipmapped);
+            MTLSamplerDescriptor* metal = metalSamplerDescriptor(*chosen, device.capabilities().anisotropicFiltering);
+            tut::ensure(name + ": min and mag", metal.minFilter == one.minMag && metal.magFilter == one.minMag);
+            tut::ensure(name + ": the mip filter", metal.mipFilter == one.mip);
+            ensureEqual(name + ": the samples", NSUInteger(metal.maxAnisotropy), one.samples);
+            ensureImage(name + ": every pixel is its texel", readTarget(device, target),
+                        [&](U32 x, U32 y) -> std::optional<Rgba> { return texel(x, y); });
+        }
+        endCleanly(device, log);
+    }
+
+    /// t86 (P3-01e F3): a program that samples channel 1 with nothing bound there reads the default
+    /// texture of its sampler's type, (0, 0, 0, 1) (llrhi.h:1004-1009), with no WARN line: a 2D, a cube
+    /// and a cube array sampler, while channel 0 has the white texture. A shadow sampler (P3-02 D2) reads 0
+    /// unbound (compare function Never) and compares a bound Depth32Float, under shader validation too (S3b).
+    API_AVAILABLE(macos(26.0)) void defaultTextureTest(MetalDevice& device)
+    {
+        DrawTarget target = drawTarget(device);
+        Encoder& encoder = device.encoder();
+        VertexStreams streams;
+        Ref<Buffer> buffer = texturedQuad(device, streams);
+        {
+            StageProgram shadow = fragmentProgram(device, "unbound shadow test", R"(#version 400
+#define FRAGMENT_SHADER 1
+uniform sampler2DShadow unbound;
+in vec4 vertex_color;
+in vec2 vary_texcoord0;
+out vec4 frag_color;
+void main() { frag_color = vertex_color * texture(unbound, vec3(vary_texcoord0, 0.5)); }
+)");
+            Program* program = shadow.program.get();
+            setVertexUniforms(encoder, program, translation(0, 0));
+            encoder.setSamplerChannel(program, U32(uniformIndex(program->reflection(), "unbound")), 1);
+            tut::ensure("shadow: the pass begins", encoder.beginRenderPass(drawPass(target)));
+            encoder.setPipeline(shadow.pipeline.get());
+            encoder.setVertexBuffer(buffer.get(), streams);
+            // P3-02 D2 (m3): unbound, the channel reads the default Depth32Float with compare function Never: 0 for
+            // the reference 0.5, so the white quad's color times 0 everywhere.
+            CaptureLog unboundLog(LLError::LEVEL_WARN);
+            encoder.draw(PrimitiveType::Triangles, 0, 6);
+            ensureEqual("an unbound shadow sampler: no WARN line", occurrences(unboundLog, "WARNING #RHI#"), size_t(0));
+            const std::optional<SamplerDesc> unbound = device.metalEncoder().lastSamplerDesc(1);
+            tut::ensure("an unbound shadow sampler compares with Never",
+                        unbound && unbound->compare && unbound->compareFunc == CompareFunc::Never);
+            encoder.endRenderPass();
+            ensureImage("an unbound shadow sampler: 0", readTarget(device, target),
+                        [](U32, U32) -> std::optional<Rgba> { return Rgba{ 0, 0, 0, 0 }; });
+            Texture* shadowDefault = device.defaultTexture(UniformType::Sampler2DShadow);
+            tut::ensure("the shadow default is a Depth32Float",
+                        shadowDefault && shadowDefault->desc().format == Format::Depth32Float
+                            && shadowDefault == device.defaultTexture(UniformType::Sampler2DShadow));
+
+            // Bound to a Depth32Float cleared to 0.75: the reference 0.5 passes LessEqual (white) and fails Greater
+            // (0); Never gives 0 there too (P3-02's review m7: the run-time proof that Never passes nothing).
+            Ref<Texture> depth = device.createTexture(
+                sizedDesc(Format::Depth32Float, TEXTURE_SAMPLED | TEXTURE_RENDER_TARGET, DRAW_SIZE, DRAW_SIZE), "shadow map");
+            RenderPassDesc fill = passOn(target.color, depth);
+            fill.color[0].load = LoadAction::Clear;
+            fill.depth.load = LoadAction::Clear;
+            fill.depth.clear = 0.75f;
+            tut::ensure("shadow map: its pass begins", encoder.beginRenderPass(fill));
+            encoder.endRenderPass();
+            for (const auto& [func, white] : { std::pair{ CompareFunc::LessEqual, true },
+                                               std::pair{ CompareFunc::Greater, false },
+                                               std::pair{ CompareFunc::Never, false } })
+            {
+                const char* name = func == CompareFunc::LessEqual ? "LessEqual"
+                                   : func == CompareFunc::Greater ? "Greater"
+                                                                  : "Never";
+                const std::string what = std::string("a bound shadow sampler, ") + name;
+                SamplerDesc compared = pointClamp();
+                compared.compareFunc = func;
+                CaptureLog boundLog(LLError::LEVEL_WARN);
+                tut::ensure(what + ": the pass begins", encoder.beginRenderPass(drawPass(target)));
+                encoder.setPipeline(shadow.pipeline.get());
+                encoder.setVertexBuffer(buffer.get(), streams);
+                encoder.setTexture(1, depth.get(), compared);
+                encoder.draw(PrimitiveType::Triangles, 0, 6);
+                encoder.endRenderPass();
+                ensureEqual(what + ": no WARN line", occurrences(boundLog, "WARNING #RHI#"), size_t(0));
+                const Rgba expected = white ? Rgba{ 255, 255, 255, 255 } : Rgba{ 0, 0, 0, 0 };
+                ensureImage(what, readTarget(device, target),
+                            [expected](U32, U32) -> std::optional<Rgba> { return expected; });
+            }
+            {
+                // P3-02's review m6: a texture without a depth format on the shadow sampler is refused with one RHI
+                // WARN (MSL's depth2d needs a depth format), and nothing is drawn.
+                SamplerDesc compared = pointClamp();
+                compared.compareFunc = CompareFunc::LessEqual;
+                CaptureLog wrongLog(LLError::LEVEL_WARN);
+                tut::ensure("an RGBA8 shadow texture: the pass begins", encoder.beginRenderPass(drawPass(target)));
+                encoder.setPipeline(shadow.pipeline.get());
+                encoder.setVertexBuffer(buffer.get(), streams);
+                encoder.setTexture(1, target.white.get(), compared);
+                const U64 drawsBefore = device.metalEncoder().nativeDraws();
+                encoder.draw(PrimitiveType::Triangles, 0, 6);
+                ensureEqual("an RGBA8 shadow texture: no native draw", device.metalEncoder().nativeDraws(),
+                            drawsBefore);
+                encoder.endRenderPass();
+                ensureEqual("an RGBA8 shadow texture: one WARN line", occurrences(wrongLog, "WARNING #RHI#"),
+                            size_t(1));
+                ensureEqual("an RGBA8 shadow texture: refused for its format",
+                            occurrences(wrongLog, "has no depth format"), size_t(1));
+            }
+            encoder.setTexture(1, nullptr, pointClamp());
+        }
+        const std::pair<const char*, const char*> programs[] = {
+            { "unbound 2D test", R"(#version 400
+#define FRAGMENT_SHADER 1
+uniform sampler2D unbound;
+in vec4 vertex_color;
+in vec2 vary_texcoord0;
+out vec4 frag_color;
+void main() { frag_color = vertex_color * texture(unbound, vary_texcoord0); }
+)" },
+            { "unbound cube test", R"(#version 400
+#define FRAGMENT_SHADER 1
+uniform samplerCube unbound;
+in vec4 vertex_color;
+in vec2 vary_texcoord0;
+out vec4 frag_color;
+void main() { frag_color = vertex_color * texture(unbound, vec3(vary_texcoord0 * 2.0 - 1.0, 1.0)); }
+)" },
+            { "unbound cube array test", R"(#version 400
+#define FRAGMENT_SHADER 1
+uniform samplerCubeArray unbound;
+in vec4 vertex_color;
+in vec2 vary_texcoord0;
+out vec4 frag_color;
+void main() { frag_color = vertex_color * texture(unbound, vec4(vary_texcoord0 * 2.0 - 1.0, 1.0, 0.0)); }
+)" },
+        };
+        CaptureLog log(LLError::LEVEL_WARN);
+        for (const auto& [name, source] : programs)
+        {
+            StageProgram sampling = fragmentProgram(device, name, source);
+            Program* program = sampling.program.get();
+            setVertexUniforms(encoder, program, translation(0, 0));
+            encoder.setSamplerChannel(program, U32(uniformIndex(program->reflection(), "unbound")), 1);
+            tut::ensure(std::string(name) + ": the pass begins", encoder.beginRenderPass(drawPass(target)));
+            encoder.setPipeline(sampling.pipeline.get());
+            encoder.setVertexBuffer(buffer.get(), streams);
+            encoder.setTexture(0, target.white.get(), pointClamp());
+            encoder.draw(PrimitiveType::Triangles, 0, 6);
+            encoder.endRenderPass();
+            ensureImage(std::string(name) + ": (0, 0, 0, 1) everywhere", readTarget(device, target),
+                        [](U32, U32) -> std::optional<Rgba> { return Rgba{ 0, 0, 0, 255 }; });
+        }
+        Texture* flat = device.defaultTexture(UniformType::Sampler2D);
+        tut::ensure("one default texture per type, made once",
+                    flat == device.defaultTexture(UniformType::Sampler2D)
+                        && flat != device.defaultTexture(UniformType::SamplerCube));
+        endCleanly(device, log);
+    }
+
+    // P3-01e S2 ----------------------------------------------------------------------------------------
+
+    /// An index buffer with the values, static unless dynamic.
+    template <class T>
+    API_AVAILABLE(macos(26.0)) Ref<Buffer> indexBufferOf(Device& device, const std::vector<T>& values,
+                                                         const std::string& name, bool dynamic = false)
+    {
+        BufferDesc desc;
+        desc.size = values.size() * sizeof(T);
+        desc.usage = BUFFER_INDEX;
+        desc.dynamic = dynamic;
+        Ref<Buffer> buffer = device.createBuffer(desc, std::as_bytes(std::span(values)), name);
+        tut::ensure("index buffer '" + name + "' is made", buffer.notNull());
+        return buffer;
+    }
+
+    /// Rectangle A (vertices 0-5) covers [0, 32) x [0, 32), rectangle B (6-11) [32, 64) x [32, 64).
+    API_AVAILABLE(macos(26.0)) Ref<Buffer> twoRects(MetalDevice& device, VertexStreams& streams)
+    {
+        DrawVertices vertices;
+        addRect(vertices, -1, -1, 0, 0, YELLOW);
+        addRect(vertices, 0, 0, 1, 1, YELLOW);
+        return vertexBuffer(device, vertices, streams);
+    }
+
+    /// Inside rectangle A only its first triangle (0, 1, 2), below the diagonal, or only its second
+    /// (3, 4, 5), above it; the pixels on the diagonal are not checked.
+    auto halfOfA(bool lower)
+    {
+        return [lower](U32 x, U32 y) -> std::optional<Rgba>
+        {
+            if (x >= 32 || y >= 32)
+            {
+                return CLEAR_RGBA;
+            }
+            if (x + 1 >= y && y + 1 >= x)
+            {
+                return std::nullopt;
+            }
+            return (lower ? y < x : y > x) ? YELLOW : CLEAR_RGBA;
+        };
+    }
+
+    /// One pass on the target with the UI program: what draws records, then the target read back.
+    template <class Draws>
+    API_AVAILABLE(macos(26.0)) Ref<Readback> drawnPass(MetalDevice& device, const DrawTarget& target,
+                                                       const Ref<Buffer>& vertices, const VertexStreams& streams,
+                                                       Draws draws)
+    {
+        Encoder& encoder = device.encoder();
+        setUiUniforms(encoder, target.program.get(), translation(0, 0));
+        tut::ensure("the pass begins", encoder.beginRenderPass(drawPass(target)));
+        bindDraw(encoder, target, vertices, streams);
+        draws(encoder);
+        encoder.endRenderPass();
+        return readTarget(device, target);
+    }
+
+    /// t87 (F4): drawIndexed with 16- and 32-bit indices from a first index past 0, from a dynamic
+    /// buffer's memory current at the draw, and a type change on the same buffer: the 12 bytes of the
+    /// 32-bit (0, 1, 2) are the 16-bit (0, 0, 1, 0, 2, 0), which draw nothing; the 6 bytes of a 16-bit
+    /// (1, 0, 2) hold one 32-bit index, 1, so the length is rounded down to 4 (P2-98 C03).
+    API_AVAILABLE(macos(26.0)) void indexedDrawTest(MetalDevice& device)
+    {
+        CaptureLog log(LLError::LEVEL_WARN);
+        DrawTarget target = drawTarget(device);
+        VertexStreams streams;
+        Ref<Buffer> vertices = twoRects(device, streams);
+        std::vector<U16> shorts(12);
+        std::vector<U32> longs(12);
+        for (U32 i = 0; i < 12; ++i)
+        {
+            shorts[i] = U16(i);
+            longs[i] = i;
+        }
+        Ref<Buffer> u16 = indexBufferOf(device, shorts, "short indices");
+        Ref<Buffer> u32 = indexBufferOf(device, longs, "long indices");
+        const U64 before = device.metalEncoder().nativeDraws();
+        ensureImage("16-bit from index 6: B only", drawnPass(device, target, vertices, streams, [&](Encoder& encoder)
+        {
+            encoder.setIndexBuffer(u16.get(), IndexType::U16);
+            encoder.drawIndexed(PrimitiveType::Triangles, 6, 6);
+        }), yellowIn({ { 32, 32, 64, 64 } }));
+        ensureImage("32-bit from index 6: B only", drawnPass(device, target, vertices, streams, [&](Encoder& encoder)
+        {
+            encoder.setIndexBuffer(u32.get(), IndexType::U32);
+            encoder.drawIndexed(PrimitiveType::Triangles, 6, 6);
+        }), yellowIn({ { 32, 32, 64, 64 } }));
+
+        std::vector<U16> first(shorts.begin(), shorts.begin() + 6);
+        Ref<Buffer> dynamic = indexBufferOf(device, first, "dynamic indices", true);
+        const std::vector<U16> second(shorts.begin() + 6, shorts.end());
+        device.encoder().updateBuffer(dynamic.get(), 0, std::as_bytes(std::span(second)));
+        ensureImage("a dynamic buffer's current memory: B", drawnPass(device, target, vertices, streams, [&](Encoder& encoder)
+        {
+            encoder.setIndexBuffer(dynamic.get(), IndexType::U16);
+            encoder.drawIndexed(PrimitiveType::Triangles, 0, 6);
+        }), yellowIn({ { 32, 32, 64, 64 } }));
+
+        Ref<Buffer> twelve = indexBufferOf(device, std::vector<U32>{ 0, 1, 2 }, "twelve bytes");
+        ensureImage("the same 12 bytes as 16-bit, then 32-bit: A's first triangle",
+                    drawnPass(device, target, vertices, streams, [&](Encoder& encoder)
+        {
+            encoder.setIndexBuffer(twelve.get(), IndexType::U16);
+            encoder.drawIndexed(PrimitiveType::Triangles, 0, 6);
+            encoder.setIndexBuffer(twelve.get(), IndexType::U32);
+            encoder.drawIndexed(PrimitiveType::Triangles, 0, 3);
+        }), halfOfA(true));
+        Ref<Buffer> six = indexBufferOf(device, std::vector<U16>{ 1, 0, 2 }, "six bytes");
+        ensureImage("the same 6 bytes as 16-bit, then one 32-bit index", drawnPass(device, target, vertices, streams,
+                                                                                    [&](Encoder& encoder)
+        {
+            encoder.setIndexBuffer(six.get(), IndexType::U16);
+            encoder.drawIndexed(PrimitiveType::Triangles, 0, 3);
+            encoder.setIndexBuffer(six.get(), IndexType::U32);
+            encoder.drawIndexed(PrimitiveType::Triangles, 0, 1);
+        }), halfOfA(true));
+        ensureEqual("native draws", device.metalEncoder().nativeDraws() - before, U64(7));
+        endCleanly(device, log);
+    }
+
+    /// t88 (P2-01b): draw(Triangles, 3, 3) draws the second triangle only.
+    API_AVAILABLE(macos(26.0)) void firstCountTest(MetalDevice& device)
+    {
+        CaptureLog log(LLError::LEVEL_WARN);
+        DrawTarget target = drawTarget(device);
+        VertexStreams streams;
+        Ref<Buffer> vertices = twoRects(device, streams);
+        ensureImage("vertices 3-5: A's second triangle", drawnPass(device, target, vertices, streams, [](Encoder& encoder)
+        {
+            encoder.draw(PrimitiveType::Triangles, 3, 3);
+        }), halfOfA(false));
+        endCleanly(device, log);
+    }
+
+    /// A Metal device of its own, made with the Metal debug setting or without it.
+    API_AVAILABLE(macos(26.0)) Ref<Device> otherMetalDevice(bool debug)
+    {
+        DeviceCreateInfo info;
+        info.backend = chooseBackend(BackendType::Metal);
+        Ref<Device> made;
+        if (debug)
+        {
+            made = Device::create(info);
+        }
+        else
+        {
+            MetalDebugOff off;
+            made = Device::create(info);
+        }
+        tut::ensure("another Metal device", made.notNull());
+        return made;
+    }
+
+    /// t89 (F4, flag H): with the Metal debug setting drawIndexed checks the indices' CPU copy: a
+    /// value at or past the vertices and a non-resident index buffer are refused with one WARN line
+    /// naming the buffer and no native draw; a static buffer updated outside a pass is checked with
+    /// its new bytes. Without the setting nothing is checked, and the CPU copy is still kept (S8).
+    API_AVAILABLE(macos(26.0)) void indexCheckTest(MetalDevice& device)
+    {
+        DrawTarget target = drawTarget(device);
+        DrawVertices six;
+        addRect(six, -1, -1, 0, 0, YELLOW);
+        VertexStreams streams;
+        Ref<Buffer> vertices = vertexBuffer(device, six, streams);
+        Ref<Buffer> bad = indexBufferOf(device, std::vector<U16>{ 0, 1, 2, 3, 4, 6 }, "bad indices");
+        Ref<Buffer> good = indexBufferOf(device, std::vector<U16>{ 0, 1, 2, 3, 4, 5 }, "good indices");
+        MetalEncoder& metal = device.metalEncoder();
+        const auto refused = [&](const std::string& what, const Ref<Buffer>& indices, const std::string& names)
+        {
+            CaptureLog log(LLError::LEVEL_WARN);
+            const U64 draws = metal.nativeDraws();
+            drawnPass(device, target, vertices, streams, [&](Encoder& encoder)
+            {
+                encoder.setIndexBuffer(indices.get(), IndexType::U16);
+                encoder.drawIndexed(PrimitiveType::Triangles, 0, 6);
+                tut::ensure(what + ": no native encoder", metal.openEncoder() == nil);
+            });
+            ensureEqual(what + ": one WARN line", occurrences(log, "WARNING #RHI#"), size_t(1));
+            ensureEqual(what + ": the WARN names it", occurrences(log, "drawIndexed: " + names), size_t(1));
+            ensureEqual(what + ": no native draw", metal.nativeDraws(), draws);
+        };
+        const U64 checks = metal.indexChecks();
+        refused("a value past the vertices", bad, "index 5 of index buffer 'bad indices' is 6, past the 6 vertices");
+        tut::ensure("the indices were checked", metal.indexChecks() > checks);
+
+        MetalResidency& residency = device.residency();
+        residency.dropForTest(metalBuffer(good.get()));
+        refused("not resident", good, "index buffer 'good indices' is not resident");
+        residency.admit(metalBuffer(good.get()), "good indices");
+
+        const std::vector<U16> later = { 0, 1, 2, 3, 4, 7 };
+        device.encoder().updateBuffer(good.get(), 0, std::as_bytes(std::span(later)));
+        refused("the update's bytes", good, "index 5 of index buffer 'good indices' is 7");
+        const std::vector<U16> back = { 0, 1, 2, 3, 4, 5 };
+        device.encoder().updateBuffer(good.get(), 0, std::as_bytes(std::span(back)));
+        {
+            CaptureLog log(LLError::LEVEL_WARN);
+            ensureImage("the bytes back: A", drawnPass(device, target, vertices, streams, [&](Encoder& encoder)
+            {
+                encoder.setIndexBuffer(good.get(), IndexType::U16);
+                encoder.drawIndexed(PrimitiveType::Triangles, 0, 6);
+            }), yellowIn({ { 0, 0, 32, 32 } }));
+            endCleanly(device, log);
+        }
+
+        Ref<Device> quietOwner = otherMetalDevice(false);
+        MetalDevice& quiet = *static_cast<MetalDevice*>(quietOwner.get());
+        CaptureLog log(LLError::LEVEL_WARN);
+        DrawTarget quietTarget = drawTarget(quiet);
+        VertexStreams quietStreams;
+        Ref<Buffer> quietVertices = vertexBuffer(quiet, six, quietStreams);
+        Ref<Buffer> quietIndices = indexBufferOf(quiet, back, "quiet indices");
+        ensureImage("without the setting: A", drawnPass(quiet, quietTarget, quietVertices, quietStreams,
+                                                         [&](Encoder& encoder)
+        {
+            encoder.setIndexBuffer(quietIndices.get(), IndexType::U16);
+            encoder.drawIndexed(PrimitiveType::Triangles, 0, 6);
+        }), yellowIn({ { 0, 0, 32, 32 } }));
+        ensureEqual("without the setting: no check", quiet.metalEncoder().indexChecks(), U64(0));
+        // S8 (flag C): the copy is kept without the setting too, since indexed fans, strips and loops read it.
+        ensureEqual("without the setting: the CPU copy", metalIndexBytes(quietIndices.get()).size(),
+                    back.size() * sizeof(U16));
+        endCleanly(quiet, log);
+    }
+
+    /// t90 (F2): bindForDraw writes an argument table place only when its value changes: a second
+    /// draw with the same bindings writes nothing, a texture with another sampling writes its texture
+    /// and sampler places; each device's encoder has its own tables.
+    API_AVAILABLE(macos(26.0)) void tableShadowTest(MetalDevice& device)
+    {
+        CaptureLog log(LLError::LEVEL_WARN);
+        DrawTarget target = drawTarget(device);
+        VertexStreams streams;
+        Ref<Buffer> vertices = twoRects(device, streams);
+        Ref<Texture> other = device.createTexture(sizedDesc(Format::RGBA8Unorm, TEXTURE_SAMPLED, 1, 1), "other white");
+        constexpr Rgba WHITE = { 255, 255, 255, 255 };
+        device.encoder().uploadTexture(other.get(), 0, 0, { 0, 0, 1, 1 }, PixelLayout(), bytesOf(WHITE));
+        MetalEncoder& metal = device.metalEncoder();
+        U64 first = 0;
+        U64 again = 0;
+        U64 switched = 0;
+        ensureImage("three draws", drawnPass(device, target, vertices, streams, [&](Encoder& encoder)
+        {
+            U64 at = metal.tableWrites();
+            encoder.draw(PrimitiveType::Triangles, 0, 6);
+            first = metal.tableWrites() - at;
+            at = metal.tableWrites();
+            encoder.draw(PrimitiveType::Triangles, 0, 6);
+            again = metal.tableWrites() - at;
+            SamplerDesc bilinear = pointClamp();
+            bilinear.filter = Filter::Bilinear;
+            encoder.setTexture(0, other.get(), bilinear);
+            at = metal.tableWrites();
+            encoder.draw(PrimitiveType::Triangles, 6, 6);
+            switched = metal.tableWrites() - at;
+        }), yellowIn({ { 0, 0, 32, 32 }, { 32, 32, 64, 64 } }));
+        tut::ensure("the first draw writes its places: " + std::to_string(first), first > 0);
+        ensureEqual("the same bindings write nothing", again, U64(0));
+        ensureEqual("another texture and sampler write two places", switched, U64(2));
+
+        // Two devices drawn in turn: each encoder's tables and shadow are its own.
+        Ref<Device> secondOwner = otherMetalDevice(true);
+        MetalDevice& second = *static_cast<MetalDevice*>(secondOwner.get());
+        CaptureLog secondLog(LLError::LEVEL_WARN);
+        DrawTarget secondTarget = drawTarget(second);
+        VertexStreams secondStreams;
+        Ref<Buffer> secondVertices = twoRects(second, secondStreams);
+        for (U32 round = 0; round < 2; ++round)
+        {
+            const std::string what = "round " + std::to_string(round) + ": ";
+            const U64 firstAt = metal.tableWrites();
+            ensureImage(what + "the first device", drawnPass(device, target, vertices, streams, [](Encoder& encoder)
+            {
+                encoder.draw(PrimitiveType::Triangles, 0, 6);
+            }), yellowIn({ { 0, 0, 32, 32 } }));
+            const U64 secondAt = second.metalEncoder().tableWrites();
+            ensureImage(what + "the second device", drawnPass(second, secondTarget, secondVertices, secondStreams,
+                                                              [](Encoder& encoder)
+            {
+                encoder.draw(PrimitiveType::Triangles, 6, 6);
+            }), yellowIn({ { 32, 32, 64, 64 } }));
+            if (round == 0)
+            {
+                tut::ensure(what + "the first device wrote its texture back", metal.tableWrites() > firstAt);
+                tut::ensure(what + "the second device wrote its own tables", second.metalEncoder().tableWrites() > secondAt);
+            }
+            else
+            {
+                ensureEqual(what + "the first device's bindings are unchanged", metal.tableWrites(), firstAt);
+                ensureEqual(what + "the second device's bindings are unchanged", second.metalEncoder().tableWrites(),
+                            secondAt);
+            }
+        }
+        endCleanly(second, secondLog);
+        endCleanly(device, log);
+    }
+
+    /// t91 (F11, P2-98): refused draws encode nothing: depth writes in a pass with a read-only depth
+    /// (the tracker's reason), a program failNextCompile failed (a null pipeline), a refused shader
+    /// (its program never Ready, so no pipeline), and a pipeline failNextCompile fails while the draw
+    /// waits for it: one WARN line per draw.
+    API_AVAILABLE(macos(26.0)) void refusedDrawsTest(MetalDevice& device)
+    {
+        DrawTarget target = drawTarget(device);
+        VertexStreams streams;
+        Ref<Buffer> vertices = twoRects(device, streams);
+        MetalEncoder& metal = device.metalEncoder();
+        Encoder& encoder = device.encoder();
+        const auto refusedDraw = [&](const std::string& what, Pipeline* pipeline, const std::string& reason, U32 draws)
+        {
+            CaptureLog log(LLError::LEVEL_WARN);
+            const U64 before = metal.nativeDraws();
+            RenderPassDesc pass = drawPass(target);
+            encoder.beginRenderPass(pass);
+            bindDraw(encoder, target, vertices, streams);
+            encoder.setPipeline(pipeline);
+            for (U32 i = 0; i < draws; ++i)
+            {
+                encoder.draw(PrimitiveType::Triangles, 0, 6);
+            }
+            encoder.endRenderPass();
+            ensureEqual(what + ": one WARN line per draw", occurrences(log, "draw: " + reason), size_t(draws));
+            ensureEqual(what + ": no native draw", metal.nativeDraws(), before);
+        };
+        {
+            CaptureLog log(LLError::LEVEL_WARN);
+            const U64 before = metal.nativeDraws();
+            RenderPassDesc pass = drawPass(target);
+            pass.depth.load = LoadAction::Load;
+            pass.depth.readOnly = true;
+            encoder.beginRenderPass(pass);
+            bindDraw(encoder, target, vertices, streams);
+            DepthStencilDesc writes;
+            writes.depthTest = true;
+            writes.depthWrite = true;
+            encoder.setDepthStencilState(device.getDepthStencilState(writes).get());
+            encoder.draw(PrimitiveType::Triangles, 0, 6);
+            encoder.setDepthStencilState(nullptr);
+            encoder.endRenderPass();
+            ensureEqual("depthWritesInReadOnlyPass: the tracker's reason",
+                        occurrences(log, "draw: depth writes are on, but pass '"), size_t(1));
+            ensureEqual("depthWritesInReadOnlyPass: one WARN line", occurrences(log, "WARNING #RHI#"), size_t(1));
+            ensureEqual("depthWritesInReadOnlyPass: no native draw", metal.nativeDraws(), before);
+        }
+        {
+            CaptureLog log(LLError::LEVEL_WARN);
+            device.failNextCompile();
+            Ref<Program> failed = device.createProgram(programDesc("failed draw test", UI_VERTEX, UI_FRAGMENT));
+            if (failed.notNull())
+            {
+                failed->wait();
+            }
+            tut::ensure("failNextCompile: the program failed", failed.notNull() && failed->status() == CompileStatus::Failed);
+            Ref<Pipeline> none = device.getPipeline(*failed, uiPipelineDesc());
+            tut::ensure("failNextCompile: a null pipeline", none.isNull());
+            refusedDraw("failNextCompile", none.get(), "no pipeline is set", 1);
+        }
+        {
+            CaptureLog log(LLError::LEVEL_WARN);
+            ProgramDesc geometry = programDesc("refused shader draw test", UI_VERTEX, UI_FRAGMENT);
+            geometry.stages.push_back({ ShaderStage::Geometry, { "#version 400\nvoid main() {}\n" } });
+            Ref<Program> refused = device.createProgram(geometry);
+            tut::ensure("the refused shader is not Ready", refused.isNull() || refused->status() != CompileStatus::Ready);
+            Ref<Pipeline> none = refused.notNull() ? device.getPipeline(*refused, uiPipelineDesc()) : nullptr;
+            refusedDraw("a refused shader", none.get(), "no pipeline is set", 1);
+        }
+        CaptureLog log(LLError::LEVEL_WARN);
+        std::string vertex;
+        Ref<Program> program = ready(device.createProgram(uniqueUiDesc("failing pipeline test", vertex)));
+        device.failNextCompile();
+        device.sleepNextHandlerMs(300);
+        Ref<Pipeline> failing = device.getPipeline(*program, uiPipelineDesc());
+        tut::ensure("the failing pipeline is made", failing.notNull());
+        ensureEqual("Pending while its handler sleeps", int(failing->status()), int(CompileStatus::Pending));
+        refusedDraw("a pipeline that fails while the draw waits", failing.get(), "the pipeline failed to compile", 2);
+        ensureEqual("Failed after the draws", int(failing->status()), int(CompileStatus::Failed));
+        device.endFrame();
+    }
+
+    /// t92 (F17): Lines and LineStrip draw natively, indexed too, on a line pipeline; since S8 a
+    /// TriangleStrip of 3 is one draw of its list without a WARN line, and one of 2 indices draws nothing.
+    API_AVAILABLE(macos(26.0)) void nativeLinesTest(MetalDevice& device)
+    {
+        DrawTarget target = drawTarget(device);
+        PipelineDesc lineDesc = uiPipelineDesc();
+        lineDesc.primitiveClass = PrimitiveClass::Line;
+        Ref<Pipeline> lines = device.getPipeline(*target.program, lineDesc);
+        tut::ensure("the line pipeline", lines.notNull());
+        // Through the centres of GL's row 16: y = 16.5 / 32 - 1.
+        DrawVertices vertices;
+        const F32 y = 16.5f / 32.f - 1.f;
+        vertices.positions = { { -1, y, 0, 1 }, { 0, y, 0, 1 }, { 1, y, 0, 1 } };
+        vertices.colors = { YELLOW, YELLOW, YELLOW };
+        VertexStreams streams;
+        Ref<Buffer> buffer = vertexBuffer(device, vertices, streams);
+        Ref<Buffer> indices = indexBufferOf(device, std::vector<U16>{ 0, 2 }, "line indices");
+        MetalEncoder& metal = device.metalEncoder();
+        {
+            CaptureLog log(LLError::LEVEL_WARN);
+            const U64 before = metal.nativeDraws();
+            Ref<Readback> image = drawnPass(device, target, buffer, streams, [&](Encoder& encoder)
+            {
+                encoder.setPipeline(lines.get());
+                encoder.draw(PrimitiveType::Lines, 0, 2);
+                encoder.draw(PrimitiveType::LineStrip, 0, 3);
+                encoder.setIndexBuffer(indices.get(), IndexType::U16);
+                encoder.drawIndexed(PrimitiveType::Lines, 0, 2);
+            });
+            ensureEqual("three native draws", metal.nativeDraws() - before, U64(3));
+            U32 lit = 0;
+            for (U32 x = 0; x < DRAW_SIZE; ++x)
+            {
+                lit += pixelAt(image, x, 16) == YELLOW ? 1 : 0;
+            }
+            tut::ensure("row 16 is drawn: " + std::to_string(lit) + " pixels", lit >= DRAW_SIZE - 2);
+            ensureImage("only near row 16", image, [](U32, U32 row) -> std::optional<Rgba>
+            {
+                return row + 1 >= 16 && row <= 17 ? std::nullopt : std::optional<Rgba>(CLEAR_RGBA);
+            });
+            endCleanly(device, log);
+        }
+        CaptureLog log(LLError::LEVEL_WARN);
+        const U64 before = metal.nativeDraws();
+        drawnPass(device, target, buffer, streams, [&](Encoder& encoder)
+        {
+            encoder.draw(PrimitiveType::TriangleStrip, 0, 3);
+            encoder.draw(PrimitiveType::TriangleStrip, 0, 2);
+            encoder.setIndexBuffer(indices.get(), IndexType::U16);
+            encoder.drawIndexed(PrimitiveType::TriangleStrip, 0, 2);
+        });
+        ensureEqual("a strip of 3 is one draw, one of 2 none", metal.nativeDraws() - before, U64(1));
+        endCleanly(device, log);
+    }
+
+    /// t93 (flag I, P2-R1): LLTexUnit's tell on the viewer's Metal device follows its record:
+    /// Sent, then Same, still Same after the frame's end, Sent on another device. A texture the
+    /// tracker refuses (no TEXTURE_SAMPLED) stays in the record, so its next tell is Same with
+    /// nothing bound, as on GL (llrender.cpp:701-716). The device has 16 channels (llrhi.h:394).
+    API_AVAILABLE(macos(26.0)) void toldTest()
+    {
+        CaptureLog log(LLError::LEVEL_WARN);
+        struct TellLogScope
+        {
+            LLTexUnit::TellLog log;
+            TellLogScope() { LLTexUnit::setTellLog(&log); }
+            ~TellLogScope() { LLTexUnit::setTellLog(nullptr); }
+        } scope;
+        LLTexUnit::TellLog& tells = scope.log;
+        Texture* const nothing = nullptr;
+        {
+            MetalViewerRun run;
+            MetalDevice& device = *run.device;
+            ensureEqual("the Metal device's channels", device.capabilities().maxSamplersPerStage, U32(16));
+            LLTexUnit* unit = gGL.getTexUnit(0);
+            Ref<Texture> sampled = device.createTexture(sizedDesc(Format::RGBA8Unorm, TEXTURE_SAMPLED, 1, 1), "told");
+            Ref<Texture> unsampled =
+                device.createTexture(sizedDesc(Format::RGBA8Unorm, TEXTURE_RENDER_TARGET, 1, 1), "never sampled");
+            tells.clear();
+            unit->bindTexture(LLTexUnit::TT_TEXTURE, sampled.get());
+            ensureEqual("the first bind: Sent", tells.size(), size_t(1));
+            unit->bindTexture(LLTexUnit::TT_TEXTURE, sampled.get());
+            ensureEqual("the same bind: Same", tells.size(), size_t(1));
+            finishFrame(device);
+            unit->bindTexture(LLTexUnit::TT_TEXTURE, sampled.get());
+            ensureEqual("after the frame's end: Same", tells.size(), size_t(1));
+
+            unit->bindTexture(LLTexUnit::TT_TEXTURE, unsampled.get());
+            ensureEqual("a texture the tracker refuses: Sent", tells.size(), size_t(2));
+            ensureEqual("the tracker's WARN line", occurrences(log, "setTexture: texture 'never sampled' cannot be sampled"),
+                        size_t(1));
+            unit->bindTexture(LLTexUnit::TT_TEXTURE, unsampled.get());
+            ensureEqual("the record keeps it: Same", tells.size(), size_t(2));
+            unit->unbind(LLTexUnit::TT_TEXTURE);
+            unit->bindTexture(LLTexUnit::TT_TEXTURE, nothing);
+            const size_t told = tells.size();
+            unit->bindTexture(LLTexUnit::TT_TEXTURE, nothing);
+            ensureEqual("nothing again: Same", tells.size(), told);
+            finishFrame(device);
+        }
+        {
+            MetalViewerRun run;
+            const size_t told = tells.size();
+            gGL.getTexUnit(0)->bindTexture(LLTexUnit::TT_TEXTURE, nothing);
+            ensureEqual("nothing on another device: Sent", tells.size(), told + 1);
+            finishFrame(*run.device);
+        }
+        ensureEqual("no other WARN line", occurrences(log, "WARNING"), size_t(1));
+    }
+
+    /// t94 (F5, decision 2): a static buffer updated between two draws in one pass: the first draw
+    /// reads the old bytes, the second the new ones. The update breaks the pass: the first segment
+    /// stores its colour, the GPU copy has an encoder of its own, and the next segment loads.
+    API_AVAILABLE(macos(26.0)) void staticUpdateInPassTest(MetalDevice& device)
+    {
+        CaptureLog log(LLError::LEVEL_WARN);
+        TintTarget target = tintTarget(device);
+        Encoder& encoder = device.encoder();
+        MetalEncoder& metal = device.metalEncoder();
+        const std::vector<std::byte> v1 = vertexBytes(squareAt(0, WHITE_RGBA));
+        const std::vector<std::byte> v2 = vertexBytes(squareAt(1, WHITE_RGBA));
+        BufferDesc fixed;
+        fixed.size = v1.size();
+        fixed.usage = BUFFER_VERTEX;
+        Ref<Buffer> still = device.createBuffer(fixed, v1, "static vertices in a pass");
+        tut::ensure("the pass begins", encoder.beginRenderPass(tintPass(target, LoadAction::Clear)));
+        tintDraw(encoder, target, still.get(), 0, RED);
+        MTL4RenderPassDescriptor* before = metal.lastPassDescriptor();
+        const U64 copies = device.copyEncodersBegun();
+        encoder.updateBuffer(still.get(), 0, v2);
+        ensureEqual("the update began one encoder of copies", device.copyEncodersBegun(), copies + 1);
+        MTL4RenderPassDescriptor* first = metal.lastPassDescriptor();
+        tut::ensure("the update ended the first segment", first != nil && first != before);
+        tut::ensure("the first segment stores its colour for the next",
+                    first.colorAttachments[0].storeAction == MTLStoreActionStore);
+        tintDraw(encoder, target, still.get(), 0, GREEN_RGBA);
+        encoder.endRenderPass();
+        MTL4RenderPassDescriptor* second = metal.lastPassDescriptor();
+        tut::ensure("the pass ended a second segment", second != nil && second != first);
+        tut::ensure("the second segment loads the first's colour",
+                    second.colorAttachments[0].loadAction == MTLLoadActionLoad);
+        ensureColumns("the draw before the update reads the old bytes, the one after it the new", readTint(device, target),
+                      { RED, GREEN_RGBA });
+        endCleanly(device, log);
+    }
+
+    /// t148 (P2-16b U2, decision 2): a dynamic uniform buffer the size of ReflectionProbeData, read through a named block
+    /// and updated whole before each of 8 draws in one pass: each draw reads its own bytes. Each update gives the buffer
+    /// new memory from the pool, does not break the pass and begins no copy, and the pool grows by one chunk at most.
+    API_AVAILABLE(macos(26.0)) void uniformBlockUpdatesTest(MetalDevice& device)
+    {
+        // sizeof(ReflectionProbeData), llreflectionmapmanager.h:69-106; llrender's tests cannot see newview.
+        static constexpr U32 PROBES_SIZE = 49248;
+        CaptureLog log(LLError::LEVEL_WARN);
+        const size_t chunks = device.poolChunks();
+        StageProgram probes = fragmentProgram(device, "block updates test", R"(#version 400
+#define FRAGMENT_SHADER 1
+layout(std140) uniform ReflectionProbes { vec4 probe[3078]; };
+in vec4 vertex_color;
+in vec2 vary_texcoord0;
+out vec4 frag_color;
+void main() { frag_color = vertex_color * probe[0] + probe[3077] * 0.0; }
+)");
+        ensureEqual("the fragment stage reads slot 0", metalProgramLayout(probes.program.get())->fragment.uniformBlocks,
+                    1u << 0);
+        const ProgramReflection& reflection = probes.program->reflection();
+        ensureEqual("one block", reflection.blocks.size(), size_t(1));
+        ensureEqual("ReflectionProbeData's size", reflection.blocks[0].size, PROBES_SIZE);
+        BufferDesc blockDesc;
+        blockDesc.size = PROBES_SIZE;
+        blockDesc.usage = BUFFER_UNIFORM;
+        blockDesc.dynamic = true;
+        Ref<Buffer> block = device.createBuffer(blockDesc, {}, "probes");
+        tut::ensure("the dynamic uniform buffer is made", block.notNull());
+        tut::ensure("in the pool", metalPooled(block->desc()));
+
+        // One square over columns 0-7 of rows 0-15; draw i moves it to columns 8i to 8i + 7.
+        TintTarget target = tintTarget(device);
+        DrawVertices vertices;
+        addRect(vertices, -1, -1, -0.75f, -0.5f, WHITE_RGBA);
+        VertexStreams streams;
+        Ref<Buffer> square = vertexBuffer(device, vertices, streams);
+        tut::ensure("the square", square.notNull());
+        const std::array<Rgba, 8> colours = { RED, GREEN, BLUE, YELLOW, MAGENTA_RGBA, Rgba{ 0, 255, 255, 255 }, WHITE_RGBA,
+                                              Rgba{ 204, 153, 102, 255 } };
+        Encoder& encoder = device.encoder();
+        MetalEncoder& metal = device.metalEncoder();
+        tut::ensure("the pass begins", encoder.beginRenderPass(tintPass(target, LoadAction::Clear)));
+        encoder.setUniformBuffer(0, block.get(), 0, PROBES_SIZE);
+        encoder.setPipeline(probes.pipeline.get());
+        encoder.setVertexBuffer(square.get(), streams);
+        // A segment's descriptor becomes the last one when the segment ends (endNative), so it stays until the pass ends
+        // unless an update breaks the pass (t94).
+        MTL4RenderPassDescriptor* const lastBefore = metal.lastPassDescriptor();
+        const U64 copies = device.copyEncodersBegun();
+        std::vector<std::byte> bytes(PROBES_SIZE);
+        for (U32 i = 0; i < colours.size(); ++i)
+        {
+            const std::string at = "draw " + std::to_string(i) + ": ";
+            const std::array<F32, 4> colour = tintOf(colours[i]);
+            std::memcpy(bytes.data(), colour.data(), sizeof(colour));
+            const MetalAllocation before = metalAllocation(block.get());
+            encoder.updateBuffer(block.get(), 0, bytes);
+            const MetalAllocation after = metalAllocation(block.get());
+            tut::ensure(at + "the update gave new memory",
+                        after.buffer != nil && (after.buffer != before.buffer || after.offset != before.offset));
+            tut::ensure(at + "with the bytes", memcmp(after.cpu, bytes.data(), bytes.size()) == 0);
+            ensureEqual(at + "the update began no encoder of copies", device.copyEncodersBegun(), copies);
+            tut::ensure(at + "the update did not break the pass", metal.lastPassDescriptor() == lastBefore);
+            setVertexUniforms(encoder, probes.program.get(), translation(0.25f * F32(i), 0));
+            encoder.draw(PrimitiveType::Triangles, 0, 6);
+            tut::ensure(at + "the draw is recorded", metal.openEncoder() != nil);
+        }
+        tut::ensure("no segment ended in the pass", metal.lastPassDescriptor() == lastBefore);
+        encoder.endRenderPass();
+        MTL4RenderPassDescriptor* const segment = metal.lastPassDescriptor();
+        tut::ensure("the pass's end ended its segment", segment != nil && segment != lastBefore);
+        tut::ensure("one segment: it cleared, nothing loaded", segment.colorAttachments[0].loadAction == MTLLoadActionClear);
+        device.submitAndWait();
+        ensureImage("each draw reads its own update", readTint(device, target),
+                    [&colours](U32 x, U32 y) -> std::optional<Rgba>
+                    {
+                        return y < 16 ? colours[x / 8] : CLEAR_RGBA;
+                    });
+        ensureEqual("no RHI WARN line", occurrences(log, "WARNING #RHI#"), size_t(0));
+        endCleanly(device, log);
+        tut::ensure("the pool grew by one chunk at most", device.poolChunks() <= chunks + 1);
+    }
+
+    /// t95 (decision 2, P2-03b): a readback in the middle of a stack pass on the viewer's Metal device: an LLRenderTarget
+    /// bound and cleared, a draw, a readback, a draw and the flush. The readback has the first draw only, the target both,
+    /// and LLRenderTarget::currentPass gives the same record before and after the readback's pass break.
+    API_AVAILABLE(macos(26.0)) void stackPassReadbackTest()
+    {
+        MetalViewerRun run;
+        MetalDevice& device = *run.device;
+        CaptureLog log(LLError::LEVEL_WARN);
+        @autoreleasepool
+        {
+            TintTarget tint = tintTarget(device);
+            PipelineDesc noDepth = uiPipelineDesc();
+            noDepth.depthFormat = Format::Unknown;
+            tint.pipeline = device.getPipeline(*tint.program, noDepth);
+            tut::ensure("the pipeline without a depth", tint.pipeline.notNull());
+            LLRenderTarget::setClearColor(CLEAR_COLOR[0], CLEAR_COLOR[1], CLEAR_COLOR[2], CLEAR_COLOR[3]);
+            LLRenderTarget target;
+            tut::ensure("the target", target.allocate(DRAW_SIZE, DRAW_SIZE, GL_RGBA, false));
+            Texture* color = target.getRHITexture(0);
+            tut::ensure("its colour of the device", color != nullptr);
+            ensureEqual("GL_RGBA is RGBA8Unorm", U32(color->desc().format), U32(Format::RGBA8Unorm));
+            target.bindTarget();
+            tut::ensure("the stack pass is open", LLRenderTarget::beginStackPass());
+            target.clear();
+            RenderPassDesc before;
+            tut::ensure("the record before the break", LLRenderTarget::currentPass(before));
+            Encoder& encoder = device.encoder();
+            const U64 draws = device.metalEncoder().nativeDraws();
+            tintDraw(encoder, tint, tint.square.get(), 0, RED);
+            Ref<Readback> middle = encoder.readback(color, 0, 0, { 0, 0, DRAW_SIZE, DRAW_SIZE }, PixelLayout());
+            tut::ensure("the readback in the pass is made", middle.notNull());
+            tintDraw(encoder, tint, tint.square.get(), 1, GREEN_RGBA);
+            ensureEqual("both draws are encoded", device.metalEncoder().nativeDraws(), draws + 2);
+            RenderPassDesc after;
+            tut::ensure("the record after the break", LLRenderTarget::currentPass(after));
+            ensureEqual("the record's colours", after.colorCount, before.colorCount);
+            tut::ensure("the record's colour", after.color[0].texture.get() == color && before.color[0].texture.get() == color);
+            tut::ensure("the record's depth", after.depth.texture.get() == before.depth.texture.get());
+            tut::ensure("the record's read-only flag", after.depth.readOnly == before.depth.readOnly);
+            tut::ensure("the record's name and stack", after.name == before.name && after.stack && before.stack);
+            target.flush();
+            middle->wait();
+            ensureColumns("the readback in the pass has the first draw only", middle, { RED });
+            DrawTarget as;
+            as.color = color;
+            ensureColumns("the target has both draws", readTarget(device, as), { RED, GREEN_RGBA });
+            target.release();
+            finishFrame(device);
+        }
+        std::ostringstream warnings;
+        log.streamto(warnings);
+        // As t52 (P3-01f).
+        ensureEqual("t95: no 'not ported (P3-01f)' line", occurrences(log, "not ported to Metal yet (P3-01f)"), size_t(0));
+        tut::ensure("t95: no WARN line: " + warnings.str(), occurrences(log, "WARNING") == 0);
+    }
+
+    /// t150 (P2-06a, F5): LLRenderTarget::setDepthAccess on the viewer's Metal device. A target with colour and depth, its
+    /// depth cleared by a writing pass and then filled with 0.25, bound read-only: the segment loads the fill (P2-R2, R32),
+    /// a draw without depth writes that passes only against the fill is encoded and lands, and one with writes is refused
+    /// (one WARN line, no native draw); after setDepthAccess(DEPTH_READ_WRITE) the writing draw is encoded with no WARN.
+    /// The change ends the read-only segment with colour and depth stored, the next segment loads both, and the depth read
+    /// back has the write where the writing draw was, and the fill everywhere else.
+    API_AVAILABLE(macos(26.0)) void depthAccessBreakTest()
+    {
+        MetalViewerRun run;
+        MetalDevice& device = *run.device;
+        CaptureLog log(LLError::LEVEL_WARN);
+        @autoreleasepool
+        {
+            TintTarget tint = tintTarget(device);
+            LLRenderTarget::setClearColor(CLEAR_COLOR[0], CLEAR_COLOR[1], CLEAR_COLOR[2], CLEAR_COLOR[3]);
+            LLRenderTarget target;
+            tut::ensure("the target", target.allocate(DRAW_SIZE, DRAW_SIZE, GL_RGBA, true));
+            Texture* color = target.getRHITexture(0);
+            Texture* depth = target.getRHIDepth();
+            tut::ensure("its colour and depth of the device", color != nullptr && depth != nullptr);
+            ensureEqual("GL_RGBA is RGBA8Unorm", U32(color->desc().format), U32(Format::RGBA8Unorm));
+            ensureEqual("the depth is Depth32Float", U32(depth->desc().format), U32(Format::Depth32Float));
+            // The depth's writing pass: the target cleared, colour to CLEAR_COLOR and depth to 1, under a state that writes it.
+            zeroDepth(device, depth);
+            clearTarget("the depth's writing pass", device, target);
+            ensureDepthCleared("the depth before the read-only bind", device, depth);
+            // P2-R2 (R32): then filled through the test's own queue, so only a load keeps the fill in the read-only
+            // segment (a clear would give 1): its draw at depth 0.5 passes GreaterEqual against the fill, not against 1
+            constexpr F32 FILL = 0.25f;
+            fillDepth(device, depth, FILL);
+
+            Encoder& encoder = device.encoder();
+            MetalEncoder& metal = device.metalEncoder();
+            Ref<DepthStencilState> writes = device.getDepthStencilState({ true, true, CompareFunc::AlwaysPass });
+            Ref<DepthStencilState> noWrites = device.getDepthStencilState({ true, false, CompareFunc::GreaterEqual });
+            const std::string refusal = "draw: depth writes are on, but pass 'render target' has a read-only depth";
+            target.bindTarget(LLRenderTarget::DEPTH_READ_ONLY);
+            RenderPassDesc record;
+            tut::ensure("the read-only stack pass", LLRenderTarget::currentPass(record) && record.depth.readOnly);
+            const U64 draws = metal.nativeDraws();
+            encoder.setDepthStencilState(noWrites.get());
+            tintDraw(encoder, tint, tint.square.get(), 0, RED);
+            ensureEqual("the draw without depth writes is encoded", metal.nativeDraws(), draws + 1);
+            ensureEqual("with no WARN line", occurrences(log, "WARNING"), size_t(0));
+            encoder.setDepthStencilState(writes.get());
+            tintDraw(encoder, tint, tint.square.get(), 1, GREEN_RGBA);
+            ensureEqual("the writing draw is refused: the tracker's WARN line", occurrences(log, refusal), size_t(1));
+            ensureEqual("and no native draw", metal.nativeDraws(), draws + 1);
+            MTL4RenderPassDescriptor* before = metal.lastPassDescriptor();
+            target.setDepthAccess(LLRenderTarget::DEPTH_READ_WRITE);
+            MTL4RenderPassDescriptor* first = metal.lastPassDescriptor();
+            tut::ensure("setDepthAccess ended the read-only segment", first != nil && first != before);
+            tut::ensure("which stores its colour", first.colorAttachments[0].storeAction == MTLStoreActionStore);
+            tut::ensure("and its depth", first.depthAttachment.storeAction == MTLStoreActionStore);
+            tut::ensure("and loaded the filled depth", first.depthAttachment.loadAction == MTLLoadActionLoad);
+            tut::ensure("the record is read-write now", LLRenderTarget::currentPass(record) && !record.depth.readOnly);
+            tintDraw(encoder, tint, tint.square.get(), 2, BLUE_RGBA);
+            ensureEqual("the writing draw is encoded", metal.nativeDraws(), draws + 2);
+            ensureEqual("with no other WARN line", occurrences(log, "WARNING"), size_t(1));
+            encoder.setDepthStencilState(nullptr);
+            target.flush();
+            MTL4RenderPassDescriptor* second = metal.lastPassDescriptor();
+            tut::ensure("the flush ended the read-write segment", second != nil && second != first);
+            tut::ensure("which loads the colour", second.colorAttachments[0].loadAction == MTLLoadActionLoad);
+            tut::ensure("and the depth", second.depthAttachment.loadAction == MTLLoadActionLoad);
+            tut::ensure("and stores the depth", second.depthAttachment.storeAction == MTLStoreActionStore);
+            DrawTarget as;
+            as.color = color;
+            ensureColumns("the read-only draw and the read-write one, not the refused one", readTarget(device, as),
+                          { RED, CLEAR_RGBA, BLUE_RGBA });
+            device.submitAndWait();
+            // The writing draw's square (columns 32-47 of rows 0-15) has one depth other than the fill; every other texel
+            // keeps the fill.
+            const std::vector<U8> bytes = levelBytes(device, depth, sizeof(F32));
+            ensureEqual("the depth's size", bytes.size(), size_t(DRAW_SIZE) * DRAW_SIZE * sizeof(F32));
+            std::optional<F32> written;
+            for (U32 y = 0; y < DRAW_SIZE; ++y)
+            {
+                for (U32 x = 0; x < DRAW_SIZE; ++x)
+                {
+                    F32 value = 0.f;
+                    std::memcpy(&value, &bytes[(size_t(y) * DRAW_SIZE + x) * sizeof(F32)], sizeof(F32));
+                    const bool square = y < 16 && x / 16 == 2;
+                    const std::string at = "depth (" + std::to_string(x) + ", " + std::to_string(y) + ") is " +
+                                           std::to_string(value);
+                    if (!square)
+                    {
+                        tut::ensure(at + ", not the fill " + std::to_string(FILL), value == FILL);
+                        continue;
+                    }
+                    tut::ensure(at + ", the fill: the write is lost", value != FILL);
+                    if (!written)
+                    {
+                        written = value;
+                    }
+                    tut::ensure(at + ", not the square's " + std::to_string(*written), value == *written);
+                }
+            }
+            target.release();
+            finishFrame(device);
+        }
+        std::ostringstream warnings;
+        log.streamto(warnings);
+        ensureEqual("t150: no 'not ported (P3-01f)' line", occurrences(log, "not ported to Metal yet (P3-01f)"), size_t(0));
+        tut::ensure("t150: only the refusal's WARN line: " + warnings.str(), occurrences(log, "WARNING") == 1);
+    }
+
+    /// t96 (F5, decision 2): an upload in a pass after a draw: the draw before it samples the old
+    /// texel and the draw after it the new one, with no WARN line.
+    API_AVAILABLE(macos(26.0)) void uploadInPassTest(MetalDevice& device)
+    {
+        CaptureLog log(LLError::LEVEL_WARN);
+        DrawTarget target = drawTarget(device);
+        Encoder& encoder = device.encoder();
+        Ref<Texture> texture = device.createTexture(sizedDesc(Format::RGBA8Unorm, TEXTURE_SAMPLED, 1, 1), "upload in a pass");
+        tut::ensure("the texture", texture.notNull());
+        const Region texel{ 0, 0, 1, 1 };
+        encoder.uploadTexture(texture.get(), 0, 0, texel, PixelLayout(), bytesOf(RED));
+        DrawVertices left;
+        addRect(left, -1, -1, 0, 1, WHITE_RGBA);
+        DrawVertices right;
+        addRect(right, 0, -1, 1, 1, WHITE_RGBA);
+        VertexStreams streams;
+        Ref<Buffer> leftBuffer = vertexBuffer(device, left, streams);
+        Ref<Buffer> rightBuffer = vertexBuffer(device, right, streams);
+        setUiUniforms(encoder, target.program.get(), translation(0, 0));
+        tut::ensure("the pass begins", encoder.beginRenderPass(drawPass(target)));
+        encoder.setPipeline(target.pipeline.get());
+        encoder.setTexture(0, texture.get(), pointClamp());
+        encoder.setVertexBuffer(leftBuffer.get(), streams);
+        encoder.draw(PrimitiveType::Triangles, 0, 6);
+        const U64 copies = device.copyEncodersBegun();
+        encoder.uploadTexture(texture.get(), 0, 0, texel, PixelLayout(), bytesOf(GREEN_RGBA));
+        encoder.setVertexBuffer(rightBuffer.get(), streams);
+        encoder.draw(PrimitiveType::Triangles, 0, 6);
+        encoder.endRenderPass();
+        // Checked after the pass, so a failure leaves no encoder open.
+        ensureEqual("the upload began one encoder of copies", device.copyEncodersBegun(), copies + 1);
+        ensureImage("the draw before the upload samples the old texel, the one after it the new", readTarget(device, target),
+                    [](U32 x, U32 y) -> std::optional<Rgba> { return x < DRAW_SIZE / 2 ? RED : GREEN_RGBA; });
+        endCleanly(device, log);
+    }
+
+    /// t97 (F5): copyTexture in a pass after a draw: the copy has the draw, and a draw after it in the
+    /// pass samples the copy, as on GL; the pass goes on in a second render encoder, with no WARN line.
+    API_AVAILABLE(macos(26.0)) void copyInPassTest(MetalDevice& device)
+    {
+        CaptureLog log(LLError::LEVEL_WARN);
+        DrawTarget target = drawTarget(device);
+        Encoder& encoder = device.encoder();
+        const Region texel{ 0, 0, 1, 1 };
+        const U8 usage = TEXTURE_SAMPLED | TEXTURE_READBACK;
+        Ref<Texture> red = device.createTexture(sizedDesc(Format::RGBA8Unorm, TEXTURE_SAMPLED, 1, 1), "red");
+        Ref<Texture> copy = device.createTexture(sizedDesc(Format::RGBA8Unorm, usage, 1, 1), "copy in a pass");
+        tut::ensure("the textures", red.notNull() && copy.notNull());
+        encoder.uploadTexture(red.get(), 0, 0, texel, PixelLayout(), bytesOf(RED));
+        encoder.uploadTexture(copy.get(), 0, 0, texel, PixelLayout(), bytesOf(GREEN_RGBA));
+        DrawVertices left;
+        addRect(left, -1, -1, 0, 1, WHITE_RGBA);
+        DrawVertices right;
+        addRect(right, 0, -1, 1, 1, WHITE_RGBA);
+        VertexStreams streams;
+        Ref<Buffer> leftBuffer = vertexBuffer(device, left, streams);
+        Ref<Buffer> rightBuffer = vertexBuffer(device, right, streams);
+        setUiUniforms(encoder, target.program.get(), translation(0, 0));
+        tut::ensure("the pass begins", encoder.beginRenderPass(drawPass(target)));
+        encoder.setPipeline(target.pipeline.get());
+        encoder.setTexture(0, red.get(), pointClamp());
+        encoder.setVertexBuffer(leftBuffer.get(), streams);
+        encoder.draw(PrimitiveType::Triangles, 0, 6);
+        const U64 copies = device.copyEncodersBegun();
+        const U64 renders = device.metalEncoder().renderEncoders();
+        // The target's texel (0, 0), in the left half the draw before the copy fills.
+        encoder.copyTexture(target.color.get(), 0, 0, texel, copy.get(), 0, 0, 0, 0);
+        encoder.setTexture(0, copy.get(), pointClamp());
+        encoder.setVertexBuffer(rightBuffer.get(), streams);
+        encoder.draw(PrimitiveType::Triangles, 0, 6);
+        encoder.endRenderPass();
+        // Checked after the pass, so a failure leaves no encoder open.
+        ensureEqual("the copy began one encoder of copies", device.copyEncodersBegun(), copies + 1);
+        ensureEqual("the draw after the copy is on a second render encoder", device.metalEncoder().renderEncoders(), renders + 1);
+        ensureRead("the copy has the draw before it", encoder.readback(copy.get(), 0, 0, texel, PixelLayout()),
+                   std::vector<U8>(RED.begin(), RED.end()));
+        ensureImage("the draw before the copy and the draw after it, which samples the copy", readTarget(device, target),
+                    [](U32, U32) -> std::optional<Rgba> { return RED; });
+        endCleanly(device, log);
+    }
+
+    /// t98 (decision 3, F16): each native render and compute encoder begins with one queue barrier,
+    /// issued through queueBarrier; a frame whose stack pass begins and ends with nothing recorded
+    /// opens no render encoder and issues no barrier.
+    API_AVAILABLE(macos(26.0)) void countersTest(MetalDevice& device)
+    {
+        CaptureLog log(LLError::LEVEL_WARN);
+        DrawTarget target = drawTarget(device);
+        Encoder& encoder = device.encoder();
+        DrawVertices square;
+        addRect(square, -1, -1, 1, 1, WHITE_RGBA);
+        VertexStreams streams;
+        Ref<Buffer> buffer = vertexBuffer(device, square, streams);
+        setUiUniforms(encoder, target.program.get(), translation(0, 0));
+        finishFrame(device);
+        {
+            const U64 barriers = device.barriers();
+            const U64 renders = device.metalEncoder().renderEncoders();
+            RenderPassDesc stack = passOn(target.color, target.depth);
+            stack.stack = true;
+            tut::ensure("the stack pass begins", encoder.beginRenderPass(stack));
+            device.endFrame();
+            ensureEqual("an untouched stack pass: no render encoder", device.metalEncoder().renderEncoders(), renders);
+            ensureEqual("an untouched stack pass: no barrier", device.barriers(), barriers);
+        }
+        const U64 barriers = device.barriers();
+        const U64 renders = device.metalEncoder().renderEncoders();
+        const U64 copies = device.copyEncodersBegun();
+        tut::ensure("the pass begins", encoder.beginRenderPass(drawPass(target)));
+        bindDraw(encoder, target, buffer, streams);
+        encoder.draw(PrimitiveType::Triangles, 0, 6);
+        // An upload breaks the pass (F5): a copy encoder between two render encoders.
+        encoder.uploadTexture(target.white.get(), 0, 0, { 0, 0, 1, 1 }, PixelLayout(), bytesOf(WHITE_RGBA));
+        encoder.draw(PrimitiveType::Triangles, 0, 6);
+        encoder.endRenderPass();
+        ensureImage("the pass draws", readTarget(device, target), [](U32, U32) -> std::optional<Rgba> { return WHITE_RGBA; });
+        const U64 renderDelta = device.metalEncoder().renderEncoders() - renders;
+        const U64 copyDelta = device.copyEncodersBegun() - copies;
+        ensureEqual("two render encoders", renderDelta, U64(2));
+        ensureEqual("the upload's and the readback's encoders of copies", copyDelta, U64(2));
+        ensureEqual("one barrier per native encoder", device.barriers() - barriers, renderDelta + copyDelta);
+        endCleanly(device, log);
+    }
+
+    // P3-01e F6: clears between draws and the clear draw ----------------------------------------------
+
+    constexpr std::array<F32, 4> RED_FLOATS = { 1.f, 0.f, 0.f, 1.f };
+
+    /// t99 (F6): a clear after a draw in a pass: the pass goes on in a new segment whose color load action
+    /// is the clear, the depth is kept, and a later draw is on top of the clear, behind the kept depth.
+    API_AVAILABLE(macos(26.0)) void clearAfterDrawTest(MetalDevice& device)
+    {
+        CaptureLog log(LLError::LEVEL_WARN);
+        DrawTarget target = drawTarget(device);
+        Encoder& encoder = device.encoder();
+        DrawVertices left;
+        addRect(left, -1, -1, 0, 1, YELLOW);
+        DrawVertices whole;
+        addRect(whole, -1, -1, 1, 1, YELLOW);
+        for (std::array<F32, 4>& position : whole.positions)
+        {
+            position[2] = 0.5f; // depth 0.75, behind the left half's 0.5
+        }
+        VertexStreams streams;
+        Ref<Buffer> leftBuffer = vertexBuffer(device, left, streams);
+        Ref<Buffer> wholeBuffer = vertexBuffer(device, whole, streams);
+        Ref<DepthStencilState> depthState = device.getDepthStencilState({ true, true, CompareFunc::LessEqual });
+        setUiUniforms(encoder, target.program.get(), translation(0, 0));
+        tut::ensure("the pass begins", encoder.beginRenderPass(drawPass(target)));
+        bindDraw(encoder, target, leftBuffer, streams);
+        encoder.setDepthStencilState(depthState.get());
+        encoder.draw(PrimitiveType::Triangles, 0, 6);
+        const U64 renders = device.metalEncoder().renderEncoders();
+        const U64 draws = device.metalEncoder().clearDraws();
+        encoder.clear(true, RED_FLOATS, false, 1.f);
+        encoder.setVertexBuffer(wholeBuffer.get(), streams);
+        encoder.draw(PrimitiveType::Triangles, 0, 6);
+        encoder.endRenderPass();
+        ensureEqual("the clear began a second render encoder", device.metalEncoder().renderEncoders(), renders + 1);
+        ensureEqual("the clear is a load action, not a draw", device.metalEncoder().clearDraws(), draws);
+        MTL4RenderPassDescriptor* last = device.metalEncoder().lastPassDescriptor();
+        tut::ensure("the second segment clears color", last.colorAttachments[0].loadAction == MTLLoadActionClear);
+        tut::ensure("the second segment loads depth", last.depthAttachment.loadAction == MTLLoadActionLoad);
+        ensureImage("the clear, and the draw after it behind the kept depth", readTarget(device, target),
+                    [](U32 x, U32) -> std::optional<Rgba> { return x < DRAW_SIZE / 2 ? RED : YELLOW; });
+        endCleanly(device, log);
+    }
+
+    /// t100 (F6, G3): a clear inside a scissor changes only the scissor's rectangle: first in its pass, and
+    /// after a draw with a viewport on a smaller rectangle, without culling and with Front and Back culling;
+    /// the draw after it has the tracker's viewport and cull mode again (Front culling culls its faces).
+    API_AVAILABLE(macos(26.0)) void scissorClearDrawTest(MetalDevice& device)
+    {
+        CaptureLog log(LLError::LEVEL_WARN);
+        DrawTarget target = drawTarget(device);
+        Encoder& encoder = device.encoder();
+        DrawVertices whole;
+        addRect(whole, -1, -1, 1, 1, YELLOW);
+        VertexStreams streams;
+        Ref<Buffer> buffer = vertexBuffer(device, whole, streams);
+        setUiUniforms(encoder, target.program.get(), translation(0, 0));
+        struct Case
+        {
+            const char* name;
+            bool drawFirst; // a draw in the smaller viewport before the clear, so the encoder has them
+            CullMode cull;
+        };
+        const Case cases[] = { { "first in the pass", false, CullMode::Off },
+                               { "a smaller viewport", true, CullMode::Off },
+                               { "Front culling", true, CullMode::Front },
+                               { "Back culling", true, CullMode::Back } };
+        for (const Case& c : cases)
+        {
+            const std::string name = c.name;
+            const U64 draws = device.metalEncoder().clearDraws();
+            tut::ensure(name + ": the pass begins", encoder.beginRenderPass(drawPass(target)));
+            bindDraw(encoder, target, buffer, streams);
+            encoder.setCullMode(c.cull);
+            if (c.drawFirst)
+            {
+                encoder.setViewport(0, 0, 16, 16);
+                encoder.draw(PrimitiveType::Triangles, 0, 6);
+            }
+            encoder.setScissor(true, 8, 16, 24, 8);
+            encoder.clear(true, RED_FLOATS, false, 1.f);
+            encoder.setScissor(false, 0, 0, 0, 0);
+            encoder.setViewport(0, 0, 16, 16);
+            encoder.draw(PrimitiveType::Triangles, 0, 6);
+            encoder.endRenderPass();
+            ensureEqual(name + ": one clear draw", device.metalEncoder().clearDraws(), draws + 1);
+            const bool culled = c.cull == CullMode::Front;
+            ensureImage(name, readTarget(device, target), [culled](U32 x, U32 y) -> std::optional<Rgba>
+            {
+                if (x >= 8 && x < 32 && y >= 16 && y < 24)
+                {
+                    return RED;
+                }
+                return x < 16 && y < 16 && !culled ? YELLOW : CLEAR_RGBA;
+            });
+        }
+        endCleanly(device, log);
+    }
+
+    /// t101 (F6): a clear while the bound pipeline writes no alpha is a draw that keeps the pass's alpha.
+    API_AVAILABLE(macos(26.0)) void maskedClearTest(MetalDevice& device)
+    {
+        CaptureLog log(LLError::LEVEL_WARN);
+        DrawTarget target = drawTarget(device);
+        PipelineDesc noAlpha = uiPipelineDesc();
+        noAlpha.colorMask = U8(COLOR_MASK_R | COLOR_MASK_G | COLOR_MASK_B);
+        Ref<Pipeline> masked = device.getPipeline(*target.program, noAlpha);
+        tut::ensure("the pipeline without alpha", masked.notNull());
+        Encoder& encoder = device.encoder();
+        RenderPassDesc pass = drawPass(target);
+        pass.color[0].clear = { 0.f, 0.f, 0.f, 0.2f };
+        const U64 draws = device.metalEncoder().clearDraws();
+        tut::ensure("the pass begins", encoder.beginRenderPass(pass));
+        encoder.setPipeline(masked.get());
+        encoder.clear(true, RED_FLOATS, false, 1.f);
+        encoder.endRenderPass();
+        ensureEqual("the masked clear is a draw", device.metalEncoder().clearDraws(), draws + 1);
+        ensureImage("red, with the pass's alpha", readTarget(device, target),
+                    [](U32, U32) -> std::optional<Rgba> { return Rgba{ 255, 0, 0, 51 }; });
+        endCleanly(device, log);
+    }
+
+    /// The 4x4 readback's value at (x, y), of size bytes per pixel.
+    template <class T>
+    T valueAt(const Ref<Readback>& readback, U32 x, U32 y)
+    {
+        T value{};
+        const std::span<const std::byte> data = readback->data();
+        const size_t at = (size_t(y) * 4 + x) * sizeof(T);
+        if (at + sizeof(T) <= data.size())
+        {
+            std::memcpy(&value, data.data() + at, sizeof(T));
+        }
+        return value;
+    }
+
+    /// t102 (F6): a clear inside a scissor of an R32Uint attachment writes GLuint(rgba) (glClearBufferuiv,
+    /// llrhigl.cpp), of a pass with only a depth attachment the exact depth, and of two attachments both.
+    API_AVAILABLE(macos(26.0)) void scissorClearFormatsTest(MetalDevice& device)
+    {
+        CaptureLog log(LLError::LEVEL_WARN);
+        Encoder& encoder = device.encoder();
+        const Region whole{ 0, 0, 4, 4 };
+        const auto inScissor = [](U32 x, U32 y) { return x >= 1 && x < 3 && y >= 2; }; // setScissor(1, 2, 2, 2)
+        const U8 usage = TEXTURE_RENDER_TARGET | TEXTURE_READBACK;
+        const U64 draws = device.metalEncoder().clearDraws();
+        {
+            Ref<Texture> ids = device.createTexture(sizedDesc(Format::R32Uint, usage, 4, 4), "uint clear");
+            RenderPassDesc pass = passOn(ids, nullptr);
+            pass.color[0].load = LoadAction::Clear;
+            pass.color[0].clear = { 5.f, 0.f, 0.f, 0.f };
+            tut::ensure("the R32Uint pass begins", encoder.beginRenderPass(pass));
+            encoder.setScissor(true, 1, 2, 2, 2);
+            encoder.clear(true, { 7.9f, 3.f, 0.f, 0.f }, false, 1.f);
+            encoder.endRenderPass();
+            Ref<Readback> read = encoder.readback(ids.get(), 0, 0, whole, *metalReadbackLayout(Format::R32Uint));
+            read->wait();
+            for (U32 y = 0; y < 4; ++y)
+            {
+                for (U32 x = 0; x < 4; ++x)
+                {
+                    ensureEqual("R32Uint at " + std::to_string(x) + ", " + std::to_string(y), valueAt<U32>(read, x, y),
+                                inScissor(x, y) ? 7u : 5u);
+                }
+            }
+        }
+        {
+            Ref<Texture> depth = device.createTexture(sizedDesc(Format::Depth32Float, usage, 4, 4), "depth-only clear");
+            Ref<DepthStencilState> writes = device.getDepthStencilState({ true, true, CompareFunc::LessEqual });
+            RenderPassDesc pass = passOn(nullptr, depth);
+            pass.colorCount = 0;
+            pass.depth.load = LoadAction::Clear;
+            pass.depth.clear = 1.f;
+            tut::ensure("the depth-only pass begins", encoder.beginRenderPass(pass));
+            encoder.setDepthStencilState(writes.get());
+            encoder.setScissor(true, 1, 2, 2, 2);
+            encoder.clear(false, {}, true, 0.3f);
+            encoder.endRenderPass();
+            Ref<Readback> read = encoder.readback(depth.get(), 0, 0, whole, *metalReadbackLayout(Format::Depth32Float));
+            read->wait();
+            for (U32 y = 0; y < 4; ++y)
+            {
+                for (U32 x = 0; x < 4; ++x)
+                {
+                    // Bit for bit, as glClear writes it into a float depth.
+                    const F32 expected = inScissor(x, y) ? 0.3f : 1.f;
+                    const F32 actual = valueAt<F32>(read, x, y);
+                    tut::ensure("depth at " + std::to_string(x) + ", " + std::to_string(y) + ": " + std::to_string(actual),
+                                std::memcmp(&actual, &expected, sizeof(F32)) == 0);
+                }
+            }
+        }
+        {
+            Ref<Texture> first = device.createTexture(sizedDesc(Format::RGBA8Unorm, usage, 4, 4), "first of two");
+            Ref<Texture> second = device.createTexture(sizedDesc(Format::RGBA8Unorm, usage, 4, 4), "second of two");
+            RenderPassDesc pass = passOn(first, nullptr);
+            pass.color[1].texture = second;
+            pass.colorCount = 2;
+            pass.color[0].load = pass.color[1].load = LoadAction::Clear;
+            pass.color[0].clear = pass.color[1].clear = { 0.f, 0.f, 1.f, 1.f };
+            tut::ensure("the pass with two attachments begins", encoder.beginRenderPass(pass));
+            encoder.setScissor(true, 1, 2, 2, 2);
+            encoder.clear(true, RED_FLOATS, false, 1.f);
+            encoder.endRenderPass();
+            for (const Ref<Texture>& texture : { first, second })
+            {
+                Ref<Readback> read = encoder.readback(texture.get(), 0, 0, whole, PixelLayout());
+                read->wait();
+                for (U32 y = 0; y < 4; ++y)
+                {
+                    for (U32 x = 0; x < 4; ++x)
+                    {
+                        const Rgba actual = valueAt<Rgba>(read, x, y);
+                        ensureEqual(texture->debugName() + " at " + std::to_string(x) + ", " + std::to_string(y),
+                                    describe(actual), describe(inScissor(x, y) ? RED : BLUE));
+                    }
+                }
+            }
+        }
+        ensureEqual("three clear draws", device.metalEncoder().clearDraws(), draws + 3);
+        ensureEqual("three clear programs: uint, depth only, two floats", device.clearPrograms(), size_t(3));
+        endCleanly(device, log);
+    }
+
+    /// t103 (F6, R1): with no translator registered a clear draw writes one WARN line and draws nothing
+    /// (the backend has no MSL of its own); once one is registered again the program is made again.
+    API_AVAILABLE(macos(26.0)) void noTranslatorClearTest(MetalDevice& device)
+    {
+        DrawTarget target = drawTarget(device);
+        Encoder& encoder = device.encoder();
+        const auto clearInScissor = [&]()
+        {
+            tut::ensure("the pass begins", encoder.beginRenderPass(drawPass(target)));
+            encoder.setScissor(true, 8, 16, 24, 8);
+            encoder.clear(true, RED_FLOATS, false, 1.f);
+            encoder.endRenderPass();
+        };
+        {
+            CaptureLog log(LLError::LEVEL_WARN);
+            const U64 draws = device.metalEncoder().clearDraws();
+            setMetalTranslator(nullptr);
+            clearInScissor();
+            setMetalTranslator(&MSL::translate);
+            ensureEqual("no translator: one WARN line", occurrences(log, "WARNING #RHI#"), size_t(1));
+            ensureEqual("no translator: the line says so", occurrences(log, "no shader translator registered"), size_t(1));
+            ensureEqual("no translator: no draw", device.metalEncoder().clearDraws(), draws);
+            ensureImage("no translator: nothing cleared", readTarget(device, target), yellowIn({}));
+        }
+        CaptureLog log(LLError::LEVEL_WARN);
+        clearInScissor();
+        ensureImage("the translator again: the scissor's rectangle", readTarget(device, target),
+                    [](U32 x, U32 y) -> std::optional<Rgba> { return x >= 8 && x < 32 && y >= 16 && y < 24 ? RED : CLEAR_RGBA; });
+        endCleanly(device, log);
+    }
+
+    /// t104 (G5): a clear as a load action and as a clear draw (a scissor over all but the last column) give
+    /// the same bytes inside the scissor for RGBA8Unorm, RGBA8Unorm_sRGB and RG11B10Float. RG11B10Float has
+    /// no readback layout, so a draw samples its texel (0, 0) into RGBA32Float, which holds each of its
+    /// values exactly. RGBA16Float differs (S5, for P3-01f): the clear draw's output is converted toward
+    /// zero (alpha 0.7: 0x3999), the load action to the nearest half (0x399A), so it is only logged.
+    API_AVAILABLE(macos(26.0)) void loadActionAndClearDrawTest(MetalDevice& device)
+    {
+        CaptureLog log(LLError::LEVEL_WARN);
+        Encoder& encoder = device.encoder();
+        const std::array<F32, 4> value = { 0.5f, 1.f / 3.f, 0.2f, 0.7f };
+        const Region whole{ 0, 0, 4, 4 };
+        Ref<Program> sampler = ready(device.createProgram(uiProgramDesc()));
+        PipelineDesc floats = uiPipelineDesc();
+        floats.colorFormats[0] = Format::RGBA32Float;
+        floats.depthFormat = Format::Unknown;
+        Ref<Pipeline> sampling = device.getPipeline(*sampler, floats);
+        tut::ensure("the sampling pipeline", sampling.notNull());
+        DrawVertices square;
+        addRect(square, -1, -1, 1, 1, { 255, 255, 255, 255 });
+        VertexStreams streams;
+        Ref<Buffer> buffer = vertexBuffer(device, square, streams);
+        setUiUniforms(encoder, sampler.get(), translation(0, 0));
+        const Format formats[] = { Format::RGBA8Unorm, Format::RGBA8Unorm_sRGB, Format::RGBA16Float, Format::RG11B10Float };
+        const char* names[] = { "RGBA8Unorm", "RGBA8Unorm_sRGB", "RGBA16Float", "RG11B10Float" };
+        const bool equal[] = { true, true, false, true };
+        for (size_t f = 0; f < std::size(formats); ++f)
+        {
+            const bool readable = metalReadbackLayout(formats[f]).has_value();
+            std::vector<U8> bytes[2];
+            for (int b = 0; b < 2; ++b)
+            {
+                const U8 usage = TEXTURE_RENDER_TARGET | TEXTURE_SAMPLED | (readable ? TEXTURE_READBACK : 0);
+                Ref<Texture> texture = device.createTexture(sizedDesc(formats[f], usage, 4, 4), "load or clear draw");
+                RenderPassDesc pass = passOn(texture, nullptr);
+                pass.color[0].load = LoadAction::Clear;
+                pass.color[0].clear = b == 0 ? value : std::array<F32, 4>{ 0.f, 0.f, 0.f, 0.f };
+                tut::ensure(std::string(names[f]) + ": the pass begins", encoder.beginRenderPass(pass));
+                if (b == 1)
+                {
+                    encoder.setScissor(true, 0, 0, 3, 4);
+                    encoder.clear(true, value, false, 1.f);
+                }
+                encoder.endRenderPass();
+                if (readable)
+                {
+                    Ref<Readback> read = encoder.readback(texture.get(), 0, 0, whole, *metalReadbackLayout(formats[f]));
+                    read->wait();
+                    const size_t pixel = read->data().size() / 16;
+                    for (U32 y = 0; y < 4; ++y)
+                    {
+                        for (U32 x = 0; x < 3; ++x)
+                        {
+                            for (size_t i = 0; i < pixel; ++i)
+                            {
+                                bytes[b].push_back(std::to_integer<U8>(read->data()[(y * 4 + x) * pixel + i]));
+                            }
+                        }
+                    }
+                    continue;
+                }
+                Ref<Texture> read = device.createTexture(sizedDesc(Format::RGBA32Float, TEXTURE_RENDER_TARGET | TEXTURE_READBACK, 4, 4),
+                                                         "sampled texel");
+                tut::ensure(std::string(names[f]) + ": the sampling pass begins", encoder.beginRenderPass(passOn(read, nullptr)));
+                encoder.setPipeline(sampling.get());
+                encoder.setVertexBuffer(buffer.get(), streams);
+                encoder.setTexture(0, texture.get(), pointClamp());
+                encoder.draw(PrimitiveType::Triangles, 0, 6);
+                encoder.endRenderPass();
+                Ref<Readback> sampled = encoder.readback(read.get(), 0, 0, { 0, 0, 1, 1 }, *metalReadbackLayout(Format::RGBA32Float));
+                sampled->wait();
+                for (std::byte one : sampled->data())
+                {
+                    bytes[b].push_back(std::to_integer<U8>(one));
+                }
+            }
+            tut::ensure(std::string(names[f]) + ": bytes read", !bytes[0].empty());
+            if (bytes[0] != bytes[1])
+            {
+                std::ostringstream message;
+                message << names[f] << ": the load action's and the clear draw's first bytes differ:";
+                for (size_t i = 0; i < std::min<size_t>(bytes[0].size(), 16); ++i)
+                {
+                    message << " " << U32(bytes[0][i]) << "/" << U32(bytes[1][i]);
+                }
+                if (equal[f])
+                {
+                    tut::fail(message.str());
+                }
+                LL_INFOS("RHI") << message.str() << LL_ENDL;
+            }
+        }
+        endCleanly(device, log);
+    }
+
+    /// t105 (G4): a device destroyed right after a clear draw lets go of its clear program and pipeline
+    /// before its releases run: no "never freed" WARN line.
+    API_AVAILABLE(macos(26.0)) void clearDrawShutdownTest()
+    {
+        CaptureLog log(LLError::LEVEL_WARN);
+        {
+            Ref<Device> other = anotherDevice();
+            MetalDevice& device = *static_cast<MetalDevice*>(other.get());
+            Ref<Texture> color = device.createTexture(textureDesc(Format::RGBA8Unorm, TEXTURE_RENDER_TARGET), "shutdown clear");
+            Encoder& encoder = device.encoder();
+            tut::ensure("the pass begins", encoder.beginRenderPass(passOn(color, nullptr)));
+            encoder.setScissor(true, 0, 0, 2, 2);
+            encoder.clear(true, RED_FLOATS, false, 1.f);
+            encoder.endRenderPass();
+            ensureEqual("one clear draw", device.metalEncoder().clearDraws(), U64(1));
+            ensureEqual("one clear program", device.clearPrograms(), size_t(1));
+            color = nullptr;
+            other = nullptr; // right after the clear draw, with the frame unsent
+        }
+        ensureEqual("no release left unfreed", occurrences(log, "never freed"), size_t(0));
+        ensureEqual("no WARN line", occurrences(log, "WARNING #RHI#"), size_t(0));
+    }
+
+    /// P3-01e F22: level 1's mip_hash, a fixed pattern whose 2x2 sums fall in every remainder mod 4.
+    U32 mipHash(U32 x, U32 y, U32 c)
+    {
+        U32 h = x * 73856093u ^ y * 19349663u ^ (c + 1) * 83492791u;
+        h ^= h >> 13;
+        h *= 0x5bd1e995u;
+        return h ^ (h >> 15);
+    }
+
+    /// F22: a value of mip level n from level n - 1 (w x h texels of channels values) as the mip program takes
+    /// it: one bilinear tap at the texel's centre with clamp to edge. dyadic becomes false when a weight is not
+    /// a multiple of 1/4 (an axis of 7 halves to 3), as the hardware's weights of a third are not exact.
+    double mipTap(const std::vector<double>& above, U32 w, U32 h, U32 channels, U32 x, U32 y, U32 channel, bool& dyadic)
+    {
+        const double u = (x + 0.5) / std::max(1u, w / 2) * w - 0.5;
+        const double v = (y + 0.5) / std::max(1u, h / 2) * h - 0.5;
+        const double fu = std::floor(u);
+        const double fv = std::floor(v);
+        const double au = u - fu;
+        const double av = v - fv;
+        dyadic = dyadic && std::abs(au * 4 - std::round(au * 4)) < 1e-9 && std::abs(av * 4 - std::round(av * 4)) < 1e-9;
+        const auto at = [&](double i, double j)
+        {
+            const size_t cx = size_t(std::clamp(i, 0.0, double(w - 1)));
+            const size_t cy = size_t(std::clamp(j, 0.0, double(h - 1)));
+            return above[(cy * w + cx) * channels + channel];
+        };
+        return (1 - au) * (1 - av) * at(fu, fv) + au * (1 - av) * at(fu + 1, fv) + (1 - au) * av * at(fu, fv + 1)
+               + au * av * at(fu + 1, fv + 1);
+    }
+
+    double srgbToLinear(double c)
+    {
+        return c <= 0.04045 ? c / 12.92 : std::pow((c + 0.055) / 1.055, 2.4);
+    }
+
+    double linearToSrgb(double l)
+    {
+        return l <= 0.0031308 ? l * 12.92 : 1.055 * std::pow(l, 1 / 2.4) - 0.055;
+    }
+
+    double halfValue(U32 bits)
+    {
+        const double sign = (bits & 0x8000) ? -1.0 : 1.0;
+        const int exponent = int((bits >> 10) & 0x1f);
+        const double mantissa = double(bits & 0x3ff);
+        return sign * (exponent == 0 ? std::ldexp(mantissa, -24) : std::ldexp(1024 + mantissa, exponent - 25));
+    }
+
+    std::vector<U8> filled(U32 texels, const Rgba& color)
+    {
+        std::vector<U8> bytes;
+        for (U32 i = 0; i < texels; ++i)
+        {
+            bytes.insert(bytes.end(), color.begin(), color.end());
+        }
+        return bytes;
+    }
+
+    struct MipCase
+    {
+        const char* name;
+        Format format;
+        U32 width;
+        U32 height;
+        U32 channels;
+        bool srgb;
+        bool half;
+        SwizzleRGBA swizzle;
+    };
+
+    /// t106 (F22): generateMipmaps makes each level from the level above with one bilinear tap at each texel's
+    /// centre, as glGenerateMipmap on Apple's GL (level 1's probe_mips): within half a step of the exact tap (a
+    /// tie goes either way, as on GL) for RGBA8 with 2x2 sums in all remainders mod 4, the raw channel of an R8
+    /// with an alpha swizzle, RG8, sRGB in linear space (alpha linear) and R16F within one half ULP (SH-05, P3-05a1: a
+    /// 16-bit float target converts toward zero, accepted by decision 9); the odd and one-texel axes with the tap's
+    /// weights (within a step where a weight is a third).
+    API_AVAILABLE(macos(26.0)) void mipFilterTest(MetalDevice& device)
+    {
+        CaptureLog log(LLError::LEVEL_WARN);
+        Encoder& encoder = device.encoder();
+        const SwizzleRGBA none;
+        const SwizzleRGBA alpha = { Swizzle::Zero, Swizzle::Zero, Swizzle::Zero, Swizzle::R };
+        const MipCase cases[] = {
+            { "RGBA8 8x8", Format::RGBA8Unorm, 8, 8, 4, false, false, none },
+            { "R8 with an alpha swizzle 8x8", Format::R8Unorm, 8, 8, 1, false, false, alpha },
+            { "RG8 8x8", Format::RG8Unorm, 8, 8, 2, false, false, none },
+            { "RGBA8 sRGB 8x8", Format::RGBA8Unorm_sRGB, 8, 8, 4, true, false, none },
+            { "R16F 8x8", Format::R16Float, 8, 8, 1, false, true, none },
+            { "RGBA8 5x7", Format::RGBA8Unorm, 5, 7, 4, false, false, none },
+            { "RGBA8 3x3", Format::RGBA8Unorm, 3, 3, 4, false, false, none },
+            { "RGBA8 1x8", Format::RGBA8Unorm, 1, 8, 4, false, false, none },
+            { "RGBA8 7x1", Format::RGBA8Unorm, 7, 1, 4, false, false, none },
+        };
+        const U64 draws = device.metalEncoder().mipDraws();
+        U64 levelsDrawn = 0;
+        std::array<bool, 4> remainders{};
+        for (const MipCase& mip : cases)
+        {
+            const std::string name = mip.name;
+            const U32 bytes = mip.half ? 2 : 1;
+            TextureDesc desc = sizedDesc(mip.format, TEXTURE_SAMPLED | TEXTURE_READBACK, mip.width, mip.height);
+            desc.mipLevels = fullMipCount(mip.width, mip.height);
+            desc.swizzle = mip.swizzle;
+            Ref<Texture> texture = device.createTexture(desc, name);
+            tut::ensure(name + ": the texture", texture.notNull());
+            PixelLayout layout;
+            layout.components = mip.channels == 4   ? PixelLayout::Components::RGBA
+                                : mip.channels == 2 ? PixelLayout::Components::RG
+                                                    : PixelLayout::Components::R;
+            layout.type = mip.half ? PixelLayout::Type::F16 : PixelLayout::Type::U8;
+            std::vector<U8> level0(size_t(mip.width) * mip.height * mip.channels * bytes);
+            for (size_t i = 0; i < level0.size() / bytes; ++i)
+            {
+                const U32 texel = U32(i / mip.channels);
+                const U32 hash = mipHash(texel % mip.width, texel / mip.width, U32(i % mip.channels));
+                if (mip.half)
+                {
+                    // In [0.5, 1), one binade: the 2x2 means fall on and between halves, ties too.
+                    const U32 bits = 0x3800 | (hash & 0x3ff);
+                    level0[i * 2] = U8(bits & 0xff);
+                    level0[i * 2 + 1] = U8(bits >> 8);
+                }
+                else
+                {
+                    level0[i] = U8(hash);
+                }
+            }
+            encoder.uploadTexture(texture.get(), 0, 0, { 0, 0, mip.width, mip.height }, layout, asBytes(level0));
+            encoder.generateMipmaps(texture.get());
+            levelsDrawn += desc.mipLevels - 1;
+            std::vector<double> above; // the level above in the filter's space: bytes, linear sRGB or halves
+            for (U32 level = 0; level < desc.mipLevels; ++level)
+            {
+                const std::string what = name + " level " + std::to_string(level);
+                const U32 w = std::max(1u, mip.width >> level);
+                const U32 h = std::max(1u, mip.height >> level);
+                Ref<Readback> readback = encoder.readback(texture.get(), level, 0, { 0, 0, w, h }, layout);
+                tut::ensure(what + ": read back", readback.notNull());
+                readback->wait();
+                const std::span<const std::byte> data = readback->data();
+                ensureEqual(what + ": the size", data.size(), size_t(w) * h * mip.channels * bytes);
+                std::vector<double> values(size_t(w) * h * mip.channels);
+                std::vector<double> actual(values.size());
+                for (size_t i = 0; i < values.size(); ++i)
+                {
+                    const bool linear = mip.srgb && i % 4 != 3;
+                    const U32 b = std::to_integer<U32>(data[i * bytes]);
+                    actual[i] = mip.half ? halfValue(b | std::to_integer<U32>(data[i * 2 + 1]) << 8) : double(b);
+                    values[i] = linear ? srgbToLinear(actual[i] / 255.0) : actual[i];
+                }
+                if (level == 0)
+                {
+                    ensureRead(what + " is the upload", readback, level0);
+                }
+                const U32 aw = std::max(1u, mip.width >> (level ? level - 1 : 0));
+                const U32 ah = std::max(1u, mip.height >> (level ? level - 1 : 0));
+                for (size_t i = 0; level > 0 && i < values.size(); ++i)
+                {
+                    const U32 x = U32(i / mip.channels) % w;
+                    const U32 y = U32(i / mip.channels) / w;
+                    const U32 c = U32(i % mip.channels);
+                    const bool linear = mip.srgb && c != 3;
+                    bool dyadic = true;
+                    const double tap = mipTap(above, aw, ah, mip.channels, x, y, c, dyadic);
+                    const double expected = linear ? linearToSrgb(tap) * 255.0 : tap;
+                    double allowed = (dyadic ? 0.5 : 1.0) + (linear ? 0.1 : 1e-6);
+                    if (mip.half)
+                    {
+                        int exponent = 0;
+                        std::frexp(expected, &exponent);
+                        // one half ULP (SH-05); 2^-24 below the normals and at 0, where frexp gives no exponent
+                        allowed = std::ldexp(1.0, expected == 0.0 ? -24 : std::max(exponent, -13) - 11) + 1e-12;
+                    }
+                    if (std::abs(actual[i] - expected) > allowed)
+                    {
+                        tut::fail(what + " texel (" + std::to_string(x) + ", " + std::to_string(y) + ") channel "
+                                  + std::to_string(c) + ": " + std::to_string(actual[i]) + ", the tap gives "
+                                  + std::to_string(expected));
+                    }
+                    if (mip.format == Format::RGBA8Unorm && mip.width == 8 && level == 1)
+                    {
+                        const U32 sum = U32(above[((2 * y) * aw + 2 * x) * 4 + c] + above[((2 * y) * aw + 2 * x + 1) * 4 + c]
+                                            + above[((2 * y + 1) * aw + 2 * x) * 4 + c]
+                                            + above[((2 * y + 1) * aw + 2 * x + 1) * 4 + c]);
+                        remainders[sum % 4] = true;
+                    }
+                }
+                above = values;
+            }
+        }
+        tut::ensure("RGBA8 8x8: level 1's 2x2 sums fall in every remainder mod 4",
+                    remainders[0] && remainders[1] && remainders[2] && remainders[3]);
+        ensureEqual("each level drawn once", device.metalEncoder().mipDraws(), draws + levelsDrawn);
+        endCleanly(device, log);
+    }
+
+    /// t107 (F22): a cube and a cube array of 2 cubes with 3 levels and a color per face: each face gets its own
+    /// levels (a slice per face, a cube array's cube * 6 + face).
+    API_AVAILABLE(macos(26.0)) void mipCubeTest(MetalDevice& device)
+    {
+        CaptureLog log(LLError::LEVEL_WARN);
+        Encoder& encoder = device.encoder();
+        const auto faceColor = [](U32 slice) { return Rgba{ U8(10 + 20 * slice), U8(250 - 15 * slice), U8(7 * slice), 255 }; };
+        for (U32 cubes = 1; cubes <= 2; ++cubes)
+        {
+            const std::string name = cubes == 1 ? "the cube" : "the cube array";
+            TextureDesc desc = textureDesc(Format::RGBA8Unorm, TEXTURE_SAMPLED | TEXTURE_READBACK);
+            desc.type = cubes == 1 ? TextureType::Cube : TextureType::CubeArray;
+            desc.layers = cubes;
+            desc.mipLevels = 3;
+            Ref<Texture> cube = device.createTexture(desc, name);
+            tut::ensure(name, cube.notNull());
+            const U32 slices = 6 * cubes;
+            for (U32 slice = 0; slice < slices; ++slice)
+            {
+                encoder.uploadTexture(cube.get(), 0, slice, { 0, 0, 4, 4 }, PixelLayout(), asBytes(filled(16, faceColor(slice))));
+            }
+            const U64 draws = device.metalEncoder().mipDraws();
+            encoder.generateMipmaps(cube.get());
+            ensureEqual(name + ": two levels drawn for each face", device.metalEncoder().mipDraws(), draws + 2 * slices);
+            for (U32 slice = 0; slice < slices; ++slice)
+            {
+                for (U32 level = 1; level < 3; ++level)
+                {
+                    const U32 size = 4 >> level;
+                    ensureRead(name + " face " + std::to_string(slice) + " level " + std::to_string(level),
+                               encoder.readback(cube.get(), level, slice, { 0, 0, size, size }, PixelLayout()),
+                               filled(size * size, faceColor(slice)));
+                }
+            }
+        }
+        endCleanly(device, log);
+    }
+
+    /// t108 (F5, F22): generateMipmaps in a pass after a draw: the draw before it samples the old level 1, the
+    /// draw after it the new one, with no WARN line (GL's order).
+    API_AVAILABLE(macos(26.0)) void mipsInPassTest(MetalDevice& device)
+    {
+        CaptureLog log(LLError::LEVEL_WARN);
+        DrawTarget target = drawTarget(device);
+        Encoder& encoder = device.encoder();
+        TextureDesc desc = sizedDesc(Format::RGBA8Unorm, TEXTURE_SAMPLED, DRAW_SIZE, DRAW_SIZE);
+        desc.mipLevels = fullMipCount(DRAW_SIZE, DRAW_SIZE);
+        Ref<Texture> texture = device.createTexture(desc, "mips in a pass");
+        tut::ensure("the texture", texture.notNull());
+        for (U32 level = 0; level < desc.mipLevels; ++level)
+        {
+            const U32 size = std::max(1u, DRAW_SIZE >> level);
+            encoder.uploadTexture(texture.get(), level, 0, { 0, 0, size, size }, PixelLayout(),
+                                  asBytes(filled(size * size, level == 0 ? RED : GREEN_RGBA)));
+        }
+        // A half of the target with texcoords over the whole texture: two texels a pixel across and one down,
+        // so the draws sample level 1.
+        const auto half = [&](F32 x0, F32 x1, VertexStreams& streams)
+        {
+            DrawVertices vertices;
+            addRect(vertices, x0, -1, x1, 1, WHITE_RGBA);
+            const std::array<F32, 2> texcoords[6] = { { 0, 0 }, { 1, 0 }, { 1, 1 }, { 0, 0 }, { 1, 1 }, { 0, 1 } };
+            const size_t count = vertices.positions.size();
+            std::vector<std::byte> bytes(count * (16 + 8 + 4));
+            streams.attributeMask = UI_MASK;
+            streams.offset[2] = U32(count * 16);
+            streams.offset[6] = U32(count * 24);
+            std::memcpy(bytes.data(), vertices.positions.data(), count * 16);
+            std::memcpy(bytes.data() + streams.offset[2], texcoords, count * 8);
+            std::memcpy(bytes.data() + streams.offset[6], vertices.colors.data(), count * 4);
+            BufferDesc bufferDesc;
+            bufferDesc.size = bytes.size();
+            return device.createBuffer(bufferDesc, bytes, "mips in a pass vertices");
+        };
+        VertexStreams leftStreams;
+        VertexStreams rightStreams;
+        Ref<Buffer> left = half(-1, 0, leftStreams);
+        Ref<Buffer> right = half(0, 1, rightStreams);
+        SamplerDesc sampling; // bilinear, the nearest level
+        sampling.addressU = sampling.addressV = sampling.addressW = AddressMode::ClampToEdge;
+        setUiUniforms(encoder, target.program.get(), translation(0, 0));
+        tut::ensure("the pass begins", encoder.beginRenderPass(drawPass(target)));
+        encoder.setPipeline(target.pipeline.get());
+        encoder.setTexture(0, texture.get(), sampling);
+        encoder.setVertexBuffer(left.get(), leftStreams);
+        encoder.draw(PrimitiveType::Triangles, 0, 6);
+        const U64 draws = device.metalEncoder().mipDraws();
+        encoder.generateMipmaps(texture.get());
+        encoder.setVertexBuffer(right.get(), rightStreams);
+        encoder.draw(PrimitiveType::Triangles, 0, 6);
+        encoder.endRenderPass();
+        // Checked after the pass, so a failure leaves no encoder open.
+        ensureEqual("the levels drawn", device.metalEncoder().mipDraws(), draws + desc.mipLevels - 1);
+        ensureImage("the draw before generateMipmaps samples the old level 1, the one after it the new", readTarget(device, target),
+                    [](U32 x, U32 y) -> std::optional<Rgba> { return x < DRAW_SIZE / 2 ? GREEN_RGBA : RED; });
+        endCleanly(device, log);
+    }
+
+    /// t109 (F22, R1): with no translator registered generateMipmaps writes one WARN line and leaves the levels as
+    /// they were (the backend has no MSL of its own and no generateMipmapsForTexture:); registered again, the
+    /// program is made again and the levels are drawn.
+    API_AVAILABLE(macos(26.0)) void noTranslatorMipsTest(MetalDevice& device)
+    {
+        Encoder& encoder = device.encoder();
+        TextureDesc desc = textureDesc(Format::RGBA8Unorm, TEXTURE_SAMPLED | TEXTURE_READBACK);
+        desc.mipLevels = 3;
+        Ref<Texture> texture = device.createTexture(desc, "mips with no translator");
+        tut::ensure("the texture", texture.notNull());
+        encoder.uploadTexture(texture.get(), 0, 0, { 0, 0, 4, 4 }, PixelLayout(), asBytes(filled(16, RED)));
+        encoder.uploadTexture(texture.get(), 1, 0, { 0, 0, 2, 2 }, PixelLayout(), asBytes(filled(4, GREEN_RGBA)));
+        encoder.uploadTexture(texture.get(), 2, 0, { 0, 0, 1, 1 }, PixelLayout(), asBytes(filled(1, GREEN_RGBA)));
+        const U64 draws = device.metalEncoder().mipDraws();
+        {
+            CaptureLog log(LLError::LEVEL_WARN);
+            setMetalTranslator(nullptr);
+            encoder.generateMipmaps(texture.get());
+            setMetalTranslator(&MSL::translate);
+            ensureEqual("no translator: one WARN line", occurrences(log, "WARNING #RHI#"), size_t(1));
+            ensureEqual("no translator: the line says so", occurrences(log, "no shader translator registered"), size_t(1));
+            ensureEqual("no translator: no level drawn", device.metalEncoder().mipDraws(), draws);
+            ensureRead("no translator: level 1 as it was", encoder.readback(texture.get(), 1, 0, { 0, 0, 2, 2 }, PixelLayout()),
+                       filled(4, GREEN_RGBA));
+            ensureRead("no translator: level 2 as it was", encoder.readback(texture.get(), 2, 0, { 0, 0, 1, 1 }, PixelLayout()),
+                       filled(1, GREEN_RGBA));
+        }
+        CaptureLog log(LLError::LEVEL_WARN);
+        encoder.generateMipmaps(texture.get());
+        ensureRead("the translator again: level 1", encoder.readback(texture.get(), 1, 0, { 0, 0, 2, 2 }, PixelLayout()),
+                   filled(4, RED));
+        ensureRead("the translator again: level 2", encoder.readback(texture.get(), 2, 0, { 0, 0, 1, 1 }, PixelLayout()),
+                   filled(1, RED));
+        endCleanly(device, log);
+    }
+
+    /// t110 (G4, F22): a device destroyed right after generateMipmaps lets go of its mip program, pipeline,
+    /// scratch and level views before its releases run: no "never freed" WARN line.
+    API_AVAILABLE(macos(26.0)) void mipsShutdownTest()
+    {
+        CaptureLog log(LLError::LEVEL_WARN);
+        {
+            Ref<Device> other = anotherDevice();
+            MetalDevice& device = *static_cast<MetalDevice*>(other.get());
+            TextureDesc desc = textureDesc(Format::RGBA8Unorm, TEXTURE_SAMPLED);
+            desc.mipLevels = 3;
+            Ref<Texture> texture = device.createTexture(desc, "shutdown mips");
+            tut::ensure("the texture", texture.notNull());
+            device.encoder().uploadTexture(texture.get(), 0, 0, { 0, 0, 4, 4 }, PixelLayout(), asBytes(filled(16, RED)));
+            device.encoder().generateMipmaps(texture.get());
+            ensureEqual("two levels drawn", device.metalEncoder().mipDraws(), U64(2));
+            ensureEqual("one mip program", device.mipPrograms(), size_t(1));
+            texture = nullptr;
+            other = nullptr; // right after the mips, with the frame unsent
+        }
+        ensureEqual("no release left unfreed", occurrences(log, "never freed"), size_t(0));
+        ensureEqual("no WARN line", occurrences(log, "WARNING #RHI#"), size_t(0));
+    }
+
+    /// t111 (F22, point 6): the price of a 1024x1024 RGBA8's levels: the median of 20 runs, each committed and
+    /// waited for, after one that makes the program and the pipeline, and the scratch's memory (a texture of
+    /// its description); written to stdout for P3-05b and P3-07, with no limit.
+    API_AVAILABLE(macos(26.0)) void mipPriceTest(MetalDevice& device)
+    {
+        CaptureLog log(LLError::LEVEL_WARN);
+        Encoder& encoder = device.encoder();
+        TextureDesc desc = sizedDesc(Format::RGBA8Unorm, TEXTURE_SAMPLED | TEXTURE_READBACK, 1024, 1024);
+        desc.mipLevels = fullMipCount(1024, 1024);
+        Ref<Texture> texture = device.createTexture(desc, "mip price");
+        tut::ensure("the texture", texture.notNull());
+        std::vector<U8> level0(size_t(1024) * 1024 * 4);
+        for (size_t i = 0; i < level0.size(); ++i)
+        {
+            level0[i] = U8(mipHash(U32(i / 4) % 1024, U32(i / 4) / 1024, U32(i % 4)));
+        }
+        encoder.uploadTexture(texture.get(), 0, 0, { 0, 0, 1024, 1024 }, PixelLayout(), asBytes(level0));
+        std::vector<double> ms;
+        for (int run = 0; run <= 20; ++run)
+        {
+            const auto start = std::chrono::steady_clock::now();
+            const U64 frame = device.frameNumber();
+            encoder.generateMipmaps(texture.get());
+            device.endFrame();
+            tut::ensure("the frame finishes", device.waitForFrame(frame));
+            if (run > 0)
+            {
+                ms.push_back(std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - start).count());
+            }
+        }
+        std::sort(ms.begin(), ms.end());
+        TextureDesc scratchDesc = desc;
+        scratchDesc.usage = TEXTURE_SAMPLED | TEXTURE_RENDER_TARGET;
+        Ref<Texture> scratch = device.createTexture(scratchDesc, "mip price scratch");
+        tut::ensure("a texture as the scratch", scratch.notNull());
+        std::cout << "mip price: 1024x1024 RGBA8, " << desc.mipLevels - 1 << " levels: median " << (ms[9] + ms[10]) / 2
+                  << " ms of 20 runs (" << ms.front() << " to " << ms.back() << "), the scratch "
+                  << U64(metalTexture(scratch.get()).allocatedSize) << " bytes" << std::endl;
+        endCleanly(device, log);
+    }
+
+    // P3-01e F7, F8, F18: LLRenderTarget's clears follow the facade's masks; a stack pass ended by another --------------
+
+    constexpr U32 FACADE_WIDTH = 16;
+    constexpr U32 FACADE_HEIGHT = 8;
+    constexpr std::array<U8, 4> DIM_BYTES = { 0, 0, 0, 51 }; // dimColour's RGBA8Unorm bytes
+
+    /// S7: LLRenderTarget::clear's colour before a clear the test checks: black with alpha 0.2.
+    void setDimClearColour()
+    {
+        LLRenderTarget::setClearColor(0.f, 0.f, 0.f, 0.2f);
+    }
+
+    /// S7: the target's RGBA8Unorm colour and Depth32Float depth after the device's work, pixel by pixel: inside(x, y)
+    /// tells whether the pixel holds CLEAR_BYTES and depth 1, else the outside colour and depth the test gives.
+    template <class Inside>
+    API_AVAILABLE(macos(26.0)) void ensureTarget(const std::string& what, MetalDevice& device, LLRenderTarget& target,
+                                                 const std::array<U8, 4>& outside, F32 outsideDepth, Inside inside)
+    {
+        const std::vector<U8> colour = levelBytes(device, target.getRHITexture(0), 4);
+        const std::vector<U8> depth = levelBytes(device, target.getRHIDepth(), sizeof(F32));
+        for (U32 y = 0; y < FACADE_HEIGHT; ++y)
+        {
+            for (U32 x = 0; x < FACADE_WIDTH; ++x)
+            {
+                const size_t at = size_t(y) * FACADE_WIDTH + x;
+                const bool in = inside(x, y);
+                const std::array<U8, 4>& expected = in ? CLEAR_BYTES : outside;
+                F32 value = 0.f;
+                std::memcpy(&value, &depth[at * sizeof(F32)], sizeof(F32));
+                const F32 expectedDepth = in ? 1.f : outsideDepth;
+                if (std::memcmp(&colour[at * 4], expected.data(), 4) != 0 || value != expectedDepth)
+                {
+                    tut::fail(what + llformat(": pixel %u, %u is %u %u %u %u depth %f, not %u %u %u %u depth %f", x, y,
+                                              colour[at * 4], colour[at * 4 + 1], colour[at * 4 + 2], colour[at * 4 + 3],
+                                              value, expected[0], expected[1], expected[2], expected[3], expectedDepth));
+                }
+            }
+        }
+    }
+
+    /// S7: every texel of the target's Depth32Float is value.
+    API_AVAILABLE(macos(26.0)) void ensureDepthIs(const std::string& what, MetalDevice& device, Texture* depth, F32 value)
+    {
+        const std::vector<U8> bytes = levelBytes(device, depth, sizeof(F32));
+        for (size_t i = 0; i < bytes.size(); i += sizeof(F32))
+        {
+            F32 texel = 0.f;
+            std::memcpy(&texel, &bytes[i], sizeof(F32));
+            if (texel != value)
+            {
+                tut::fail(what + ": texel " + std::to_string(i / sizeof(F32)) + " is " + std::to_string(texel) + ", not " +
+                          std::to_string(value));
+            }
+        }
+    }
+
+    /// S7: the target flushed and the device's work finished, so the test's own queue reads what it wrote.
+    API_AVAILABLE(macos(26.0)) void flushTarget(MetalDevice& device, LLRenderTarget& target)
+    {
+        target.flush();
+        device.submitAndWait();
+    }
+
+    /// S7: a 16x8 GL_RGBA target with a depth on the viewer's Metal device.
+    void allocateFacadeTarget(LLRenderTarget& target)
+    {
+        tut::ensure("the target", target.allocate(FACADE_WIDTH, FACADE_HEIGHT, GL_RGBA, true));
+        tut::ensure("its depth of the device", target.getRHIDepth() != nullptr);
+        ensureEqual("RGBA8Unorm", U32(target.getRHITexture(0)->desc().format), U32(Format::RGBA8Unorm));
+    }
+
+    /// S7: no WARN line but the expected others; the stack bottom's surface says nothing since P3-01f (t52).
+    void ensureOnlySurfaceWarnings(const std::string& what, const CaptureLog& log, size_t others)
+    {
+        std::ostringstream warnings;
+        log.streamto(warnings);
+        ensureEqual(what + ": no 'not ported (P3-01f)' line", occurrences(log, "not ported to Metal yet (P3-01f)"),
+                    size_t(0));
+        tut::ensure(what + ": no WARN line but the expected: " + warnings.str(), occurrences(log, "WARNING") == others);
+    }
+
+    /// t112 (F7, F18, R3 of P3-01c): t52's clear by the facade's depth write mask alone, as GL's glClear: with no state
+    /// bound the clear clears the depth; inside LLGLDepthTest(GL_TRUE, GL_FALSE), under the state a facade draw binds
+    /// there (writes off, as LLVertexBuffer binds it, llvertexbuffer.cpp:1797-1803), it keeps the depth, and after the
+    /// scope, under the same state, it clears it (GL's counterpart: llrhigl_test's targets test, case (d)).
+    API_AVAILABLE(macos(26.0)) void facadeDepthClearTest()
+    {
+        MetalViewerRun run;
+        MetalDevice& device = *run.device;
+        CaptureLog log(LLError::LEVEL_WARN);
+        @autoreleasepool
+        {
+            LLRenderTarget target;
+            allocateFacadeTarget(target);
+            Texture* depth = target.getRHIDepth();
+            LLRenderTarget::setClearColor(CLEAR_COLOR[0], CLEAR_COLOR[1], CLEAR_COLOR[2], CLEAR_COLOR[3]);
+
+            zeroDepth(device, depth);
+            target.bindTarget();
+            tut::ensure("no depth state bound", device.encoder().state().depthStencilState() == nullptr);
+            target.clear();
+            flushTarget(device, target);
+            ensureDepthCleared("with no state bound", device, depth);
+
+            Ref<DepthStencilState> keeps = device.getDepthStencilState({ true, false, CompareFunc::LessEqual });
+            zeroDepth(device, depth);
+            target.bindTarget();
+            {
+                LLGLDepthTest scope(GL_TRUE, GL_FALSE);
+                device.encoder().setDepthStencilState(keeps.get());
+                target.clear();
+            }
+            flushTarget(device, target);
+            ensureDepthIs("inside LLGLDepthTest(GL_TRUE, GL_FALSE): the depth kept", device, depth, 0.f);
+
+            target.bindTarget();
+            device.encoder().setDepthStencilState(keeps.get());
+            target.clear();
+            flushTarget(device, target);
+            ensureDepthCleared("after the scope, under the draw's state", device, depth);
+            target.release();
+            finishFrame(device);
+        }
+        ensureOnlySurfaceWarnings("t112", log, 0);
+    }
+
+    /// t113 (F7): an interface clear of the depth in a stack pass, outside LLRenderTarget's OwnGL, is GL's
+    /// glClearBufferfv under the bound state: a state without depth writes keeps the depth, though the facade's depth
+    /// write mask is on.
+    API_AVAILABLE(macos(26.0)) void interfaceClearInStackPassTest()
+    {
+        MetalViewerRun run;
+        MetalDevice& device = *run.device;
+        CaptureLog log(LLError::LEVEL_WARN);
+        @autoreleasepool
+        {
+            LLRenderTarget target;
+            allocateFacadeTarget(target);
+            Texture* depth = target.getRHIDepth();
+            zeroDepth(device, depth);
+            Ref<DepthStencilState> keeps = device.getDepthStencilState({ true, false, CompareFunc::LessEqual });
+            target.bindTarget();
+            const EncoderTracker& state = device.encoder().state();
+            tut::ensure("a stack pass is open", state.inPass() && state.pass().stack);
+            tut::ensure("outside OwnGL", !LLRenderTarget::makesOwnGL());
+            GLboolean enabled = GL_FALSE;
+            GLboolean write = GL_FALSE;
+            GLenum func = GL_LEQUAL;
+            LLGLDepthTest::getState(enabled, write, func);
+            tut::ensure("the facade writes depth", write == GL_TRUE);
+            device.encoder().setDepthStencilState(keeps.get());
+            device.encoder().clear(false, CLEAR_COLOR, true, 1.f);
+            flushTarget(device, target);
+            ensureDepthIs("the interface clear under a state without depth writes", device, depth, 0.f);
+            target.release();
+            finishFrame(device);
+        }
+        ensureOnlySurfaceWarnings("t113", log, 0);
+    }
+
+    /// t114 (F7, F18): LLRenderTarget::clear writes the colours LLRender::setColorMask allows, not the bound
+    /// pipeline's: under a pipeline without alpha, setColorMask(true, true) clears alpha too; setColorMask(true,
+    /// false) keeps alpha and clears RGB (a clear draw); setColorMask(false, false) keeps every colour and still
+    /// clears the depth. The mask is set back to all.
+    API_AVAILABLE(macos(26.0)) void facadeColorMaskClearTest()
+    {
+        MetalViewerRun run;
+        MetalDevice& device = *run.device;
+        CaptureLog log(LLError::LEVEL_WARN);
+        @autoreleasepool
+        {
+            LLRenderTarget target;
+            allocateFacadeTarget(target);
+            Ref<Program> program = ready(device.createProgram(uiProgramDesc()));
+            PipelineDesc noAlpha = uiPipelineDesc();
+            noAlpha.colorMask = U8(COLOR_MASK_R | COLOR_MASK_G | COLOR_MASK_B);
+            Ref<Pipeline> masked = device.getPipeline(*program, noAlpha);
+            tut::ensure("the pipeline without alpha", masked.notNull());
+            auto dim = [&]()
+            {
+                setDimClearColour();
+                target.bindTarget();
+                target.clear();
+                flushTarget(device, target);
+            };
+            auto clearUnder = [&](bool colour, bool alpha)
+            {
+                LLRenderTarget::setClearColor(CLEAR_COLOR[0], CLEAR_COLOR[1], CLEAR_COLOR[2], CLEAR_COLOR[3]);
+                target.bindTarget();
+                device.encoder().setPipeline(masked.get());
+                gGL.setColorMask(colour, alpha);
+                target.clear();
+                gGL.setColorMask(true, true);
+                flushTarget(device, target);
+            };
+            const auto everywhere = [](U32, U32) { return true; };
+            const auto nowhere = [](U32, U32) { return false; };
+
+            dim();
+            clearUnder(true, true);
+            ensureTarget("setColorMask(true, true): alpha cleared too", device, target, DIM_BYTES, 1.f, everywhere);
+
+            dim();
+            const U64 draws = device.metalEncoder().clearDraws();
+            clearUnder(true, false);
+            ensureEqual("setColorMask(true, false): a clear draw", device.metalEncoder().clearDraws(), draws + 1);
+            const std::array<U8, 4> rgbOnly = { CLEAR_BYTES[0], CLEAR_BYTES[1], CLEAR_BYTES[2], DIM_BYTES[3] };
+            ensureTarget("setColorMask(true, false): RGB cleared, alpha kept", device, target, rgbOnly, 1.f, nowhere);
+
+            dim();
+            zeroDepth(device, target.getRHIDepth());
+            clearUnder(false, false);
+            ensureTarget("setColorMask(false, false): every colour kept", device, target, DIM_BYTES, 1.f, nowhere);
+
+            bool mask[4] = {};
+            gGL.getColorMask(mask[0], mask[1], mask[2], mask[3]);
+            tut::ensure("the mask set back", mask[0] && mask[1] && mask[2] && mask[3]);
+            target.release();
+            finishFrame(device);
+        }
+        ensureOnlySurfaceWarnings("t114", log, 0);
+    }
+
+    /// t115 (G3, F7): LLRenderTarget::clear inside LLGLEnable(GL_SCISSOR_TEST) and gGL.setScissor on a smaller rectangle
+    /// changes only the rectangle, colour and depth, with every colour on (llrhigl_test's targets test, case (d)).
+    API_AVAILABLE(macos(26.0)) void facadeScissorClearTest()
+    {
+        MetalViewerRun run;
+        MetalDevice& device = *run.device;
+        CaptureLog log(LLError::LEVEL_WARN);
+        @autoreleasepool
+        {
+            LLRenderTarget target;
+            allocateFacadeTarget(target);
+            setDimClearColour();
+            target.bindTarget();
+            target.clear();
+            flushTarget(device, target);
+            zeroDepth(device, target.getRHIDepth());
+            LLRenderTarget::setClearColor(CLEAR_COLOR[0], CLEAR_COLOR[1], CLEAR_COLOR[2], CLEAR_COLOR[3]);
+            const U64 draws = device.metalEncoder().clearDraws();
+            target.bindTarget();
+            {
+                LLGLEnable scissor(GL_SCISSOR_TEST);
+                gGL.setScissor(4, 2, 8, 4);
+                target.clear();
+            }
+            flushTarget(device, target);
+            ensureEqual("a clear draw", device.metalEncoder().clearDraws(), draws + 1);
+            ensureTarget("only the scissor's rectangle", device, target, DIM_BYTES, 0.f,
+                         [](U32 x, U32 y) { return x >= 4 && x < 12 && y >= 2 && y < 6; });
+            target.release();
+            finishFrame(device);
+        }
+        ensureOnlySurfaceWarnings("t115", log, 0);
+    }
+
+    /// t129 (P2-07f): LLRender::setScissor on Metal is today's path: no pass registers with gGL (only the GL encoder's own pass
+    /// does), so every call in a pass reaches the encoder, a repeated box too, and the first in a new pass is not dropped.
+    API_AVAILABLE(macos(26.0)) void facadeScissorSendsTest()
+    {
+        MetalViewerRun run;
+        MetalDevice& device = *run.device;
+        CaptureLog log(LLError::LEVEL_WARN);
+        @autoreleasepool
+        {
+            LLRenderTarget target;
+            allocateFacadeTarget(target);
+            target.bindTarget();
+            tut::ensure("no own pass registered with gGL", gGL.ownPassTracker() == nullptr);
+            const std::array<S32, 4> box{ 4, 2, 8, 4 };
+            U64 calls = device.encoder().state().dynamicCalls();
+            const U64 sends = LLRender::dynamicStateCounts().sends;
+            gGL.setScissor(4, 2, 8, 4);
+            gGL.setScissor(4, 2, 8, 4);
+            ensureEqual("two dynamic calls for the box twice", device.encoder().state().dynamicCalls() - calls, U64(2));
+            ensureEqual("two sends", LLRender::dynamicStateCounts().sends - sends, U64(2));
+            tut::ensure("the record's box", device.encoder().state().dynamicState().scissor == box);
+            flushTarget(device, target);
+            target.bindTarget();
+            tut::ensure("a new pass at the defaults' box",
+                        device.encoder().state().dynamicState().scissor == EncoderTracker::DynamicState().scissor);
+            calls = device.encoder().state().dynamicCalls();
+            gGL.setScissor(4, 2, 8, 4);
+            ensureEqual("the first set in the new pass", device.encoder().state().dynamicCalls() - calls, U64(1));
+            tut::ensure("the new pass's box", device.encoder().state().dynamicState().scissor == box);
+            target.flush();
+            target.release();
+            finishFrame(device);
+            gGL.setScissor(0, 0, S32_MAX, S32_MAX); // LLRender's start box again, outside any pass
+        }
+        ensureOnlySurfaceWarnings("t129", log, 0);
+    }
+
+    // P3-01f S4: immediate mode through LLRender, scaleDown's gate, a 0x0 target and bind(target, true) on Metal --------
+
+    /// This process's own scratch folder under $TMPDIR, made on first use and removed at exit, as llrhigl_test's
+    /// tempFolder: the checkouts of one user share $TMPDIR and run their unit tests at the same time, and one
+    /// shared folder let a run read the GLSL another run had just truncated (P3-01j's review R1; P3-T3).
+    struct TempFolder
+    {
+        const std::string mPath = std::string(getenv("TMPDIR") ? getenv("TMPDIR") : "/tmp") + llformat("/llrhimetal.%d", int(getpid()));
+
+        TempFolder()
+        {
+            // Empty first: a test process that aborted (a validation assert, SIGKILL, a timeout) leaves its folder, and a
+            // later process with the same pid would read its files (P3-T3's review m2).
+            std::error_code error;
+            std::filesystem::remove_all(mPath, error);
+            std::filesystem::create_directories(mPath, error);
+        }
+
+        ~TempFolder()
+        {
+            std::error_code error;
+            std::filesystem::remove_all(mPath, error);
+        }
+    };
+
+    std::string tempFolder()
+    {
+        static const TempFolder folder;
+        return folder.mPath;
+    }
+
+    /// t131: LLShaderMgr for LLGLSLShader on the viewer's Metal device, reading the test's own GLSL from a folder of its
+    /// own, as llrhigl_test's TestShaderMgr; the reserved names from initAttribsAndUniforms.
+    class MetalTestShaderMgr : public LLShaderMgr
+    {
+    public:
+        MetalTestShaderMgr()
+        {
+            sInstance = this;
+            initAttribsAndUniforms();
+        }
+
+        ~MetalTestShaderMgr() override { sInstance = nullptr; }
+
+        std::string getShaderDirPrefix() override { return folder() + "/class"; }
+        void        updateShaderUniforms(LLGLSLShader*) override {}
+
+        static std::string folder()
+        {
+            return tempFolder() + "/shaders";
+        }
+
+        /// Writes class1/<path>; the files are written again on every run, and the folder goes with tempFolder's at exit.
+        static void write(const std::string& path, const std::string& text)
+        {
+            const std::filesystem::path file = std::filesystem::path(folder()) / "class1" / path;
+            std::error_code error;
+            std::filesystem::create_directories(file.parent_path(), error);
+            std::ofstream out(file, std::ios::out | std::ios::binary | std::ios::trunc);
+            out << text;
+            out.close();
+            tut::ensure("wrote " + file.string(), !out.fail());
+        }
+    };
+
+    /// t131: the UI programs' vertex colour path (interface/uiV.glsl's matrix and colour) without a texture.
+    const char* IMMEDIATE_VERTEX = R"(uniform mat4 modelview_projection_matrix;
+in vec3 position;
+in vec4 diffuse_color;
+out vec4 vertex_color;
+void main()
+{
+    gl_Position = modelview_projection_matrix * vec4(position, 1.0);
+    vertex_color = diffuse_color;
+}
+)";
+
+    const char* IMMEDIATE_FRAGMENT = R"(in vec4 vertex_color;
+out vec4 frag_color;
+void main()
+{
+    frag_color = vertex_color;
+}
+)";
+
+    /// t131: an LLGLSLShader that unloads itself when it goes, also when an ensure throws, so sInstances never keeps it.
+    struct UnloadingShader : public LLGLSLShader
+    {
+        ~UnloadingShader()
+        {
+            if (LLGLSLShader::sCurBoundShaderPtr == this)
+            {
+                LLGLSLShader::unbind();
+            }
+            unload();
+        }
+    };
+
+    /// t131: LLRender's immediate-mode buffer, which gGL.init(true) makes in the viewer (MetalViewerRun's init(false)
+    /// makes none), released before the device, also when an ensure throws, with the buffers LLRender cached.
+    struct ImmediateBuffer
+    {
+        ImmediateBuffer() { gGL.initVertexBuffer(); }
+        ~ImmediateBuffer() { gGL.resetVertexBuffer(); }
+    };
+
+    /// t131 (P3-01f M21 c): immediate mode through LLRender on the viewer's Metal device, with an LLGLSLShader made by
+    /// createShader through the translator: two triangles in window coordinates (gGL.ortho in pixels, origin bottom left, as
+    /// the UI draws), whose edges lie between pixel centres, from gGL.begin, color4ub, vertex2f and end, flushed into a
+    /// 16x8 target. GL's rule covers a pixel exactly when its centre is inside, so the four corner pixels inside have the
+    /// quad's colour, the four just outside, which the quad partly covers, keep the clear colour, and so does every pixel
+    /// by the same rule; row 0 of the readback is GL's bottom row (t4).
+    API_AVAILABLE(macos(26.0)) void immediateModeTest()
+    {
+        MetalViewerRun run;
+        MetalDevice& device = *run.device;
+        ImmediateBuffer immediate;
+        MetalTestShaderMgr mgr;
+        MetalTestShaderMgr::write("test/immediateV.glsl", IMMEDIATE_VERTEX);
+        MetalTestShaderMgr::write("test/immediateF.glsl", IMMEDIATE_FRAGMENT);
+        CaptureLog log(LLError::LEVEL_WARN);
+        constexpr std::array<U8, 4> QUAD_BYTES = { 200, 30, 90, 255 };
+        constexpr F32 X0 = 2.75f;
+        constexpr F32 X1 = 13.25f;
+        constexpr F32 Y0 = 1.75f;
+        constexpr F32 Y1 = 6.25f;
+        @autoreleasepool
+        {
+            UnloadingShader shader;
+            shader.mName = "t131 immediate mode";
+            shader.mShaderLevel = 1;
+            shader.mShaderFiles = { { "test/immediateV.glsl", GL_VERTEX_SHADER }, { "test/immediateF.glsl", GL_FRAGMENT_SHADER } };
+            shader.mFeatures.attachNothing = true;
+            shader.mShaderGroup = LLGLSLShader::SG_DEFAULT;
+            tut::ensure("createShader on Metal", shader.createShader());
+            shader.bind(); // publishes the pending program first
+            tut::ensure("the shader is complete", shader.isComplete());
+            tut::ensure("its program is the Metal device's", shader.getRHIProgram() != nullptr &&
+                                                                 shader.getRHIDevice() == device.id());
+            ensureEqual("the attribute mask: position and colour", shader.mAttributeMask,
+                        U32(LLVertexBuffer::MAP_VERTEX | LLVertexBuffer::MAP_COLOR));
+
+            LLRenderTarget target;
+            allocateFacadeTarget(target);
+            LLRenderTarget::setClearColor(CLEAR_COLOR[0], CLEAR_COLOR[1], CLEAR_COLOR[2], CLEAR_COLOR[3]);
+            target.bindTarget();
+            target.clear();
+            gGL.matrixMode(LLRender::MM_PROJECTION);
+            gGL.loadIdentity();
+            gGL.ortho(0.f, F32(FACADE_WIDTH), 0.f, F32(FACADE_HEIGHT), -1.f, 1.f);
+            gGL.matrixMode(LLRender::MM_MODELVIEW);
+            gGL.loadIdentity();
+            gGL.begin(LLRender::TRIANGLES);
+            gGL.color4ub(QUAD_BYTES[0], QUAD_BYTES[1], QUAD_BYTES[2], QUAD_BYTES[3]);
+            gGL.vertex2f(X0, Y0);
+            gGL.vertex2f(X1, Y0);
+            gGL.vertex2f(X1, Y1);
+            gGL.vertex2f(X0, Y0);
+            gGL.vertex2f(X1, Y1);
+            gGL.vertex2f(X0, Y1);
+            gGL.end();
+            gGL.flush();
+            flushTarget(device, target);
+            gGL.matrixMode(LLRender::MM_PROJECTION);
+            gGL.loadIdentity();
+            gGL.matrixMode(LLRender::MM_MODELVIEW);
+
+            const std::vector<U8> colour = levelBytes(device, target.getRHITexture(0), 4);
+            const auto at = [&colour](U32 x, U32 y)
+            {
+                const size_t i = (size_t(y) * FACADE_WIDTH + x) * 4;
+                return std::array<U8, 4>{ colour[i], colour[i + 1], colour[i + 2], colour[i + 3] };
+            };
+            // The corners by name: inside (3, 2), (12, 2), (3, 5), (12, 5); just outside, each partly covered, the pixels
+            // diagonally beyond them
+            const std::array<std::array<U32, 2>, 4> inside = { { { 3, 2 }, { 12, 2 }, { 3, 5 }, { 12, 5 } } };
+            const std::array<std::array<U32, 2>, 4> outside = { { { 2, 1 }, { 13, 1 }, { 2, 6 }, { 13, 6 } } };
+            for (const auto& [x, y] : inside)
+            {
+                tut::ensure(llformat("the corner pixel %u, %u inside has the quad's colour", x, y), at(x, y) == QUAD_BYTES);
+            }
+            for (const auto& [x, y] : outside)
+            {
+                tut::ensure(llformat("the pixel %u, %u just outside keeps the clear colour", x, y), at(x, y) == CLEAR_BYTES);
+            }
+            for (U32 y = 0; y < FACADE_HEIGHT; ++y)
+            {
+                for (U32 x = 0; x < FACADE_WIDTH; ++x)
+                {
+                    const bool in = F32(x) + 0.5f > X0 && F32(x) + 0.5f < X1 && F32(y) + 0.5f > Y0 && F32(y) + 0.5f < Y1;
+                    const std::array<U8, 4> expected = in ? QUAD_BYTES : CLEAR_BYTES;
+                    const std::array<U8, 4> actual = at(x, y);
+                    if (actual != expected)
+                    {
+                        tut::fail(llformat("pixel %u, %u is %u %u %u %u, not %u %u %u %u", x, y, actual[0], actual[1],
+                                           actual[2], actual[3], expected[0], expected[1], expected[2], expected[3]));
+                    }
+                }
+            }
+            LLGLSLShader::unbind();
+            target.release();
+            finishFrame(device);
+        }
+        ensureOnlySurfaceWarnings("t131", log, 0);
+    }
+
+    /// t134 (P3-01f F1a): a 0x0 LLRenderTarget with a depth on the viewer's Metal device, as the screen buffers at a 0x0
+    /// window: no texture of the device and no raw name for the colour or the depth, and no generateTextures call, which
+    /// would draw names with glGenTextures.
+    API_AVAILABLE(macos(26.0)) void zeroSizeTargetTest()
+    {
+        MetalViewerRun run;
+        MetalDevice& device = *run.device;
+        CaptureLog log(LLError::LEVEL_WARN);
+        @autoreleasepool
+        {
+            const LLImageGL::NameDraws before = LLImageGL::nameDraws();
+            LLRenderTarget target;
+            tut::ensure("allocate(0, 0) with a depth", target.allocate(0, 0, GL_RGBA, true));
+            ensureEqual("one colour attachment", target.getNumTextures(), U32(1));
+            tut::ensure("no colour texture of the device", target.getRHITexture(0) == nullptr);
+            ensureEqual("no raw colour name", target.getTexture(), U32(0));
+            tut::ensure("no depth texture of the device", target.getRHIDepth() == nullptr);
+            ensureEqual("no raw depth name", target.getDepth(), U32(0));
+            const LLImageGL::NameDraws after = LLImageGL::nameDraws();
+            ensureEqual("no generateTextures call", after.calls, before.calls);
+            ensureEqual("no name drawn", after.names, before.names);
+            target.release();
+            finishFrame(device);
+        }
+        ensureEqual("t134: no WARN", occurrences(log, "WARNING"), size_t(0));
+    }
+
+    /// t136 (P3-01i): gCopyProgram's stages, interface/copyV.glsl and copyF.glsl without COPY_DEPTH.
+    const char* COPY_VERTEX_GLSL = R"(in vec3 position;
+out vec2 tc;
+void main()
+{
+    tc = position.xy * 0.5 + 0.5;
+    gl_Position = vec4(position, 1.0);
+}
+)";
+
+    const char* COPY_FRAGMENT_GLSL = R"(in vec2 tc;
+uniform sampler2D diffuseMap;
+out vec4 frag_color;
+void main()
+{
+    frag_color = texture(diffuseMap, tc);
+}
+)";
+
+    /// t136: four RGBA quadrants whose channels sum to multiples of 4 over the four, so every box-filtered level is exact,
+    /// the 1x1 level too (their average: 91, 90, 96, 255). Quadrant q = (x in the right half) + 2 (y in the top half),
+    /// row 0 GL's bottom row.
+    constexpr std::array<std::array<U8, 4>, 4> SCALE_QUADRANTS = { { { 200, 40, 12, 255 },
+                                                                     { 16, 180, 60, 255 },
+                                                                     { 100, 20, 220, 255 },
+                                                                     { 48, 120, 92, 255 } } };
+
+    std::vector<U8> scaleQuadrantBytes(U32 width, U32 height)
+    {
+        std::vector<U8> bytes;
+        bytes.reserve(size_t(width) * height * 4);
+        for (U32 y = 0; y < height; ++y)
+        {
+            for (U32 x = 0; x < width; ++x)
+            {
+                const auto& colour = SCALE_QUADRANTS[(x >= width / 2 ? 1 : 0) + (y >= height / 2 ? 2 : 0)];
+                bytes.insert(bytes.end(), colour.begin(), colour.end());
+            }
+        }
+        return bytes;
+    }
+
+    /// t136: one level of a texture's layer 0 through the test's own queue, after the device's work has finished, as
+    /// levelBytes reads level 0.
+    API_AVAILABLE(macos(26.0)) std::vector<U8> levelBytesAt(MetalDevice& device, Texture* texture, NSUInteger level,
+                                                            NSUInteger bytesPerPixel)
+    {
+        id<MTLTexture> metal = metalTexture(texture);
+        const NSUInteger width = std::max<NSUInteger>(1, metal.width >> level);
+        const NSUInteger height = std::max<NSUInteger>(1, metal.height >> level);
+        const NSUInteger rowBytes = width * bytesPerPixel;
+        const NSUInteger imageBytes = rowBytes * height;
+        id<MTLBuffer> target = [device.mtlDevice() newBufferWithLength:imageBytes options:MTLResourceStorageModeShared];
+        id<MTLCommandQueue> queue = [device.mtlDevice() newCommandQueue];
+        id<MTLCommandBuffer> commands = [queue commandBuffer];
+        id<MTLBlitCommandEncoder> blit = [commands blitCommandEncoder];
+        [blit copyFromTexture:metal
+                     sourceSlice:0
+                     sourceLevel:level
+                    sourceOrigin:MTLOriginMake(0, 0, 0)
+                      sourceSize:MTLSizeMake(width, height, 1)
+                        toBuffer:target
+               destinationOffset:0
+          destinationBytesPerRow:rowBytes
+        destinationBytesPerImage:imageBytes];
+        [blit endEncoding];
+        [commands commit];
+        [commands waitUntilCompleted];
+        tut::ensure("the level's readback completed", commands.status == MTLCommandBufferStatusCompleted);
+        const U8* data = static_cast<const U8*>(target.contents);
+        return std::vector<U8>(data, data + imageBytes);
+    }
+
+    /// t136: gPipeline.mScreenTriangleVB's triangle (pipeline.cpp), with storage of the viewer's device.
+    LLPointer<LLVertexBuffer> metalScreenTriangle()
+    {
+        LLPointer<LLVertexBuffer> triangle = new LLVertexBuffer(LLVertexBuffer::MAP_VERTEX);
+        tut::ensure("the screen triangle", triangle->allocateBuffer(3, 0));
+        LLStrider<LLVector3> vertices;
+        tut::ensure("its strider", triangle->getVertexStrider(vertices));
+        vertices[0].set(-1.f, 1.f, 0.f);
+        vertices[1].set(-1.f, -3.f, 0.f);
+        vertices[2].set(3.f, 1.f, 0.f);
+        triangle->unmapBuffer();
+        tut::ensure("its storage on the device", triangle->getRHIBuffer() != nullptr);
+        return triangle;
+    }
+
+    /// t136 (P3-01i S1): LLImageGL::scaleDown on the viewer's Metal device as LLViewerTextureList's caller makes it: a
+    /// 64x64 RGBA target bound as mDownResMap, the copy program (t131's LLShaderMgr with copyV/copyF's GLSL, through the
+    /// translator) and the screen triangle set, blending off. scaleDown(1, triangle) of a mipmapped 16x16 image of four
+    /// quadrants gives true, an 8x8 texture of 4 levels at discard 1 on a new texture, every level exact (the quadrants at
+    /// 8x8, 4x4 and 2x2, their average at 1x1), the bytes allocated 768 less (R54 (c): createGLTexture books level 0, 1024
+    /// bytes, on the image's own texture, not on the texture bound on unit 0 (S1b), and the 8x8 level 0 is 256), one draw
+    /// encoded and made, one copy tracked, mipmaps tracked, no WARN line, and the bytes back at the start once the image
+    /// goes. Then the refusals, each false with the image's
+    /// texture, discard level and bytes unchanged, counted, no re-specification, one WARN line each: no triangle (B-1's
+    /// sibling: the draw has no way to the encoder), a draw not delivered (M-1: no copy program bound, so the draw stays
+    /// raw), an sRGB image (RGBA8Unorm_sRGB, which copyRefusal refuses, so canFromFramebuffer does too and the image
+    /// keeps its content: P3-08b S2, the challenge's F1; no 'between formats' line, since nothing reaches the encoder)
+    /// and a size over the target (B-1, the same WARN line, once). (2b) P3-08b's review m3: an R8 image whose format copy
+    /// program cannot be made is refused by canFromFramebuffer and keeps its texture and content. P3-08b S2 (e): a 1- and a 2-component image (R8 and
+    /// RG8 with GL's luminance swizzles) scale down through the copy as a draw, which keeps the target's R and RG, so the
+    /// luminance-alpha image's alpha becomes its luminance, as GL's glCopyTexSubImage2D into GL_RG8 makes it. Then the cost of one
+    /// scaleDown(1) on Metal, reported only (m-5). Last, S1b's observation: createGLTexture of an image without mips
+    /// leaves the options of the texture on unit 0 unchanged, and the new texture's first bind tells the image's.
+    API_AVAILABLE(macos(26.0)) void scaleDownTest()
+    {
+        MetalViewerRun run;
+        MetalDevice& device = *run.device;
+        MetalTestShaderMgr mgr;
+        MetalTestShaderMgr::write("test/copyV.glsl", COPY_VERTEX_GLSL);
+        MetalTestShaderMgr::write("test/copyF.glsl", COPY_FRAGMENT_GLSL);
+        @autoreleasepool
+        {
+            UnloadingShader copy;
+            copy.mName = "t136 copy";
+            copy.mShaderLevel = 1;
+            copy.mShaderFiles = { { "test/copyV.glsl", GL_VERTEX_SHADER }, { "test/copyF.glsl", GL_FRAGMENT_SHADER } };
+            copy.mFeatures.attachNothing = true;
+            copy.mShaderGroup = LLGLSLShader::SG_DEFAULT;
+            tut::ensure("createShader of the copy program on Metal", copy.createShader());
+            copy.bind(); // publishes the pending program first
+            tut::ensure("its program is the Metal device's", copy.getRHIProgram() != nullptr &&
+                                                                 copy.getRHIDevice() == device.id());
+            LLGLSLShader::unbind();
+
+            LLRenderTarget downRes;
+            tut::ensure("the down-res target", downRes.allocate(64, 64, GL_RGBA, false));
+            ensureEqual("its colour is RGBA8Unorm", U32(downRes.getRHITexture(0)->desc().format), U32(Format::RGBA8Unorm));
+            LLPointer<LLVertexBuffer> triangle = metalScreenTriangle();
+            LLGLDisable blend(GL_BLEND);
+            // The caller's frame around each call (LLViewerTextureList::updateImagesCreateTextures)
+            const auto scaleDownAsCaller = [&](LLImageGL* image, LLVertexBuffer* screen, bool unbindProgram)
+            {
+                downRes.bindTarget();
+                copy.bind();
+                triangle->setBuffer();
+                if (unbindProgram)
+                {
+                    LLGLSLShader::unbind();
+                }
+                const bool scaled = image->scaleDown(1, screen);
+                LLGLSLShader::unbind();
+                gGL.getTexUnit(0)->unbind(LLTexUnit::TT_TEXTURE);
+                flushTarget(device, downRes);
+                return scaled;
+            };
+
+            // (1) The scale down
+            {
+                CaptureLog log(LLError::LEVEL_WARN);
+                LLPointer<LLImageRaw> raw = new LLImageRaw(16, 16, 4);
+                const std::vector<U8> pattern = scaleQuadrantBytes(16, 16);
+                std::memcpy(raw->getData(), pattern.data(), pattern.size());
+                LLPointer<LLImageGL> image = new LLImageGL(true);
+                const U64 beforeCreate = LLImageGL::getTextureBytesAllocated();
+                // S1b: another texture of the device on unit 0, as createGLTexture's bind of the name 0 leaves it (no GL
+                // name to bind); before S1b setManualImage freed its bytes and booked the image's level on its id
+                Texture* bound = downRes.getRHITexture(0);
+                tut::ensure("the target's colour bound on unit 0",
+                            gGL.getTexUnit(0)->bindTexture(LLTexUnit::TT_TEXTURE, bound) &&
+                                gGL.getTexUnit(0)->getCurrTextureId() == bound->id());
+                tut::ensure("createGLTexture", image->createGLTexture(0, raw.get()));
+                gGL.getTexUnit(0)->unbind(LLTexUnit::TT_TEXTURE);
+                // R54 (c), P3-01i S1b: createGLTexture books level 0 on the image's own texture, as GL books it (1024 bytes)
+                ensureEqual("createGLTexture books level 0, 1024 bytes, as GL",
+                            S64(LLImageGL::getTextureBytesAllocated()) - S64(beforeCreate), S64(1024));
+                ensureEqual("max discard 4", image->getMaxDiscardLevel(), S32(4));
+                Texture* old = image->getRHITexture();
+                tut::ensure("a texture of the device", old != nullptr);
+                const U64 oldId = old->id();
+                const U64 bytes = LLImageGL::getTextureBytesAllocated();
+                const LLImageGL::DeviceCounts calls = LLImageGL::deviceCounts();
+                const LLGPUReadback::Counts copies = LLGPUCopy::counts();
+                const LLVertexBuffer::DrawCounts census = LLVertexBuffer::drawCounts();
+                const U64 draws = device.encoder().state().draws();
+                const U64 transfers = device.encoder().state().transfers();
+                const U32 scaled = LLImageGL::sScaleDowns;
+                const U32 refused = LLImageGL::sScaleDownsRefused;
+                tut::ensure("scaleDown(1, triangle) on Metal", scaleDownAsCaller(image.get(), triangle.get(), false));
+                Texture* texture = image->getRHITexture();
+                tut::ensure("a new texture", texture != nullptr && texture->id() != oldId);
+                ensureEqual("8 wide", texture->desc().width, 8u);
+                ensureEqual("8 high", texture->desc().height, 8u);
+                ensureEqual("createGLTexture's levels: 4 - 1 + 1", texture->desc().mipLevels, 4u);
+                ensureEqual("discard level 1", image->getDiscardLevel(), S32(1));
+                for (U32 level = 0; level < 3; ++level)
+                {
+                    const U32 size = 8u >> level;
+                    tut::ensure(llformat("level %u: the quadrants at %ux%u", level, size, size),
+                                levelBytesAt(device, texture, level, 4) == scaleQuadrantBytes(size, size));
+                }
+                const std::vector<U8> average = { 91, 90, 96, 255 };
+                tut::ensure("level 3: the quadrants' average", levelBytesAt(device, texture, 3, 4) == average);
+                // R54 (c), P3-01i's m-2: both backends book only level 0, so 16x16 to 8x8 RGBA is 1024 - 256 bytes less
+                ensureEqual("the bytes allocated: only level 0 booked, 768 less (R54 (c))",
+                            S64(LLImageGL::getTextureBytesAllocated()) - S64(bytes), S64(-768));
+                ensureEqual("one re-specification", LLImageGL::deviceCounts().respecifications - calls.respecifications,
+                            U64(1));
+                ensureEqual("mipmaps tracked", LLImageGL::deviceCounts().mipmaps - calls.mipmaps, U64(1));
+                ensureEqual("the copy tracked", LLGPUCopy::counts().tracked - copies.tracked, U64(1));
+                ensureEqual("the tracker's transfers", device.encoder().state().transfers() - transfers, U64(1));
+                ensureEqual("the draw made (the tracker's draws)", device.encoder().state().draws() - draws, U64(1));
+                const LLVertexBuffer::DrawCounts drawn = LLVertexBuffer::drawCounts();
+                ensureEqual("the census: one draw", drawn.draws - census.draws, U64(1));
+                ensureEqual("the census: encoded", drawn.encoded - census.encoded, U64(1));
+                ensureEqual("counted scaled down", LLImageGL::sScaleDowns - scaled, 1u);
+                ensureEqual("none refused", LLImageGL::sScaleDownsRefused - refused, 0u);
+                ensureEqual("t136 (1): no WARN", occurrences(log, "WARNING"), size_t(0));
+                image = nullptr;
+                ensureEqual("the bytes back at the start once the image goes (S1b)", LLImageGL::getTextureBytesAllocated(),
+                            beforeCreate);
+                finishFrame(device);
+            }
+
+            // (1b) P3-08b S3: RenderDownScaleMethod 1 (the PBO method) on Metal, which has no pixelBufferObjects, takes
+            // the FBO path of (1): the copy tracked and the quadrants at 8x8
+            {
+                CaptureLog log(LLError::LEVEL_WARN);
+                tut::ensure("(1b) no pixelBufferObjects on Metal", !device.capabilities().pixelBufferObjects);
+                LLPointer<LLImageRaw> raw = new LLImageRaw(16, 16, 4);
+                const std::vector<U8> pattern = scaleQuadrantBytes(16, 16);
+                std::memcpy(raw->getData(), pattern.data(), pattern.size());
+                LLPointer<LLImageGL> image = new LLImageGL(true);
+                tut::ensure("(1b) createGLTexture", image->createGLTexture(0, raw.get()));
+                gGL.getTexUnit(0)->unbind(LLTexUnit::TT_TEXTURE);
+                const LLGPUReadback::Counts copies = LLGPUCopy::counts();
+                const U32 method = gGLManager.mDownScaleMethod;
+                gGLManager.mDownScaleMethod = 1;
+                const bool scaled = scaleDownAsCaller(image.get(), triangle.get(), false);
+                gGLManager.mDownScaleMethod = method;
+                tut::ensure("(1b) scaleDown(1, triangle) with RenderDownScaleMethod 1", scaled);
+                ensureEqual("(1b) the FBO path's copy tracked", LLGPUCopy::counts().tracked - copies.tracked, U64(1));
+                tut::ensure("(1b) level 0: the quadrants at 8x8",
+                            levelBytesAt(device, image->getRHITexture(), 0, 4) == scaleQuadrantBytes(8, 8));
+                ensureEqual("t136 (1b): no WARN", occurrences(log, "WARNING"), size_t(0));
+                image = nullptr;
+                finishFrame(device);
+            }
+
+            // (2) The refusals: false, nothing changed, counted, one WARN line each (the size's line is the format's, once)
+            {
+                CaptureLog log(LLError::LEVEL_WARN);
+                struct Case
+                {
+                    const char* name;
+                    U16 size;
+                    S8 components;
+                    bool triangle;
+                    bool unbindProgram;
+                    const char* warning; ///< null: the line is the case before's, warned once
+                    bool srgb;           ///< GL_SRGB_ALPHA (P3-08b S2, F1)
+                };
+                const Case cases[] = {
+                    { "no triangle", 16, 4, false, false, "scaleDown needs the caller's screen triangle off GL", false },
+                    { "the draw not delivered (no copy program bound)", 16, 4, true, true,
+                      "the screen triangle's draw was not delivered", false },
+                    { "an sRGB image", 16, 4, true, false, "cannot be made", true },
+                    { "a size over the target", 256, 4, true, false, nullptr, false },
+                };
+                for (const Case& c : cases)
+                {
+                    const std::string at = std::string(c.name) + ": ";
+                    LLPointer<LLImageRaw> raw = new LLImageRaw(c.size, c.size, c.components);
+                    std::memset(raw->getData(), 0x40, size_t(c.size) * c.size * c.components);
+                    LLPointer<LLImageGL> image = new LLImageGL(true);
+                    if (c.srgb)
+                    {
+                        image->setExplicitFormat(GL_SRGB_ALPHA, GL_RGBA); // LLImageGL knows the unsized sRGB formats
+                    }
+                    tut::ensure(at + "createGLTexture", image->createGLTexture(0, raw.get()));
+                    Texture* texture = image->getRHITexture();
+                    tut::ensure(at + "a texture of the device", texture != nullptr);
+                    if (c.srgb)
+                    {
+                        ensureEqual(at + "RGBA8Unorm_sRGB", U32(texture->desc().format), U32(Format::RGBA8Unorm_sRGB));
+                    }
+                    finishFrame(device); // levelBytesAt reads on a queue of its own, after the upload has run
+                    const std::vector<U8> content = levelBytesAt(device, texture, 0, 4);
+                    const S32 discard = image->getDiscardLevel();
+                    const U64 bytes = LLImageGL::getTextureBytesAllocated();
+                    const U64 respecifications = LLImageGL::deviceCounts().respecifications;
+                    const LLGPUReadback::Counts copies = LLGPUCopy::counts();
+                    const U32 refused = LLImageGL::sScaleDownsRefused;
+                    const size_t warnings = occurrences(log, "WARNING");
+                    tut::ensure(at + "false", !scaleDownAsCaller(image.get(), c.triangle ? triangle.get() : nullptr,
+                                                                 c.unbindProgram));
+                    tut::ensure(at + "the image keeps its texture", image->getRHITexture() == texture);
+                    ensureEqual(at + "and its discard level", image->getDiscardLevel(), discard);
+                    ensureEqual(at + "the bytes allocated unchanged", LLImageGL::getTextureBytesAllocated(), bytes);
+                    ensureEqual(at + "no re-specification", LLImageGL::deviceCounts().respecifications, respecifications);
+                    ensureEqual(at + "no copy", LLGPUCopy::counts().tracked + LLGPUCopy::counts().refused,
+                                copies.tracked + copies.refused);
+                    ensureEqual(at + "counted refused", LLImageGL::sScaleDownsRefused - refused, 1u);
+                    // F1: the refusal comes before any change, so the image keeps its content too
+                    tut::ensure(at + "its content unchanged", levelBytesAt(device, texture, 0, 4) == content);
+                    if (c.warning)
+                    {
+                        ensureEqual(at + "its WARN line", occurrences(log, c.warning), size_t(1));
+                    }
+                    std::ostringstream lines;
+                    log.streamto(lines);
+                    ensureEqual(at + "one WARN line, or none for a line warned once (" + lines.str() + ")",
+                                occurrences(log, "WARNING") - warnings, size_t(c.warning ? 1 : 0));
+                    image = nullptr;
+                    finishFrame(device);
+                }
+                ensureEqual("the sRGB image reached no copy ('between formats')", occurrences(log, "between formats"),
+                            size_t(0));
+            }
+
+            // (2b) P3-08b's review m3: an R8 image whose format copy program cannot be made (the first one this device
+            // asks for, failNextCompile) is refused by canFromFramebuffer before anything changes, so it keeps its
+            // texture and its content, and no copy reaches the encoder; the next R8 image in (e) gets the program again
+            {
+                CaptureLog log(LLError::LEVEL_WARN);
+                LLPointer<LLImageRaw> raw = new LLImageRaw(16, 16, 1);
+                std::memset(raw->getData(), 0x40, 16 * 16);
+                LLPointer<LLImageGL> image = new LLImageGL(true);
+                tut::ensure("(2b) createGLTexture", image->createGLTexture(0, raw.get()));
+                Texture* texture = image->getRHITexture();
+                tut::ensure("(2b) an R8 texture of the device",
+                            texture != nullptr && texture->desc().format == Format::R8Unorm);
+                finishFrame(device);
+                const std::vector<U8> content = levelBytesAt(device, texture, 0, 1);
+                const S32 discard = image->getDiscardLevel();
+                const U64 respecifications = LLImageGL::deviceCounts().respecifications;
+                const LLGPUReadback::Counts copies = LLGPUCopy::counts();
+                const U32 refused = LLImageGL::sScaleDownsRefused;
+                const U64 draws = device.metalEncoder().formatCopyDraws();
+                downRes.bindTarget();
+                copy.bind();
+                triangle->setBuffer();
+                device.failNextCompile(); // the next program made: the format copy program, asked by canFromFramebuffer
+                tut::ensure("(2b) false", !image->scaleDown(1, triangle.get()));
+                LLGLSLShader::unbind();
+                gGL.getTexUnit(0)->unbind(LLTexUnit::TT_TEXTURE);
+                flushTarget(device, downRes);
+                tut::ensure("(2b) the image keeps its texture", image->getRHITexture() == texture);
+                ensureEqual("(2b) and its discard level", image->getDiscardLevel(), discard);
+                ensureEqual("(2b) no re-specification", LLImageGL::deviceCounts().respecifications, respecifications);
+                ensureEqual("(2b) no copy", LLGPUCopy::counts().tracked + LLGPUCopy::counts().refused,
+                            copies.tracked + copies.refused);
+                ensureEqual("(2b) no draw", device.metalEncoder().formatCopyDraws(), draws);
+                ensureEqual("(2b) counted refused", LLImageGL::sScaleDownsRefused - refused, 1u);
+                tut::ensure("(2b) its content unchanged", levelBytesAt(device, texture, 0, 1) == content);
+                ensureEqual("(2b) the program's WARN line", occurrences(log, "does not compile"), size_t(1));
+                image = nullptr;
+                finishFrame(device);
+            }
+
+            // (e) P3-08b S2: R8 and RG8 images (GL's luminance and luminance-alpha) scale down on Metal through the copy as
+            // a draw; the target is RGBA8, so the copy keeps its R (and G), as GL's glCopyTexSubImage2D does
+            {
+                CaptureLog log(LLError::LEVEL_WARN);
+                struct Small
+                {
+                    const char* name;
+                    S8 components;
+                    Format format;
+                    U32 bytesPerPixel;
+                    std::vector<U8> texel;     ///< every texel of the 16x16 image
+                    std::vector<U8> scaled;    ///< every texel of the 8x8 level 0 after the scale down
+                };
+                // The draw writes the image as sampled, and the copy keeps the target's R and G. LA (0x40, 0x90) samples as
+                // (0x40, 0x40, 0x40, 0x90) with the core profile's swizzle, so RG8 gets (0x40, 0x40); this test's
+                // profile describes no swizzle (manual_image_format), so it samples (0x40, 0x90, 0, 1) and gets it back
+                const Small smalls[] = {
+                    { "R8 (luminance)", 1, Format::R8Unorm, 1, { 0x40 }, { 0x40 } },
+                    { "RG8 (luminance-alpha)", 2, Format::RG8Unorm, 2, { 0x40, 0x90 }, {} },
+                };
+                for (const Small& c : smalls)
+                {
+                    const std::string at = std::string(c.name) + ": ";
+                    LLPointer<LLImageRaw> raw = new LLImageRaw(16, 16, c.components);
+                    for (size_t t = 0; t < 16 * 16; ++t)
+                    {
+                        std::memcpy(raw->getData() + t * c.texel.size(), c.texel.data(), c.texel.size());
+                    }
+                    LLPointer<LLImageGL> image = new LLImageGL(true);
+                    tut::ensure(at + "createGLTexture", image->createGLTexture(0, raw.get()));
+                    Texture* old = image->getRHITexture();
+                    tut::ensure(at + "a texture of the device", old != nullptr);
+                    ensureEqual(at + "its format", U32(old->desc().format), U32(c.format));
+                    const SwizzleRGBA swizzle = old->desc().swizzle; // old goes with the scale down
+                    const U64 oldId = old->id();
+                    const U64 draws = device.metalEncoder().formatCopyDraws();
+                    const U32 refused = LLImageGL::sScaleDownsRefused;
+                    tut::ensure(at + "scaleDown(1, triangle) on Metal", scaleDownAsCaller(image.get(), triangle.get(), false));
+                    Texture* texture = image->getRHITexture();
+                    tut::ensure(at + "a new texture", texture != nullptr && texture->id() != oldId);
+                    ensureEqual(at + "8 wide", texture->desc().width, 8u);
+                    ensureEqual(at + "none refused", LLImageGL::sScaleDownsRefused - refused, 0u);
+                    ensureEqual(at + "one copy as a draw", device.metalEncoder().formatCopyDraws() - draws, U64(1));
+                    std::vector<U8> scaled = c.scaled;
+                    if (scaled.empty())
+                    {
+                        const bool swizzled = swizzle.g == Swizzle::R;
+                        tut::ensure(at + "identity or (R, R, R, G)", swizzled || swizzle.isIdentity());
+                        scaled = { c.texel[0], swizzled ? c.texel[0] : c.texel[1] };
+                    }
+                    std::vector<U8> want;
+                    for (size_t t = 0; t < 8 * 8; ++t)
+                    {
+                        want.insert(want.end(), scaled.begin(), scaled.end());
+                    }
+                    const std::vector<U8> got = levelBytesAt(device, texture, 0, c.bytesPerPixel);
+                    tut::ensure(at + "level 0's bytes (the first texel " +
+                                    std::to_string(got.empty() ? -1 : int(got[0])) + "," +
+                                    std::to_string(got.size() > 1 ? int(got[1]) : -1) + ")",
+                                got == want);
+                    image = nullptr;
+                    finishFrame(device);
+                }
+                ensureEqual("(e): no WARN line", occurrences(log, "WARNING"), size_t(0));
+            }
+
+            // (3) The cost of one scaleDown(1) on Metal: the CPU's encoding, reported only (m-5)
+            {
+                constexpr int CALLS = 50;
+                LLPointer<LLImageRaw> raw = new LLImageRaw(16, 16, 4);
+                const std::vector<U8> pattern = scaleQuadrantBytes(16, 16);
+                std::memcpy(raw->getData(), pattern.data(), pattern.size());
+                double total = 0.0;
+                for (int call = 0; call < CALLS; ++call)
+                {
+                    LLPointer<LLImageGL> image = new LLImageGL(true);
+                    tut::ensure("timing: createGLTexture", image->createGLTexture(0, raw.get()));
+                    downRes.bindTarget();
+                    copy.bind();
+                    triangle->setBuffer();
+                    const auto start = std::chrono::steady_clock::now();
+                    const bool scaled = image->scaleDown(1, triangle.get());
+                    total += std::chrono::duration<double, std::nano>(std::chrono::steady_clock::now() - start).count();
+                    tut::ensure("timing: scaleDown(1)", scaled);
+                    LLGLSLShader::unbind();
+                    gGL.getTexUnit(0)->unbind(LLTexUnit::TT_TEXTURE);
+                    downRes.flush();
+                    image = nullptr;
+                    if (call % 10 == 9)
+                    {
+                        finishFrame(device);
+                    }
+                }
+                std::fprintf(stderr, "t136: scaleDown(1) on Metal's FBO path over %d calls: %.1f ns per call (the CPU's "
+                                     "encoding, reported only, P3-01i m-5)\n", CALLS, total / CALLS);
+            }
+
+            // (4) S1b's observation (P3-01i S2, step 0): createGLTexture of an image without mips leaves the options of the
+            // texture on unit 0 as they were (the new texture has no GL name for the bind to put there, and the test has
+            // no default texture to fall back to), and the new texture's first bind gives the encoder the image's options
+            {
+                struct TellLogScope
+                {
+                    LLTexUnit::TellLog log;
+                    TellLogScope() { LLTexUnit::setTellLog(&log); }
+                    ~TellLogScope() { LLTexUnit::setTellLog(nullptr); }
+                } scope;
+                LLTexUnit* unit = gGL.getTexUnit(0);
+                Texture* bound = downRes.getRHITexture(0);
+                tut::ensure("(4) the target's colour bound on unit 0",
+                            unit->bindTexture(LLTexUnit::TT_TEXTURE, bound) && unit->getCurrTextureId() == bound->id());
+                unit->setTextureAddressMode(LLTexUnit::TAM_WRAP);
+                unit->setTextureFilteringOption(LLTexUnit::TFO_BILINEAR);
+                const U64 boundState = bound->facadeState();
+                LLPointer<LLImageRaw> raw = new LLImageRaw(4, 4, 4);
+                std::memset(raw->getData(), 0x40, 4 * 4 * 4);
+                LLPointer<LLImageGL> image = new LLImageGL(false);
+                image->setAddressMode(LLTexUnit::TAM_CLAMP);
+                image->setFilteringOption(LLTexUnit::TFO_POINT);
+                tut::ensure("(4) createGLTexture without mips", image->createGLTexture(0, raw.get()));
+                Texture* texture = image->getRHITexture();
+                tut::ensure("(4) a new texture of the device", texture != nullptr && texture != bound);
+                ensureEqual("(4) the options of the texture on unit 0 unchanged (the image's would be clamp and point)",
+                            bound->facadeState(), boundState);
+                unit->unbind(LLTexUnit::TT_TEXTURE);
+                scope.log.clear();
+                tut::ensure("(4) the image bound", unit->bind(image.get()));
+                tut::ensure("(4) its first bind told the encoder", !scope.log.empty());
+                const auto& [channel, id, sampling, known] = scope.log.back();
+                ensureEqual("(4) on unit 0", channel, 0u);
+                ensureEqual("(4) the image's texture", id, texture->id());
+                ensureEqual("(4) the image's address mode", U32(sampling.addressU), U32(AddressMode::ClampToEdge));
+                ensureEqual("(4) the image's filter", U32(sampling.filter), U32(Filter::Point));
+                unit->unbind(LLTexUnit::TT_TEXTURE);
+                image = nullptr;
+                finishFrame(device);
+            }
+            triangle = nullptr;
+            downRes.release();
+            finishFrame(device);
+        }
+    }
+
+    /// t135's view of LLGLState's map, which initGL's initGLStates sets.
+    struct StoreStateMap : public LLGLState
+    {
+        static std::unordered_map<LLGLenum, LLGLboolean>& map() { return sStateMap; }
+    };
+
+    /// t135: the fields the CGL query sets (S5's list), the test's own, independent of llgl.cpp's GL_STORE_FIELDS.
+    struct StoreBool
+    {
+        const char* name;
+        bool LLGLManager::*field;
+    };
+    struct StoreInt
+    {
+        const char* name;
+        S32 LLGLManager::*field;
+    };
+    struct StoreString
+    {
+        const char* name;
+        std::string LLGLManager::*field;
+    };
+    const StoreBool STORE_BOOLS[] = {
+        { "mIsAMD", &LLGLManager::mIsAMD },
+        { "mIsNVIDIA", &LLGLManager::mIsNVIDIA },
+        { "mIsIntel", &LLGLManager::mIsIntel },
+        { "mIsApple", &LLGLManager::mIsApple },
+        { "mHasCubeMapArray", &LLGLManager::mHasCubeMapArray },
+        { "mHasTransformFeedback", &LLGLManager::mHasTransformFeedback },
+        { "mHasDebugOutput", &LLGLManager::mHasDebugOutput },
+        { "mHasAnisotropic", &LLGLManager::mHasAnisotropic },
+        { "mHasNVXGpuMemoryInfo", &LLGLManager::mHasNVXGpuMemoryInfo },
+        { "mHasATIMemInfo", &LLGLManager::mHasATIMemInfo },
+    };
+    const StoreInt STORE_INTS[] = {
+        { "mDriverVersionMajor", &LLGLManager::mDriverVersionMajor },
+        { "mDriverVersionMinor", &LLGLManager::mDriverVersionMinor },
+        { "mDriverVersionRelease", &LLGLManager::mDriverVersionRelease },
+        { "mGLSLVersionMajor", &LLGLManager::mGLSLVersionMajor },
+        { "mGLSLVersionMinor", &LLGLManager::mGLSLVersionMinor },
+        { "mGLMaxVertexRange", &LLGLManager::mGLMaxVertexRange },
+        { "mGLMaxIndexRange", &LLGLManager::mGLMaxIndexRange },
+        { "mGLMaxTextureSize", &LLGLManager::mGLMaxTextureSize },
+        { "mNumTextureImageUnits", &LLGLManager::mNumTextureImageUnits },
+        { "mMaxColorTextureSamples", &LLGLManager::mMaxColorTextureSamples },
+        { "mMaxDepthTextureSamples", &LLGLManager::mMaxDepthTextureSamples },
+        { "mMaxIntegerSamples", &LLGLManager::mMaxIntegerSamples },
+        { "mMaxSampleMaskWords", &LLGLManager::mMaxSampleMaskWords },
+        { "mMaxSamples", &LLGLManager::mMaxSamples },
+        { "mMaxVaryingVectors", &LLGLManager::mMaxVaryingVectors },
+        { "mMaxUniformBlockSize", &LLGLManager::mMaxUniformBlockSize },
+    };
+    const StoreString STORE_STRINGS[] = {
+        { "mGLVendor", &LLGLManager::mGLVendor },
+        { "mGLRenderer", &LLGLManager::mGLRenderer },
+        { "mDriverVersionVendorString", &LLGLManager::mDriverVersionVendorString },
+        { "mGLVersionString", &LLGLManager::mGLVersionString },
+        { "mGLVendorShort", &LLGLManager::mGLVendorShort },
+        { "mRawVendor", &LLGLManager::mRawVendor },
+        { "mRawRenderer", &LLGLManager::mRawRenderer },
+        { "mRawVersion", &LLGLManager::mRawVersion },
+    };
+    // The bools, ints and strings above, mGLVersion, mMaxAnisotropy, mVRAM, mAliasedLineRange and mGLExtensions.
+    constexpr size_t STORE_FIELD_COUNT = std::size(STORE_BOOLS) + std::size(STORE_INTS) + std::size(STORE_STRINGS) + 5;
+
+    /// A manager with every stored field set for the round: bool k is bit round of k + 1 (so any two bools differ in
+    /// some round), or its complement; the other values differ by field and round, or are a stale value.
+    void fillStoreFields(LLGLManager& gl, int round, bool stale)
+    {
+        for (size_t k = 0; k < std::size(STORE_BOOLS); ++k)
+        {
+            const bool bit = (((k + 1) >> round) & 1) != 0;
+            gl.*STORE_BOOLS[k].field = stale ? !bit : bit;
+        }
+        for (size_t k = 0; k < std::size(STORE_INTS); ++k)
+        {
+            gl.*STORE_INTS[k].field = stale ? -1 - S32(k) : 1000 + 10 * S32(k) + round;
+        }
+        for (size_t k = 0; k < std::size(STORE_STRINGS); ++k)
+        {
+            gl.*STORE_STRINGS[k].field = stale ? std::string("stale") : llformat("%s r%d", STORE_STRINGS[k].name, round);
+        }
+        gl.mGLVersion = stale ? 1.f : 4.1f + 0.5f * F32(round);
+        gl.mMaxAnisotropy = stale ? 0.f : 16.f - F32(round);
+        gl.mVRAM = stale ? 0 : 36864 + U32(round);
+        gl.mAliasedLineRange = stale ? LLVector2(1.f, 1.f) : LLVector2(0.5f, 7.375f + F32(round));
+        gl.mGLExtensions = stale ? std::set<std::string>{ "stale" }
+                                 : std::set<std::string>{ "GL_ARB_a", llformat("GL_EXT_b r%d", round) };
+    }
+
+    /// Each stored field of a and b equal; the first difference fails with its name.
+    void ensureStoreFieldsEqual(const std::string& what, const LLGLManager& a, const LLGLManager& b)
+    {
+        for (const StoreBool& entry : STORE_BOOLS)
+        {
+            ensureEqual(what + ": " + entry.name, a.*entry.field, b.*entry.field);
+        }
+        for (const StoreInt& entry : STORE_INTS)
+        {
+            ensureEqual(what + ": " + entry.name, a.*entry.field, b.*entry.field);
+        }
+        for (const StoreString& entry : STORE_STRINGS)
+        {
+            ensureEqual(what + ": " + entry.name, a.*entry.field, b.*entry.field);
+        }
+        ensureEqual(what + ": mGLVersion", a.mGLVersion, b.mGLVersion);
+        ensureEqual(what + ": mMaxAnisotropy", a.mMaxAnisotropy, b.mMaxAnisotropy);
+        ensureEqual(what + ": mVRAM", a.mVRAM, b.mVRAM);
+        ensureEqual(what + ": mAliasedLineRange x", a.mAliasedLineRange.mV[VX], b.mAliasedLineRange.mV[VX]);
+        ensureEqual(what + ": mAliasedLineRange y", a.mAliasedLineRange.mV[VY], b.mAliasedLineRange.mV[VY]);
+        tut::ensure(what + ": mGLExtensions", a.mGLExtensions == b.mGLExtensions);
+    }
+
+    /// The LLSD as the viewer's metal_gl_query.xml holds it: written as pretty XML and read back.
+    LLSD throughXML(const LLSD& value)
+    {
+        std::ostringstream out;
+        LLSDSerialize::toPrettyXML(value, out);
+        std::istringstream in(out.str());
+        LLSD read;
+        tut::ensure("the store's XML parses", LLSDSerialize::fromXML(read, in) != LLSDParser::PARSE_FAILURE);
+        return read;
+    }
+
+    /// t135 (P3-01f M26): the CGL store's round trip. A manager with every field the CGL query sets goes through
+    /// toStoredLLSD, LLSD XML as the viewer writes the store, and fromStoredLLSD into a manager whose fields are all stale:
+    /// each field comes back equal, over four rounds in which every two bools differ once; mInited and the fields the
+    /// store does not hold keep their values. As initGL does, fromStoredLLSD logs the 'GL:' line, keeps
+    /// LLImageGL::sCompressTextures from GL 2.1 on and clears it below, and sets LLGLState's map (GL_DITHER on,
+    /// GL_MULTISAMPLE off). A value missing or of another type gives false and changes nothing. Run with Metal as the
+    /// viewer's backend, as the viewer runs it, so initClass's gl_set_enabled makes no GL call.
+    void storeRoundTripTest()
+    {
+        struct MetalBackend
+        {
+            MetalBackend() { setViewerBackend(BackendType::Metal); }
+            ~MetalBackend() { setViewerBackend(BackendType::GL); }
+        } metal;
+        const bool compress = LLImageGL::sCompressTextures;
+        const std::unordered_map<LLGLenum, LLGLboolean> states = StoreStateMap::map();
+        struct Restore
+        {
+            bool compress;
+            std::unordered_map<LLGLenum, LLGLboolean> states;
+            ~Restore()
+            {
+                LLImageGL::sCompressTextures = compress;
+                StoreStateMap::map() = states;
+            }
+        } restore{ compress, states };
+
+        for (int round = 0; round < 4; ++round)
+        {
+            const std::string what = "round " + std::to_string(round);
+            LLGLManager source;
+            fillStoreFields(source, round, false);
+            source.mInited = true; // not stored
+            const LLSD stored = throughXML(source.toStoredLLSD());
+            ensureEqual(what + ": the stored values", size_t(stored.size()), STORE_FIELD_COUNT);
+
+            LLGLManager target;
+            fillStoreFields(target, round, true);
+            target.mDownScaleMethod = 3; // not stored
+            target.mHasRequirements = false;
+            StoreStateMap::map().clear();
+            LLImageGL::sCompressTextures = true;
+            {
+                CaptureLog log(LLError::LEVEL_INFO);
+                tut::ensure(what + ": fromStoredLLSD", target.fromStoredLLSD(stored));
+                ensureEqual(what + ": initGL's 'GL:' line", occurrences(log, "GL: " + source.mGLVersionString), size_t(1));
+            }
+            ensureStoreFieldsEqual(what, target, source);
+            tut::ensure(what + ": mInited stays false (initForDevice's)", !target.mInited);
+            ensureEqual(what + ": mDownScaleMethod kept", target.mDownScaleMethod, U32(3));
+            tut::ensure(what + ": mHasRequirements kept", !target.mHasRequirements);
+            tut::ensure(what + ": texture compression kept from GL 2.1", LLImageGL::sCompressTextures);
+            ensureEqual(what + ": LLGLState's map", StoreStateMap::map().size(), size_t(2));
+            tut::ensure(what + ": GL_DITHER on", StoreStateMap::map()[GL_DITHER] == GL_TRUE);
+            tut::ensure(what + ": GL_MULTISAMPLE off", StoreStateMap::map()[GL_MULTISAMPLE] == GL_FALSE);
+        }
+
+        // initGL's texture compression: off below GL 2.1, and never turned on.
+        LLGLManager source;
+        fillStoreFields(source, 0, false);
+        source.mGLVersion = 2.f;
+        LLGLManager target;
+        LLImageGL::sCompressTextures = true;
+        tut::ensure("GL 2.0: fromStoredLLSD", target.fromStoredLLSD(source.toStoredLLSD()));
+        tut::ensure("GL 2.0: texture compression off", !LLImageGL::sCompressTextures);
+        source.mGLVersion = 4.1f;
+        tut::ensure("GL 4.1: fromStoredLLSD", target.fromStoredLLSD(source.toStoredLLSD()));
+        tut::ensure("GL 4.1 after off: texture compression stays off", !LLImageGL::sCompressTextures);
+
+        // An incomplete or mistyped store: false, nothing changed.
+        const LLSD good = source.toStoredLLSD();
+        const std::pair<const char*, std::function<void(LLSD&)>> broken[] = {
+            { "mGLVersion missing", [](LLSD& sd) { sd.erase("mGLVersion"); } },
+            { "mRawVersion missing", [](LLSD& sd) { sd.erase("mRawVersion"); } },
+            { "mVRAM a string", [](LLSD& sd) { sd["mVRAM"] = "big"; } },
+            { "mIsApple an integer", [](LLSD& sd) { sd["mIsApple"] = 1; } },
+            { "mAliasedLineRange of one value", [](LLSD& sd) { sd["mAliasedLineRange"].erase(1); } },
+            { "mGLExtensions missing", [](LLSD& sd) { sd.erase("mGLExtensions"); } },
+            { "not a map", [](LLSD& sd) { sd = LLSD::emptyArray(); } },
+        };
+        for (const auto& [name, change] : broken)
+        {
+            LLSD stored = good;
+            change(stored);
+            LLGLManager stale;
+            fillStoreFields(stale, 0, true);
+            LLGLManager untouched = stale;
+            tut::ensure(std::string(name) + ": false", !stale.fromStoredLLSD(stored));
+            ensureStoreFieldsEqual(std::string(name) + ": nothing changed", stale, untouched);
+        }
+    }
+
+    /// t142 (P3-01f, review render-2): with Metal as the viewer's backend getGLString, which the About box and the release
+    /// notes reach through LLAppViewer::getViewerInfo, gives the CGL query's strings for GL_VENDOR, GL_RENDERER and
+    /// GL_VERSION, not glGetString's (the viewer has no GL context then), and for any other name an empty string with
+    /// one WARN line per name, once.
+    void getGLStringTest()
+    {
+        struct MetalBackend
+        {
+            MetalBackend() { setViewerBackend(BackendType::Metal); }
+            ~MetalBackend() { setViewerBackend(BackendType::GL); }
+        } metal;
+        struct Restore
+        {
+            std::string vendor = gGLManager.mRawVendor;
+            std::string renderer = gGLManager.mRawRenderer;
+            std::string version = gGLManager.mRawVersion;
+            ~Restore()
+            {
+                gGLManager.mRawVendor = vendor;
+                gGLManager.mRawRenderer = renderer;
+                gGLManager.mRawVersion = version;
+            }
+        } restore;
+        gGLManager.mRawVendor = "t142 vendor";
+        gGLManager.mRawRenderer = "t142 renderer";
+        gGLManager.mRawVersion = "t142 version";
+        CaptureLog log(LLError::LEVEL_WARN);
+        ensureEqual("GL_VENDOR", gGLManager.getGLString(GL_VENDOR), std::string("t142 vendor"));
+        ensureEqual("GL_RENDERER", gGLManager.getGLString(GL_RENDERER), std::string("t142 renderer"));
+        ensureEqual("GL_VERSION", gGLManager.getGLString(GL_VERSION), std::string("t142 version"));
+        ensureEqual("the three: no WARN line", occurrences(log, "WARNING"), size_t(0));
+        ensureEqual("GL_EXTENSIONS: empty", gGLManager.getGLString(GL_EXTENSIONS), std::string());
+        ensureEqual("GL_EXTENSIONS again: empty", gGLManager.getGLString(GL_EXTENSIONS), std::string());
+        ensureEqual("GL_SHADING_LANGUAGE_VERSION: empty", gGLManager.getGLString(GL_SHADING_LANGUAGE_VERSION),
+                    std::string());
+        // LL_WARNS_ONCE is once per text, and the text names the name.
+        ensureEqual("two other names: one WARN line each, once", occurrences(log, "without GL as the backend: no string"),
+                    size_t(2));
+    }
+
+    /// t143 (P3-01g G9, the grey login web view): LLViewerMediaImpl::doMediaTexUpdate's sequence on the viewer's Metal
+    /// device, whose textures have no GL name, so createGLTexture's defer_copy gives the caller the handle of the name 0,
+    /// the default handle (P2-98's review, F1). A media image as
+    /// updateMediaImage makes it (the CEF plugin's texture_params: depth 4, GL_RGB, GL_BGRA, GL_UNSIGNED_BYTE; no mipmaps),
+    /// then twice createGLTexture with defer_copy, setSubImage with that name and syncTexName: (1) the whole frame of one
+    /// colour, (2) a dirty rect of another. P3-03c D1: each update is made in the image's own texture, so the image keeps
+    /// it and its key throughout, nothing is swapped (swaps and handleSwaps unchanged), and syncTexName(0) counts one
+    /// deferred swap and one in-place update. render-4 (P3-03b S3; fixed by P3-01i S1b): each update leaves the
+    /// accounting's total as it was; after the updates freeing the texture's key takes exactly its bytes. The dirty rect
+    /// reads GL's zeros around it (alpha 1 for GL_RGB), not update (1)'s colour: the in-place update marks the level
+    /// unwritten first (the challenge's M1), as GL's new name per update has zeros there (P3-01g, R7 against R6). The
+    /// encoder's waitForFence for a null fence and for the upload context's fence writes no WARN line (P2-98's review,
+    /// TM-4). After the image goes, its texture is not left in the residency set.
+    API_AVAILABLE(macos(26.0)) void mediaDeferTest()
+    {
+        MetalViewerRun run;
+        MetalDevice& device = *run.device;
+        CaptureLog log(LLError::LEVEL_WARN);
+        @autoreleasepool
+        {
+            const S32 width = 64, height = 32;
+            // A whole frame as getBitsData gives it, in the plugin's BGRA order, of one colour
+            auto frame = [&](const std::array<U8, 4>& bgra)
+            {
+                LLPointer<LLImageRaw> raw = new LLImageRaw(width, height, 4);
+                U8* data = raw->getData();
+                for (S32 i = 0; i < width * height; ++i)
+                {
+                    std::memcpy(data + i * 4, bgra.data(), 4);
+                }
+                return raw;
+            };
+            // The device's texel for a BGRA pixel: RGBA8Unorm, and alpha 1 for GL_RGB, which keeps no alpha
+            auto texel = [](const std::array<U8, 4>& bgra) { return std::array<U8, 4>{ bgra[2], bgra[1], bgra[0], 255 }; };
+
+            LLPointer<LLImageGL> image = new LLImageGL(width, height, 4, false);
+            image->setExplicitFormat(GL_RGB, GL_BGRA, GL_UNSIGNED_BYTE, false);
+            // updateMediaImage: the placeholder in the background colour, without defer_copy
+            tut::ensure("updateMediaImage's createGLTexture", image->createGLTexture(0, frame({ 255, 255, 255, 255 }).get()));
+            LLPointer<Texture> current = image->getRHITexture();
+            tut::ensure("the placeholder has its texture of the device", current.notNull());
+            ensureEqual("RGBA8Unorm", U32(current->desc().format), U32(Format::RGBA8Unorm));
+            std::vector<id<MTLTexture>> made{ metalTexture(current.get()) };
+            device.residency().commitIfChanged();
+            const U64 resident = device.residency().count();
+
+            struct Update
+            {
+                const char* what;
+                std::array<U8, 4> bgra;
+                S32 x, y, w, h;
+            };
+            const Update updates[2] = { { "(1) the whole frame", { 30, 60, 90, 255 }, 0, 0, width, height },
+                                        { "(2) a dirty rect", { 200, 150, 100, 255 }, 8, 4, 16, 8 } };
+            for (const Update& update : updates)
+            {
+                const std::string what = update.what;
+                const LLImageGL::SyncCounts before = LLImageGL::syncCounts();
+                const U64 total = LLImageGL::getTextureBytesAllocated(); // render-4 (P3-03b S3)
+                LLPointer<LLImageRaw> raw = frame(update.bgra);
+                // doMediaTexUpdate: allocate without copying, the region with the name it gave, then the swap
+                LLImageGLHandle name; // the new texture's opaque handle, as doMediaTexUpdate holds it (P2-98's review, F1)
+                tut::ensure(what + ": createGLTexture with defer_copy",
+                            image->createGLTexture(0, raw.get(), 0, true, LLGLTexture::OTHER, true, &name));
+                const bool keptAfterCreate = image->getRHITexture() == current.get();
+                const U64 keyAfterCreate = image->getTextureKey();
+                const bool uploaded =
+                    image->setSubImage(raw->getData(), width, height, update.x, update.y, update.w, update.h, false, name);
+                const bool keptAfterUpload = image->getRHITexture() == current.get();
+                image->syncTexName(name);
+                const LLImageGL::SyncCounts after = LLImageGL::syncCounts();
+                Texture* swapped = image->getRHITexture();
+
+                tut::ensure(what + ": the name 0 on Metal, the default handle", name == LLImageGLHandle());
+                tut::ensure(what + ": a texture of the device after syncTexName (else the default grey image is drawn)",
+                            swapped != nullptr);
+                tut::ensure(what + ": the same texture, updated in place (P3-03c D1)", swapped == current.get());
+                ensureEqual(what + ": its id as the key", image->getTextureKey(), current->id());
+                tut::ensure(what + ": the image keeps its texture through the update", keptAfterCreate && keptAfterUpload);
+                ensureEqual(what + ": and its key", keyAfterCreate, current->id());
+                tut::ensure(what + ": setSubImage with the name 0 uploads", uploaded);
+                ensureEqual(what + ": one deferred swap (a media update landed)", after.deferredSwaps - before.deferredSwaps,
+                            U64(1));
+                ensureEqual(what + ": one in-place update", after.inPlaceUpdates - before.inPlaceUpdates, U64(1));
+                ensureEqual(what + ": no swap", after.swaps - before.swaps, U64(0));
+                ensureEqual(what + ": no handle swap", after.handleSwaps - before.handleSwaps, U64(0));
+                ensureEqual(what + ": the accounting's total unchanged by the update (render-4)",
+                            LLImageGL::getTextureBytesAllocated(), total);
+
+                // The texture reads back the upload: the whole frame for (1); for (2) the rect, and around it GL's
+                // zeros of a texture made without data (alpha 1 for GL_RGB), which the linear filter at the media's
+                // edges reads (P3-01g, R7 against R6; metalZeroAroundFirstWrite after the challenge's M1)
+                device.submitAndWait();
+                const std::vector<U8> read = levelBytes(device, swapped, 4);
+                ensureEqual(what + ": the whole level", read.size(), size_t(width * height * 4));
+                const std::array<U8, 4> expected = texel(update.bgra);
+                const std::array<U8, 4> zero = { 0, 0, 0, 255 };
+                for (S32 y = 0; y < height; ++y)
+                {
+                    for (S32 x = 0; x < width; ++x)
+                    {
+                        const bool inside =
+                            x >= update.x && x < update.x + update.w && y >= update.y && y < update.y + update.h;
+                        const size_t at = size_t((y * width + x) * 4);
+                        tut::ensure(what + ": texel (" + std::to_string(x) + ", " + std::to_string(y) + ") is "
+                                        + (inside ? "the upload" : "0, as GL's"),
+                                    std::memcmp(read.data() + at, inside ? expected.data() : zero.data(), 4) == 0);
+                    }
+                }
+            }
+
+            // render-4 (P3-03b S3): the texture's key has its entry, of the texture's bytes
+            {
+                const U64 bytes = LLImageGL::getTextureBytesAllocated();
+                gGL.getTexUnit(0)->bindTexture(LLTexUnit::TT_TEXTURE, current.get());
+                LLImageGLMemory::free_cur_tex_image();
+                gGL.getTexUnit(0)->unbind(LLTexUnit::TT_TEXTURE);
+                ensureEqual("render-4: the new key's entry holds the texture's bytes",
+                            bytes - LLImageGL::getTextureBytesAllocated(),
+                            U64(LLImageGL::dataFormatBytes(GL_RGB, width, height)));
+            }
+
+            // The encoder's GPU-side wait, as GL's swap item makes it for the upload context's fence that syncToMainThread
+            // submits, and for a null fence: on the recording thread the upload context's work is on the main encoder, so
+            // its fence has value 0 and is signalled at once (P3-03a), and neither waits on the queue nor makes a WARN line
+            // (P2-98's S8; the review's TM-4)
+            const MetalUploadCounts before = metalUploadCounts(device);
+            device.encoder().waitForFence(nullptr);
+            Ref<Fence> uploads = device.uploadContext().submit();
+            tut::ensure("the upload context's fence is signalled", uploads.notNull() && uploads->signaled());
+            device.encoder().waitForFence(uploads.get());
+            ensureEqual("waitForFence: no queue wait", metalUploadCounts(device).queueWaits - before.queueWaits, U64(0));
+            uploads = nullptr;
+
+            // The image goes: its one texture leaves the residency set after its frame, and no parked one stays
+            current = nullptr;
+            image = nullptr;
+            finishFrame(device);
+            device.residency().commitIfChanged();
+            for (size_t i = 0; i < made.size(); ++i)
+            {
+                tut::ensure("texture " + std::to_string(i) + " left the residency set", !device.residency().contains(made[i]));
+            }
+            ensureEqual("the residency set without the image's texture it had before the updates", device.residency().count(),
+                        resident - 1);
+            made.clear();
+            finishFrame(device);
+        }
+        std::ostringstream warnings;
+        log.streamto(warnings);
+        tut::ensure("t143: no WARN: " + warnings.str(), occurrences(log, "WARNING") == 0);
+    }
+
+    /// t147 (P3-01g, R7 against R6's media edges): GL's storage for a texture made without data reads 0 where nothing
+    /// has written it, and Metal's new texture has no defined contents, so the first upload or copy into part of a level
+    /// and slice nothing has written zeroes the rest in the write's own encoder (metalZeroAroundFirstWrite). A fresh
+    /// texture with a region in its middle reads the region and 0 around it; a second region keeps the first (no second
+    /// zeroing); a level of a mipmapped texture is zeroed at its own size; a copy into part of a fresh texture reads 0
+    /// around it; a texture whose GL format has no alpha gets alpha 1 there (seen through a copy into one with alpha).
+    /// Each write begins one encoder of copies, and no WARN line.
+    API_AVAILABLE(macos(26.0)) void zeroAroundTest(MetalDevice& device)
+    {
+        CaptureLog log(LLError::LEVEL_WARN);
+        Encoder& encoder = device.encoder();
+        const U8 usage = TEXTURE_SAMPLED | TEXTURE_READBACK;
+        // An RGBA8 level of w x h texels: around, then data's region pasted in
+        auto level = [](U32 w, U32 h, const std::array<U8, 4>& around)
+        {
+            std::vector<U8> bytes(size_t(w) * h * 4);
+            for (size_t i = 0; i < bytes.size(); i += 4)
+            {
+                std::copy(around.begin(), around.end(), bytes.begin() + i);
+            }
+            return bytes;
+        };
+        auto paste = [](std::vector<U8>& bytes, U32 w, const Region& r, const std::vector<U8>& data)
+        {
+            for (U32 y = 0; y < r.height; ++y)
+            {
+                std::copy(data.begin() + size_t(y) * r.width * 4, data.begin() + size_t(y + 1) * r.width * 4,
+                          bytes.begin() + (size_t(r.y + y) * w + r.x) * 4);
+            }
+        };
+        const std::array<U8, 4> zero = { 0, 0, 0, 0 };
+        // A new texture made after one of the same description held 0xA5 in every texel and was freed, so that its memory
+        // more likely holds old texels than the system's zeroed pages (t143's parked texture read old ones without the
+        // zeroing; a fresh small texture read 0)
+        auto fresh = [&](const TextureDesc& desc, const char* name)
+        {
+            {
+                Ref<Texture> old = device.createTexture(desc, "zero around: old texels");
+                for (U32 m = 0; m < desc.mipLevels; ++m)
+                {
+                    const U32 w = std::max(1u, desc.width >> m);
+                    const U32 h = std::max(1u, desc.height >> m);
+                    encoder.uploadTexture(old.get(), m, 0, { 0, 0, w, h }, PixelLayout(),
+                                          asBytes(std::vector<U8>(size_t(w) * h * 4, 0xA5)));
+                }
+            }
+            finishFrame(device);
+            finishFrame(device);
+            Ref<Texture> texture = device.createTexture(desc, name);
+            tut::ensure(std::string(name) + ": made", texture.notNull());
+            return texture;
+        };
+
+        // A fresh 64x64 texture, a 10x6 region in its middle: every part of the rest (rows before and after, left, right)
+        const U32 side = 64;
+        Ref<Texture> middleTexture = fresh(sizedDesc(Format::RGBA8Unorm, usage, side, side), "zero around");
+        const Region middle{ 20, 30, 10, 6 };
+        const std::vector<U8> first = numbered(10 * 6 * 4, 10);
+        U64 begun = device.copyEncodersBegun();
+        encoder.uploadTexture(middleTexture.get(), 0, 0, middle, PixelLayout(), asBytes(first));
+        ensureEqual("the first upload began one encoder of copies", device.copyEncodersBegun(), begun + 1);
+        std::vector<U8> expected = level(side, side, zero);
+        paste(expected, side, middle, first);
+        ensureRead("a region in a fresh texture, 0 around it",
+                   encoder.readback(middleTexture.get(), 0, 0, { 0, 0, side, side }, PixelLayout()), expected);
+
+        // A second region in the written level: the first stays (no second zeroing)
+        const Region corner{ 0, 0, 4, 4 };
+        const std::vector<U8> second = numbered(4 * 4 * 4, 120);
+        begun = device.copyEncodersBegun();
+        encoder.uploadTexture(middleTexture.get(), 0, 0, corner, PixelLayout(), asBytes(second));
+        ensureEqual("the second upload began one encoder of copies", device.copyEncodersBegun(), begun + 1);
+        paste(expected, side, corner, second);
+        ensureRead("a second region keeps the first",
+                   encoder.readback(middleTexture.get(), 0, 0, { 0, 0, side, side }, PixelLayout()), expected);
+
+        // Level 1 (32x32) of a mipmapped 64x64 texture
+        TextureDesc mippedDesc = sizedDesc(Format::RGBA8Unorm, usage, side, side);
+        mippedDesc.mipLevels = 2;
+        Ref<Texture> mipped = fresh(mippedDesc, "zero around a level");
+        const Region inLevel{ 5, 7, 4, 3 };
+        const std::vector<U8> third = numbered(4 * 3 * 4, 200);
+        encoder.uploadTexture(mipped.get(), 1, 0, inLevel, PixelLayout(), asBytes(third));
+        std::vector<U8> level1 = level(side / 2, side / 2, zero);
+        paste(level1, side / 2, inLevel, third);
+        ensureRead("level 1 of a fresh texture, 0 around its region",
+                   encoder.readback(mipped.get(), 1, 0, { 0, 0, side / 2, side / 2 }, PixelLayout()), level1);
+
+        // A copy into part of a fresh texture
+        Ref<Texture> src = device.createTexture(sizedDesc(Format::RGBA8Unorm, usage, 2, 2), "zero around src");
+        const std::vector<U8> copied = numbered(16, 40);
+        encoder.uploadTexture(src.get(), 0, 0, { 0, 0, 2, 2 }, PixelLayout(), asBytes(copied));
+        Ref<Texture> dst = fresh(sizedDesc(Format::RGBA8Unorm, usage, side, side), "zero around dst");
+        begun = device.copyEncodersBegun();
+        encoder.copyTexture(src.get(), 0, 0, { 0, 0, 2, 2 }, dst.get(), 0, 0, 33, 17);
+        ensureEqual("the copy began one encoder of copies", device.copyEncodersBegun(), begun + 1);
+        std::vector<U8> copyLevel = level(side, side, zero);
+        paste(copyLevel, side, { 33, 17, 2, 2 }, copied);
+        ensureRead("a copy into a fresh texture, 0 around it",
+                   encoder.readback(dst.get(), 0, 0, { 0, 0, side, side }, PixelLayout()), copyLevel);
+
+        // A texture GL keeps without alpha: alpha 1 around the region, read through a whole copy into one with alpha
+        TextureDesc rgbDesc = sizedDesc(Format::RGBA8Unorm, usage, side, side);
+        rgbDesc.glFormat = GL_RGB8;
+        Ref<Texture> rgb = fresh(rgbDesc, "zero around rgb");
+        Ref<Texture> withAlpha = device.createTexture(sizedDesc(Format::RGBA8Unorm, usage, side, side), "zero around rgba");
+        const std::vector<U8> pixel = { 50, 60, 70, 80 };
+        encoder.uploadTexture(rgb.get(), 0, 0, { side - 1, side - 1, 1, 1 }, PixelLayout(), asBytes(pixel));
+        encoder.copyTexture(rgb.get(), 0, 0, { 0, 0, side, side }, withAlpha.get(), 0, 0, 0, 0);
+        std::vector<U8> rgbLevel = level(side, side, { 0, 0, 0, 255 });
+        paste(rgbLevel, side, { side - 1, side - 1, 1, 1 }, { 50, 60, 70, 255 });
+        ensureRead("without alpha in GL: (0, 0, 0, 255) around the region",
+                   encoder.readback(withAlpha.get(), 0, 0, { 0, 0, side, side }, PixelLayout()), rgbLevel);
+
+        std::ostringstream warnings;
+        log.streamto(warnings);
+        tut::ensure("t147: no WARN: " + warnings.str(), occurrences(log, "WARNING") == 0);
+        device.endFrame();
+    }
+
+    /// t139 (P3-01f M26, M18; review delta-2, delta-3): the CGL store's key differs when the store's format, the viewer
+    /// build (a new build can derive a value differently with the same layout), the macOS version, the macOS build
+    /// (kern.osversion: a beta or security build can bring a new GL driver), the Mac's memory (hw.memsize, which the
+    /// query's mVRAM follows; 48 and 64 GB have the same low 32 bits) or the Metal device's name differs, and only then.
+    /// This Mac's key has kGLStoreFormat, the caller's viewer build, LLOSInfo's version and sysctl's build and memory, and
+    /// the startup check's device name is the device's (BackendChoice::gpuName).
+    API_AVAILABLE(macos(26.0)) void storeKeyTest(MetalDevice& device)
+    {
+        const S32 format = LLGLManager::kGLStoreFormat;
+        const std::string viewer = "Viewer Lab Test 7.2.3.1 2B5E7C1A-0000-4000-8000-000000000139";
+        const U64 gb48 = 48ULL << 30;
+        const LLSD key = LLGLManager::storeKey(format, viewer, "26.6.2", "25G83", gb48, "Apple M4 Max");
+        tut::ensure("the same facts: the same key",
+                    llsd_equals(key, LLGLManager::storeKey(format, viewer, "26.6.2", "25G83", gb48, "Apple M4 Max")));
+        const std::pair<const char*, LLSD> others[] = {
+            { "another format", LLGLManager::storeKey(format + 1, viewer, "26.6.2", "25G83", gb48, "Apple M4 Max") },
+            { "another viewer build",
+              LLGLManager::storeKey(format, "Viewer Lab Test 7.2.3.1 2B5E7C1A-0000-4000-8000-000000000140", "26.6.2", "25G83",
+                                    gb48, "Apple M4 Max") },
+            { "another viewer version",
+              LLGLManager::storeKey(format, "Viewer Lab Test 7.2.4.1 2B5E7C1A-0000-4000-8000-000000000139", "26.6.2", "25G83",
+                                    gb48, "Apple M4 Max") },
+            { "another macOS version", LLGLManager::storeKey(format, viewer, "26.6.3", "25G83", gb48, "Apple M4 Max") },
+            { "another macOS build", LLGLManager::storeKey(format, viewer, "26.6.2", "25G84", gb48, "Apple M4 Max") },
+            { "another memory size", LLGLManager::storeKey(format, viewer, "26.6.2", "25G83", 64ULL << 30, "Apple M4 Max") },
+            { "another device", LLGLManager::storeKey(format, viewer, "26.6.2", "25G83", gb48, "Apple M4 Pro") },
+        };
+        for (const auto& [name, other] : others)
+        {
+            tut::ensure(std::string(name) + ": another key", !llsd_equals(key, other));
+        }
+        const LLSD through = throughXML(key);
+        tut::ensure("the key through LLSD XML, as the store holds it: the same key", llsd_equals(key, through));
+
+        char   text[256] = {};
+        size_t size = sizeof(text) - 1;
+        tut::ensure("kern.osversion", sysctlbyname("kern.osversion", text, &size, nullptr, 0) == 0);
+        const std::string build = text;
+        tut::ensure("this Mac has a build string", !build.empty());
+        U64 memory = 0;
+        size = sizeof(memory);
+        tut::ensure("hw.memsize", sysctlbyname("hw.memsize", &memory, &size, nullptr, 0) == 0);
+        tut::ensure("this Mac has a memory size", memory > 0);
+        const BackendChoice choice = chooseBackend(BackendType::Metal);
+        ensureEqual("the startup check's device name", choice.gpuName, device.capabilities().renderer);
+        tut::ensure("a device name", !choice.gpuName.empty());
+        const LLSD mine = LLGLManager::storeKey(viewer, choice.gpuName);
+        tut::ensure("this Mac's key",
+                    llsd_equals(mine, LLGLManager::storeKey(format, viewer, LLOSInfo::instance().getOSVersionString(), build,
+                                                              memory, choice.gpuName)));
+        LL_INFOS("RHI") << "t139: this Mac's CGL store key " << mine << LL_ENDL;
+    }
+
+    /// t138 (P3-01f M21 a): LLTexUnit::bind(target, true) on a Metal target with a depth, whose GL name is 0, gives true and
+    /// binds the depth texture of the device without the Metal-only check's LL_ERRS under the debug setting; a target that
+    /// only shares another's depth has none, so there the check stops in LL_ERRS (caught by the test's error hook), and
+    /// without the setting it writes one WARN line, once. P3-05b S3 (K136, the shared depth of pipeline.cpp's
+    /// shareDepthBuffer): without the setting the sharer's bind leaves the unit and the encoder's tracker holding no
+    /// texture on its channel, not the colour bound before; and LLGLSLShader::bindTexture(.., &sharer, true) (t136's
+    /// copy program, its diffuseMap) gives the program's channel, whose unit then holds no texture either, through the
+    /// same check: its WARN line (a new CaptureLog logs the once again) and no other.
+    API_AVAILABLE(macos(26.0)) void bindDepthTest()
+    {
+        MetalViewerRun run;
+        MetalDevice& device = *run.device;
+        @autoreleasepool
+        {
+            LLRenderTarget target;
+            allocateFacadeTarget(target);
+            LLRenderTarget sharer;
+            tut::ensure("the sharer", sharer.allocate(FACADE_WIDTH, FACADE_HEIGHT, GL_RGBA));
+            target.shareDepthBuffer(sharer);
+            Texture* depth = target.getRHIDepth();
+            ensureEqual("the depth has no GL name", target.getDepth(), U32(0));
+            tut::ensure("the sharer has no depth texture of its own", sharer.getRHIDepth() == nullptr);
+            tut::ensure("the tests run with the Metal debug setting", metalDebug());
+            LLTexUnit* unit = gGL.getTexUnit(0);
+            {
+                CaptureLog log(LLError::LEVEL_WARN);
+                tut::ensure("bind(target, true)", unit->bind(&target, true));
+                tut::ensure("the unit has the depth texture of the device", unit->getCurrRHITexture() == depth);
+                ensureEqual("the unit records its id", unit->getCurrTextureId(), depth->id());
+                tut::ensure("bind(target) binds the colour", unit->bind(&target));
+                tut::ensure("the unit has the colour texture", unit->getCurrRHITexture() == target.getRHITexture(0));
+                ensureEqual("no WARN line", occurrences(log, "WARNING"), size_t(0));
+            }
+            {
+                WrapLLErrs errors;
+                const std::string error = errors.catch_llerrs([unit, &sharer]() { unit->bind(&sharer, true); });
+                tut::ensure("the sharer: LL_ERRS under the debug setting: '" + error + "'",
+                            error.find("the target has no depth texture of the device") != std::string::npos);
+            }
+            // The texture the encoder's tracker holds on a channel, or null
+            const auto heldBy = [&device](U32 channel) -> Texture*
+            {
+                const auto& textures = device.encoder().state().textures();
+                const auto bound = textures.find(channel);
+                return bound != textures.end() ? bound->second.get() : nullptr;
+            };
+            {
+                MetalDebugOff off;
+                CaptureLog log(LLError::LEVEL_WARN);
+                tut::ensure("before the sharer: the unit has the colour texture",
+                            unit->getCurrRHITexture() == target.getRHITexture(0));
+                unit->bind(&sharer, true);
+                tut::ensure("the sharer without the setting: the unit holds no texture",
+                            unit->getCurrRHITexture() == nullptr && heldBy(0) == nullptr);
+                unit->bind(&sharer, true);
+                ensureEqual("the sharer without the setting: one WARN line, once",
+                            occurrences(log, "the target has no depth texture of the device"), size_t(1));
+            }
+            unit->unbind(LLTexUnit::TT_TEXTURE);
+            {
+                MetalTestShaderMgr mgr;
+                MetalTestShaderMgr::write("test/copyV.glsl", COPY_VERTEX_GLSL);
+                MetalTestShaderMgr::write("test/copyF.glsl", COPY_FRAGMENT_GLSL);
+                UnloadingShader copy;
+                copy.mName = "t138 copy";
+                copy.mShaderLevel = 1;
+                copy.mShaderFiles = { { "test/copyV.glsl", GL_VERTEX_SHADER },
+                                      { "test/copyF.glsl", GL_FRAGMENT_SHADER } };
+                copy.mFeatures.attachNothing = true;
+                copy.mShaderGroup = LLGLSLShader::SG_DEFAULT;
+                tut::ensure("createShader of the copy program on Metal", copy.createShader());
+                copy.bind(); // publishes the pending program first
+                const S32 channel = copy.getTextureChannel(LLShaderMgr::DIFFUSE_MAP);
+                tut::ensure("the copy program's diffuseMap has a channel", channel >= 0);
+                LLTexUnit* sampled = gGL.getTexUnit(channel);
+                tut::ensure("the channel holds the colour first",
+                            sampled->bind(&target) && sampled->getCurrRHITexture() == target.getRHITexture(0));
+                MetalDebugOff off;
+                CaptureLog log(LLError::LEVEL_WARN);
+                ensureEqual("bindTexture(diffuseMap, &sharer, true) gives the channel",
+                            copy.bindTexture(LLShaderMgr::DIFFUSE_MAP, &sharer, true), channel);
+                tut::ensure("the channel's unit holds no texture",
+                            sampled->getCurrRHITexture() == nullptr && heldBy(U32(channel)) == nullptr);
+                std::ostringstream caught;
+                log.streamto(caught);
+                tut::ensure("bindTexture of the sharer: the check's WARN line and no other, not '" + caught.str() + "'",
+                            occurrences(log, "WARNING") == 1 &&
+                                occurrences(log, "the target has no depth texture of the device") == 1);
+                sampled->unbind(LLTexUnit::TT_TEXTURE);
+                LLGLSLShader::unbind();
+            }
+            sharer.release();
+            target.release();
+            finishFrame(device);
+        }
+    }
+
+    /// t116 (F8): Encoder::endRenderPass on a stack pass, outside LLRenderTarget's OwnGL, writes one WARN line and
+    /// still ends the pass; LLRenderTarget::endStackPass writes none.
+    API_AVAILABLE(macos(26.0)) void foreignStackPassEndTest()
+    {
+        MetalViewerRun run;
+        MetalDevice& device = *run.device;
+        CaptureLog log(LLError::LEVEL_WARN);
+        const std::string warning = "ended with endRenderPass; LLRenderTarget::endStackPass ends it";
+        @autoreleasepool
+        {
+            LLRenderTarget target;
+            allocateFacadeTarget(target);
+            target.bindTarget();
+            tut::ensure("a stack pass is open", device.encoder().state().inPass() && device.encoder().state().pass().stack);
+            device.encoder().endRenderPass();
+            ensureEqual("one WARN line", occurrences(log, warning), size_t(1));
+            tut::ensure("the pass ended", !device.encoder().state().inPass());
+            finishFrame(device); // the stack's record of the pass ends with the frame
+            target.flush();
+            target.bindTarget();
+            tut::ensure("the stack pass again", device.encoder().state().inPass());
+            LLRenderTarget::endStackPass();
+            tut::ensure("endStackPass ended it", !device.encoder().state().inPass());
+            ensureEqual("no WARN line from endStackPass", occurrences(log, warning), size_t(1));
+            target.flush();
+            target.release();
+            finishFrame(device);
+        }
+        ensureOnlySurfaceWarnings("t116", log, 1);
+    }
+
+    // P3-01e S8 ----------------------------------------------------------------------------------------
+
+    /// GL's pixel p's centre in clip space on the 64-pixel target.
+    F32 centre(F32 p)
+    {
+        return (p + 0.5f) / 32.f - 1.f;
+    }
+
+    /// Yellow vertices at pixel centres, after `skip` vertices at (0, 0) that a draw from 0 would read.
+    DrawVertices yellowAt(const std::vector<std::array<F32, 2>>& pixels, size_t skip = 0)
+    {
+        DrawVertices vertices;
+        for (size_t i = 0; i < skip; ++i)
+        {
+            vertices.positions.push_back({ centre(0), centre(0), 0, 1 });
+            vertices.colors.push_back(YELLOW);
+        }
+        for (const std::array<F32, 2>& pixel : pixels)
+        {
+            vertices.positions.push_back({ centre(pixel[0]), centre(pixel[1]), 0, 1 });
+            vertices.colors.push_back(YELLOW);
+        }
+        return vertices;
+    }
+
+    /// t117 (F9): a fan of 6, a strip of 6 and a loop of 4 give the pixels of the same shapes drawn as
+    /// GL's triangles and lines: not indexed from firstVertex 2 (baseVertex), indexed from first index
+    /// 2 with U16 and U32 indices, static and dynamic, and on a device without the Metal debug setting
+    /// (the CPU copy is kept, S8). Two draws of one (type, count) make one cached list.
+    API_AVAILABLE(macos(26.0)) void listDrawsTest(MetalDevice& device)
+    {
+        struct Shape
+        {
+            const char* name;
+            PrimitiveType type;
+            PrimitiveType as; ///< GL's own pieces
+            std::vector<std::array<F32, 2>> pixels;
+            std::vector<U32> pieces; ///< GL's triangles or lines, by vertex
+        };
+        const Shape shapes[] = {
+            { "fan", PrimitiveType::TriangleFan, PrimitiveType::Triangles,
+              { { 32, 32 }, { 56, 30 }, { 44, 56 }, { 20, 54 }, { 6, 34 }, { 18, 6 } },
+              { 0, 1, 2, 0, 2, 3, 0, 3, 4, 0, 4, 5 } },
+            { "strip", PrimitiveType::TriangleStrip, PrimitiveType::Triangles,
+              { { 6, 8 }, { 6, 40 }, { 20, 10 }, { 24, 44 }, { 40, 6 }, { 44, 40 } },
+              { 0, 1, 2, 1, 2, 3, 2, 3, 4, 3, 4, 5 } },
+            { "loop", PrimitiveType::LineLoop, PrimitiveType::Lines,
+              { { 8, 8 }, { 54, 10 }, { 50, 52 }, { 10, 50 } },
+              { 0, 1, 1, 2, 2, 3, 3, 0 } },
+        };
+        const auto run = [](MetalDevice& on, const Shape& shape, bool all)
+        {
+            CaptureLog log(LLError::LEVEL_WARN);
+            DrawTarget target = drawTarget(on);
+            PipelineDesc lineDesc = uiPipelineDesc();
+            lineDesc.primitiveClass = PrimitiveClass::Line;
+            Ref<Pipeline> lines = on.getPipeline(*target.program, lineDesc);
+            tut::ensure("the line pipeline", lines.notNull());
+            if (shape.as == PrimitiveType::Lines)
+            {
+                target.pipeline = lines;
+            }
+            // GL's pieces as a list: the reference.
+            std::vector<std::array<F32, 2>> piecePixels;
+            for (U32 vertex : shape.pieces)
+            {
+                piecePixels.push_back(shape.pixels[vertex]);
+            }
+            VertexStreams pieceStreams;
+            Ref<Buffer> pieceBuffer = vertexBuffer(on, yellowAt(piecePixels), pieceStreams);
+            Ref<Readback> expected = drawnPass(on, target, pieceBuffer, pieceStreams, [&](Encoder& encoder)
+            {
+                encoder.draw(shape.as, 0, U32(piecePixels.size()));
+            });
+            U32 lit = 0;
+            for (U32 y = 0; y < DRAW_SIZE; ++y)
+            {
+                for (U32 x = 0; x < DRAW_SIZE; ++x)
+                {
+                    lit += pixelAt(expected, x, y) == YELLOW ? 1 : 0;
+                }
+            }
+            tut::ensure(std::string(shape.name) + ": GL's pieces draw " + std::to_string(lit) + " pixels", lit > 40);
+            const auto same = [&](const std::string& what, const Ref<Readback>& image)
+            {
+                const std::span<const std::byte> a = image->data();
+                const std::span<const std::byte> b = expected->data();
+                size_t differ = 0;
+                for (size_t i = 0; i < std::min(a.size(), b.size()); ++i)
+                {
+                    differ += a[i] != b[i] ? 1 : 0;
+                }
+                ensureEqual(std::string(shape.name) + " " + what + ": the bytes that differ from GL's pieces", differ,
+                            size_t(0));
+                ensureEqual(std::string(shape.name) + " " + what + ": the size", a.size(), b.size());
+            };
+            const U32 count = U32(shape.pixels.size());
+            VertexStreams streams;
+            Ref<Buffer> buffer = vertexBuffer(on, yellowAt(shape.pixels, 2), streams);
+            std::vector<U16> shorts = { 0, 0 };
+            std::vector<U32> longs = { 0, 0 };
+            for (U32 i = 0; i < count; ++i)
+            {
+                shorts.push_back(U16(i + 2));
+                longs.push_back(i + 2);
+            }
+            Ref<Buffer> indices16 = indexBufferOf(on, shorts, std::string(shape.name) + " 16-bit indices");
+            same("indexed U16", drawnPass(on, target, buffer, streams, [&](Encoder& encoder)
+            {
+                encoder.setIndexBuffer(indices16.get(), IndexType::U16);
+                encoder.drawIndexed(shape.type, 2, count);
+            }));
+            if (all)
+            {
+                const size_t lists = on.indexLists();
+                same("from vertex 2", drawnPass(on, target, buffer, streams, [&](Encoder& encoder)
+                {
+                    encoder.draw(shape.type, 2, count);
+                }));
+                ensureEqual(std::string(shape.name) + ": one list made", on.indexLists() - lists, size_t(1));
+                same("again", drawnPass(on, target, buffer, streams, [&](Encoder& encoder)
+                {
+                    encoder.draw(shape.type, 2, count);
+                }));
+                ensureEqual(std::string(shape.name) + ": the list is the cached one", on.indexLists() - lists,
+                            size_t(1));
+                Ref<Buffer> indices32 = indexBufferOf(on, longs, std::string(shape.name) + " 32-bit indices");
+                same("indexed U32", drawnPass(on, target, buffer, streams, [&](Encoder& encoder)
+                {
+                    encoder.setIndexBuffer(indices32.get(), IndexType::U32);
+                    encoder.drawIndexed(shape.type, 2, count);
+                }));
+                Ref<Buffer> dynamic32 = indexBufferOf(on, longs, std::string(shape.name) + " dynamic indices", true);
+                same("indexed U32, dynamic", drawnPass(on, target, buffer, streams, [&](Encoder& encoder)
+                {
+                    encoder.setIndexBuffer(dynamic32.get(), IndexType::U32);
+                    encoder.drawIndexed(shape.type, 2, count);
+                }));
+            }
+            endCleanly(on, log);
+        };
+        for (const Shape& shape : shapes)
+        {
+            run(device, shape, true);
+        }
+        Ref<Device> quietOwner = otherMetalDevice(false);
+        MetalDevice& quiet = *static_cast<MetalDevice*>(quietOwner.get());
+        tut::ensure("the quiet device has no debug checks", !quiet.debugChecks());
+        run(quiet, shapes[0], false);
+    }
+
+    /// t118 (F9, decision 7): metalListOrder and generatedIndices give the table's order: fan triangle
+    /// i (i + 2, 0, i + 1), strip triangle i (i + 2, i, i + 1) when even and (i + 2, i + 1, i) when odd, a
+    /// loop 0 to n - 1 and 0; nothing for too few vertices; U16 up to 65535 vertices, else U32; at most
+    /// 64 lists, the least recently used leaves.
+    API_AVAILABLE(macos(26.0)) void listOrderTest(MetalDevice& device)
+    {
+        const auto order = [](PrimitiveType type, U32 count)
+        {
+            std::string text;
+            for (U32 index : metalListOrder(type, count))
+            {
+                text += (text.empty() ? "" : " ") + std::to_string(index);
+            }
+            return text;
+        };
+        ensureEqual("the fan of 6", order(PrimitiveType::TriangleFan, 6), std::string("2 0 1 3 0 2 4 0 3 5 0 4"));
+        ensureEqual("the strip of 6, odd triangles swapped", order(PrimitiveType::TriangleStrip, 6),
+                    std::string("2 0 1 3 2 1 4 2 3 5 4 3"));
+        ensureEqual("the loop of 4, closed", order(PrimitiveType::LineLoop, 4), std::string("0 1 2 3 0"));
+        ensureEqual("a fan of 2", order(PrimitiveType::TriangleFan, 2), std::string());
+        ensureEqual("a strip of 2", order(PrimitiveType::TriangleStrip, 2), std::string());
+        ensureEqual("a loop of 1", order(PrimitiveType::LineLoop, 1), std::string());
+        ensureEqual("a list stays as it is", order(PrimitiveType::Triangles, 6), std::string());
+        ensureEqual("the loop's primitive", int(metalListPrimitive(PrimitiveType::LineLoop)),
+                    int(MTLPrimitiveTypeLineStrip));
+        ensureEqual("the fan's primitive", int(metalListPrimitive(PrimitiveType::TriangleFan)),
+                    int(MTLPrimitiveTypeTriangle));
+
+        CaptureLog log(LLError::LEVEL_WARN);
+        const MetalIndexList fan = device.generatedIndices(PrimitiveType::TriangleFan, 6);
+        tut::ensure("the fan's list", fan.buffer != nil);
+        ensureEqual("16-bit", int(fan.type), int(IndexType::U16));
+        ensureEqual("12 indices", fan.count, U32(12));
+        tut::ensure("resident", device.residency().contains(fan.buffer));
+        const U16* written = static_cast<const U16*>(fan.buffer.contents);
+        std::string text;
+        for (U32 i = 0; i < fan.count; ++i)
+        {
+            text += (i ? " " : "") + std::to_string(written[i]);
+        }
+        ensureEqual("the buffer's indices", text, std::string("2 0 1 3 0 2 4 0 3 5 0 4"));
+        tut::ensure("no list for a fan of 2", device.generatedIndices(PrimitiveType::TriangleFan, 2).buffer == nil);
+        ensureEqual("16-bit at 65535 vertices", int(device.generatedIndices(PrimitiveType::TriangleStrip, 65535).type),
+                    int(IndexType::U16));
+        const MetalIndexList big = device.generatedIndices(PrimitiveType::TriangleStrip, 65536);
+        ensureEqual("32-bit at 65536", int(big.type), int(IndexType::U32));
+        ensureEqual("the last of 65536", static_cast<const U32*>(big.buffer.contents)[big.count - 1], U32(65533));
+
+        // Fill the cache past its size, using the fan again before the last: the fan stays, and the
+        // least recently used goes once the GPU has finished the frame.
+        for (U32 count = 3; device.indexLists() < MetalDevice::MAX_INDEX_LISTS; ++count)
+        {
+            device.generatedIndices(PrimitiveType::LineLoop, count);
+        }
+        const MetalIndexList strip = device.generatedIndices(PrimitiveType::TriangleStrip, 65535);
+        tut::ensure("the fan is still cached",
+                    device.generatedIndices(PrimitiveType::TriangleFan, 6).buffer == fan.buffer);
+        device.generatedIndices(PrimitiveType::TriangleFan, 7);
+        ensureEqual("at most 64 lists", device.indexLists(), MetalDevice::MAX_INDEX_LISTS);
+        tut::ensure("the fan stays", device.generatedIndices(PrimitiveType::TriangleFan, 6).buffer == fan.buffer);
+        tut::ensure("the strip of 65535 stays", device.generatedIndices(PrimitiveType::TriangleStrip, 65535).buffer ==
+                                                    strip.buffer);
+        tut::ensure("the strip of 65536 left", device.generatedIndices(PrimitiveType::TriangleStrip, 65536).buffer !=
+                                                   big.buffer);
+        endCleanly(device, log);
+    }
+
+    /// t119 (F10, decision 8): points of setPointSize(1) and (4) are 1x1 and 4x4 at their vertices'
+    /// pixels; the point variant is translated once per program, and never for a program without
+    /// points; the UI program's vertex block takes the one-memcpy path, and the by-name path moves
+    /// each place (metalPointBlockOf, metalBuildPointBlock); a variant that fails refuses the pipeline.
+    API_AVAILABLE(macos(26.0)) void pointsTest(MetalDevice& device)
+    {
+        {
+            CaptureLog log(LLError::LEVEL_WARN);
+            std::string vertex;
+            Ref<Program> program = ready(device.createProgram(uniqueUiDesc("point test", vertex)));
+            DrawTarget target = drawTarget(device);
+            target.program = program;
+            target.pipeline = device.getPipeline(*program, uiPipelineDesc());
+            const U64 translations = device.pointTranslations();
+            DrawVertices square;
+            addRect(square, -1, -1, 0, 0, YELLOW);
+            VertexStreams squareStreams;
+            Ref<Buffer> squareBuffer = vertexBuffer(device, square, squareStreams);
+            drawnPass(device, target, squareBuffer, squareStreams,
+                      [](Encoder& encoder) { encoder.draw(PrimitiveType::Triangles, 0, 6); });
+            ensureEqual("no variant without points", device.pointTranslations(), translations);
+
+            PipelineDesc pointDesc = uiPipelineDesc();
+            pointDesc.primitiveClass = PrimitiveClass::Point;
+            Ref<Pipeline> points = device.getPipeline(*program, pointDesc);
+            tut::ensure("the point pipeline", points.notNull());
+            ensureEqual("the variant is translated", device.pointTranslations(), translations + 1);
+            PipelineDesc blended = pointDesc;
+            blended.blend.enabled = true;
+            tut::ensure("another point pipeline", device.getPipeline(*program, blended).notNull());
+            ensureEqual("once per program", device.pointTranslations(), translations + 1);
+            const MetalPointBlock* block = metalPipelinePointBlock(points.get());
+            tut::ensure("a point block", block != nullptr);
+            tut::ensure("no point block on a triangle pipeline",
+                        metalPipelinePointBlock(target.pipeline.get()) == nullptr);
+            tut::ensure("the UI program's places are the variant's (one memcpy); point_size at " +
+                            std::to_string(block->pointSize) + " of " + std::to_string(block->size),
+                        block->same && block->copies.empty());
+
+            DrawVertices dots = yellowAt({ { 10, 10 } });
+            dots.positions.push_back({ 40.f / 32.f - 1.f, 40.f / 32.f - 1.f, 0, 1 }); // a pixel corner
+            dots.colors.push_back(YELLOW);
+            VertexStreams streams;
+            Ref<Buffer> buffer = vertexBuffer(device, dots, streams);
+            target.pipeline = points;
+            ensureImage("1x1 and 4x4 points", drawnPass(device, target, buffer, streams, [](Encoder& encoder)
+            {
+                encoder.setPointSize(1.f);
+                encoder.draw(PrimitiveType::Points, 0, 1);
+                encoder.setPointSize(4.f);
+                ensureEqual("the tracker's point size", encoder.state().dynamicState().pointSize, 4.f);
+                encoder.draw(PrimitiveType::Points, 1, 1);
+            }), yellowIn({ { 10, 10, 11, 11 }, { 38, 38, 42, 42 } }));
+            endCleanly(device, log);
+        }
+
+        // The by-name path: a variant whose point_size comes first moves both of the program's places.
+        ProgramReflection program;
+        program.uniforms = { { "a", UniformType::Vec4, 1 }, { "b", UniformType::Float, 1 } };
+        MetalStageLayout programVertex;
+        programVertex.blockSize = 32;
+        programVertex.places = { { 0, 0, 0, 16 }, { 16, 0, 0, 4 } };
+        ProgramReflection variant;
+        variant.uniforms = { { "point_size", UniformType::Float, 1 }, { "a", UniformType::Vec4, 1 },
+                             { "b", UniformType::Float, 1 } };
+        MetalStageLayout variantVertex;
+        variantVertex.blockSize = 48;
+        variantVertex.places = { { 0, 0, 0, 4 }, { 16, 0, 0, 16 }, { 32, 0, 0, 4 } };
+        MetalPointBlock moved;
+        ensureEqual("the by-name block", metalPointBlockOf(program, programVertex, variant, variantVertex, moved),
+                    std::string());
+        tut::ensure("not the same places", !moved.same);
+        ensureEqual("two copies", moved.copies.size(), size_t(2));
+        std::vector<std::byte> from(32);
+        for (size_t i = 0; i < from.size(); ++i)
+        {
+            from[i] = std::byte(i + 1);
+        }
+        std::vector<std::byte> out;
+        metalBuildPointBlock(moved, from, 4.f, out);
+        ensureEqual("the variant's size", out.size(), size_t(48));
+        F32 size = 0.f;
+        std::memcpy(&size, out.data(), sizeof(size));
+        ensureEqual("point_size at 0", size, 4.f);
+        tut::ensure("a at 16", std::memcmp(out.data() + 16, from.data(), 16) == 0);
+        tut::ensure("b at 32", std::memcmp(out.data() + 32, from.data() + 16, 4) == 0);
+        tut::ensure("the padding is zeros", out[4] == std::byte(0) && out[36] == std::byte(0));
+        variant.uniforms[2].name = "c";
+        tut::ensure("a variant without b does not fit",
+                    metalPointBlockOf(program, programVertex, variant, variantVertex, moved).find("uniform b") !=
+                        std::string::npos);
+        variant.uniforms = { { "q", UniformType::Float, 1 }, { "a", UniformType::Vec4, 1 },
+                             { "b", UniformType::Float, 1 } };
+        tut::ensure("a variant without point_size does not fit",
+                    metalPointBlockOf(program, programVertex, variant, variantVertex, moved).find("point_size") !=
+                        std::string::npos);
+
+        // A variant that fails: its WARN line, and the point pipeline is refused.
+        CaptureLog log(LLError::LEVEL_WARN);
+        setMetalTranslator(+[](const MSL::Program& source, const MSL::Options& options)
+        {
+            MSL::Result result = MSL::translate(source, options);
+            if (options.pointSize)
+            {
+                result.ok = false;
+                result.error = "no points in this test";
+            }
+            return result;
+        });
+        std::string vertex;
+        Ref<Program> failing = ready(device.createProgram(uniqueUiDesc("failing point test", vertex)));
+        setMetalTranslator(&MSL::translate);
+        PipelineDesc pointDesc = uiPipelineDesc();
+        pointDesc.primitiveClass = PrimitiveClass::Point;
+        tut::ensure("the triangle pipeline", device.getPipeline(*failing, uiPipelineDesc()).notNull());
+        tut::ensure("no point pipeline", device.getPipeline(*failing, pointDesc).isNull());
+        ensureEqual("the variant's WARN",
+                    occurrences(log, "createProgram failing point test (points): no points in this test"), size_t(1));
+        ensureEqual("the refusal", occurrences(log, "its point variant failed: no points in this test"), size_t(1));
+
+        // A variant whose vertex outputs are not the program's fails too: its fragment function is the program's.
+        setMetalTranslator(+[](const MSL::Program& source, const MSL::Options& options)
+        {
+            MSL::Result result = MSL::translate(source, options);
+            if (options.pointSize && !result.stages.empty() && !result.stages[0].outputs.empty())
+            {
+                result.stages[0].outputs[0].location += 7;
+            }
+            return result;
+        });
+        Ref<Program> moving = ready(device.createProgram(uniqueUiDesc("moved varyings test", vertex)));
+        setMetalTranslator(&MSL::translate);
+        tut::ensure("no point pipeline with other outputs", device.getPipeline(*moving, pointDesc).isNull());
+        ensureEqual("the outputs' refusal",
+                    occurrences(log, "its point variant failed: the point variant's vertex outputs"), size_t(1));
+        device.endFrame();
+    }
+
+    /// t120 (decision 8): setLineWidth(3) records 1, lineWidthRange's, with no WARN line, and the line
+    /// stays one pixel wide.
+    API_AVAILABLE(macos(26.0)) void lineWidthTest(MetalDevice& device)
+    {
+        CaptureLog log(LLError::LEVEL_WARN);
+        DrawTarget target = drawTarget(device);
+        PipelineDesc lineDesc = uiPipelineDesc();
+        lineDesc.primitiveClass = PrimitiveClass::Line;
+        target.pipeline = device.getPipeline(*target.program, lineDesc);
+        DrawVertices line;
+        line.positions = { { -1, centre(16), 0, 1 }, { 1, centre(16), 0, 1 } };
+        line.colors = { YELLOW, YELLOW };
+        VertexStreams streams;
+        Ref<Buffer> buffer = vertexBuffer(device, line, streams);
+        Ref<Readback> image = drawnPass(device, target, buffer, streams, [](Encoder& encoder)
+        {
+            encoder.setLineWidth(3.f);
+            ensureEqual("the line width recorded", encoder.state().dynamicState().lineWidth, 1.f);
+            encoder.draw(PrimitiveType::Lines, 0, 2);
+        });
+        U32 lit = 0;
+        for (U32 x = 0; x < DRAW_SIZE; ++x)
+        {
+            lit += pixelAt(image, x, 16) == YELLOW ? 1 : 0;
+        }
+        tut::ensure("row 16 is drawn: " + std::to_string(lit) + " pixels", lit >= DRAW_SIZE - 2);
+        ensureImage("only row 16", image, [](U32, U32 y) -> std::optional<Rgba>
+        {
+            return y == 16 ? std::nullopt : std::optional<Rgba>(CLEAR_RGBA);
+        });
+        endCleanly(device, log);
+    }
+
+    // P3-01e S9 ----------------------------------------------------------------------------------------
+
+    /// S9's draws: a yellow rectangle over the whole target, with the UI program's uniforms set.
+    API_AVAILABLE(macos(26.0)) Ref<Buffer> wholeRect(MetalDevice& device, const DrawTarget& target,
+                                                     VertexStreams& streams)
+    {
+        DrawVertices vertices;
+        addRect(vertices, -1.f, -1.f, 1.f, 1.f, YELLOW);
+        setUiUniforms(device.encoder(), target.program.get(), translation(0, 0));
+        Ref<Buffer> buffer = vertexBuffer(device, vertices, streams);
+        tut::ensure("the vertices", buffer.notNull());
+        return buffer;
+    }
+
+    std::string labelOf(NSString* label)
+    {
+        return label ? std::string(label.UTF8String) : std::string();
+    }
+
+    /// t121, P3-01g: a device made while a frame capture is asked for makes every render pipeline state full, as Metal
+    /// refuses to capture a device that has specialized one: blending on, which the test's own device specializes
+    /// (t74), gives a full state and no unspecialized or specialized one, and draws the same square. The request is
+    /// taken back before the device's first frame, so no WARN line.
+    API_AVAILABLE(macos(26.0)) void captureStatesTest(MetalDevice& ordinary)
+    {
+        tut::ensure("the test's own device specializes", !ordinary.fullPipelineStates());
+        CaptureLog log(LLError::LEVEL_WARN);
+        setMetalFrameCapture("/nonexistent/t121-states.gputrace");
+        Ref<Device> other = anotherDevice();
+        setMetalFrameCapture(""); // the device keeps its full states
+        MetalDevice& device = *static_cast<MetalDevice*>(other.get());
+        tut::ensure("a device made while a capture is asked for has full states", device.fullPipelineStates());
+        DrawTarget target = drawTarget(device);
+        target.pipeline = device.getPipeline(*target.program, alphaPipelineDesc());
+        tut::ensure("blending on: a state", metalPipelineState(target.pipeline.get()) != nil);
+        tut::ensure("blending on: Ready", target.pipeline->status() == CompileStatus::Ready);
+        ensureEqual("unspecialized states", device.unspecializedPipelines(), size_t(0));
+        ensureEqual("specialized states", device.specializedPipelines(), size_t(0));
+        ensureEqual("full states: blending off and on", device.fullPipelines(), size_t(2));
+        ensureImage("blending on: the square", drawSquare(device, target), yellowIn({ { 40, 8, 56, 24 } }));
+        endCleanly(device, log);
+    }
+
+    /// t121 (F13, decision 11): the labels read back: the pipeline state's (its program's name), the last native
+    /// render encoder's (the pass's name, read from the encoder) and the command buffers' ("Frame n", then "Frame n
+    /// part 2" after a submit in the frame). Then a frame capture asked for in a process without
+    /// MTL_CAPTURE_ENABLED: none for a request taken back with an empty path; one WARN line at the next frame's first
+    /// command buffer, the frame as before, and the request taken, so the frame after writes none. A request for the
+    /// frame after the current one, made before the current frame's first command buffer as the viewer's is (P3-01g):
+    /// no WARN line in the current frame, one in the frame after it, then none. First captureStatesTest (P3-01g).
+    API_AVAILABLE(macos(26.0)) void labelsTest(MetalDevice& device)
+    {
+        captureStatesTest(device);
+        {
+            CaptureLog log(LLError::LEVEL_WARN);
+            DrawTarget target = drawTarget(device);
+            VertexStreams streams;
+            Ref<Buffer> buffer = wholeRect(device, target, streams);
+            tut::ensure("the pipeline state's label is its program's",
+                        labelOf(metalPipelineState(target.pipeline.get()).label) == "UI test");
+            finishFrame(device);
+            const std::string frame = "Frame " + std::to_string(device.frameNumber());
+            Encoder& encoder = device.encoder();
+            RenderPassDesc pass = drawPass(target);
+            pass.name = "labelled pass";
+            tut::ensure("the pass begins", encoder.beginRenderPass(pass));
+            bindDraw(encoder, target, buffer, streams);
+            encoder.draw(PrimitiveType::Triangles, 0, 6);
+            ensureEqual("the native encoder's label", device.metalEncoder().lastEncoderLabel(),
+                        std::string("labelled pass"));
+            ensureEqual("the frame's first command buffer", labelOf(device.commandBuffer().label), frame);
+            encoder.endRenderPass();
+            Ref<Readback> image = readTarget(device, target);
+            tut::ensure("the pass drew: " + describe(pixelAt(image, 1, 1)), pixelAt(image, 1, 1) == YELLOW);
+            ensureEqual("the command buffer after a submit in the frame", labelOf(device.commandBuffer().label),
+                        frame + " part 2");
+            endCleanly(device, log);
+        }
+        if ([[MTLCaptureManager sharedCaptureManager] supportsDestination:MTLCaptureDestinationGPUTraceDocument])
+        {
+            LL_INFOS("RHI") << "t121: this process can capture (MTL_CAPTURE_ENABLED), so the WARN line is not checked"
+                            << LL_ENDL;
+            return;
+        }
+        CaptureLog log(LLError::LEVEL_WARN);
+        const std::string warning = "this process cannot write a GPU trace document";
+        setMetalFrameCapture("/nonexistent/t121-taken-back.gputrace");
+        setMetalFrameCapture(""); // taken back before a frame began
+        finishFrame(device);
+        ensureEqual("no WARN line for a request taken back", occurrences(log, "WARNING #RHI#"), size_t(0));
+        setMetalFrameCapture("/nonexistent/t121.gputrace");
+        ensureEqual("no WARN line before a frame begins", occurrences(log, warning), size_t(0));
+        finishFrame(device);
+        ensureEqual("one WARN line at the next frame", occurrences(log, warning), size_t(1));
+        ensureEqual("only that WARN line", occurrences(log, "WARNING #RHI#"), size_t(1));
+        finishFrame(device);
+        ensureEqual("the request was taken", occurrences(log, warning), size_t(1));
+        // P3-01g: the current frame has no command buffer yet, as the viewer's first frame right after its device.
+        setMetalFrameCapture("/nonexistent/t121-after.gputrace", MetalFrameCaptureStart::AfterCurrentFrame);
+        device.endFrame();
+        ensureEqual("no WARN line in the frame being recorded at the request", occurrences(log, warning), size_t(1));
+        device.endFrame();
+        ensureEqual("one WARN line in the frame after it", occurrences(log, warning), size_t(2));
+        finishFrame(device);
+        ensureEqual("the request for after the current frame was taken", occurrences(log, warning), size_t(2));
+        ensureEqual("only those WARN lines", occurrences(log, "WARNING #RHI#"), size_t(2));
+        ensureEqual("no GPU errors", device.gpuErrors(), U64(0));
+    }
+
+    /// t122 (F12, decision 11): debug groups are the open native render encoder's while one is open, else the
+    /// command buffer's, so no native group crosses an encoder's begin or end: a GPU zone pushed before a stack pass
+    /// and popped in it (LLRenderTarget's binds), and one pushed in a pass and held across a pass break with a
+    /// submit (a readback waited for). No validation line (validated()), no WARN line, and the command buffer held
+    /// no group while an encoder was open.
+    API_AVAILABLE(macos(26.0)) void groupsTest(MetalDevice& device)
+    {
+        CaptureLog log(LLError::LEVEL_WARN);
+        DrawTarget target = drawTarget(device);
+        VertexStreams streams;
+        Ref<Buffer> buffer = wholeRect(device, target, streams);
+        Encoder& encoder = device.encoder();
+        MetalEncoder& metal = device.metalEncoder();
+        const U64 encoders = metal.renderEncoders();
+
+        encoder.pushDebugGroup("zone before the stack pass");
+        RenderPassDesc stack = drawPass(target);
+        stack.name = "stack pass";
+        stack.stack = true;
+        tut::ensure("the stack pass begins", encoder.beginRenderPass(stack));
+        bindDraw(encoder, target, buffer, streams);
+        encoder.draw(PrimitiveType::Triangles, 0, 6);
+        tut::ensure("the stack pass's encoder is open", metal.openEncoder() != nil);
+        encoder.popDebugGroup(); // a stack pass's groups may have begun before it (llrhi.h:863-870)
+        encoder.draw(PrimitiveType::Triangles, 0, 6);
+        finishFrame(device); // the stack pass ends with the frame, without a WARN line
+
+        encoder.pushDebugGroup("zone around the pass");
+        setUiUniforms(encoder, target.program.get(), translation(0, 0));
+        tut::ensure("the pass begins", encoder.beginRenderPass(drawPass(target)));
+        encoder.pushDebugGroup("zone in the pass");
+        bindDraw(encoder, target, buffer, streams);
+        encoder.draw(PrimitiveType::Triangles, 0, 6);
+        Ref<Readback> middle =
+            encoder.readback(target.color.get(), 0, 0, { 0, 0, DRAW_SIZE, DRAW_SIZE }, PixelLayout());
+        tut::ensure("the readback in the pass", middle.notNull());
+        middle->wait(); // the segment ends and the command buffer is sent; the pass goes on
+        tut::ensure("the segment before the break drew: " + describe(pixelAt(middle, 1, 1)),
+                    pixelAt(middle, 1, 1) == YELLOW);
+        encoder.draw(PrimitiveType::Triangles, 0, 6);
+        encoder.pushDebugGroup("zone in the open encoder"); // pushed on the native encoder
+        encoder.draw(PrimitiveType::Triangles, 0, 6);
+        encoder.popDebugGroup();
+        encoder.popDebugGroup();
+        encoder.endRenderPass();
+        encoder.popDebugGroup();
+        ensureEqual("three native encoders", metal.renderEncoders() - encoders, U64(3));
+        ensureEqual("no group on the command buffer while an encoder was open",
+                    device.groupsOnCommandBufferWhileEncoding(), U32(0));
+        endCleanly(device, log);
+    }
+
+    /// t123 (F19, P3-01b's handover): a device destroyed in a pass with its native encoder open, a debug group
+    /// pushed before the pass and one in it: ~MetalDevice's closeForTeardown ends the encoder with its groups back on
+    /// the command buffer, which ends unsent (without it, endCommandBuffer asserts). Then on another device the same
+    /// call made directly: every attachment's store action is DontCare (the debug layer does not check them on a
+    /// command buffer that is never committed), and the encoder is closed. No validation line, no WARN line, no
+    /// release left unfreed.
+    API_AVAILABLE(macos(26.0)) void teardownInPassTest()
+    {
+        CaptureLog log(LLError::LEVEL_WARN);
+        for (const bool direct : { false, true })
+        {
+            Ref<Device> other = anotherDevice();
+            MetalDevice& device = *static_cast<MetalDevice*>(other.get());
+            DrawTarget target = drawTarget(device);
+            VertexStreams streams;
+            Ref<Buffer> buffer = wholeRect(device, target, streams);
+            Encoder& encoder = device.encoder();
+            encoder.pushDebugGroup("zone before the pass");
+            tut::ensure("the pass begins", encoder.beginRenderPass(drawPass(target)));
+            encoder.pushDebugGroup("zone in the pass");
+            bindDraw(encoder, target, buffer, streams);
+            encoder.draw(PrimitiveType::Triangles, 0, 6);
+            tut::ensure("the pass's encoder is open", device.metalEncoder().openEncoder() != nil);
+            if (direct)
+            {
+                device.metalEncoder().closeForTeardown();
+                tut::ensure("closeForTeardown closed the encoder", device.metalEncoder().openEncoder() == nil);
+                MTL4RenderPassDescriptor* closed = device.metalEncoder().lastPassDescriptor();
+                tut::ensure("the closed encoder's descriptor", closed != nil);
+                ensureEqual("the color store action is DontCare", U32(closed.colorAttachments[0].storeAction),
+                            U32(MTLStoreActionDontCare));
+                ensureEqual("the depth store action is DontCare", U32(closed.depthAttachment.storeAction),
+                            U32(MTLStoreActionDontCare));
+            }
+            buffer = nullptr;
+            target = DrawTarget();
+            other = nullptr; // in the pass, with both groups open
+        }
+        ensureEqual("no release left unfreed", occurrences(log, "never freed"), size_t(0));
+        ensureEqual("no WARN line", occurrences(log, "WARNING #RHI#"), size_t(0));
+    }
+
+    /// t124 (S9, the frame capture anomaly): a texture's release and a mip level's view's release make the shadows
+    /// forget their places, since Metal gives a freed texture's MTLResourceID to a later one; level 1 under the
+    /// capture layer sampled the last mip view through a write F2 skipped. A new texture with the released ID, when
+    /// Metal reuses it here, writes its place at its draw.
+    API_AVAILABLE(macos(26.0)) void releasedTexturesTest(MetalDevice& device)
+    {
+        CaptureLog log(LLError::LEVEL_WARN);
+        DrawTarget target = drawTarget(device);
+        VertexStreams streams;
+        Ref<Buffer> vertices = twoRects(device, streams);
+        MetalEncoder& metal = device.metalEncoder();
+        Encoder& encoder = device.encoder();
+        constexpr Rgba WHITE = { 255, 255, 255, 255 };
+        const TextureDesc single = sizedDesc(Format::RGBA8Unorm, TEXTURE_SAMPLED, 1, 1);
+        const auto settle = [&device]()
+        {
+            device.submitAndWait();
+            for (int i = 0; i < 3; ++i)
+            {
+                device.endFrame();
+            }
+        };
+
+        Ref<Texture> released = device.createTexture(single, "released white");
+        encoder.uploadTexture(released.get(), 0, 0, { 0, 0, 1, 1 }, PixelLayout(), bytesOf(WHITE));
+        const MTLResourceID releasedId = metalTexture(released.get()).gpuResourceID;
+        ensureImage("a draw with the texture", drawnPass(device, target, vertices, streams, [&](Encoder& drawing)
+        {
+            drawing.setTexture(0, released.get(), pointClamp());
+            drawing.draw(PrimitiveType::Triangles, 0, 6);
+        }), yellowIn({ { 0, 0, 32, 32 } }));
+        tut::ensure("the shadow holds the texture after its draw", metal.shadowHolds(releasedId));
+        encoder.setTexture(0, target.white.get(), pointClamp()); // the tracker lets go; no draw writes the place
+        released = nullptr;
+        settle();
+        ensureEqual("the texture's release ran", device.lifecycle().pendingReleases(), size_t(0));
+        tut::ensure("the shadow forgot the released texture", !metal.shadowHolds(releasedId));
+
+        Ref<Texture> next = device.createTexture(single, "next white");
+        encoder.uploadTexture(next.get(), 0, 0, { 0, 0, 1, 1 }, PixelLayout(), bytesOf(WHITE));
+        const bool reused = metalTexture(next.get()).gpuResourceID._impl == releasedId._impl;
+        U64 written = 0;
+        ensureImage("a draw with the next texture", drawnPass(device, target, vertices, streams, [&](Encoder& drawing)
+        {
+            drawing.setTexture(0, next.get(), pointClamp());
+            const U64 at = metal.tableWrites();
+            drawing.draw(PrimitiveType::Triangles, 0, 6);
+            written = metal.tableWrites() - at;
+        }), yellowIn({ { 0, 0, 32, 32 } }));
+        tut::ensure("the next texture writes its place (its ID " + std::string(reused ? "is" : "is not") +
+                        " the released one's): " + std::to_string(written),
+                    written > 0);
+
+        TextureDesc levels = sizedDesc(Format::RGBA8Unorm, TEXTURE_SAMPLED | TEXTURE_READBACK, 4, 4);
+        levels.mipLevels = 3;
+        Ref<Texture> mipped = device.createTexture(levels, "mipped");
+        encoder.uploadTexture(mipped.get(), 0, 0, { 0, 0, 4, 4 }, PixelLayout(), asBytes(numbered(64, 0)));
+        encoder.setTexture(0, target.white.get(), pointClamp());
+        const U32 before = metal.shadowTextures();
+        encoder.generateMipmaps(mipped.get());
+        const U32 drawn = metal.shadowTextures();
+        tut::ensure("a mip view took the next texture's place",
+                    !metal.shadowHolds(metalTexture(next.get()).gpuResourceID));
+        settle();
+        ensureEqual("the views' releases ran", device.lifecycle().pendingReleases(), size_t(0));
+        ensureEqual("the shadow forgot the last mip view (" + std::to_string(before) + " places before the mips)",
+                    metal.shadowTextures(), drawn - 1);
+        endCleanly(device, log);
+    }
+
+    // Targets without alpha in GL and a cube's faces (P3-01e S10) -------------------------------------
+
+    constexpr std::array<F32, 4> HAZY_COLOR = { 0.2f, 0.4f, 0.6f, 0.3f }; // CLEAR_COLOR with alpha 0.3
+    constexpr Rgba OPAQUE_RED = { 255, 0, 0, 255 };
+    constexpr Rgba BLACK = { 0, 0, 0, 255 };
+
+    /// A 64x64 RGBA8Unorm render target that GL keeps as GL_RGB8, as LLRenderTarget's RGB targets.
+    API_AVAILABLE(macos(26.0)) Ref<Texture> rgbTarget(MetalDevice& device, const char* name)
+    {
+        TextureDesc desc = sizedDesc(Format::RGBA8Unorm, TEXTURE_SAMPLED | TEXTURE_RENDER_TARGET | TEXTURE_READBACK,
+                                     DRAW_SIZE, DRAW_SIZE);
+        desc.glFormat = GL_RGB8;
+        Ref<Texture> texture = device.createTexture(desc, name);
+        tut::ensure(std::string(name) + " is made", texture.notNull());
+        return texture;
+    }
+
+    /// One pass on the color texture alone, loading or clearing to HAZY_COLOR, with one draw of the vertices.
+    API_AVAILABLE(macos(26.0)) void drawOn(MetalDevice& device, const DrawTarget& target, const Ref<Texture>& color,
+                                           LoadAction load, const Ref<Pipeline>& pipeline, const DrawVertices& vertices)
+    {
+        Encoder& encoder = device.encoder();
+        RenderPassDesc pass = passOn(color, Ref<Texture>());
+        pass.color[0].load = load;
+        pass.color[0].clear = HAZY_COLOR;
+        VertexStreams streams;
+        Ref<Buffer> buffer = vertexBuffer(device, vertices, streams);
+        tut::ensure("the pass on " + color->debugName() + " begins", encoder.beginRenderPass(pass));
+        encoder.setPipeline(pipeline.get());
+        encoder.setVertexBuffer(buffer.get(), streams);
+        encoder.setTexture(0, target.white.get(), pointClamp());
+        setUiUniforms(encoder, target.program.get(), translation(0, 0));
+        encoder.draw(PrimitiveType::Triangles, 0, U32(vertices.positions.size()));
+        encoder.endRenderPass();
+    }
+
+    /// The texel of the texture at (u, v), point sampled into the draw target's RGBA8 color (R3: alpha is seen
+    /// where GL's sampling would give it, not by the target's own readback).
+    API_AVAILABLE(macos(26.0)) Rgba sampled(MetalDevice& device, const DrawTarget& target, const Ref<Texture>& texture,
+                                            F32 u, F32 v)
+    {
+        Encoder& encoder = device.encoder();
+        DrawVertices vertices;
+        addRect(vertices, -1.f, -1.f, 1.f, 1.f, { 255, 255, 255, 255 });
+        VertexStreams streams;
+        Ref<Buffer> buffer = vertexBuffer(device, vertices, streams);
+        tut::ensure("the sampling pass begins", encoder.beginRenderPass(drawPass(target)));
+        encoder.setPipeline(target.pipeline.get());
+        encoder.setVertexBuffer(buffer.get(), streams);
+        encoder.setTexture(0, texture.get(), pointClamp());
+        setUiUniforms(encoder, target.program.get(), translation(0, 0));
+        encoder.setUniform(target.program.get(), U32(uniformIndex(target.program->reflection(), "texture_matrix0")),
+                           bytesOf(translation(u, v)));
+        encoder.draw(PrimitiveType::Triangles, 0, 6);
+        encoder.endRenderPass();
+        return pixelAt(readTarget(device, target), 0, 0);
+    }
+
+    /// The whole 64x64 texture, read back and waited for.
+    API_AVAILABLE(macos(26.0)) Ref<Readback> readAll(MetalDevice& device, const Ref<Texture>& texture)
+    {
+        Ref<Readback> readback =
+            device.encoder().readback(texture.get(), 0, 0, { 0, 0, DRAW_SIZE, DRAW_SIZE }, PixelLayout());
+        tut::ensure("the readback of " + texture->debugName() + " is made", readback.notNull());
+        readback->wait();
+        return readback;
+    }
+
+    void ensurePixel(const std::string& what, const Rgba& actual, const Rgba& expected)
+    {
+        ensureEqual(what, describe(actual), describe(expected));
+    }
+
+    /// t125 (f', P3-01e R4, R5): a copy in from an RGBA texture with a faint alpha (GL format withAlpha) to one of the
+    /// format that GL keeps as withoutAlpha, sampled and read back but no render target (LLImageGL's, which LLGPUCopy
+    /// copies into). Its memory keeps the faint alpha (a copy out to the source's GL format shows it, Metal's copy
+    /// moves the bytes); sampling reads 1 (the texture's swizzle) and the readback 1 (its own).
+    template <class T>
+    API_AVAILABLE(macos(26.0)) void copiedIntoPlainTexture(MetalDevice& device, const DrawTarget& target,
+                                                           const std::string& what, Format format, U32 withAlpha,
+                                                           U32 withoutAlpha, PixelLayout::Type type,
+                                                           const std::array<T, 4>& texel, T one, const Rgba& seen)
+    {
+        Encoder& encoder = device.encoder();
+        PixelLayout layout;
+        layout.type = type;
+        TextureDesc desc = sizedDesc(format, TEXTURE_SAMPLED | TEXTURE_READBACK, DRAW_SIZE, DRAW_SIZE);
+        desc.glFormat = withAlpha;
+        Ref<Texture> source = device.createTexture(desc, what + " source");
+        Ref<Texture> out = device.createTexture(desc, what + " copied out");
+        desc.glFormat = withoutAlpha;
+        Ref<Texture> plain = device.createTexture(desc, what + " copied in");
+        tut::ensure(what + ": the textures are made", source.notNull() && out.notNull() && plain.notNull());
+        const std::vector<std::array<T, 4>> texels(size_t(DRAW_SIZE) * DRAW_SIZE, texel);
+        encoder.uploadTexture(source.get(), 0, 0, { 0, 0, DRAW_SIZE, DRAW_SIZE }, layout,
+                              std::as_bytes(std::span(texels)));
+        const U64 alphaDraws = device.metalEncoder().alphaCopyDraws();
+        encoder.copyTexture(source.get(), 0, 0, { 0, 0, DRAW_SIZE, DRAW_SIZE }, plain.get(), 0, 0, 0, 0);
+        ensureEqual(what + ": no alpha draw, as the texture is no render target",
+                    device.metalEncoder().alphaCopyDraws(), alphaDraws);
+        encoder.copyTexture(plain.get(), 0, 0, { 0, 0, DRAW_SIZE, DRAW_SIZE }, out.get(), 0, 0, 0, 0);
+        const auto ensureAlpha = [&](const std::string& check, const Ref<Texture>& texture, T expected)
+        {
+            Ref<Readback> readback = encoder.readback(texture.get(), 0, 0, { 0, 0, DRAW_SIZE, DRAW_SIZE }, layout);
+            tut::ensure(what + ": the readback of " + texture->debugName() + " is made", readback.notNull());
+            readback->wait();
+            const std::span<const std::byte> data = readback->data();
+            ensureEqual(what + ": " + check + ": the size", data.size(), size_t(DRAW_SIZE) * DRAW_SIZE * sizeof(texel));
+            for (size_t i = 0; i < size_t(DRAW_SIZE) * DRAW_SIZE; ++i)
+            {
+                T alpha{};
+                std::memcpy(&alpha, data.data() + i * sizeof(texel) + 3 * sizeof(T), sizeof(T));
+                if (alpha != expected)
+                {
+                    tut::fail(what + ": " + check + ": texel " + std::to_string(i) + " has alpha " +
+                              std::to_string(alpha) + ", expected " + std::to_string(expected));
+                }
+            }
+        };
+        ensureAlpha("the memory keeps the copied alpha (copied out)", out, texel[3]);
+        ensureAlpha("read back with alpha 1", plain, one);
+        ensurePixel(what + ": sampled after the copy in", sampled(device, target, plain, 0.25f, 0.5f), seen);
+    }
+
+    /// t125 (P3-01e S10, F14, flag L): render targets GL keeps without alpha (GL_RGB8 on RGBA8Unorm). GL's alpha
+    /// there is 1 for draws, blending, clears, copies in and out and readbacks; a level never written loads as
+    /// RGB 0, alpha 1. (f') Textures without alpha in GL that are no render target, in 8-bit, F16 and F32: sampled
+    /// and read back with alpha 1 after a copy in with alpha 0.3 (R4, R5).
+    API_AVAILABLE(macos(26.0)) void alphaLessTargetsTest(MetalDevice& device)
+    {
+        DrawTarget target = drawTarget(device);
+        MetalEncoder& metal = device.metalEncoder();
+        Encoder& encoder = device.encoder();
+        PipelineDesc plainDesc = uiPipelineDesc();
+        plainDesc.depthFormat = Format::Unknown;
+        Ref<Pipeline> plain = device.getPipeline(*target.program, plainDesc);
+        PipelineDesc keepDesc = plainDesc;
+        keepDesc.blend.enabled = true;
+        keepDesc.blend.srcColor = BlendFactor::OneMinusDestAlpha;
+        keepDesc.blend.dstColor = BlendFactor::One;
+        Ref<Pipeline> keep = device.getPipeline(*target.program, keepDesc);
+        tut::ensure("the pipelines are made", plain.notNull() && keep.notNull());
+        DrawVertices redRight;
+        addRect(redRight, 0.f, -1.f, 1.f, 1.f, { 255, 0, 0, 77 }); // alpha 0.3
+        DrawVertices greenRight;
+        addRect(greenRight, 0.f, -1.f, 1.f, 1.f, { 0, 255, 0, 255 });
+        constexpr Rgba HAZY_RGB = { CLEAR_BYTES[0], CLEAR_BYTES[1], CLEAR_BYTES[2], 255 };
+
+        // (a) Cleared with alpha 0.3, the right half drawn with alpha 0.3: alpha stays 1 under both.
+        const U64 firstLoads = metal.firstLoadClears();
+        Ref<Texture> drawn = rgbTarget(device, "rgb drawn");
+        drawOn(device, target, drawn, LoadAction::Clear, plain, redRight);
+        ensurePixel("(a) sampled where drawn", sampled(device, target, drawn, 0.75f, 0.5f), OPAQUE_RED);
+        ensurePixel("(a) sampled where cleared", sampled(device, target, drawn, 0.25f, 0.5f), HAZY_RGB);
+        Ref<Readback> back = readAll(device, drawn);
+        ensurePixel("(a) read back where drawn", pixelAt(back, 48, 32), OPAQUE_RED);
+        ensurePixel("(a) read back where cleared", pixelAt(back, 16, 32), HAZY_RGB);
+        ensureEqual("(a) one variant without alpha for the plain pipeline", metalPipelineVariants(plain.get()),
+                    size_t(1));
+        ensureEqual("(a) R08: the variant is counted", metalCompileStats(device).alphaVariants, U64(1)); // (P3-04a S3)
+        ensureEqual("(a) none for the RGBA8 target's pipeline", metalPipelineVariants(target.pipeline.get()),
+                    size_t(0));
+
+        // (a') A scissored clear with alpha 0.3 (clearDraw) in a pass that loads: the same mask, alpha stays 1.
+        RenderPassDesc load = passOn(drawn, Ref<Texture>());
+        tut::ensure("(a') the pass begins", encoder.beginRenderPass(load));
+        encoder.setScissor(true, 0, 0, DRAW_SIZE / 2, DRAW_SIZE);
+        encoder.clear(true, { 0.f, 0.f, 1.f, 0.3f }, false, 1.f);
+        encoder.setScissor(false, 0, 0, DRAW_SIZE, DRAW_SIZE);
+        encoder.endRenderPass();
+        ensurePixel("(a') sampled where the scissored clear wrote", sampled(device, target, drawn, 0.25f, 0.5f),
+                    BLUE);
+
+        // (b) ONE_MINUS_DST_ALPHA over the right half: GL's destination alpha is 1, so the red stays.
+        drawOn(device, target, drawn, LoadAction::Load, keep, greenRight);
+        ensurePixel("(b) sampled after blending with one minus destination alpha",
+                    sampled(device, target, drawn, 0.75f, 0.5f), OPAQUE_RED);
+        ensureEqual("(a, b) a cleared target's later loads are no first loads", metal.firstLoadClears(), firstLoads);
+
+        // (c) A copy out to an RGBA8 texture has alpha 1.
+        TextureDesc rgbaDesc = sizedDesc(Format::RGBA8Unorm, TEXTURE_SAMPLED | TEXTURE_READBACK, DRAW_SIZE, DRAW_SIZE);
+        rgbaDesc.glFormat = GL_RGBA8;
+        Ref<Texture> copied = device.createTexture(rgbaDesc, "rgba copy");
+        tut::ensure("(c) the copy is made", copied.notNull());
+        encoder.copyTexture(drawn.get(), 0, 0, { 0, 0, DRAW_SIZE, DRAW_SIZE }, copied.get(), 0, 0, 0, 0);
+        ensurePixel("(c) the RGBA8 copy where drawn", pixelAt(readAll(device, copied), 48, 32), OPAQUE_RED);
+
+        // (d) A copy in from an RGBA8 texture with alpha 0.3, then a pass that loads with one draw: the copied RGB
+        // stays (the copy wrote the level), alpha 1 (drawn after the copy).
+        std::vector<Rgba> faint(size_t(DRAW_SIZE) * DRAW_SIZE, Rgba{ 10, 200, 30, 77 });
+        Ref<Texture> source = device.createTexture(rgbaDesc, "faint source");
+        tut::ensure("(d) the source is made", source.notNull());
+        encoder.uploadTexture(source.get(), 0, 0, { 0, 0, DRAW_SIZE, DRAW_SIZE }, PixelLayout(),
+                              std::as_bytes(std::span(faint)));
+        Ref<Texture> copiedIn = rgbTarget(device, "rgb copied in");
+        const U64 alphaDraws = metal.alphaCopyDraws();
+        encoder.copyTexture(source.get(), 0, 0, { 0, 0, DRAW_SIZE, DRAW_SIZE }, copiedIn.get(), 0, 0, 0, 0);
+        drawOn(device, target, copiedIn, LoadAction::Load, plain, redRight);
+        ensurePixel("(d) sampled where copied", sampled(device, target, copiedIn, 0.25f, 0.5f),
+                    Rgba{ 10, 200, 30, 255 });
+        ensurePixel("(d) sampled where drawn", sampled(device, target, copiedIn, 0.75f, 0.5f), OPAQUE_RED);
+        ensureEqual("(d) alpha 1 is drawn after the copy in", metal.alphaCopyDraws(), alphaDraws + 1);
+        ensureEqual("(d) the copied level loads as it is", metal.firstLoadClears(), firstLoads);
+
+        // (e) Never written, drawn with Load: GL's undefined RGB is 0 here, its alpha 1.
+        Ref<Texture> fresh = rgbTarget(device, "rgb never written");
+        drawOn(device, target, fresh, LoadAction::Load, plain, redRight);
+        ensurePixel("(e) sampled outside the draw", sampled(device, target, fresh, 0.25f, 0.5f), BLACK);
+        ensurePixel("(e) sampled where drawn", sampled(device, target, fresh, 0.75f, 0.5f), OPAQUE_RED);
+        ensureEqual("(e) the first load is a clear", metal.firstLoadClears(), firstLoads + 1);
+
+        // (e') Uploaded, then drawn with Load: the upload wrote the level, so it loads as it is.
+        Ref<Texture> uploaded = rgbTarget(device, "rgb uploaded");
+        encoder.uploadTexture(uploaded.get(), 0, 0, { 0, 0, DRAW_SIZE, DRAW_SIZE }, PixelLayout(),
+                              std::as_bytes(std::span(faint)));
+        drawOn(device, target, uploaded, LoadAction::Load, plain, redRight);
+        ensureEqual("(e') an uploaded level loads as it is", metal.firstLoadClears(), firstLoads + 1);
+        ensurePixel("(e') sampled where uploaded", sampled(device, target, uploaded, 0.25f, 0.5f),
+                    Rgba{ 10, 200, 30, 255 });
+
+        // (f) Never loaded, read back directly: alpha 1 through the readback alone.
+        Ref<Texture> unread = rgbTarget(device, "rgb never loaded");
+        Ref<Readback> direct = readAll(device, unread);
+        for (U32 y = 0; y < DRAW_SIZE; ++y)
+        {
+            for (U32 x = 0; x < DRAW_SIZE; ++x)
+            {
+                const U8 alpha = pixelAt(direct, x, y)[3];
+                if (alpha != 255)
+                {
+                    tut::fail("(f) the never loaded target reads back alpha " + std::to_string(alpha) + " at (" +
+                              std::to_string(x) + ", " + std::to_string(y) + ")");
+                }
+            }
+        }
+
+        // (f') R4, R5: alpha 0.3 is 77, F16 0x34CD and F32 0.3f; 1 is 255, 0x3C00 and 1.f.
+        copiedIntoPlainTexture<U8>(device, target, "(f') RGB8", Format::RGBA8Unorm, GL_RGBA8, GL_RGB8,
+                                   PixelLayout::Type::U8, { 10, 200, 30, 77 }, U8(255), { 10, 200, 30, 255 });
+        copiedIntoPlainTexture<U16>(device, target, "(f') RGB16F", Format::RGBA16Float, GL_RGBA16F, GL_RGB16F,
+                                    PixelLayout::Type::F16, { 0x0000, 0x3C00, 0x0000, 0x34CD }, U16(0x3C00),
+                                    { 0, 255, 0, 255 });
+        copiedIntoPlainTexture<F32>(device, target, "(f') RGB32F", Format::RGBA32Float, GL_RGBA32F, GL_RGB32F,
+                                    PixelLayout::Type::F32, { 0.f, 1.f, 0.f, 0.3f }, 1.f, { 0, 255, 0, 255 });
+        ensureEqual("(a-f) the variant is made once per mask", metalPipelineVariants(plain.get()), size_t(1));
+    }
+
+    // Flag F's program (as level1.cpp's cube faces probe): column i < 6 samples major axis i (+X, -X, +Y, -Y, +Z,
+    // -Z), columns 6-29 the face (i - 6) / 4 towards the centre of one of its texels.
+    const char* CUBE_VERTEX = R"(#version 400
+in vec3 position;
+void main()
+{
+    gl_Position = vec4(position, 1.0);
+}
+)";
+    const char* CUBE_FRAGMENT = R"(#version 400
+out vec4 frag_color;
+uniform samplerCube cube_faces;
+void main()
+{
+    int i = int(gl_FragCoord.x);
+    vec3 d = vec3(0.0);
+    if (i < 6)
+    {
+        d[i / 2] = (i % 2 == 0) ? 1.0 : -1.0;
+    }
+    else
+    {
+        int c = i - 6;
+        int k = (c / 4) / 2;
+        d[k] = ((c / 4) % 2 == 0) ? 1.0 : -1.0;
+        d[(k + 1) % 3] = (c % 2 == 0) ? -0.5 : 0.5;
+        d[(k + 2) % 3] = ((c / 2) % 2 == 0) ? -0.5 : 0.5;
+    }
+    frag_color = i < 30 ? texture(cube_faces, d) : vec4(0.0);
+}
+)";
+    const char* CUBE_FACE_NAMES[] = { "+X", "-X", "+Y", "-Y", "+Z", "-Z" };
+
+    /// The program's direction for column i.
+    std::array<F32, 3> cubeDirection(U32 i)
+    {
+        std::array<F32, 3> d{};
+        if (i < 6)
+        {
+            d[i / 2] = i % 2 ? -1.f : 1.f;
+            return d;
+        }
+        const U32 c = i - 6;
+        const U32 k = (c / 4) / 2;
+        d[k] = (c / 4) % 2 ? -1.f : 1.f;
+        d[(k + 1) % 3] = c % 2 ? 0.5f : -0.5f;
+        d[(k + 2) % 3] = (c / 2) % 2 ? 0.5f : -0.5f;
+        return d;
+    }
+
+    /// The face and the texel (row * 2 + column of a 2x2 face) GL samples for the direction with point filtering:
+    /// OpenGL 4.6's table 8.19 (major axis, sc, tc, ma), s = (sc / |ma| + 1) / 2, t = (tc / |ma| + 1) / 2, and
+    /// texel (floor(2s), floor(2t)) in the face's rows as uploaded.
+    std::pair<U32, U32> tableCubeTexel(const std::array<F32, 3>& r)
+    {
+        const F32 ax = std::fabs(r[0]);
+        const F32 ay = std::fabs(r[1]);
+        const F32 az = std::fabs(r[2]);
+        U32 face = 0;
+        F32 sc = 0.f;
+        F32 tc = 0.f;
+        F32 ma = 0.f;
+        if (ax >= ay && ax >= az)
+        {
+            ma = ax;
+            face = r[0] > 0.f ? 0 : 1;
+            sc = r[0] > 0.f ? -r[2] : r[2];
+            tc = -r[1];
+        }
+        else if (ay >= az)
+        {
+            ma = ay;
+            face = r[1] > 0.f ? 2 : 3;
+            sc = r[0];
+            tc = r[1] > 0.f ? r[2] : -r[2];
+        }
+        else
+        {
+            ma = az;
+            face = r[2] > 0.f ? 4 : 5;
+            sc = r[2] > 0.f ? r[0] : -r[0];
+            tc = -r[1];
+        }
+        const F32 s = 0.5f * (sc / ma + 1.f);
+        const F32 t = 0.5f * (tc / ma + 1.f);
+        const U32 column = std::min(1u, U32(std::floor(s * 2.f)));
+        const U32 row = std::min(1u, U32(std::floor(t * 2.f)));
+        return { face, row * 2 + column };
+    }
+
+    Rgba cubeTexelColor(U32 face, U32 texel)
+    {
+        return { U8(40 * face + 20), U8(60 * texel + 30), U8(235 - 40 * face), 255 };
+    }
+
+    /// t126 (P3-01e S10, flag F): a 2x2 cube with a color per face and a code per texel, uploaded face by face in
+    /// GL's order, sampled along the 6 major axes and towards the 24 texel centres: the faces and texels GL's table
+    /// 8.19 gives. The major axes hit the face's centre, so only the face is checked there.
+    API_AVAILABLE(macos(26.0)) void cubeFacesTest(MetalDevice& device)
+    {
+        Ref<Program> program = ready(device.createProgram(programDesc("cube faces", CUBE_VERTEX, CUBE_FRAGMENT)));
+        TextureDesc cubeDesc = sizedDesc(Format::RGBA8Unorm, TEXTURE_SAMPLED, 2, 2);
+        cubeDesc.type = TextureType::Cube;
+        Ref<Texture> cube = device.createTexture(cubeDesc, "cube faces");
+        Ref<Texture> color =
+            device.createTexture(sizedDesc(Format::RGBA8Unorm, TEXTURE_RENDER_TARGET | TEXTURE_READBACK, 32, 8),
+                                 "cube faces target");
+        tut::ensure("the cube, its target and its program are made", program.notNull() &&
+                    program->status() == CompileStatus::Ready && cube.notNull() && color.notNull());
+        Encoder& encoder = device.encoder();
+        for (U32 face = 0; face < 6; ++face)
+        {
+            std::array<Rgba, 4> texels;
+            for (U32 n = 0; n < 4; ++n)
+            {
+                texels[n] = cubeTexelColor(face, n);
+            }
+            encoder.uploadTexture(cube.get(), 0, face, { 0, 0, 2, 2 }, PixelLayout(), bytesOf(texels));
+        }
+        DrawVertices vertices;
+        addRect(vertices, -1.f, -1.f, 1.f, 1.f, { 255, 255, 255, 255 });
+        VertexStreams streams;
+        Ref<Buffer> buffer = vertexBuffer(device, vertices, streams);
+        PipelineDesc desc;
+        desc.attributeMask = UI_MASK;
+        desc.colorFormats[0] = Format::RGBA8Unorm;
+        Ref<Pipeline> pipeline = device.getPipeline(*program, desc);
+        RenderPassDesc pass = passOn(color, Ref<Texture>());
+        pass.color[0].load = LoadAction::Clear;
+        pass.color[0].clear = { 0.f, 0.f, 0.f, 1.f };
+        tut::ensure("the cube's pass begins", encoder.beginRenderPass(pass));
+        encoder.setPipeline(pipeline.get());
+        encoder.setVertexBuffer(buffer.get(), streams);
+        encoder.setTexture(0, cube.get(), pointClamp());
+        encoder.setSamplerChannel(program.get(), U32(uniformIndex(program->reflection(), "cube_faces")), 0);
+        encoder.draw(PrimitiveType::Triangles, 0, 6);
+        encoder.endRenderPass();
+        Ref<Readback> readback = encoder.readback(color.get(), 0, 0, { 0, 0, 32, 8 }, PixelLayout());
+        tut::ensure("the cube's readback is made", readback.notNull());
+        readback->wait();
+        const std::span<const std::byte> data = readback->data();
+        ensureEqual("the cube's readback size", data.size(), size_t(32 * 8 * 4));
+        for (U32 y = 0; y < 8; y += 7)
+        {
+            for (U32 i = 0; i < 30; ++i)
+            {
+                Rgba actual{};
+                for (U32 c = 0; c < 4; ++c)
+                {
+                    actual[c] = std::to_integer<U8>(data[(size_t(y) * 32 + i) * 4 + c]);
+                }
+                const std::array<F32, 3> d = cubeDirection(i);
+                const auto [face, texel] = tableCubeTexel(d);
+                const Rgba expected = cubeTexelColor(face, texel);
+                const bool major = i < 6;
+                if (major ? (actual[0] != expected[0] || actual[2] != expected[2]) : actual != expected)
+                {
+                    tut::fail("direction " + std::to_string(i) + " (" + std::to_string(d[0]) + ", " +
+                              std::to_string(d[1]) + ", " + std::to_string(d[2]) + ") in row " + std::to_string(y) +
+                              " is " + describe(actual) + ", expected face " + CUBE_FACE_NAMES[face] +
+                              (major ? std::string() : " texel " + std::to_string(texel)) + " (" + describe(expected) +
+                              ")");
+                }
+            }
+        }
+    }
+
+    /// t127 (P3-01e R7, F4, C13): with the Metal debug setting a fan's generated list and the list drawIndexed
+    /// writes in the frame's ring for a fan are resident before the draw binds anything: one that has left the
+    /// residency set is refused with one WARN line that names it and no native draw; admitted again, it draws.
+    API_AVAILABLE(macos(26.0)) void listResidencyTest(MetalDevice& device)
+    {
+        tut::ensure("the device has the Metal debug setting", device.debugChecks());
+        DrawTarget target = drawTarget(device);
+        DrawVertices six;
+        addRect(six, -1, -1, 0, 0, YELLOW);
+        VertexStreams streams;
+        Ref<Buffer> vertices = vertexBuffer(device, six, streams);
+        Ref<Buffer> indices = indexBufferOf(device, std::vector<U16>{ 0, 1, 2, 3, 4, 5 }, "fan indices");
+        MetalEncoder& metal = device.metalEncoder();
+        MetalResidency& residency = device.residency();
+        const auto refused = [&](const std::string& what, const std::string& names, auto drop, auto admit, auto draw)
+        {
+            CaptureLog log(LLError::LEVEL_WARN);
+            const U64 draws = metal.nativeDraws();
+            drawnPass(device, target, vertices, streams, [&](Encoder& encoder)
+            {
+                encoder.setIndexBuffer(indices.get(), IndexType::U16);
+                drop();
+                draw(encoder);
+                // Back before the submit, which commits the set, so the GPU never runs without it.
+                admit();
+            });
+            ensureEqual(what + ": one WARN line", occurrences(log, "WARNING #RHI#"), size_t(1));
+            ensureEqual(what + ": the WARN names it", occurrences(log, names + " is not resident"), size_t(1));
+            ensureEqual(what + ": no native draw", metal.nativeDraws(), draws);
+            drawnPass(device, target, vertices, streams, [&](Encoder& encoder)
+            {
+                encoder.setIndexBuffer(indices.get(), IndexType::U16);
+                draw(encoder);
+            });
+            ensureEqual(what + ": admitted again, it draws", metal.nativeDraws(), draws + 1);
+        };
+
+        const MetalIndexList list = device.generatedIndices(PrimitiveType::TriangleFan, 6);
+        tut::ensure("the fan's list is made", list.buffer != nil);
+        refused("a fan's generated list", "draw: index list of 6 vertices",
+                [&]() { residency.dropForTest(list.buffer); },
+                [&]() { residency.admit(list.buffer, "index list of 6 vertices"); },
+                [](Encoder& encoder) { encoder.draw(PrimitiveType::TriangleFan, 0, 6); });
+
+        // Every chunk of the frame's ring: the list goes in the current one.
+        std::vector<IdMTLBuffer> chunks;
+        refused("a fan's list in the ring", "drawIndexed: the ring's list of index buffer 'fan indices'",
+                [&]()
+                {
+                    for (size_t i = 0; device.ringChunk(i) != nil; ++i)
+                    {
+                        chunks.push_back(device.ringChunk(i));
+                        residency.dropForTest(chunks.back());
+                    }
+                    tut::ensure("the frame's ring has a chunk", !chunks.empty());
+                },
+                [&]()
+                {
+                    for (IdMTLBuffer chunk : chunks)
+                    {
+                        residency.admit(chunk, "Frame ring");
+                    }
+                    chunks.clear();
+                },
+                [](Encoder& encoder) { encoder.drawIndexed(PrimitiveType::TriangleFan, 0, 6); });
+    }
+
+    /// t128 (P3-01e R8, F12): GPU zones open over generateMipmaps outside a pass and in one, and over a copy into a
+    /// render target without alpha in GL (F14's alpha draw): the mip encoders and the alpha encoder take the groups
+    /// from the command buffer and give them back, as a pass's encoder does, so the command buffer holds none while
+    /// one is open. No validation line (validated()), no WARN line, and the mips and the alpha are drawn.
+    API_AVAILABLE(macos(26.0)) void mipGroupsTest(MetalDevice& device)
+    {
+        CaptureLog log(LLError::LEVEL_WARN);
+        DrawTarget target = drawTarget(device);
+        VertexStreams streams;
+        Ref<Buffer> buffer = wholeRect(device, target, streams);
+        Encoder& encoder = device.encoder();
+        MetalEncoder& metal = device.metalEncoder();
+        TextureDesc desc = sizedDesc(Format::RGBA8Unorm, TEXTURE_SAMPLED, 4, 4);
+        desc.mipLevels = 3;
+        Ref<Texture> texture = device.createTexture(desc, "mips in zones");
+        tut::ensure("the texture is made", texture.notNull());
+        encoder.uploadTexture(texture.get(), 0, 0, { 0, 0, 4, 4 }, PixelLayout(), asBytes(filled(16, RED)));
+        const U64 mips = metal.mipDraws();
+        const U64 alphaDraws = metal.alphaCopyDraws();
+
+        encoder.pushDebugGroup("zone over the mips");
+        encoder.generateMipmaps(texture.get());
+        setUiUniforms(encoder, target.program.get(), translation(0, 0));
+        tut::ensure("the pass begins", encoder.beginRenderPass(drawPass(target)));
+        encoder.pushDebugGroup("zone in the pass");
+        bindDraw(encoder, target, buffer, streams);
+        encoder.draw(PrimitiveType::Triangles, 0, 6);
+        encoder.generateMipmaps(texture.get()); // the segment ends, and the next draw opens one that loads
+        encoder.draw(PrimitiveType::Triangles, 0, 6);
+        encoder.popDebugGroup();
+        encoder.endRenderPass();
+        Ref<Texture> rgb = rgbTarget(device, "rgb copied in a zone");
+        encoder.copyTexture(target.color.get(), 0, 0, { 0, 0, DRAW_SIZE, DRAW_SIZE }, rgb.get(), 0, 0, 0, 0);
+        encoder.popDebugGroup();
+
+        ensureEqual("two levels drawn twice", metal.mipDraws() - mips, U64(4));
+        ensureEqual("one alpha draw", metal.alphaCopyDraws() - alphaDraws, U64(1));
+        ensureEqual("no group on the command buffer while an encoder was open",
+                    device.groupsOnCommandBufferWhileEncoding(), U32(0));
+        endCleanly(device, log);
+    }
+
+    // P3-01f S3: the Metal surface: the window's layer, the flip pass and present at the frame boundary ---------------
+
+    /// P3-01f S3: a Metal device of its own whose window is the layer (a CAMetalLayer without a view, as the challenge's
+    /// probe found it gives drawables), of width x height.
+    Ref<Device> deviceOnLayer(CAMetalLayer* layer, U32 width, U32 height)
+    {
+        DeviceCreateInfo info;
+        info.backend = chooseBackend(BackendType::Metal);
+        info.window.window = (__bridge void*)layer;
+        info.width = width;
+        info.height = height;
+        return Device::create(info);
+    }
+
+    /// t130 (P3-01f M7, the surface's part; the Capabilities list is t140): surface() is null without a window, with
+    /// no WARN line (no 'not ported (P3-01f)'), and the surface interface calls do nothing then; with a CAMetalLayer as
+    /// the window it is made as decision 7 says: back buffer RGBA8Unorm and Depth32Float of the window's size, both
+    /// resident, the layer on the device, BGRA8Unorm, framebufferOnly, opaque, no colorspace, three drawables with the
+    /// timeout and drawableSize set; setVSync sets displaySyncEnabled. A 0x0 window gives 1x1 buffers and leaves the
+    /// drawable size alone, and a window that is not a CAMetalLayer gives no device. P3-01g: metalSurfaceStats reports
+    /// the layer's state (G8: opaque, no colorspace, pixelFormat 80), and the residency records the layer's set after
+    /// the surface's creation and clears it when the device ends (G14, the bookkeeping; residency-site.py checks the
+    /// queue calls beside it).
+    API_AVAILABLE(macos(26.0)) void surfaceWindowTest(MetalDevice& windowless)
+    {
+        {
+            CaptureLog log(LLError::LEVEL_WARN);
+            tut::ensure("no surface without a window", windowless.surface() == nullptr);
+            const MetalSurfaceStats none = metalSurfaceStats(windowless);
+            ensureEqual("no presents without a surface", none.presents, U64(0));
+            setMetalDrawableReadback(windowless, true);
+            std::vector<U8> pixels{ 1 };
+            U32 width = 7;
+            U32 height = 7;
+            tut::ensure("no drawable to read without a surface", !readMetalDrawable(windowless, pixels, width, height));
+            tut::ensure("nothing read", pixels.empty() && width == 0 && height == 0);
+            ensureEqual("no 'not ported (P3-01f)' line", occurrences(log, "not ported to Metal yet (P3-01f)"), size_t(0));
+            ensureEqual("no WARN line", occurrences(log, "WARNING"), size_t(0));
+        }
+
+        CAMetalLayer* layer = [CAMetalLayer layer];
+        IdMTLResidencySet setAtEnd = layer.residencySet; // what the device's teardown finds recorded (G14)
+        bool endSeen = false;
+        {
+            CaptureLog log(LLError::LEVEL_WARN);
+            Ref<Device> owner = deviceOnLayer(layer, 16, 8);
+            tut::ensure("a device on the layer", owner.notNull());
+            MetalDevice& device = *static_cast<MetalDevice*>(owner.get());
+            Surface* surface = device.surface();
+            tut::ensure("a surface with a window", surface != nullptr);
+            tut::ensure("the residency records the layer's set (G14)",
+                        layer.residencySet != nil && device.residency().layerSet() == layer.residencySet);
+            Texture* back = surface->backBuffer();
+            Texture* depth = surface->backBufferDepth();
+            tut::ensure("a back buffer and its depth", back && depth);
+            ensureEqual("back buffer RGBA8Unorm", U32(back->desc().format), U32(Format::RGBA8Unorm));
+            ensureEqual("back buffer width", back->desc().width, 16u);
+            ensureEqual("back buffer height", back->desc().height, 8u);
+            ensureEqual("back buffer usage", U32(back->desc().usage),
+                        U32(TEXTURE_SAMPLED | TEXTURE_RENDER_TARGET | TEXTURE_READBACK));
+            ensureEqual("depth Depth32Float", U32(depth->desc().format), U32(Format::Depth32Float));
+            ensureEqual("depth width", depth->desc().width, 16u);
+            ensureEqual("depth height", depth->desc().height, 8u);
+            ensureEqual("depth usage", U32(depth->desc().usage), U32(TEXTURE_RENDER_TARGET | TEXTURE_READBACK));
+            tut::ensure("the back buffer is resident", device.residency().contains(metalTexture(back)));
+            tut::ensure("its depth is resident", device.residency().contains(metalTexture(depth)));
+            tut::ensure("the layer is on the device", layer.device == device.mtlDevice());
+            ensureEqual("BGRA8Unorm", U32(layer.pixelFormat), U32(MTLPixelFormatBGRA8Unorm));
+            tut::ensure("framebufferOnly", layer.framebufferOnly);
+            tut::ensure("opaque", layer.opaque);
+            tut::ensure("no colorspace", layer.colorspace == nullptr);
+            ensureEqual("three drawables", U32(layer.maximumDrawableCount), 3u);
+            tut::ensure("the drawable timeout", layer.allowsNextDrawableTimeout);
+            ensureEqual("drawable width", U32(layer.drawableSize.width), 16u);
+            ensureEqual("drawable height", U32(layer.drawableSize.height), 8u);
+            tut::ensure("the layer has its residency set", layer.residencySet != nil);
+            surface->setVSync(false);
+            tut::ensure("setVSync(false)", !layer.displaySyncEnabled && !metalSurfaceStats(device).displaySync);
+            surface->setVSync(true);
+            tut::ensure("setVSync(true)", layer.displaySyncEnabled && metalSurfaceStats(device).displaySync);
+            const MetalSurfaceStats stats = metalSurfaceStats(device);
+            ensureEqual("stats: drawable width", stats.drawableWidth, 16u);
+            ensureEqual("stats: drawable height", stats.drawableHeight, 8u);
+            ensureEqual("stats: no presents yet", stats.presents, U64(0));
+            tut::ensure("stats: opaque (G8)", stats.opaque);
+            tut::ensure("stats: no colorspace (G8)", !stats.colorspace);
+            ensureEqual("stats: pixelFormat BGRA8Unorm (G8)", stats.pixelFormat, 80u);
+            endCleanly(device, log);
+            // A release queued after the last frame runs in the device's teardown (FrameLifecycle::releaseAll), after
+            // detachLayer, while the residency still lives.
+            MetalResidency* residency = &device.residency();
+            device.lifecycle().release(
+                [residency, &setAtEnd, &endSeen]()
+                {
+                    setAtEnd = residency->layerSet();
+                    endSeen = true;
+                });
+        }
+        tut::ensure("the device's teardown ran the release", endSeen);
+        tut::ensure("the layer's set is cleared when the device ends (G14)", setAtEnd == nil);
+
+        {
+            CaptureLog log(LLError::LEVEL_WARN);
+            CAMetalLayer* empty = [CAMetalLayer layer];
+            Ref<Device> owner = deviceOnLayer(empty, 0, 0);
+            tut::ensure("a device on a 0x0 window", owner.notNull());
+            MetalDevice& device = *static_cast<MetalDevice*>(owner.get());
+            tut::ensure("a surface on a 0x0 window", device.surface() != nullptr);
+            ensureEqual("a 1x1 back buffer", device.surface()->backBuffer()->desc().width, 1u);
+            ensureEqual("a 1x1 back buffer height", device.surface()->backBuffer()->desc().height, 1u);
+            ensureEqual("the layer's drawable size is left alone", U32(empty.drawableSize.width), 0u);
+            endCleanly(device, log);
+        }
+
+        {
+            CaptureLog log(LLError::LEVEL_WARN);
+            CALayer* plain = [CALayer layer];
+            DeviceCreateInfo info;
+            info.backend = chooseBackend(BackendType::Metal);
+            info.window.window = (__bridge void*)plain;
+            info.width = 16;
+            info.height = 8;
+            tut::ensure("no device on a window without a CAMetalLayer", Device::create(info).isNull());
+            ensureEqual("its WARN line", occurrences(log, "the window has no CAMetalLayer"), size_t(1));
+        }
+    }
+
+    /// A texel of t132's pattern: every texel of the 64x32 back buffer differs from the others and from its row's
+    /// mirror, so a flip off by one row or a swapped x shows.
+    std::array<U8, 4> flipTexel(U32 x, U32 y)
+    {
+        return { U8(4 * x), U8(8 * y), U8((7 * x + 13 * y + 1) & 255), 255 };
+    }
+
+    /// t132's check of a drawable read back over the 64x32 back buffer's bytes: drawable row r, column x is back buffer
+    /// row 31 - r, column x, every byte; beyond the back buffer (a larger drawable) it is (0, 0, 0, 255), the flip
+    /// program's black branch (llrhimetaldevice-objc.mm, metalPresentProgramDesc).
+    void ensureFlipped(const std::string& what, const std::vector<U8>& drawable, U32 width, U32 height,
+                       std::span<const std::byte> back)
+    {
+        ensureEqual(what + ": drawable bytes", drawable.size(), size_t(width) * height * 4);
+        for (U32 r = 0; r < height; ++r)
+        {
+            for (U32 x = 0; x < width; ++x)
+            {
+                const bool inside = r < 32 && x < 64;
+                const U8* got = &drawable[(size_t(r) * width + x) * 4];
+                for (U32 c = 0; c < 4; ++c)
+                {
+                    const U32 want = inside ? std::to_integer<U32>(back[((31 - r) * 64 + x) * 4 + c]) : (c == 3 ? 255u : 0u);
+                    if (got[c] != want)
+                    {
+                        tut::fail(what + ": drawable row " + std::to_string(r) + ", column " + std::to_string(x) +
+                                  ", channel " + std::to_string(c) + ": " + std::to_string(got[c]) + ", expected " +
+                                  std::to_string(want) +
+                                  (inside ? " from back buffer row " + std::to_string(31 - r) : " (beyond the back buffer)"));
+                    }
+                }
+            }
+        }
+    }
+
+    /// t132 (P3-01f M7, M8, U1 answer 1): a CAMetalLayer without a view (drawableSize 64x32) on a surface with the
+    /// drawable readback option: a coded pattern in the back buffer, present, and the drawable read back: drawable row
+    /// r == back buffer row 31 - r, every byte, under validation; one drawable presented with one wait and one signal.
+    /// P3-01g G14: then the layer's drawableSize 80x40 over the same 64x32 back buffer (a view whose drawable grew before
+    /// the surface's resize): the 64x32 part is flipped as before, and rows 32-39 and columns 64-79 are (0, 0, 0, 255).
+    API_AVAILABLE(macos(26.0)) void drawableFlipTest()
+    {
+        CaptureLog log(LLError::LEVEL_WARN);
+        CAMetalLayer* layer = [CAMetalLayer layer];
+        Ref<Device> owner = deviceOnLayer(layer, 64, 32);
+        tut::ensure("a device on the layer", owner.notNull());
+        MetalDevice& device = *static_cast<MetalDevice*>(owner.get());
+        Surface* surface = device.surface();
+        tut::ensure("a surface", surface != nullptr);
+        Texture* back = surface->backBuffer();
+        std::vector<U8> pattern(64 * 32 * 4);
+        for (U32 y = 0; y < 32; ++y)
+        {
+            for (U32 x = 0; x < 64; ++x)
+            {
+                const std::array<U8, 4> texel = flipTexel(x, y);
+                std::memcpy(&pattern[(y * 64 + x) * 4], texel.data(), 4);
+            }
+        }
+        setMetalDrawableReadback(device, true);
+        tut::ensure("framebufferOnly NO with the readback option", !layer.framebufferOnly);
+        Encoder& encoder = device.encoder();
+        encoder.uploadTexture(back, 0, 0, { 0, 0, 64, 32 }, PixelLayout(),
+                              { reinterpret_cast<const std::byte*>(pattern.data()), pattern.size() });
+        Ref<Readback> backRead = encoder.readback(back, 0, 0, { 0, 0, 64, 32 }, PixelLayout());
+        tut::ensure("the back buffer's readback", backRead.notNull());
+        surface->present();
+        device.endFrame();
+        backRead->wait();
+        const std::span<const std::byte> backBytes = backRead->data();
+        ensureEqual("the back buffer's bytes", backBytes.size(), pattern.size());
+        tut::ensure("the back buffer holds the pattern", std::memcmp(backBytes.data(), pattern.data(), pattern.size()) == 0);
+
+        std::vector<U8> drawable;
+        U32 width = 0;
+        U32 height = 0;
+        tut::ensure("the drawable is read back", readMetalDrawable(device, drawable, width, height));
+        ensureEqual("drawable width", width, 64u);
+        ensureEqual("drawable height", height, 32u);
+        ensureFlipped("64x32", drawable, width, height, backBytes);
+        const MetalSurfaceStats stats = metalSurfaceStats(device);
+        ensureEqual("presents", stats.presents, U64(1));
+        ensureEqual("drawables presented", stats.drawablesPresented, U64(1));
+        ensureEqual("drawable waits", stats.drawableWaits, U64(1));
+        ensureEqual("drawable signals", stats.drawableSignals, U64(1));
+        ensureEqual("no 0x0 skip", stats.presentsSkippedZero, U64(0));
+        ensureEqual("no timeout", stats.drawableTimeouts, U64(0));
+        ensureEqual("one flip pass", device.metalEncoder().presentDraws(), U64(1));
+        setMetalDrawableReadback(device, false);
+        tut::ensure("framebufferOnly YES again", layer.framebufferOnly);
+        tut::ensure("the copy is dropped", !readMetalDrawable(device, drawable, width, height));
+
+        // P3-01g G14: a drawable larger than the back buffer, which still holds the pattern.
+        layer.drawableSize = CGSizeMake(80, 40);
+        setMetalDrawableReadback(device, true);
+        surface->present();
+        device.endFrame();
+        tut::ensure("the larger drawable is read back", readMetalDrawable(device, drawable, width, height));
+        ensureEqual("larger drawable width", width, 80u);
+        ensureEqual("larger drawable height", height, 40u);
+        ensureEqual("the back buffer stays 64 wide", back->desc().width, 64u);
+        ensureFlipped("80x40 over 64x32", drawable, width, height, backBytes);
+        ensureEqual("two drawables presented", metalSurfaceStats(device).drawablesPresented, U64(2));
+        setMetalDrawableReadback(device, false);
+        endCleanly(device, log);
+    }
+
+    /// t133 (P3-01f M7, M9): a resize to 0x0 and then to 128x96 across presents: the size changes only at a present
+    /// (the frame boundary, after the flip pass), the 0x0 frame asks for no drawable, presents == 3,
+    /// presentsSkippedZero == 1, drawablesPresented == 2, the back buffer 1x1 during 0x0 and 128x96 after. A readback's
+    /// wait() between present() and endFrame finds the drawable's wait and signal counted (challenge gl-8; since
+    /// render-1, P3-01h, present() sends the flip pass itself): one pair per drawable, counted before the frame ends.
+    API_AVAILABLE(macos(26.0)) void surfaceResizeTest()
+    {
+        CaptureLog log(LLError::LEVEL_WARN);
+        CAMetalLayer* layer = [CAMetalLayer layer];
+        Ref<Device> owner = deviceOnLayer(layer, 64, 32);
+        tut::ensure("a device on the layer", owner.notNull());
+        MetalDevice& device = *static_cast<MetalDevice*>(owner.get());
+        Surface* surface = device.surface();
+        Encoder& encoder = device.encoder();
+
+        Texture* before = surface->backBuffer();
+        surface->resize(0, 0);
+        tut::ensure("resize(0, 0) keeps the frame's back buffer", surface->backBuffer() == before);
+        ensureEqual("still 64 wide in the frame", surface->backBuffer()->desc().width, 64u);
+        surface->present();
+        device.endFrame();
+        MetalSurfaceStats stats = metalSurfaceStats(device);
+        ensureEqual("the 0x0 frame: presents", stats.presents, U64(1));
+        ensureEqual("the 0x0 frame: skipped", stats.presentsSkippedZero, U64(1));
+        ensureEqual("the 0x0 frame: no drawable", stats.drawablesPresented, U64(0));
+        ensureEqual("1x1 during 0x0: width", surface->backBuffer()->desc().width, 1u);
+        ensureEqual("1x1 during 0x0: height", surface->backBuffer()->desc().height, 1u);
+        ensureEqual("1x1 depth during 0x0", surface->backBufferDepth()->desc().width, 1u);
+
+        Texture* during = surface->backBuffer();
+        surface->resize(128, 96);
+        layer.drawableSize = CGSizeMake(128, 96); // what the view does (M4)
+        tut::ensure("resize(128, 96) keeps the frame's back buffer", surface->backBuffer() == during);
+        ensureEqual("still 1x1 in the frame", surface->backBuffer()->desc().width, 1u);
+        surface->present();
+        device.endFrame();
+        stats = metalSurfaceStats(device);
+        ensureEqual("back to 128x96: presents", stats.presents, U64(2));
+        ensureEqual("back to 128x96: presented", stats.drawablesPresented, U64(1));
+        ensureEqual("128x96 after: width", surface->backBuffer()->desc().width, 128u);
+        ensureEqual("128x96 after: height", surface->backBuffer()->desc().height, 96u);
+        ensureEqual("128x96 depth after", surface->backBufferDepth()->desc().height, 96u);
+        ensureEqual("the drawable", stats.drawableWidth, 128u);
+
+        // The readback between present() and endFrame (present() has sent the flip pass, render-1).
+        surface->present();
+        Ref<Readback> readback = encoder.readback(surface->backBuffer(), 0, 0, { 0, 0, 1, 1 }, PixelLayout());
+        tut::ensure("the readback", readback.notNull());
+        readback->wait();
+        stats = metalSurfaceStats(device);
+        ensureEqual("after the readback's submit: presented", stats.drawablesPresented, U64(2));
+        ensureEqual("after the readback's submit: waits", stats.drawableWaits, U64(2));
+        ensureEqual("after the readback's submit: signals", stats.drawableSignals, U64(2));
+        device.endFrame();
+        stats = metalSurfaceStats(device);
+        ensureEqual("presents", stats.presents, U64(3));
+        ensureEqual("presentsSkippedZero", stats.presentsSkippedZero, U64(1));
+        ensureEqual("drawablesPresented", stats.drawablesPresented, U64(2));
+        ensureEqual("one wait per drawable", stats.drawableWaits, stats.drawablesPresented);
+        ensureEqual("one signal per drawable", stats.drawableSignals, stats.drawablesPresented);
+        ensureEqual("no timeout", stats.drawableTimeouts, U64(0));
+        endCleanly(device, log);
+    }
+
+    /// t185 (P3-09 S1, F51): metalPresentPaced leaves a present out only with displaySync off, no drawable readback and
+    /// the window server holding every drawable but one, and not once it has taken nothing for
+    /// METAL_WINDOW_SERVER_STALE_NS. On a surface (a CAMetalLayer without a view, its handlers' timing unknown, so the
+    /// held drawables are holdDrawablesForTest's): with displaySync off and two of the three held, a present asks for no
+    /// drawable and the frame's work still reaches the GPU at endFrame (an upload read back); a drawable readback and
+    /// displaySync on each present a drawable all the same; presents == drawablesPresented + presentsSkippedZero +
+    /// presentsPaced + drawableTimeouts. On a second surface, held drawables older than the limit get a present, and the
+    /// present after it is left out again. The surfaces' limit is 1 s (setStaleLimitForTest, P3-09's review m2): the
+    /// windows a check needs below the limit (hold to present; the stale present's progress to the next present) then
+    /// hold on a loaded machine, and the free function's own checks keep METAL_WINDOW_SERVER_STALE_NS. No WARN line.
+    API_AVAILABLE(macos(26.0)) void presentPacingTest()
+    {
+        const U64 stale = METAL_WINDOW_SERVER_STALE_NS;
+        const U64 testStale = 1'000'000'000; // the surfaces' limit here (setStaleLimitForTest)
+        tut::ensure("displaySync on: never", !metalPresentPaced(true, false, 2, 3, 0));
+        tut::ensure("a drawable readback: never", !metalPresentPaced(false, true, 2, 3, 0));
+        tut::ensure("one of three with the window server: presented", !metalPresentPaced(false, false, 1, 3, 0));
+        tut::ensure("two of three: left out", metalPresentPaced(false, false, 2, 3, 0));
+        tut::ensure("three of three: left out", metalPresentPaced(false, false, 3, 3, 0));
+        tut::ensure("one of two: left out", metalPresentPaced(false, false, 1, 2, 0));
+        tut::ensure("none of two: presented", !metalPresentPaced(false, false, 0, 2, 0));
+        tut::ensure("no drawable count: presented", !metalPresentPaced(false, false, 2, 0, 0));
+        tut::ensure("just inside the limit: left out", metalPresentPaced(false, false, 2, 3, stale - 1));
+        tut::ensure("at the limit: presented", !metalPresentPaced(false, false, 2, 3, stale));
+        tut::ensure("another limit, just inside: left out", metalPresentPaced(false, false, 2, 3, testStale - 1, testStale));
+        tut::ensure("another limit, at it: presented", !metalPresentPaced(false, false, 2, 3, testStale, testStale));
+
+        CaptureLog log(LLError::LEVEL_WARN);
+        {
+            CAMetalLayer* layer = [CAMetalLayer layer];
+            Ref<Device> owner = deviceOnLayer(layer, 64, 32);
+            tut::ensure("a device on the layer", owner.notNull());
+            MetalDevice& device = *static_cast<MetalDevice*>(owner.get());
+            MetalSurface* surface = device.metalSurface();
+            tut::ensure("a surface", surface != nullptr);
+            Encoder& encoder = device.encoder();
+            Texture* back = surface->backBuffer();
+            std::vector<U8> pattern(64 * 32 * 4);
+            for (size_t i = 0; i < pattern.size(); ++i)
+            {
+                pattern[i] = U8(i * 13 + 5);
+            }
+
+            surface->setVSync(false);
+            surface->setStaleLimitForTest(testStale);
+            surface->holdDrawablesForTest(2);
+            ensureEqual("two drawables held", metalSurfaceStats(device).drawablesWithWindowServer, 2u);
+            encoder.uploadTexture(back, 0, 0, { 0, 0, 64, 32 }, PixelLayout(),
+                                  { reinterpret_cast<const std::byte*>(pattern.data()), pattern.size() });
+            Ref<Readback> read = encoder.readback(back, 0, 0, { 0, 0, 64, 32 }, PixelLayout());
+            tut::ensure("the back buffer's readback", read.notNull());
+            surface->present();
+            MetalSurfaceStats stats = metalSurfaceStats(device);
+            ensureEqual("left out: presents", stats.presents, U64(1));
+            ensureEqual("left out: paced", stats.presentsPaced, U64(1));
+            ensureEqual("left out: no drawable", stats.drawablesPresented, U64(0));
+            ensureEqual("left out: no flip pass", device.metalEncoder().presentDraws(), U64(0));
+            device.endFrame();
+            read->wait();
+            const std::span<const std::byte> bytes = read->data();
+            ensureEqual("the frame's bytes", bytes.size(), pattern.size());
+            tut::ensure("the frame's work ran at endFrame",
+                        std::memcmp(bytes.data(), pattern.data(), pattern.size()) == 0);
+            stats = metalSurfaceStats(device);
+            ensureEqual("after endFrame: no drawable wait", stats.drawableWaits, U64(0));
+            ensureEqual("after endFrame: no drawable signal", stats.drawableSignals, U64(0));
+
+            setMetalDrawableReadback(device, true);
+            surface->present();
+            device.endFrame();
+            std::vector<U8> drawable;
+            U32 width = 0;
+            U32 height = 0;
+            tut::ensure("a drawable readback presents", readMetalDrawable(device, drawable, width, height));
+            setMetalDrawableReadback(device, false);
+            stats = metalSurfaceStats(device);
+            ensureEqual("the readback's drawable", stats.drawablesPresented, U64(1));
+            ensureEqual("the readback: still one paced", stats.presentsPaced, U64(1));
+            tut::ensure("the held two stay held", stats.drawablesWithWindowServer >= 2);
+
+            surface->setVSync(true);
+            surface->present();
+            device.endFrame();
+            stats = metalSurfaceStats(device);
+            ensureEqual("displaySync on presents", stats.drawablesPresented, U64(2));
+            ensureEqual("displaySync on: still one paced", stats.presentsPaced, U64(1));
+            ensureEqual("presents", stats.presents, U64(3));
+            ensureEqual("every present counted once", stats.presents,
+                        stats.drawablesPresented + stats.presentsSkippedZero + stats.presentsPaced + stats.drawableTimeouts);
+            ensureEqual("one wait per drawable", stats.drawableWaits, stats.drawablesPresented);
+            ensureEqual("one signal per drawable", stats.drawableSignals, stats.drawablesPresented);
+            ensureEqual("no timeout", stats.drawableTimeouts, U64(0));
+            endCleanly(device, log);
+        }
+        {
+            CAMetalLayer* layer = [CAMetalLayer layer];
+            Ref<Device> owner = deviceOnLayer(layer, 16, 8);
+            tut::ensure("a second device on a layer", owner.notNull());
+            MetalDevice& device = *static_cast<MetalDevice*>(owner.get());
+            MetalSurface* surface = device.metalSurface();
+            surface->setVSync(false);
+            surface->setStaleLimitForTest(testStale);
+            surface->holdDrawablesForTest(2);
+            std::this_thread::sleep_for(std::chrono::nanoseconds(testStale + 10'000'000));
+            surface->present();
+            device.endFrame();
+            MetalSurfaceStats stats = metalSurfaceStats(device);
+            ensureEqual("stale: presented", stats.drawablesPresented, U64(1));
+            ensureEqual("stale: not paced", stats.presentsPaced, U64(0));
+            surface->present();
+            device.endFrame();
+            stats = metalSurfaceStats(device);
+            ensureEqual("after the stale present: paced again", stats.presentsPaced, U64(1));
+            ensureEqual("after the stale present: no second drawable", stats.drawablesPresented, U64(1));
+            ensureEqual("no timeout", stats.drawableTimeouts, U64(0));
+            endCleanly(device, log);
+        }
+        ensureEqual("no WARN line", occurrences(log, "WARNING"), size_t(0));
+    }
+
+    /// t161 (P3-05a1, F10): RGB of U8 from an RGBA8 and an RGBA8_sRGB texture, as rawSnapshot and saveSnapshot read the
+    /// window (GL_RGB): the identity RGBA copy packed to tight RGB rows, a row pitch of 3 bytes a pixel, the same rows
+    /// through LLGPUReadback::copyRows, data() stable when read again, and no WARN line.
+    API_AVAILABLE(macos(26.0)) void rgbReadbackTest(MetalDevice& device)
+    {
+        CaptureLog log(LLError::LEVEL_WARN);
+        const U32 width = 5;
+        const U32 height = 3;
+        std::vector<U8> pattern(size_t(width) * height * 4);
+        for (size_t i = 0; i < pattern.size(); ++i)
+        {
+            pattern[i] = U8(i * 7 + 1);
+        }
+        PixelLayout rgb;
+        rgb.components = PixelLayout::Components::RGB;
+        for (Format format : { Format::RGBA8Unorm, Format::RGBA8Unorm_sRGB })
+        {
+            const std::string name = format == Format::RGBA8Unorm ? "RGBA8" : "RGBA8_sRGB";
+            Ref<Texture> texture =
+                device.createTexture(sizedDesc(format, TEXTURE_SAMPLED | TEXTURE_READBACK, width, height), "rgb readback");
+            tut::ensure(name + ": the texture", texture.notNull());
+            device.encoder().uploadTexture(texture.get(), 0, 0, { 0, 0, width, height }, PixelLayout(),
+                                           std::as_bytes(std::span<const U8>(pattern)));
+            Ref<Readback> readback = device.encoder().readback(texture.get(), 0, 0, { 0, 0, width, height }, rgb);
+            tut::ensure(name + ": the RGB readback is made", readback.notNull());
+            ensureEqual(name + ": the row pitch, 3 bytes a pixel", readback->rowPitch(), width * 3);
+            readback->wait();
+            tut::ensure(name + ": ready", readback->ready());
+            const std::span<const std::byte> data = readback->data();
+            ensureEqual(name + ": tight RGB rows", data.size(), size_t(width) * 3 * height);
+            for (size_t pixel = 0; pixel < size_t(width) * height; ++pixel)
+            {
+                for (size_t component = 0; component < 3; ++component)
+                {
+                    ensureEqual(name + ": pixel " + std::to_string(pixel) + ", component " + std::to_string(component),
+                                std::to_integer<U32>(data[pixel * 3 + component]), U32(pattern[pixel * 4 + component]));
+                }
+            }
+            const std::span<const std::byte> again = readback->data();
+            tut::ensure(name + ": data() again is the same packed rows",
+                        again.size() == data.size() && std::equal(again.begin(), again.end(), data.begin()));
+            std::vector<std::byte> copied(size_t(width) * 3 * height);
+            ensureEqual(name + ": copyRows writes every row",
+                        LLGPUReadback::copyRows(copied.data(), copied.size(), data, readback->rowPitch(), width * 3, height),
+                        copied.size());
+            tut::ensure(name + ": copyRows gives the packed rows", std::equal(copied.begin(), copied.end(), data.begin()));
+        }
+        device.endFrame();
+        ensureEqual("no GPU errors", device.gpuErrors(), U64(0));
+        ensureEqual("no WARN line", occurrences(log, "WARNING #RHI#"), size_t(0));
+    }
+
+    /// t162 (P3-05a1 F11, ARCHITECTURE.md decision 4's addendum): a channel keeps a slot per texture type, as GL a target
+    /// per type. A white 2D texture and then a green cube array on channel 3: a sampler2D there reads the 2D slot's white
+    /// (one type slot read), not the cube array, which Metal API Validation reports as "Invalid texture type"; a
+    /// samplerCubeArray reads the cube array (the channel's current texture, no type slot read). After a null tell the
+    /// cube array's slot is empty, so the samplerCubeArray reads its default (0, 0, 0, 1), and the sampler2D still reads
+    /// white. A texture that only two channels' 2D slots hold leaves both at one frame end. Under validation
+    /// (validated()), with no WARN line.
+    API_AVAILABLE(macos(26.0)) void typeSlotTest(MetalDevice& device)
+    {
+        constexpr Rgba WHITE = { 255, 255, 255, 255 };
+        constexpr Rgba BLACK = { 0, 0, 0, 255 };
+        DrawTarget target = drawTarget(device);
+        Encoder& encoder = device.encoder();
+        VertexStreams streams;
+        Ref<Buffer> buffer = texturedQuad(device, streams);
+        TextureDesc desc = textureDesc(Format::RGBA8Unorm, TEXTURE_SAMPLED);
+        desc.type = TextureType::CubeArray;
+        Ref<Texture> cubes = device.createTexture(desc, "type slot cube array");
+        tut::ensure("the cube array", cubes.notNull());
+        for (U32 slice = 0; slice < 6; ++slice)
+        {
+            encoder.uploadTexture(cubes.get(), 0, slice, { 0, 0, 4, 4 }, PixelLayout(), asBytes(filled(16, GREEN)));
+        }
+        const StageProgram flat = fragmentProgram(device, "type slot 2D test", R"(#version 400
+#define FRAGMENT_SHADER 1
+uniform sampler2D slot;
+in vec4 vertex_color;
+in vec2 vary_texcoord0;
+out vec4 frag_color;
+void main() { frag_color = vertex_color * texture(slot, vary_texcoord0); }
+)");
+        const StageProgram array = fragmentProgram(device, "type slot cube array test", R"(#version 400
+#define FRAGMENT_SHADER 1
+uniform samplerCubeArray slot;
+in vec4 vertex_color;
+in vec2 vary_texcoord0;
+out vec4 frag_color;
+void main() { frag_color = vertex_color * texture(slot, vec4(vary_texcoord0 * 2.0 - 1.0, 1.0, 0.0)); }
+)");
+        CaptureLog log(LLError::LEVEL_WARN);
+        const auto drawWith = [&](const StageProgram& sampling, const std::string& what, U32 channel = 3)
+        {
+            Program* program = sampling.program.get();
+            setVertexUniforms(encoder, program, translation(0, 0));
+            encoder.setSamplerChannel(program, U32(uniformIndex(program->reflection(), "slot")), channel);
+            tut::ensure(what + ": the pass begins", encoder.beginRenderPass(drawPass(target)));
+            encoder.setPipeline(sampling.pipeline.get());
+            encoder.setVertexBuffer(buffer.get(), streams);
+            encoder.draw(PrimitiveType::Triangles, 0, 6);
+            encoder.endRenderPass();
+            return readTarget(device, target);
+        };
+        const auto everywhere = [](const Rgba& color)
+        {
+            return [color](U32, U32) -> std::optional<Rgba> { return color; };
+        };
+        const U64 reads = device.metalEncoder().stats().typeSlotReads;
+        encoder.setTexture(3, target.white.get(), pointClamp());
+        encoder.setTexture(3, cubes.get(), pointClamp());
+        ensureImage("a sampler2D after a cube array on its channel: the 2D slot's white",
+                    drawWith(flat, "the sampler2D"), everywhere(WHITE));
+        ensureEqual("one type slot read", device.metalEncoder().stats().typeSlotReads, reads + 1);
+        ensureImage("a samplerCubeArray there: the cube array", drawWith(array, "the samplerCubeArray"), everywhere(GREEN));
+        ensureEqual("the channel's current texture is no type slot read", device.metalEncoder().stats().typeSlotReads,
+                    reads + 1);
+        encoder.setTexture(3, nullptr, pointClamp());
+        ensureImage("after a null tell, a samplerCubeArray: its default (0, 0, 0, 1)",
+                    drawWith(array, "the samplerCubeArray after the null tell"), everywhere(BLACK));
+        ensureImage("after the null tell, a sampler2D: still the 2D slot's white",
+                    drawWith(flat, "the sampler2D after the null tell"), everywhere(WHITE));
+        ensureEqual("two type slot reads", device.metalEncoder().stats().typeSlotReads, reads + 2);
+        // The 2D slot empties as GL's 2D target would: the white told, then nothing, so later tests find channel 3 empty.
+        encoder.setTexture(3, target.white.get(), pointClamp());
+        encoder.setTexture(3, nullptr, pointClamp());
+        ensureImage("after the 2D slot's null tell, a sampler2D: its default (0, 0, 0, 1)",
+                    drawWith(flat, "the sampler2D with both slots empty"), everywhere(BLACK));
+        // A red texture that only the 2D slots of channels 2 and 3 hold (the cube array is both channels' current
+        // texture): one frame end empties both slots, since every slot is judged before any empties (review m1).
+        {
+            Ref<Texture> shared = device.createTexture(textureDesc(Format::RGBA8Unorm, TEXTURE_SAMPLED), "type slot shared");
+            tut::ensure("the shared texture", shared.notNull());
+            encoder.uploadTexture(shared.get(), 0, 0, { 0, 0, 4, 4 }, PixelLayout(), asBytes(filled(16, RED)));
+            finishFrame(device);
+            for (const U32 channel : { 2u, 3u })
+            {
+                encoder.setTexture(channel, shared.get(), pointClamp());
+                encoder.setTexture(channel, cubes.get(), pointClamp());
+            }
+        }
+        device.endFrame();
+        for (const U32 channel : { 2u, 3u })
+        {
+            const std::string on = "channel " + std::to_string(channel);
+            ensureImage("one frame end emptied both slots of the shared texture: a sampler2D on " + on + " reads its default",
+                        drawWith(flat, "the sampler2D on " + on, channel), everywhere(BLACK));
+        }
+        for (const U32 channel : { 2u, 3u })
+        {
+            encoder.setTexture(channel, nullptr, pointClamp());
+        }
+        endCleanly(device, log);
+    }
+
+    /// t160 (P3-01h, render-1): five present() calls before one endFrame, as the startup states swap several times in
+    /// one main-loop frame (display_startup). present() sends each drawable's flip pass at once, so all five are
+    /// presented before the frame ends, each with its wait and signal, and none waits out the layer's 1 s timeout
+    /// (held until endFrame, the layer's three drawables ran out at the fourth).
+    API_AVAILABLE(macos(26.0)) void presentsInOneFrameTest()
+    {
+        CaptureLog log(LLError::LEVEL_WARN);
+        CAMetalLayer* layer = [CAMetalLayer layer];
+        Ref<Device> owner = deviceOnLayer(layer, 64, 32);
+        tut::ensure("a device on the layer", owner.notNull());
+        MetalDevice& device = *static_cast<MetalDevice*>(owner.get());
+        Surface* surface = device.surface();
+        tut::ensure("a surface", surface != nullptr);
+        for (int i = 0; i < 5; ++i)
+        {
+            surface->present();
+        }
+        MetalSurfaceStats stats = metalSurfaceStats(device);
+        ensureEqual("before endFrame: drawables presented", stats.drawablesPresented, U64(5));
+        ensureEqual("before endFrame: no timeout", stats.drawableTimeouts, U64(0));
+        device.endFrame();
+        stats = metalSurfaceStats(device);
+        ensureEqual("presents", stats.presents, U64(5));
+        ensureEqual("drawablesPresented", stats.drawablesPresented, U64(5));
+        ensureEqual("one wait per drawable", stats.drawableWaits, U64(5));
+        ensureEqual("one signal per drawable", stats.drawableSignals, U64(5));
+        ensureEqual("no 0x0 skip", stats.presentsSkippedZero, U64(0));
+        ensureEqual("no timeout", stats.drawableTimeouts, U64(0));
+        ensureEqual("five flip passes", device.metalEncoder().presentDraws(), U64(5));
+        endCleanly(device, log);
+    }
+
+    /// t140 (P3-01f M17; the design's t130, whose number S3's surface test has): Capabilities on Metal equals P0-05's
+    /// list (tasks/P0-05.md:740-753) field by field. maxSamples is the largest of 8, 4 and 2 the device takes, capped at
+    /// GL's mMaxSamples after the CGL query, else at 4; devices of their own show both caps.
+    API_AVAILABLE(macos(26.0)) void capabilitiesTest(MetalDevice& device)
+    {
+        const Capabilities& caps = device.capabilities();
+        id<MTLDevice> metal = device.mtlDevice();
+        tut::ensure("backend: Metal", caps.backend == BackendType::Metal);
+
+        ensureEqual("maxTextureSize", caps.maxTextureSize, 16384u);
+        ensureEqual("maxArrayLayers", caps.maxArrayLayers, 2048u);
+        ensureEqual("maxColorAttachments", caps.maxColorAttachments, 8u);
+        U32 metalSamples = 1;
+        for (const U32 samples : { 8u, 4u, 2u })
+        {
+            if ([metal supportsTextureSampleCount:samples])
+            {
+                metalSamples = samples;
+                break;
+            }
+        }
+        const S32 queried = gGLManager.mMaxSamples;
+        ensureEqual("maxSamples", caps.maxSamples, std::min(metalSamples, queried > 0 ? U32(queried) : 4u));
+        ensureEqual("maxSamplersPerStage", caps.maxSamplersPerStage, 16u);
+        ensureEqual("maxTexturesPerStage", caps.maxTexturesPerStage, 16u);
+        // [Viewer Lab] P3-UX2 (the 16-sampler fix): this device's 16 samplers judge the feature table's texture-unit
+        // lists whatever the system's GL reports, so TexUnit16orLess caps the PBR terrain's detail at -1.
+        ensureEqual("featureTableTextureUnits with a GL of 32 units (P3-UX2)", featureTableTextureUnits(caps, 32), S32(16));
+        ensureEqual("RenderTerrainPBRDetail 0 on this device (P3-UX2)",
+                    cappedSetting(hardwareSettingCaps(caps, 32, { { "TexUnit16orLess", { { "RenderTerrainPBRDetail", -1.f } } } }),
+                                  "RenderTerrainPBRDetail", 0.f),
+                    -1.f);
+        ensureEqual("maxUniformBlockSize", caps.maxUniformBlockSize, 65536u);
+        ensureEqual("maxVaryingVectors", caps.maxVaryingVectors, 31u);
+        ensureEqual("maxVertexAttributes", caps.maxVertexAttributes, 16u);
+        ensureEqual("lineWidthRange[0]", caps.lineWidthRange[0], 1.f);
+        ensureEqual("lineWidthRange[1]", caps.lineWidthRange[1], 1.f);
+        ensureEqual("pointSizeRange[0]", caps.pointSizeRange[0], 1.f);
+        ensureEqual("pointSizeRange[1]", caps.pointSizeRange[1], 64.f);
+        ensureEqual("maxAnisotropy", caps.maxAnisotropy, 16.f);
+
+        tut::ensure("cubeMapArrays", caps.cubeMapArrays);
+        tut::ensure("anisotropicFiltering", caps.anisotropicFiltering);
+        tut::ensure("textureSwizzle", caps.textureSwizzle);
+        ensureEqual("bcCompression as the device says", caps.bcCompression, bool([metal supportsBCTextureCompression]));
+        ensureEqual("timerQueries: the timestamp heap and its tick rate (P3-08 lane B)", caps.timerQueries,
+                    device.timestampHeap() != nil && device.timestampFrequency() > 0);
+        tut::ensure("no timerQueriesWithinPass", !caps.timerQueriesWithinPass);
+        ensureEqual("benchmarkTimers as timerQueries, as on GL (P3-07's pair, P3-08 C10)", caps.benchmarkTimers,
+                    caps.timerQueries);
+        tut::ensure("no concurrentSampleQueries", !caps.concurrentSampleQueries);
+        tut::ensure("no primitivesGeneratedQuery", !caps.primitivesGeneratedQuery);
+        tut::ensure("no geometryShaders", !caps.geometryShaders);
+        tut::ensure("compute", caps.compute);
+        tut::ensure("depthClamp: setDepthClipMode (P3-02, R13/SH-10)", caps.depthClamp);
+        tut::ensure("debugLabels", caps.debugLabels);
+        tut::ensure("no programBinaries", !caps.programBinaries);
+        tut::ensure("sharedContextUploads: LLImageGLThread on the upload queue (P3-03a)", caps.sharedContextUploads);
+        tut::ensure("no pixelBufferObjects", !caps.pixelBufferObjects);
+        tut::ensure("copyBetweenFormats as a draw, between plain colour formats only (P3-08b S2, C4)",
+                    caps.copyBetweenFormats && caps.copyBetweenFormatsPlainColorOnly);
+        tut::ensure("no shaderOldSelect", !caps.shaderOldSelect);
+        tut::ensure("no shaderAMDCard", !caps.shaderAMDCard);
+        tut::ensure("no shaderIfChain", !caps.shaderIfChain);
+
+        ensureEqual("vramMB: recommendedMaxWorkingSetSize in MiB", caps.vramMB,
+                    U64([metal recommendedMaxWorkingSetSize] / (1024 * 1024)));
+        tut::ensure("vramMB is set", caps.vramMB > 0);
+        ensureEqual("unifiedMemory as the device says", caps.unifiedMemory, bool([metal hasUnifiedMemory]));
+        tut::ensure("isApple", caps.isApple);
+        ensureEqual("vendor", caps.vendor, std::string("Apple"));
+        ensureEqual("renderer: the device's name", caps.renderer, std::string([[metal name] UTF8String]));
+        ensureEqual("driverVersion: the OS version string", caps.driverVersion,
+                    std::string([[[NSProcessInfo processInfo] operatingSystemVersionString] UTF8String]));
+        tut::ensure("driverVersion is set", !caps.driverVersion.empty());
+
+        // The cap: GL's count after the query (2 below the device's, 8 at or above it), else 4.
+        struct RestoreSamples
+        {
+            S32 samples = gGLManager.mMaxSamples;
+            ~RestoreSamples() { gGLManager.mMaxSamples = samples; }
+        } restore;
+        const auto samplesWithGL = [](S32 gl)
+        {
+            gGLManager.mMaxSamples = gl;
+            DeviceCreateInfo info;
+            info.backend = chooseBackend(BackendType::Metal);
+            Ref<Device> other = Device::create(info);
+            tut::ensure("a device of its own", other.notNull());
+            return other->capabilities().maxSamples;
+        };
+        ensureEqual("GL's 2 after the query", samplesWithGL(2), 2u);
+        ensureEqual("GL's 8 after the query", samplesWithGL(8), metalSamples);
+        ensureEqual("no query: 4", samplesWithGL(0), std::min(metalSamples, 4u));
+        LL_INFOS("RHI") << "t140: the device takes up to " << metalSamples << " samples; maxSamples " << caps.maxSamples
+                        << ", vramMB " << caps.vramMB << ", driverVersion '" << caps.driverVersion << "'" << LL_ENDL;
+    }
+
+    /// t137 (P3-01f S9, P3-01e R6): a render target GL keeps as GL_RGB8 (RGBA8Unorm on Metal) in a pass with
+    /// LoadAction::DontCare and one draw with an RGB colour mask over its right half. GL's alpha there is 1; the draw
+    /// writes no alpha, so open() makes the DontCare a clear to (0, 0, 0, 1): sampled (the target's own readback gives
+    /// alpha 1 by itself, F14), alpha is 255 inside and outside the draw, red where drawn and black elsewhere, and the
+    /// pass's native load action is that clear. The pass before it leaves alpha 0.3 in a target of the same size, so a
+    /// DontCare left as is reads what the attachment's memory held (the failure gives the value). A DontCare on a
+    /// target with alpha in GL stays DontCare, and no first load is counted. No WARN line.
+    API_AVAILABLE(macos(26.0)) void dontCareAlphaTest(MetalDevice& device)
+    {
+        CaptureLog log(LLError::LEVEL_WARN);
+        DrawTarget target = drawTarget(device);
+        MetalEncoder& metal = device.metalEncoder();
+        PipelineDesc plainDesc = uiPipelineDesc();
+        plainDesc.depthFormat = Format::Unknown;
+        Ref<Pipeline> plain = device.getPipeline(*target.program, plainDesc);
+        PipelineDesc rgbDesc = plainDesc;
+        rgbDesc.colorMask = COLOR_MASK_R | COLOR_MASK_G | COLOR_MASK_B;
+        Ref<Pipeline> rgbOnly = device.getPipeline(*target.program, rgbDesc);
+        tut::ensure("the pipelines are made", plain.notNull() && rgbOnly.notNull());
+        DrawVertices redRight;
+        addRect(redRight, 0.f, -1.f, 1.f, 1.f, { 255, 0, 0, 77 }); // alpha 0.3
+
+        // The pass before: a 64x64 target with alpha in GL, cleared to HAZY_COLOR and drawn with alpha 0.3.
+        TextureDesc hazyDesc = sizedDesc(Format::RGBA8Unorm, TEXTURE_SAMPLED | TEXTURE_RENDER_TARGET | TEXTURE_READBACK,
+                                         DRAW_SIZE, DRAW_SIZE);
+        hazyDesc.glFormat = GL_RGBA8;
+        Ref<Texture> hazy = device.createTexture(hazyDesc, "rgba before");
+        tut::ensure("the target before is made", hazy.notNull());
+        drawOn(device, target, hazy, LoadAction::Clear, plain, redRight);
+
+        const U64 firstLoads = metal.firstLoadClears();
+        Ref<Texture> rgb = rgbTarget(device, "rgb dont care");
+        drawOn(device, target, rgb, LoadAction::DontCare, rgbOnly, redRight);
+        MTL4RenderPassDescriptor* pass = metal.lastPassDescriptor();
+        tut::ensure("the DontCare pass's descriptor", pass != nil);
+        const MTLLoadAction load = pass.colorAttachments[0].loadAction;
+        const MTLClearColor clear = pass.colorAttachments[0].clearColor;
+        const Rgba outside = sampled(device, target, rgb, 0.25f, 0.5f);
+        const Rgba inside = sampled(device, target, rgb, 0.75f, 0.5f);
+        ensureEqual("alpha outside the draw", S32(outside[3]), 255);
+        ensureEqual("alpha where drawn", S32(inside[3]), 255);
+        ensurePixel("sampled outside the draw", outside, BLACK);
+        ensurePixel("sampled where drawn", inside, OPAQUE_RED);
+        ensureEqual("the native load action is a clear", U32(load), U32(MTLLoadActionClear));
+        tut::ensure("the clear colour is (0, 0, 0, 1)",
+                    clear.red == 0.0 && clear.green == 0.0 && clear.blue == 0.0 && clear.alpha == 1.0);
+        ensureEqual("no first load counted", metal.firstLoadClears(), firstLoads);
+
+        // A target with alpha in GL keeps the DontCare: its alpha is undefined in GL as well.
+        drawOn(device, target, hazy, LoadAction::DontCare, rgbOnly, redRight);
+        MTL4RenderPassDescriptor* kept = metal.lastPassDescriptor();
+        tut::ensure("the second DontCare pass's descriptor", kept != nil && kept != pass);
+        ensureEqual("a target with alpha keeps DontCare", U32(kept.colorAttachments[0].loadAction),
+                    U32(MTLLoadActionDontCare));
+        endCleanly(device, log);
+    }
+
+    /// t141 (P3-01f S10b): setScissor only records, and a draw or a clear draw gives the native encoder the tracker's
+    /// scissor when it differs from what the encoder has, so Metal API Validation sees no rectangle set again before a
+    /// draw used it and no redundant one (S10's R1 logged 36909 and 3158 such warnings). Counted by scissorSends: a draw
+    /// with the scissor off in a new encoder sends none and covers every pixel (Metal's default, the whole attachment);
+    /// two sets without a draw send none and the tracker counts both; the draw sends the last; the same rectangle and a
+    /// draw send none; a new pass's first draw with the old rectangle sends it again; a scissored clear sends it. The
+    /// pixels show which rectangle each draw had. No WARN line.
+    API_AVAILABLE(macos(26.0)) void lazyScissorTest(MetalDevice& device)
+    {
+        CaptureLog log(LLError::LEVEL_WARN);
+        DrawTarget target = drawTarget(device);
+        DrawVertices vertices;
+        addRect(vertices, -1, -1, 1, 1, YELLOW); // vertices 0-5
+        addRect(vertices, -1, -1, 1, 1, RED);    // 6-11
+        addRect(vertices, -1, -1, 1, 1, BLUE);   // 12-17
+        VertexStreams streams;
+        Ref<Buffer> buffer = vertexBuffer(device, vertices, streams);
+        Encoder& encoder = device.encoder();
+        MetalEncoder& metal = device.metalEncoder();
+        setUiUniforms(encoder, target.program.get(), translation(0, 0));
+        const U64 before = metal.scissorSends();
+        const auto sends = [&]() { return metal.scissorSends() - before; };
+        const std::array<U32, 4> box{ 16, 32, 48, 48 }; // setScissor(16, 32, 32, 16) as [x0, y0, x1, y1)
+        const auto in = [](const std::array<U32, 4>& rect, U32 x, U32 y)
+        { return x >= rect[0] && x < rect[2] && y >= rect[1] && y < rect[3]; };
+
+        tut::ensure("the first pass begins", encoder.beginRenderPass(drawPass(target)));
+        bindDraw(encoder, target, buffer, streams);
+        encoder.draw(PrimitiveType::Triangles, 0, 6);
+        tut::ensure("the draw opened the segment's encoder", metal.openEncoder() != nil);
+        ensureEqual("a draw with the scissor off in a new encoder: no send", sends(), U64(0));
+        const U64 calls = encoder.state().dynamicCalls();
+        encoder.setScissor(true, 8, 16, 24, 8);
+        encoder.setScissor(true, 16, 32, 32, 16);
+        ensureEqual("the tracker counts both sets", encoder.state().dynamicCalls() - calls, U64(2));
+        ensureEqual("two sets without a draw: no send", sends(), U64(0));
+        encoder.draw(PrimitiveType::Triangles, 6, 6);
+        ensureEqual("a set and a draw: one send", sends(), U64(1));
+        encoder.setScissor(true, 16, 32, 32, 16);
+        encoder.draw(PrimitiveType::Triangles, 6, 6);
+        ensureEqual("the same rectangle again and a draw: no new send", sends(), U64(1));
+        encoder.endRenderPass();
+        ensureImage("yellow over the whole target, red in the last rectangle only", readTarget(device, target),
+                    [&](U32 x, U32 y) -> std::optional<Rgba> { return in(box, x, y) ? RED : YELLOW; });
+
+        tut::ensure("the second pass begins", encoder.beginRenderPass(passOn(target.color, target.depth)));
+        encoder.setScissor(true, 16, 32, 32, 16);
+        encoder.draw(PrimitiveType::Triangles, 12, 6);
+        ensureEqual("a new pass and a draw with the old rectangle: one send", sends(), U64(2));
+        encoder.endRenderPass();
+        ensureImage("blue in the old rectangle only", readTarget(device, target),
+                    [&](U32 x, U32 y) -> std::optional<Rgba> { return in(box, x, y) ? BLUE : YELLOW; });
+
+        const U64 clears = metal.clearDraws();
+        tut::ensure("the clear's pass begins", encoder.beginRenderPass(passOn(target.color, target.depth)));
+        encoder.setScissor(true, 0, 0, 8, 8);
+        encoder.clear(true, RED_FLOATS, false, 1.f);
+        ensureEqual("the clear is drawn", metal.clearDraws() - clears, U64(1));
+        ensureEqual("a scissored clear: one send", sends(), U64(3));
+        encoder.endRenderPass();
+        ensureImage("the clear in its rectangle only", readTarget(device, target),
+                    [&](U32 x, U32 y) -> std::optional<Rgba>
+                    { return in({ 0, 0, 8, 8 }, x, y) ? RED : in(box, x, y) ? BLUE : YELLOW; });
+        endCleanly(device, log);
+    }
+
+    /// t157 (P3-02 D1, F50; the design challenge's C1): the dynamic setters only record, and each draw gives the native
+    /// encoder the tracker's state it uses. A draw opens the encoder (no culling, the whole target, no depth test);
+    /// then each state is set to two different values (cull Front then Back, viewport A then B, depth state Greater
+    /// then LessEqual, fill Lines then Fill, depth bias on then off) and one draw follows: exactly one more native draw
+    /// on the same encoder, which shows only the last values (red front faces kept by Back culling, filled, in viewport
+    /// B, passing LessEqual against the cleared 1). A state sent at once and set again before a draw used it gives a
+    /// validation report ("Previous setCullMode was unused", 32k in the spike's first world run), which asserts here
+    /// (M1, tests/mutations/P3-02). No WARN line.
+    API_AVAILABLE(macos(26.0)) void lazyStateTest(MetalDevice& device)
+    {
+        CaptureLog log(LLError::LEVEL_WARN);
+        DrawTarget target = drawTarget(device);
+        DrawVertices vertices;
+        addRect(vertices, -1, -1, 1, 1, YELLOW); // vertices 0-5
+        addRect(vertices, -1, -1, 1, 1, RED);    // 6-11: counter-clockwise in GL, so front faces
+        VertexStreams streams;
+        Ref<Buffer> buffer = vertexBuffer(device, vertices, streams);
+        Encoder& encoder = device.encoder();
+        MetalEncoder& metal = device.metalEncoder();
+        setUiUniforms(encoder, target.program.get(), translation(0, 0));
+        Ref<DepthStencilState> greater = device.getDepthStencilState({ true, true, CompareFunc::Greater });
+        Ref<DepthStencilState> lessEqual = device.getDepthStencilState({ true, true, CompareFunc::LessEqual });
+        tut::ensure("the depth states", greater.notNull() && lessEqual.notNull());
+
+        tut::ensure("the pass begins", encoder.beginRenderPass(drawPass(target)));
+        bindDraw(encoder, target, buffer, streams);
+        encoder.draw(PrimitiveType::Triangles, 0, 6);
+        tut::ensure("the draw opened the segment's encoder", metal.openEncoder() != nil);
+        const U64 draws = metal.nativeDraws();
+        const U64 encoders = metal.renderEncoders();
+        const U64 calls = encoder.state().dynamicCalls();
+        encoder.setCullMode(CullMode::Front);
+        encoder.setCullMode(CullMode::Back);
+        encoder.setViewport(0, 0, 32, 32);
+        encoder.setViewport(32, 32, 32, 32);
+        encoder.setDepthStencilState(greater.get());
+        encoder.setDepthStencilState(lessEqual.get());
+        encoder.setFillMode(FillMode::Lines);
+        encoder.setFillMode(FillMode::Fill);
+        encoder.setDepthBias(1.f, 4.f, true, true);
+        encoder.setDepthBias(0.f, 0.f, false, false);
+        ensureEqual("the tracker counts the eight dynamic sets", encoder.state().dynamicCalls() - calls, U64(8));
+        encoder.draw(PrimitiveType::Triangles, 6, 6);
+        ensureEqual("exactly one more native draw", metal.nativeDraws() - draws, U64(1));
+        ensureEqual("on the same native encoder", metal.renderEncoders(), encoders);
+        encoder.endRenderPass();
+        ensureImage("red in viewport B only, yellow elsewhere", readTarget(device, target),
+                    [](U32 x, U32 y) -> std::optional<Rgba> { return x >= 32 && y >= 32 ? RED : YELLOW; });
+        endCleanly(device, log);
+    }
+
+    /// t158 (P3-02 D1; the design challenge's m4): fill mode, depth bias and the clear draw on Metal. (a) Fill Lines
+    /// with a depth bias draws a rectangle's two triangles as lines: pixels on them are drawn, pixels between them are
+    /// not. (b) A scissored clear then fills its whole rectangle (the clear draw makes fill and bias neutral), and the
+    /// same rectangle drawn after it is lines again. (c) Coplanar rectangles with Less, one column each: the second
+    /// loses without a bias, wins with units -4 and biasFill, and loses with only biasLines on (the enable for Fill is
+    /// off). (d) After a rectangle that won with the bias, a line with the bias and both enables on does not pass Less
+    /// over the coplanar rectangle: GL's polygon offset moves no line. No WARN line and no validation report.
+    API_AVAILABLE(macos(26.0)) void rasterStateTest(MetalDevice& device)
+    {
+        CaptureLog log(LLError::LEVEL_WARN);
+        DrawTarget target = drawTarget(device);
+        PipelineDesc lineDesc = uiPipelineDesc();
+        lineDesc.primitiveClass = PrimitiveClass::Line;
+        Ref<Pipeline> lines = device.getPipeline(*target.program, lineDesc);
+        tut::ensure("the line pipeline", lines.notNull());
+        DrawVertices vertices;
+        addRect(vertices, -0.5f, -0.5f, 0.5f, 0.5f, BLUE); // 0-5: pixels 16-47, its diagonal x = y
+        addRect(vertices, -1, -1, 1, 1, GREEN);              // 6-11
+        addRect(vertices, -1, -1, 1, 1, RED);                // 12-17
+        vertices.positions.push_back({ -1, centre(40), 0, 1 }); // 18-19: a red line along row 40
+        vertices.positions.push_back({ 1, centre(40), 0, 1 });
+        vertices.colors.push_back(RED);
+        vertices.colors.push_back(RED);
+        VertexStreams streams;
+        Ref<Buffer> buffer = vertexBuffer(device, vertices, streams);
+        Encoder& encoder = device.encoder();
+        setUiUniforms(encoder, target.program.get(), translation(0, 0));
+        Ref<DepthStencilState> less = device.getDepthStencilState({ true, true, CompareFunc::Less });
+        tut::ensure("the depth state", less.notNull());
+
+        tut::ensure("(a) the pass begins", encoder.beginRenderPass(drawPass(target)));
+        bindDraw(encoder, target, buffer, streams);
+        encoder.setFillMode(FillMode::Lines);
+        encoder.setDepthBias(1.f, 4.f, true, true);
+        encoder.draw(PrimitiveType::Triangles, 0, 6);
+        const U64 clears = device.metalEncoder().clearDraws();
+        encoder.setScissor(true, 0, 0, 8, 8);
+        encoder.clear(true, RED_FLOATS, false, 1.f);
+        ensureEqual("(b) the clear is drawn", device.metalEncoder().clearDraws() - clears, U64(1));
+        encoder.setScissor(false, 0, 0, 0, 0);
+        encoder.draw(PrimitiveType::Triangles, 0, 6);
+        encoder.endRenderPass();
+        Ref<Readback> wire = readTarget(device, target);
+        U32 blue = 0;
+        for (U32 y = 0; y < DRAW_SIZE; ++y)
+        {
+            for (U32 x = 0; x < DRAW_SIZE; ++x)
+            {
+                blue += pixelAt(wire, x, y) == BLUE ? 1 : 0;
+            }
+        }
+        tut::ensure("(a) the lines are drawn: " + std::to_string(blue) + " blue pixels", blue >= 32 && blue < 32 * 32 / 2);
+        ensurePixel("(a, b) between the lines below the diagonal", pixelAt(wire, 40, 24), CLEAR_RGBA);
+        ensurePixel("(a, b) between the lines above the diagonal", pixelAt(wire, 24, 40), CLEAR_RGBA);
+        ensureImage("(b) the clear fills its rectangle", wire,
+                    [](U32 x, U32 y) -> std::optional<Rgba> { return x < 8 && y < 8 ? std::optional<Rgba>(RED) : std::nullopt; });
+
+        tut::ensure("(c) the pass begins", encoder.beginRenderPass(drawPass(target)));
+        bindDraw(encoder, target, buffer, streams);
+        encoder.setDepthStencilState(less.get());
+        const auto column = [&](S32 x, F32 units, bool biasFill, bool biasLines)
+        {
+            encoder.setViewport(x, 0, 16, 64);
+            encoder.setDepthBias(0.f, 0.f, false, false);
+            encoder.draw(PrimitiveType::Triangles, 6, 6);
+            encoder.setDepthBias(0.f, units, biasFill, biasLines);
+            encoder.draw(PrimitiveType::Triangles, 12, 6);
+        };
+        column(0, 0.f, false, false);
+        column(16, -4.f, true, false);
+        column(32, -4.f, false, true);
+        column(48, 0.f, false, false);
+        encoder.setViewport(48, 0, 16, 32);
+        encoder.setDepthBias(0.f, -4.f, true, true);
+        encoder.draw(PrimitiveType::Triangles, 12, 6);
+        encoder.setViewport(48, 0, 16, 64);
+        encoder.setPipeline(lines.get());
+        encoder.draw(PrimitiveType::Lines, 18, 2);
+        encoder.endRenderPass();
+        ensureImage("(c, d) green, red with the bias for Fill, green with only the bias for lines; the last column red "
+                    "below row 32 and green above, also on the line's row 40",
+                    readTarget(device, target), [](U32 x, U32 y) -> std::optional<Rgba>
+                    { return x < 16 ? GREEN : x < 32 ? RED : x < 48 ? GREEN : y < 32 ? RED : GREEN; });
+        endCleanly(device, log);
+    }
+
+    /// t159 (P3-02 D3, m6): an integer texture sampled with a linear filter, without a native draw (the interface has no
+    /// integer sampler type, llrhi.cpp:2494-2502, and the viewer samples none): samplerForDraw gives the sampler GL's
+    /// adapter uses, Point with mag Nearest, which Metal makes with nearest filters; two asks for it make one sampler.
+    API_AVAILABLE(macos(26.0)) void integerSamplerTest(MetalDevice& device)
+    {
+        CaptureLog log(LLError::LEVEL_WARN);
+        SamplerDesc linear;
+        linear.filter = Filter::Bilinear;
+        linear.magFilter = MagFilter::Linear;
+        const SamplerDesc chosen = samplerForDraw(linear, UniformType::Sampler2D, Format::R8Uint);
+        tut::ensure("R8Uint: Point, mag Nearest, not comparing",
+                    chosen.filter == Filter::Point && chosen.magFilter == MagFilter::Nearest && !chosen.compare);
+        MTLSamplerDescriptor* metal = metalSamplerDescriptor(chosen, true);
+        tut::ensure("Metal's filters: nearest", metal.minFilter == MTLSamplerMinMagFilterNearest
+                                                    && metal.magFilter == MTLSamplerMinMagFilterNearest);
+        const size_t before = device.samplerCount();
+        Ref<Sampler> first = device.getSampler(chosen);
+        tut::ensure("the sampler is made", first.notNull());
+        ensureEqual("one sampler made", device.samplerCount(), before + 1);
+        tut::ensure("the second ask gives the same sampler", device.getSampler(chosen) == first);
+        ensureEqual("none made by the second ask", device.samplerCount(), before + 1);
+        ensureEqual("the device's count through llrhimetal.h", metalSamplerCount(device), before + 1);
+        ensureEqual("no WARN line", occurrences(log, "WARNING #RHI#"), size_t(0));
+    }
+
+    /// t145 (P3-01g G7, decision 2): metalEncoderStats counts the pass breaks. (a) An upload in a pass after a draw
+    /// closes the segment's encoder: one upload break, one pass break, and one upload pass break (the upload itself
+    /// broke the pass). (b) An upload right after beginRenderPass, with attachments that load and nothing drawn or
+    /// cleared, finds no segment to close: one upload break, no pass break and no upload pass break. (c) A readback in
+    /// a pass after a draw waits for the segment to break, and the draw that reaches it closes the segment: one pass
+    /// break, no upload break and no upload pass break. (d) An upload outside a pass is none of them. Each part's deltas
+    /// are taken inside its pass and checked after the passes, so a failure leaves no encoder open.
+    API_AVAILABLE(macos(26.0)) void passBreaksTest(MetalDevice& device)
+    {
+        CaptureLog log(LLError::LEVEL_WARN);
+        DrawTarget target = drawTarget(device);
+        VertexStreams streams;
+        Ref<Buffer> buffer = wholeRect(device, target, streams);
+        Encoder& encoder = device.encoder();
+        Ref<Texture> texture = device.createTexture(sizedDesc(Format::RGBA8Unorm, TEXTURE_SAMPLED, 1, 1), "pass breaks");
+        tut::ensure("the texture", texture.notNull());
+        const Region texel{ 0, 0, 1, 1 };
+        MetalEncoderStats before;
+        const auto since = [&]()
+        {
+            const MetalEncoderStats now = metalEncoderStats(device);
+            MetalEncoderStats delta;
+            delta.passBreaks = now.passBreaks - before.passBreaks;
+            delta.uploadBreaks = now.uploadBreaks - before.uploadBreaks;
+            delta.uploadPassBreaks = now.uploadPassBreaks - before.uploadPassBreaks;
+            return delta;
+        };
+
+        before = metalEncoderStats(device);
+        tut::ensure("(a) the pass begins", encoder.beginRenderPass(drawPass(target)));
+        bindDraw(encoder, target, buffer, streams);
+        encoder.draw(PrimitiveType::Triangles, 0, 6);
+        encoder.uploadTexture(texture.get(), 0, 0, texel, PixelLayout(), bytesOf(RED));
+        const MetalEncoderStats a = since();
+        encoder.endRenderPass();
+
+        before = metalEncoderStats(device);
+        tut::ensure("(b) the pass begins", encoder.beginRenderPass(passOn(target.color, target.depth)));
+        encoder.uploadTexture(texture.get(), 0, 0, texel, PixelLayout(), bytesOf(GREEN_RGBA));
+        const MetalEncoderStats b = since();
+        encoder.endRenderPass();
+
+        before = metalEncoderStats(device);
+        tut::ensure("(c) the pass begins", encoder.beginRenderPass(passOn(target.color, target.depth)));
+        bindDraw(encoder, target, buffer, streams);
+        encoder.draw(PrimitiveType::Triangles, 0, 6);
+        Ref<Readback> readback = encoder.readback(target.color.get(), 0, 0, texel, PixelLayout());
+        const MetalEncoderStats readOnly = since();
+        encoder.draw(PrimitiveType::Triangles, 0, 6);
+        const MetalEncoderStats c = since();
+        encoder.endRenderPass();
+
+        before = metalEncoderStats(device);
+        encoder.uploadTexture(texture.get(), 0, 0, texel, PixelLayout(), bytesOf(RED));
+        const MetalEncoderStats d = since();
+
+        ensureEqual("(a) an upload after a draw in a pass: one upload break", a.uploadBreaks, U64(1));
+        ensureEqual("(a) and one pass break", a.passBreaks, U64(1));
+        ensureEqual("(a) and one upload pass break: the upload closed the segment", a.uploadPassBreaks, U64(1));
+        ensureEqual("(b) an upload with nothing to close: one upload break", b.uploadBreaks, U64(1));
+        ensureEqual("(b) and no pass break", b.passBreaks, U64(0));
+        ensureEqual("(b) and no upload pass break", b.uploadPassBreaks, U64(0));
+        tut::ensure("(c) the readback is made", readback.notNull());
+        ensureEqual("(c) the readback alone breaks nothing",
+                    readOnly.passBreaks + readOnly.uploadBreaks + readOnly.uploadPassBreaks, U64(0));
+        ensureEqual("(c) the draw that reaches the readback: one pass break", c.passBreaks, U64(1));
+        ensureEqual("(c) and no upload break", c.uploadBreaks, U64(0));
+        ensureEqual("(c) and no upload pass break", c.uploadPassBreaks, U64(0));
+        ensureEqual("(d) an upload outside a pass: no upload break", d.uploadBreaks, U64(0));
+        ensureEqual("(d) and no pass break", d.passBreaks, U64(0));
+        ensureEqual("(d) and no upload pass break", d.uploadPassBreaks, U64(0));
+        readback->wait();
+        endCleanly(device, log);
+    }
+
+    /// t146 (P3-01g U5, G10): a 4x pass drawn with a 4x pipeline and its resolve through copyTexture into one sample,
+    /// under validation; a resolve into a larger level, a readback of the 4x texture (by the tracker) and an upload
+    /// into it are refused with one WARN line each and no Metal call.
+    API_AVAILABLE(macos(26.0)) void msaaResolveTest(MetalDevice& device)
+    {
+        tut::ensure("maxSamples is at least 4: " + std::to_string(device.capabilities().maxSamples),
+                    device.capabilities().maxSamples >= 4);
+        Encoder& encoder = device.encoder();
+        const Region whole{ 0, 0, DRAW_SIZE, DRAW_SIZE };
+        TextureDesc multisampled = sizedDesc(Format::RGBA8Unorm, TEXTURE_RENDER_TARGET, DRAW_SIZE, DRAW_SIZE);
+        multisampled.samples = 4;
+        Ref<Texture> ms = device.createTexture(multisampled, "msaa 4x");
+        Ref<Texture> resolved = device.createTexture(sizedDesc(Format::RGBA8Unorm, TEXTURE_READBACK, DRAW_SIZE, DRAW_SIZE),
+                                                     "msaa resolved");
+        Ref<Texture> white = device.createTexture(sizedDesc(Format::RGBA8Unorm, TEXTURE_SAMPLED, 1, 1), "msaa white");
+        tut::ensure("the textures are made", ms.notNull() && resolved.notNull() && white.notNull());
+        encoder.uploadTexture(white.get(), 0, 0, { 0, 0, 1, 1 }, PixelLayout(), bytesOf(WHITE_RGBA));
+        Ref<Program> program = ready(device.createProgram(uiProgramDesc()));
+        PipelineDesc pipelineDesc;
+        pipelineDesc.attributeMask = UI_MASK;
+        pipelineDesc.colorFormats[0] = Format::RGBA8Unorm;
+        pipelineDesc.samples = 4;
+        Ref<Pipeline> pipeline = device.getPipeline(*program, pipelineDesc);
+        tut::ensure("the 4x pipeline is made", pipeline.notNull());
+        // The lower left half of the target. Its diagonal runs through the centres of the pixels with x + y = 63 in
+        // GL's rows, so a 4x pattern covers part of each of them.
+        DrawVertices vertices;
+        vertices.positions = { { -1.f, -1.f, 0, 1 }, { 1.f, -1.f, 0, 1 }, { -1.f, 1.f, 0, 1 } };
+        vertices.colors = { WHITE_RGBA, WHITE_RGBA, WHITE_RGBA };
+        VertexStreams streams;
+        Ref<Buffer> buffer = vertexBuffer(device, vertices, streams);
+        RenderPassDesc pass;
+        pass.color[0].texture = ms;
+        pass.color[0].load = LoadAction::Clear;
+        pass.color[0].clear = { 0.f, 0.f, 0.f, 1.f };
+        pass.colorCount = 1;
+        pass.name = "msaa 4x";
+        Ref<Readback> image;
+        {
+            CaptureLog log(LLError::LEVEL_WARN);
+            setUiUniforms(encoder, program.get(), translation(0, 0));
+            const U64 encoders = device.metalEncoder().renderEncoders();
+            tut::ensure("the 4x pass begins", encoder.beginRenderPass(pass));
+            encoder.setPipeline(pipeline.get());
+            encoder.setVertexBuffer(buffer.get(), streams);
+            encoder.setTexture(0, white.get(), pointClamp());
+            encoder.draw(PrimitiveType::Triangles, 0, 3);
+            encoder.endRenderPass();
+            encoder.copyTexture(ms.get(), 0, 0, whole, resolved.get(), 0, 0, 0, 0);
+            ensureEqual("the 4x pass and the resolve's pass: two render encoders",
+                        device.metalEncoder().renderEncoders() - encoders, U64(2));
+            tut::ensure("the resolve wrote the destination", metalWritten(resolved.get(), 0, 0));
+            image = encoder.readback(resolved.get(), 0, 0, whole, PixelLayout());
+            tut::ensure("the destination's readback is made", image.notNull());
+            image->wait();
+            ensureEqual("the 4x pass and its resolve: no WARN line", occurrences(log, "WARNING #RHI#"), size_t(0));
+        }
+        size_t between = 0;
+        for (U32 y = 0; y < DRAW_SIZE; ++y)
+        {
+            for (U32 x = 0; x < DRAW_SIZE; ++x)
+            {
+                const Rgba pixel = pixelAt(image, x, y);
+                const std::string where = "(" + std::to_string(x) + ", " + std::to_string(y) + ")";
+                if (pixel[3] != 255)
+                {
+                    tut::fail("the resolve: pixel " + where + " is " + describe(pixel) + ", expected alpha 255");
+                }
+                // One pixel on each side of the edge's row of pixels is left to the rasteriser.
+                const U32 diagonal = x + y;
+                const std::optional<Rgba> expected = diagonal <= 61   ? std::optional<Rgba>(WHITE_RGBA)
+                                                     : diagonal >= 65 ? std::optional<Rgba>(BLACK)
+                                                                      : std::nullopt;
+                if (expected && pixel != *expected)
+                {
+                    tut::fail("the resolve: pixel " + where + " is " + describe(pixel) + ", expected " +
+                              describe(*expected));
+                }
+                if (!expected && pixel[0] > 0 && pixel[0] < 255)
+                {
+                    ++between;
+                }
+            }
+        }
+        tut::ensure("the resolve: an edge pixel strictly between black and white (" + std::to_string(between) + ")",
+                    between > 0);
+
+        // A larger destination at level 0: Metal's validation would fail the size (a run-time probe), so the backend
+        // refuses it first and the destination keeps its texels.
+        constexpr U32 LARGER = 80;
+        Ref<Texture> larger = device.createTexture(sizedDesc(Format::RGBA8Unorm, TEXTURE_READBACK, LARGER, LARGER),
+                                                   "msaa larger");
+        tut::ensure("the larger destination is made", larger.notNull());
+        const std::vector<Rgba> reds(size_t(LARGER) * LARGER, RED);
+        encoder.uploadTexture(larger.get(), 0, 0, { 0, 0, LARGER, LARGER }, PixelLayout(),
+                              std::as_bytes(std::span<const Rgba>(reds)));
+        {
+            CaptureLog log(LLError::LEVEL_WARN);
+            const U64 encoders = device.metalEncoder().renderEncoders();
+            const U64 transfers = encoder.state().transfers();
+            encoder.copyTexture(ms.get(), 0, 0, whole, larger.get(), 0, 0, 0, 0);
+            ensureEqual("a larger destination: one WARN line", occurrences(log, "WARNING #RHI#"), size_t(1));
+            ensureEqual("a larger destination: not a transfer (P2-R2, R31)", encoder.state().transfers() - transfers,
+                        U64(0));
+            ensureEqual("a larger destination: the WARN names P3-08", occurrences(log, "P3-08"), size_t(1));
+            ensureEqual("a larger destination: no render encoder", device.metalEncoder().renderEncoders() - encoders,
+                        U64(0));
+        }
+        Ref<Readback> kept = encoder.readback(larger.get(), 0, 0, { 0, 0, LARGER, LARGER }, PixelLayout());
+        tut::ensure("the larger destination's readback is made", kept.notNull());
+        kept->wait();
+        const std::span<const std::byte> keptBytes = kept->data();
+        ensureEqual("the larger destination's readback: the size", keptBytes.size(), reds.size() * 4);
+        tut::ensure("the larger destination is untouched",
+                    std::memcmp(keptBytes.data(), reds.data(), keptBytes.size()) == 0);
+
+        // A readback of the 4x texture: the tracker refuses it, since createTexture refuses a multisampled texture
+        // with TEXTURE_READBACK (textureRefusal) and the tracker's checks are always on on Metal; the backend has no
+        // second check of its own.
+        {
+            CaptureLog log(LLError::LEVEL_WARN);
+            tut::ensure("a readback of the 4x texture: null",
+                        encoder.readback(ms.get(), 0, 0, whole, PixelLayout()).isNull());
+            ensureEqual("a readback of the 4x texture: one WARN line", occurrences(log, "WARNING #RHI#"), size_t(1));
+            ensureEqual("a readback of the 4x texture: the tracker's refusal", occurrences(log, "cannot be read back"),
+                        size_t(1));
+        }
+        // An upload into the 4x texture, inside a pass that has drawn: refused before any Metal call (P3-08), so the
+        // pass does not break, no copy encoder begins and the pass's one render encoder stays open.
+        {
+            CaptureLog log(LLError::LEVEL_WARN);
+            pass.color[0].load = LoadAction::Load;
+            setUiUniforms(encoder, program.get(), translation(0, 0));
+            tut::ensure("the 4x pass for the upload begins", encoder.beginRenderPass(pass));
+            encoder.setPipeline(pipeline.get());
+            encoder.setVertexBuffer(buffer.get(), streams);
+            encoder.setTexture(0, white.get(), pointClamp());
+            encoder.draw(PrimitiveType::Triangles, 0, 3);
+            const U64 encoders = device.metalEncoder().renderEncoders();
+            const U64 copies = device.copyEncodersBegun();
+            const MetalEncoderStats stats = metalEncoderStats(device);
+            const std::vector<Rgba> reds(size_t(DRAW_SIZE) * DRAW_SIZE, RED);
+            encoder.uploadTexture(ms.get(), 0, 0, whole, PixelLayout(), std::as_bytes(std::span<const Rgba>(reds)));
+            const MetalEncoderStats after = metalEncoderStats(device);
+            const U64 encodersAfter = device.metalEncoder().renderEncoders();
+            const U64 copiesAfter = device.copyEncodersBegun();
+            encoder.endRenderPass();
+            ensureEqual("an upload into the 4x texture: one WARN line", occurrences(log, "WARNING #RHI#"), size_t(1));
+            ensureEqual("an upload into the 4x texture: the WARN names P3-08", occurrences(log, "P3-08"), size_t(1));
+            ensureEqual("an upload into the 4x texture: no pass break",
+                        (after.passBreaks - stats.passBreaks) + (after.uploadBreaks - stats.uploadBreaks), U64(0));
+            ensureEqual("an upload into the 4x texture: no new render encoder", encodersAfter - encoders, U64(0));
+            ensureEqual("an upload into the 4x texture: no copy encoder", copiesAfter - copies, U64(0));
+        }
+        CaptureLog log(LLError::LEVEL_WARN);
+        endCleanly(device, log);
+    }
+
+    // P2-07b and P2-27: the facades F1', F1a and F2 on Metal ---------------------------------------------------------
+
+    /// A readback's bytes against the expected ones, naming the first that differs: ensureRead's check without a message
+    /// per byte, for whole levels.
+    void ensureBytes(const std::string& what, Ref<Readback> readback, const std::vector<U8>& expected)
+    {
+        tut::ensure(what + ": read back", readback.notNull());
+        readback->wait();
+        const std::span<const std::byte> data = readback->data();
+        ensureEqual(what + ": the size", data.size(), expected.size());
+        for (size_t i = 0; i < data.size() && i < expected.size(); ++i)
+        {
+            const U32 got = std::to_integer<U32>(data[i]);
+            if (got != U32(expected[i]))
+            {
+                tut::fail(what + ": byte " + std::to_string(i) + " (texel " + std::to_string(i / 4) + ", channel " +
+                          std::to_string(i % 4) + ") is " + std::to_string(got) + ", expected " +
+                          std::to_string(U32(expected[i])));
+            }
+        }
+    }
+
+    /// A level's RGBA bytes, distinct per level and texel.
+    std::vector<U8> levelBytes(U32 width, U32 height, U32 level)
+    {
+        std::vector<U8> bytes(size_t(width) * height * 4);
+        for (size_t i = 0; i < bytes.size(); ++i)
+        {
+            bytes[i] = U8(i * 13 + level * 41 + (i >> 9));
+        }
+        return bytes;
+    }
+
+    /// The viewer's Metal device as MetalViewerRun makes it, on a CAMetalLayer of the given size, so it has a surface and
+    /// its back buffer (decision 7).
+    struct API_AVAILABLE(macos(26.0)) MetalViewerSurfaceRun
+    {
+        MetalDevice* device = nullptr;
+
+        MetalViewerSurfaceRun(CAMetalLayer* layer, U32 width, U32 height)
+        {
+            setViewerBackend(BackendType::Metal);
+            DeviceCreateInfo info;
+            info.backend = chooseBackend(BackendType::Metal);
+            info.window.window = (__bridge void*)layer;
+            info.width = width;
+            info.height = height;
+            device = static_cast<MetalDevice*>(createViewerDevice(info));
+            tut::ensure("the viewer's Metal device on the layer", device != nullptr && device->surface() != nullptr);
+            gGLManager.initForDevice(device->capabilities());
+            gGL.init(false);
+            LLVertexBuffer::initClass(nullptr);
+        }
+
+        ~MetalViewerSurfaceRun()
+        {
+            LLVertexBuffer::cleanupClass();
+            gGL.getTexUnit(0)->unbind(LLTexUnit::TT_TEXTURE);
+            releaseViewerDevice();
+            setViewerBackend(BackendType::GL);
+            gGLManager.mInited = false;
+        }
+    };
+
+    /// t151 (P2-07b, F1' and F1a): createEmptyOwnTexture on the viewer's Metal device makes the image's own texture without
+    /// a GL name and draws none (true; bound, LLTexUnit's GL binding stays 0), and specifyOwnLevel's bytes read back
+    /// exactly at levels 0 and 1; a second call gives a new texture. createTextureNames' 10 levels at 512x512 upload
+    /// through specifyTexture and read back exactly, level by level.
+    API_AVAILABLE(macos(26.0)) void ownTextureLevelsTest()
+    {
+        MetalViewerRun run;
+        MetalDevice& device = *run.device;
+        CaptureLog log(LLError::LEVEL_WARN);
+        @autoreleasepool
+        {
+            const LLImageGL::NameDraws before = LLImageGL::nameDraws();
+            constexpr U8 usage = TEXTURE_SAMPLED | TEXTURE_RENDER_TARGET | TEXTURE_READBACK;
+            LLPointer<LLImageGL> image = new LLImageGL(false);
+            image->setExplicitFormat(GL_RGBA, GL_RGBA);
+            tut::ensure("setSize", image->setSize(16, 8, 4, 0));
+            tut::ensure("createEmptyOwnTexture is true", image->createEmptyOwnTexture(usage, 2, false));
+            Texture* texture = image->getRHITexture();
+            tut::ensure("the image's own texture with storage", texture != nullptr && metalTexture(texture) != nil);
+            ensureEqual("16 wide", texture->desc().width, 16u);
+            ensureEqual("8 high", texture->desc().height, 8u);
+            ensureEqual("two levels", texture->desc().mipLevels, 2u);
+            ensureEqual("RGBA8Unorm", U32(texture->desc().format), U32(Format::RGBA8Unorm));
+            ensureEqual("its key is its id", image->getTextureKey(), texture->id());
+            ensureEqual("no name drawn", LLImageGL::nameDraws().names, before.names);
+            tut::ensure("bound as the caller binds it", gGL.getTexUnit(0)->bind(image.get()));
+            // No GL name: the unit's GL binding stays 0, and it records the texture's id (as t48)
+            ensureEqual("no GL name bound", gGL.getTexUnit(0)->getCurrTexture(), 0u);
+            ensureEqual("the unit records the texture's id", gGL.getTexUnit(0)->getCurrTextureId(), texture->id());
+            const std::vector<U8> level0 = levelBytes(16, 8, 0);
+            const std::vector<U8> level1 = levelBytes(8, 4, 1);
+            const LLImageGL::DeviceCounts devices = LLImageGL::deviceCounts();
+            image->specifyOwnLevel(0, GL_RGBA, 16, 8, GL_RGBA, GL_UNSIGNED_BYTE, level0.data(), false);
+            image->specifyOwnLevel(1, GL_RGBA, 8, 4, GL_RGBA, GL_UNSIGNED_BYTE, level1.data(), false);
+            ensureBytes("specifyOwnLevel's level 0", device.encoder().readback(texture, 0, 0, { 0, 0, 16, 8 }, PixelLayout()),
+                        level0);
+            ensureBytes("specifyOwnLevel's level 1", device.encoder().readback(texture, 1, 0, { 0, 0, 8, 4 }, PixelLayout()),
+                        level1);
+            ensureEqual("two uploads", LLImageGL::deviceCounts().uploads - devices.uploads, U64(2));
+            const U64 first = texture->id();
+            tut::ensure("a second call is true", image->createEmptyOwnTexture(usage, 2, false));
+            tut::ensure("a new texture", image->getRHITexture() != nullptr && image->getRHITexture()->id() != first);
+            tut::ensure("bound again", gGL.getTexUnit(0)->bind(image.get()));
+            ensureEqual("still no GL name bound", gGL.getTexUnit(0)->getCurrTexture(), 0u);
+            ensureEqual("the unit records the new texture's id", gGL.getTexUnit(0)->getCurrTextureId(),
+                        image->getRHITexture()->id());
+            ensureEqual("still no name drawn", LLImageGL::nameDraws().names, before.names);
+            gGL.getTexUnit(0)->unbind(LLTexUnit::TT_TEXTURE);
+            image->destroyGLTexture();
+            image = nullptr;
+
+            constexpr U32 RES = 512;
+            constexpr U32 LEVELS = 10;
+            std::vector<LLPointer<Texture>> textures;
+            tut::ensure("createTextureNames with 10 levels",
+                        LLImageGL::createTextureNames(textures, 1, LLTexUnit::TT_TEXTURE, GL_RGBA8, GL_RGBA, GL_UNSIGNED_BYTE,
+                                                      S32(RES), S32(RES), TEXTURE_SAMPLED | TEXTURE_READBACK, false, LEVELS));
+            ensureEqual("10 levels", textures[0]->desc().mipLevels, LEVELS);
+            ensureEqual("still no name drawn after createTextureNames", LLImageGL::nameDraws().names, before.names);
+            gGL.getTexUnit(0)->bindTexture(LLTexUnit::TT_TEXTURE, textures[0].get());
+            std::vector<std::vector<U8>> levels;
+            for (U32 level = 0; level < LEVELS; ++level)
+            {
+                const U32 size = RES >> level;
+                levels.push_back(levelBytes(size, size, level));
+                LLImageGL::specifyTexture(textures[0].get(), S32(level), GL_RGBA8, S32(size), S32(size), GL_RGBA,
+                                          GL_UNSIGNED_BYTE, levels.back().data(), false);
+            }
+            for (U32 level = 0; level < LEVELS; ++level)
+            {
+                const U32 size = RES >> level;
+                ensureBytes("level " + std::to_string(level),
+                            device.encoder().readback(textures[0].get(), level, 0, { 0, 0, size, size }, PixelLayout()),
+                            levels[level]);
+            }
+            gGL.getTexUnit(0)->unbind(LLTexUnit::TT_TEXTURE);
+            textures.clear();
+            finishFrame(device);
+        }
+        ensureEqual("t151: no WARN", occurrences(log, "WARNING"), size_t(0));
+    }
+
+    /// t156 (P2-R2, R18): load_exr's HDRI image through LLImageGL::createFloatImage on Metal at 3x2, not a power of two:
+    /// the image owns a 3x2 RGBA16Float texture with its full chain of two levels and draws no GL name, level 0 holds the
+    /// floats as halves, and nothing warns.
+    API_AVAILABLE(macos(26.0)) void floatImageTest()
+    {
+        MetalViewerRun run;
+        MetalDevice& device = *run.device;
+        CaptureLog log(LLError::LEVEL_WARN);
+        @autoreleasepool
+        {
+            const LLImageGL::NameDraws before = LLImageGL::nameDraws();
+            const F32 values[6] = { 0.f, 0.25f, 0.5f, 0.75f, 1.f, 2.f };
+            const U16 halves[6] = { 0x0000, 0x3400, 0x3800, 0x3A00, 0x3C00, 0x4000 };
+            std::vector<F32> rgba(3 * 2 * 4);
+            std::vector<U8> expected;
+            for (size_t i = 0; i < rgba.size(); ++i)
+            {
+                const size_t value = (i * 5) % 6;
+                rgba[i] = values[value];
+                // GL_RGB16F keeps no alpha, so it reads 1 (as t48's)
+                const U16 half = i % 4 == 3 ? U16(0x3C00) : halves[value];
+                expected.push_back(U8(half & 0xFF));
+                expected.push_back(U8(half >> 8));
+            }
+            LLPointer<LLImageGL> image = LLImageGL::createFloatImage(3, 2, rgba.data());
+            Texture* texture = image->getRHITexture();
+            tut::ensure("the image's own texture with storage", texture != nullptr && metalTexture(texture) != nil);
+            ensureEqual("3 wide", texture->desc().width, 3u);
+            ensureEqual("2 high", texture->desc().height, 2u);
+            ensureEqual("the full chain of two levels", texture->desc().mipLevels, 2u);
+            ensureEqual("RGBA16Float", U32(texture->desc().format), U32(Format::RGBA16Float));
+            ensureEqual("the image is 3 wide", image->getWidth(0), 3);
+            ensureEqual("and 2 high", image->getHeight(0), 2);
+            ensureEqual("no name drawn", LLImageGL::nameDraws().names, before.names);
+            device.submitAndWait();
+            const std::vector<U8> read = levelBytes(device, texture, 8);
+            std::string bytes;
+            for (U8 byte : read)
+            {
+                bytes += llformat("%02x", byte);
+            }
+            tut::ensure("level 0 holds the floats as halves: " + bytes, read == expected);
+            image->destroyGLTexture();
+            image = nullptr;
+            finishFrame(device);
+        }
+        ensureEqual("t156: no WARN", occurrences(log, "WARNING"), size_t(0));
+    }
+
+    /// t152 (P2-27, F2, equal sizes): on the viewer's Metal device with a 64x64 surface, the back buffer's stack pass open
+    /// after a clear to (0.25, 0.5, 0.75, 0.5): copyFromBackBuffer into a GL_RGB capture target of the back buffer's size
+    /// is tracked, splits the pass (counted), and the target reads (64, 128, 191, 255) everywhere, alpha 1 as GL keeps
+    /// none; the stack's pass stays open, and a draw after the copy is in a segment that loads, over the kept clear.
+    API_AVAILABLE(macos(26.0)) void backBufferCopyTest()
+    {
+        CAMetalLayer* layer = [CAMetalLayer layer];
+        MetalViewerSurfaceRun run(layer, DRAW_SIZE, DRAW_SIZE);
+        MetalDevice& device = *run.device;
+        CaptureLog log(LLError::LEVEL_WARN);
+        @autoreleasepool
+        {
+            Texture* back = device.surface()->backBuffer();
+            ensureEqual("the back buffer's width", back->desc().width, DRAW_SIZE);
+            ensureEqual("the back buffer's height", back->desc().height, DRAW_SIZE);
+            TintTarget tint = tintTarget(device);
+            LLRenderTarget capture;
+            tut::ensure("the capture target", capture.allocate(DRAW_SIZE, DRAW_SIZE, GL_RGB, false));
+            Texture* color = capture.getRHITexture(0);
+            tut::ensure("its colour of the device", color != nullptr);
+            ensureEqual("GL_RGB is RGBA8Unorm", U32(color->desc().format), U32(Format::RGBA8Unorm));
+            LLRenderTarget::setClearColor(0.25f, 0.5f, 0.75f, 0.5f);
+            tut::ensure("the back buffer's pass is open", LLRenderTarget::beginStackPass());
+            RenderPassDesc pass;
+            tut::ensure("its record", LLRenderTarget::currentPass(pass) && pass.color[0].texture.get() == back);
+            LLRenderTarget::clearCurrent(GL_COLOR_BUFFER_BIT);
+            const MetalEncoderStats stats = metalEncoderStats(device);
+            const LLGPUReadback::Counts counts = LLGPUCopy::counts();
+            gGL.getTexUnit(0)->bind(&capture);
+            const bool copied = capture.copyFromBackBuffer();
+            gGL.getTexUnit(0)->unbind(LLTexUnit::TT_TEXTURE);
+            const MetalEncoderStats after = metalEncoderStats(device);
+            tut::ensure("copied", copied);
+            ensureEqual("tracked", LLGPUCopy::counts().tracked - counts.tracked, U64(1));
+            ensureEqual("the copy split the pass", after.passBreaks - stats.passBreaks, U64(1));
+            tut::ensure("the stack's pass is still open", LLRenderTarget::currentPass(pass) && pass.color[0].texture.get() == back);
+            // A draw after the copy: its segment loads what the split stored
+            Encoder& encoder = device.encoder();
+            encoder.setViewport(0, 0, S32(DRAW_SIZE), S32(DRAW_SIZE));
+            encoder.setDepthStencilState(device.getDepthStencilState({ false, false, CompareFunc::AlwaysPass }).get());
+            tintDraw(encoder, tint, tint.square.get(), 0, RED);
+            LLRenderTarget::endStackPass();
+            MTL4RenderPassDescriptor* last = device.metalEncoder().lastPassDescriptor();
+            tut::ensure("the segment after the copy loads",
+                        last != nil && last.colorAttachments[0].loadAction == MTLLoadActionLoad);
+            const Rgba copiedColor = { 64, 128, 191, 255 };
+            const Rgba clearColor = { 64, 128, 191, 128 };
+            DrawTarget asCapture;
+            asCapture.color = color;
+            ensureImage("the copy: the clear's colour, alpha 1 in a target without alpha", readTarget(device, asCapture),
+                        [&](U32, U32) -> std::optional<Rgba> { return copiedColor; });
+            DrawTarget asBack;
+            asBack.color = back;
+            ensureImage("the back buffer: the draw over the kept clear", readTarget(device, asBack),
+                        [&](U32 x, U32 y) -> std::optional<Rgba> { return x < 16 && y < 16 ? RED : clearColor; });
+            capture.release();
+            finishFrame(device);
+        }
+        ensureEqual("t152: no WARN", occurrences(log, "WARNING"), size_t(0));
+    }
+
+    /// t153 (P2-27, F2, C4's region probe): a 64x48 back buffer holding a texel pattern and a GL_RGB capture target of
+    /// 48x32: copyFromBackBuffer copies the region (0, 0, 48, 32) under API Validation (llscenemonitor.cpp:172-173 gives
+    /// the capture target the world view's size, the back buffer has the drawable's). MTL4ComputeCommandEncoder.h:237-238
+    /// asks for a destination level of the source level's size; a run-time probe found API Validation silent on a
+    /// region copy between sizes, so the copy is tracked and the target holds the region's texels exactly, alpha 1.
+    API_AVAILABLE(macos(26.0)) void backBufferRegionTest()
+    {
+        CAMetalLayer* layer = [CAMetalLayer layer];
+        MetalViewerSurfaceRun run(layer, 64, 48);
+        MetalDevice& device = *run.device;
+        CaptureLog log(LLError::LEVEL_WARN);
+        @autoreleasepool
+        {
+            Texture* back = device.surface()->backBuffer();
+            ensureEqual("the back buffer's width", back->desc().width, 64u);
+            ensureEqual("the back buffer's height", back->desc().height, 48u);
+            // Every texel differs, so a region off by a row or a column, or with its width and height swapped, shows
+            auto texel = [](U32 x, U32 y) -> Rgba { return { U8(4 * x), U8(5 * y), U8((7 * x + 13 * y + 1) & 255), 128 }; };
+            std::vector<U8> pattern;
+            for (U32 y = 0; y < 48; ++y)
+            {
+                for (U32 x = 0; x < 64; ++x)
+                {
+                    const Rgba t = texel(x, y);
+                    pattern.insert(pattern.end(), t.begin(), t.end());
+                }
+            }
+            device.encoder().uploadTexture(back, 0, 0, { 0, 0, 64, 48 }, PixelLayout(), asBytes(pattern));
+            LLRenderTarget capture;
+            tut::ensure("the capture target", capture.allocate(48, 32, GL_RGB, false));
+            Texture* color = capture.getRHITexture(0);
+            tut::ensure("its colour of the device", color != nullptr);
+            const LLGPUReadback::Counts counts = LLGPUCopy::counts();
+            gGL.getTexUnit(0)->bind(&capture);
+            const bool copied = capture.copyFromBackBuffer();
+            gGL.getTexUnit(0)->unbind(LLTexUnit::TT_TEXTURE);
+            tut::ensure("copied", copied);
+            ensureEqual("tracked", LLGPUCopy::counts().tracked - counts.tracked, U64(1));
+            std::vector<U8> expected;
+            for (U32 y = 0; y < 32; ++y)
+            {
+                for (U32 x = 0; x < 48; ++x)
+                {
+                    Rgba t = texel(x, y);
+                    t[3] = 255;
+                    expected.insert(expected.end(), t.begin(), t.end());
+                }
+            }
+            ensureBytes("the region in the 48x32 target", device.encoder().readback(color, 0, 0, { 0, 0, 48, 32 }, PixelLayout()),
+                        expected);
+            capture.release();
+            finishFrame(device);
+        }
+        ensureEqual("t153: no WARN", occurrences(log, "WARNING"), size_t(0));
+    }
+
+    /// t155 (P2-27, F2, a target larger than the back buffer): a 48x32 back buffer holding a texel pattern and a GL_RGB
+    /// capture target of 64x48 filled with one colour, as during a snapshot above the window's size, where the capture
+    /// target has the world view's size and the back buffer the window's: copyFromBackBuffer copies the overlap
+    /// (0, 0, 48, 32) under API Validation, tracked and not outside; the overlap holds the back buffer's texels exactly,
+    /// alpha 1, and the target's texels outside it keep the fill, since GL defined only the overlap.
+    API_AVAILABLE(macos(26.0)) void backBufferOverlapTest()
+    {
+        constexpr U32 BACK_WIDTH = 48;
+        constexpr U32 BACK_HEIGHT = 32;
+        constexpr U32 TARGET_WIDTH = 64;
+        constexpr U32 TARGET_HEIGHT = 48;
+        CAMetalLayer* layer = [CAMetalLayer layer];
+        MetalViewerSurfaceRun run(layer, BACK_WIDTH, BACK_HEIGHT);
+        MetalDevice& device = *run.device;
+        CaptureLog log(LLError::LEVEL_WARN);
+        @autoreleasepool
+        {
+            Texture* back = device.surface()->backBuffer();
+            ensureEqual("the back buffer's width", back->desc().width, BACK_WIDTH);
+            ensureEqual("the back buffer's height", back->desc().height, BACK_HEIGHT);
+            // Every texel differs, so an overlap off by a row or a column shows
+            auto texel = [](U32 x, U32 y) -> Rgba { return { U8(4 * x), U8(5 * y), U8((7 * x + 13 * y + 1) & 255), 128 }; };
+            std::vector<U8> pattern;
+            for (U32 y = 0; y < BACK_HEIGHT; ++y)
+            {
+                for (U32 x = 0; x < BACK_WIDTH; ++x)
+                {
+                    const Rgba t = texel(x, y);
+                    pattern.insert(pattern.end(), t.begin(), t.end());
+                }
+            }
+            device.encoder().uploadTexture(back, 0, 0, { 0, 0, BACK_WIDTH, BACK_HEIGHT }, PixelLayout(), asBytes(pattern));
+            LLRenderTarget capture;
+            tut::ensure("the capture target", capture.allocate(TARGET_WIDTH, TARGET_HEIGHT, GL_RGB, false));
+            Texture* color = capture.getRHITexture(0);
+            tut::ensure("its colour of the device", color != nullptr);
+            const Rgba fill = { 9, 99, 199, 255 };
+            std::vector<U8> filled;
+            for (U32 i = 0; i < TARGET_WIDTH * TARGET_HEIGHT; ++i)
+            {
+                filled.insert(filled.end(), fill.begin(), fill.end());
+            }
+            device.encoder().uploadTexture(color, 0, 0, { 0, 0, TARGET_WIDTH, TARGET_HEIGHT }, PixelLayout(), asBytes(filled));
+            const LLGPUReadback::Counts counts = LLGPUCopy::counts();
+            gGL.getTexUnit(0)->bind(&capture);
+            const bool copied = capture.copyFromBackBuffer();
+            gGL.getTexUnit(0)->unbind(LLTexUnit::TT_TEXTURE);
+            const LLGPUReadback::Counts after = LLGPUCopy::counts();
+            tut::ensure("copied", copied);
+            ensureEqual("tracked", after.tracked - counts.tracked, U64(1));
+            ensureEqual("not outside", after.outside - counts.outside, U64(0));
+            const EncoderTracker::Transfer& transfer = device.encoder().state().lastTransfer();
+            tut::ensure("the overlap from (0, 0) into (0, 0)", transfer.region.x == 0 && transfer.region.y == 0 &&
+                                                                    transfer.region.width == BACK_WIDTH &&
+                                                                    transfer.region.height == BACK_HEIGHT &&
+                                                                    transfer.dstX == 0 && transfer.dstY == 0);
+            std::vector<U8> expected;
+            for (U32 y = 0; y < TARGET_HEIGHT; ++y)
+            {
+                for (U32 x = 0; x < TARGET_WIDTH; ++x)
+                {
+                    Rgba t = fill;
+                    if (x < BACK_WIDTH && y < BACK_HEIGHT)
+                    {
+                        t = texel(x, y);
+                        t[3] = 255;
+                    }
+                    expected.insert(expected.end(), t.begin(), t.end());
+                }
+            }
+            ensureBytes("the overlap in the 64x48 target and the fill around it",
+                        device.encoder().readback(color, 0, 0, { 0, 0, TARGET_WIDTH, TARGET_HEIGHT }, PixelLayout()),
+                        expected);
+            capture.release();
+            finishFrame(device);
+        }
+        ensureEqual("t155: no WARN", occurrences(log, "WARNING"), size_t(0));
+    }
+
+    /// P3-03a: one upload thread for a test, which runs each job the test gives it and returns once it is done. The same
+    /// thread throughout, as LLImageGLThread: the upload context takes the first thread other than the recording thread
+    /// as the upload thread, and a new thread may get a finished thread's id.
+    class TestUploadThread
+    {
+    public:
+        TestUploadThread() : mThread([this]() { loop(); }) {}
+        ~TestUploadThread()
+        {
+            {
+                std::lock_guard<std::mutex> lock(mMutex);
+                mStop = true;
+            }
+            mChanged.notify_all();
+            mThread.join();
+        }
+        void run(std::function<void()> job)
+        {
+            std::unique_lock<std::mutex> lock(mMutex);
+            mJob = std::move(job);
+            mDone = false;
+            mChanged.notify_all();
+            mChanged.wait(lock, [this]() { return mDone; });
+        }
+
+    private:
+        void loop()
+        {
+            std::unique_lock<std::mutex> lock(mMutex);
+            while (true)
+            {
+                mChanged.wait(lock, [this]() { return mStop || mJob; });
+                if (!mJob)
+                {
+                    return;
+                }
+                std::function<void()> job = std::exchange(mJob, nullptr);
+                lock.unlock();
+                job();
+                lock.lock();
+                mDone = true;
+                mChanged.notify_all();
+            }
+        }
+
+        std::mutex mMutex;
+        std::condition_variable mChanged;
+        std::function<void()> mJob;
+        bool mDone = true;
+        bool mStop = false;
+        std::thread mThread; ///< last, so the members above exist before it runs
+    };
+
+    /// t170 (P3-03a S1, C47, R1): (1) an upload on the upload thread (TestUploadThread) behind the test's gate on the upload
+    /// queue (encodeWaitForEvent), so its fence has not signalled when the main thread's encoder waits for it. A readback
+    /// on the main queue, recorded after waitForFence and sent before the gate opens, waits on the GPU (not ready while
+    /// the gate is shut) and reads the thread's bytes, not the main thread's earlier ones: MTL4CommandQueue's
+    /// waitForEvent on the Metal 3 queue's MTLSharedEvent, under API Validation. (2) A texture made on the upload thread
+    /// and filled in part reads, after waitForFence, what the main thread's encoder writes for the same calls: the
+    /// region and GL's zeros around it, byte for byte (the shared conversion and zeros). No Fence::wait() on the main
+    /// thread, one queue wait per unsignalled fence, a submit and an upload each; no WARN line.
+    API_AVAILABLE(macos(26.0)) void uploadQueueOrderTest(MetalDevice& device)
+    {
+        CaptureLog log(LLError::LEVEL_WARN);
+        Encoder& encoder = device.encoder();
+        UploadContext& uploads = device.uploadContext();
+        const U32 side = 16;
+        const Region whole{ 0, 0, side, side };
+        const U8 usage = TEXTURE_SAMPLED | TEXTURE_READBACK;
+        Ref<Texture> texture = device.createTexture(sizedDesc(Format::RGBA8Unorm, usage, side, side), "upload queue");
+        const std::vector<U8> before = numbered(size_t(side) * side * 4, 3);
+        const std::vector<U8> after = numbered(size_t(side) * side * 4, 101);
+        encoder.uploadTexture(texture.get(), 0, 0, whole, PixelLayout(), asBytes(before));
+        device.submitAndWait();
+        const MetalUploadCounts start = metalUploadCounts(device);
+        tut::ensure("no upload queue before the upload thread's first upload", device.metalUploads().queue() == nil);
+
+        // (1) The GPU order
+        id<MTLSharedEvent> gate = [device.mtlDevice() newSharedEvent];
+        device.metalUploads().gateNextCommands(gate, 1);
+        Ref<Fence> fence;
+        TestUploadThread thread;
+        thread.run([&]()
+        {
+            uploads.uploadTexture(texture.get(), 0, 0, whole, PixelLayout(), asBytes(after));
+            fence = uploads.submit();
+        });
+        tut::ensure("the upload thread's fence", fence.notNull());
+        const bool shut = !fence->signaled();
+        encoder.waitForFence(fence.get());
+        Ref<Readback> read = encoder.readback(texture.get(), 0, 0, whole, PixelLayout());
+        device.submitPending(); // the readback's command buffer, which waits on the queue for the upload
+        std::this_thread::sleep_for(std::chrono::milliseconds(50));
+        const bool waited = !read->ready();
+        gate.signaledValue = 1;
+        tut::ensure("the upload queue was made at the first upload", device.metalUploads().queue() != nil);
+        tut::ensure("the fence has not signalled behind the gate", shut);
+        tut::ensure("the readback after waitForFence waited on the GPU while the gate was shut", waited);
+        ensureRead("(1) the readback reads the upload thread's bytes", read, after);
+        tut::ensure("the fence has signalled", fence->signaled());
+        MetalUploadCounts counts = metalUploadCounts(device);
+        ensureEqual("(1) one submit", counts.submits - start.submits, U64(1));
+        ensureEqual("(1) one upload", counts.uploads - start.uploads, U64(1));
+        ensureEqual("(1) one queue wait", counts.queueWaits - start.queueWaits, U64(1));
+        ensureEqual("(1) no Fence::wait() on the main thread", counts.mainThreadWaits, U64(0));
+        ensureEqual("(1) no error", counts.errors, U64(0));
+
+        // (2) A texture made on the upload thread, a region in its middle: as the main thread's encoder writes it
+        const Region middle{ 5, 6, 7, 3 };
+        const std::vector<U8> region = numbered(size_t(middle.width) * middle.height * 4, 40);
+        Ref<Texture> threaded;
+        thread.run([&]()
+        {
+            threaded = device.createTexture(sizedDesc(Format::RGBA8Unorm, usage, side, side), "made on the upload thread");
+            uploads.uploadTexture(threaded.get(), 0, 0, middle, PixelLayout(), asBytes(region));
+            fence = uploads.submit();
+        });
+        tut::ensure("(2) a texture made on the upload thread", threaded.notNull());
+        tut::ensure("(2) resident from creation (D10)", device.residency().contains(metalTexture(threaded.get())));
+        encoder.waitForFence(fence.get());
+        Ref<Texture> reference = device.createTexture(sizedDesc(Format::RGBA8Unorm, usage, side, side), "made on main");
+        encoder.uploadTexture(reference.get(), 0, 0, middle, PixelLayout(), asBytes(region));
+        Ref<Readback> fromThread = encoder.readback(threaded.get(), 0, 0, whole, PixelLayout());
+        Ref<Readback> fromMain = encoder.readback(reference.get(), 0, 0, whole, PixelLayout());
+        fromMain->wait();
+        const std::span<const std::byte> mainBytes = fromMain->data();
+        std::vector<U8> expected(mainBytes.size());
+        std::transform(mainBytes.begin(), mainBytes.end(), expected.begin(),
+                       [](std::byte b) { return std::to_integer<U8>(b); });
+        ensureEqual("(2) the main thread's texture read back", expected.size(), size_t(side) * side * 4);
+        ensureEqual("(2) a zero outside the region", U32(expected[0]), U32(0));
+        ensureRead("(2) the upload thread's texture, as the main thread's: the region and 0 around it", fromThread,
+                   expected);
+        counts = metalUploadCounts(device);
+        ensureEqual("(2) two submits", counts.submits - start.submits, U64(2));
+        ensureEqual("(2) two uploads", counts.uploads - start.uploads, U64(2));
+        ensureEqual("(2) no Fence::wait() on the main thread", counts.mainThreadWaits, U64(0));
+        ensureEqual("(2) no error", counts.errors, U64(0));
+        fence = nullptr;
+        finishFrame(device);
+        std::ostringstream warnings;
+        log.streamto(warnings);
+        tut::ensure("t170: no WARN: " + warnings.str(), occurrences(log, "WARNING") == 0);
+    }
+
+    /// t171 (P3-03a S1, C47, P2-98's MT-3): waitForFence is keyed on Metal's own fence type. A null fence is no wait and
+    /// writes nothing; another backend's fence is no wait, is not called into (neither signaled() nor wait()) and gives
+    /// one WARN line; the recording thread's fence (value 0) is signalled at handover. No queue wait for any of them.
+    API_AVAILABLE(macos(26.0)) void foreignFenceTest(MetalDevice& device)
+    {
+        struct ForeignFence final : public Fence
+        {
+            mutable bool called = false;
+            bool signaled() const override
+            {
+                called = true;
+                return false;
+            }
+            void wait() override { called = true; }
+        };
+        Encoder& encoder = device.encoder();
+        const MetalUploadCounts start = metalUploadCounts(device);
+        {
+            CaptureLog log(LLError::LEVEL_WARN);
+            encoder.waitForFence(nullptr);
+            ensureEqual("a null fence: no WARN", occurrences(log, "WARNING"), size_t(0));
+        }
+        LLPointer<ForeignFence> foreign = new ForeignFence;
+        {
+            CaptureLog log(LLError::LEVEL_WARN);
+            encoder.waitForFence(foreign.get());
+            ensureEqual("another backend's fence: one WARN", occurrences(log, "WARNING"), size_t(1));
+            ensureEqual("naming the upload context's", occurrences(log, "not the Metal upload context's"), size_t(1));
+        }
+        tut::ensure("another backend's fence is not called into", !foreign->called);
+        Ref<Fence> own = device.uploadContext().submit();
+        tut::ensure("the recording thread's fence is signalled", own.notNull() && own->signaled());
+        encoder.waitForFence(own.get());
+        const MetalUploadCounts counts = metalUploadCounts(device);
+        ensureEqual("no queue wait", counts.queueWaits - start.queueWaits, U64(0));
+        ensureEqual("one fence signalled at handover", counts.signalledAtHandover - start.signalledAtHandover, U64(1));
+        ensureEqual("no submit on the upload queue", counts.submits - start.submits, U64(0));
+        finishFrame(device);
+    }
+
+    /// t172 (P3-03a S1, ARCHITECTURE.md decision 3: one recording thread): under the Metal debug setting the tests run
+    /// with, an Encoder call from another thread stops in LL_ERRS (caught by the test's error hook) before the tracker
+    /// changes: beginRenderPass leaves no pass open and the pass count as it was, setTexture binds nothing, and
+    /// waitForFence is checked too. The same calls on the main thread work. A device made without the setting checks
+    /// nothing.
+    API_AVAILABLE(macos(26.0)) void recordingThreadTest(MetalDevice& device)
+    {
+        tut::ensure("the tests run with the Metal debug setting", metalDebug());
+        Encoder& encoder = device.encoder();
+        Ref<Texture> color = device.createTexture(textureDesc(Format::RGBA8Unorm, TEXTURE_RENDER_TARGET), "thread check");
+        Ref<Texture> sampled = device.createTexture(textureDesc(Format::RGBA8Unorm, TEXTURE_SAMPLED), "thread sampled");
+        const RenderPassDesc pass = passOn(color, nullptr);
+        const U64 serial = encoder.state().passSerial();
+        const size_t bound = encoder.state().textures().size();
+        std::string begin, texture, fence;
+        {
+            WrapLLErrs errors;
+            std::thread other([&]()
+            {
+                begin = errors.catch_llerrs([&]() { encoder.beginRenderPass(pass); });
+                texture = errors.catch_llerrs([&]() { encoder.setTexture(3, sampled.get(), SamplerDesc()); });
+                fence = errors.catch_llerrs([&]() { encoder.waitForFence(nullptr); });
+            });
+            other.join();
+        }
+        tut::ensure("beginRenderPass from another thread: LL_ERRS '" + begin + "'",
+                    begin.find("beginRenderPass on another thread than the recording thread") != std::string::npos);
+        tut::ensure("setTexture from another thread: LL_ERRS '" + texture + "'",
+                    texture.find("setTexture on another thread than the recording thread") != std::string::npos);
+        tut::ensure("waitForFence from another thread: LL_ERRS '" + fence + "'",
+                    fence.find("waitForFence on another thread than the recording thread") != std::string::npos);
+        tut::ensure("no pass is open", !encoder.state().inPass());
+        ensureEqual("the pass count as it was", encoder.state().passSerial(), serial);
+        ensureEqual("nothing bound", encoder.state().textures().size(), bound);
+        tut::ensure("on the main thread the pass begins", encoder.beginRenderPass(pass));
+        encoder.endRenderPass();
+        {
+            MetalDebugOff off;
+            Ref<Device> unchecked = anotherDevice();
+            std::string error = "not run";
+            std::thread other([&]()
+            {
+                WrapLLErrs errors;
+                error = errors.catch_llerrs([&]() { unchecked->encoder().waitForFence(nullptr); });
+            });
+            other.join();
+            tut::ensure("without the debug setting nothing is checked: '" + error + "'", error.empty());
+            unchecked = nullptr;
+        }
+        finishFrame(device);
+    }
+
+    /// t173 (P3-03a S1): the upload thread's submit with nothing recorded gives a fence of value 0, signalled at once, and
+    /// makes no queue; the first thread other than the recording thread is the upload thread, so while it lives a second
+    /// thread's uploadTexture and submit each give one WARN line and do nothing; updateBuffer on the upload thread gives
+    /// one WARN line and does nothing.
+    API_AVAILABLE(macos(26.0)) void uploadThreadsTest(MetalDevice& device)
+    {
+        UploadContext& uploads = device.uploadContext();
+        const MetalUploadCounts start = metalUploadCounts(device);
+        Ref<Texture> texture = device.createTexture(textureDesc(Format::RGBA8Unorm, TEXTURE_SAMPLED), "second thread");
+        const std::vector<U8> bytes = numbered(4 * 4 * 4, 9);
+        BufferDesc bufferDesc;
+        bufferDesc.size = 64;
+        Ref<Buffer> buffer = device.createBuffer(bufferDesc, asBytes(std::vector<U8>(64, 0)), "upload thread buffer");
+        TestUploadThread upload;
+        Ref<Fence> empty;
+        upload.run([&]() { empty = uploads.submit(); });
+        tut::ensure("an empty submit's fence", empty.notNull());
+        tut::ensure("signalled at once", empty->signaled());
+        ensureEqual("value 0", static_cast<MetalUploadFence*>(empty.get())->value(), U64(0));
+        {
+            CaptureLog log(LLError::LEVEL_WARN);
+            std::thread second([&]()
+            {
+                uploads.uploadTexture(texture.get(), 0, 0, { 0, 0, 4, 4 }, PixelLayout(), asBytes(bytes));
+                uploads.submit();
+            });
+            second.join();
+            ensureEqual("a second thread: two WARN lines", occurrences(log, "WARNING"), size_t(2));
+            ensureEqual("both refused", occurrences(log, "on a second upload thread is refused"), size_t(2));
+        }
+        {
+            CaptureLog log(LLError::LEVEL_WARN);
+            upload.run([&]() { uploads.updateBuffer(buffer.get(), 0, asBytes(std::vector<U8>(16, 1))); });
+            ensureEqual("updateBuffer on the upload thread: one WARN", occurrences(log, "WARNING"), size_t(1));
+            ensureEqual("refused", occurrences(log, "updateBuffer on the upload thread is refused"), size_t(1));
+        }
+        const MetalUploadCounts counts = metalUploadCounts(device);
+        ensureEqual("no upload", counts.uploads - start.uploads, U64(0));
+        ensureEqual("no submit", counts.submits - start.submits, U64(0));
+        tut::ensure("no upload queue", device.metalUploads().queue() == nil);
+        finishFrame(device);
+    }
+
+    /// t174 (P3-03a S2, the design's choice 5): generateMipmaps on the upload thread notes the texture for the next
+    /// fence and draws nothing; waitForFence on that fence draws its mips once on the main encoder (a second waitForFence
+    /// draws none), and every level reads what the main thread's own generateMipmaps makes from the same level 0: R8 and
+    /// RGBA8 at 1x8 and 128x128, the sizes and 8-bit formats of level 1's probe_mips. No WARN line.
+    API_AVAILABLE(macos(26.0)) void deferredMipsTest(MetalDevice& device)
+    {
+        CaptureLog log(LLError::LEVEL_WARN);
+        Encoder& encoder = device.encoder();
+        UploadContext& uploads = device.uploadContext();
+        TestUploadThread thread;
+        const U8 usage = TEXTURE_SAMPLED | TEXTURE_READBACK; // as LLImageGL's, no render target (the mips' scratch)
+        const Format formats[2] = { Format::R8Unorm, Format::RGBA8Unorm };
+        const std::array<U32, 2> sizes[2] = { { 1, 8 }, { 128, 128 } };
+        for (const Format format : formats)
+        {
+            PixelLayout layout;
+            layout.components = format == Format::R8Unorm ? PixelLayout::Components::R : PixelLayout::Components::RGBA;
+            const U32 pixelBytes = format == Format::R8Unorm ? 1 : 4;
+            for (const std::array<U32, 2>& size : sizes)
+            {
+                const std::string what = std::string(format == Format::R8Unorm ? "R8 " : "RGBA8 ") + std::to_string(size[0])
+                                         + "x" + std::to_string(size[1]);
+                TextureDesc desc = sizedDesc(format, usage, size[0], size[1]);
+                desc.mipLevels = 1;
+                while (std::max(size[0], size[1]) >> desc.mipLevels)
+                {
+                    ++desc.mipLevels;
+                }
+                std::vector<U8> level0(size_t(size[0]) * size[1] * pixelBytes);
+                std::mt19937 random(size[0] * 1000 + size[1] + pixelBytes);
+                for (U8& byte : level0)
+                {
+                    byte = U8(random() & 0xff);
+                }
+                const Region whole{ 0, 0, size[0], size[1] };
+                Ref<Texture> mainMips = device.createTexture(desc, what + " main");
+                encoder.uploadTexture(mainMips.get(), 0, 0, whole, layout, asBytes(level0));
+                encoder.generateMipmaps(mainMips.get());
+
+                const MetalUploadCounts start = metalUploadCounts(device);
+                const U64 drawsBefore = device.metalEncoder().mipDraws();
+                Ref<Texture> threadMips;
+                Ref<Fence> fence;
+                thread.run([&]()
+                {
+                    threadMips = device.createTexture(desc, what + " upload thread");
+                    uploads.uploadTexture(threadMips.get(), 0, 0, whole, layout, asBytes(level0));
+                    uploads.generateMipmaps(threadMips.get());
+                    fence = uploads.submit();
+                });
+                ensureEqual(what + ": noted on the upload thread", metalUploadCounts(device).deferredMips - start.deferredMips,
+                            U64(1));
+                ensureEqual(what + ": no mip drawn on the upload thread", device.metalEncoder().mipDraws(), drawsBefore);
+                encoder.waitForFence(fence.get());
+                const U64 drawn = device.metalEncoder().mipDraws() - drawsBefore;
+                ensureEqual(what + ": the mips drawn at waitForFence", drawn, U64(desc.mipLevels - 1));
+                encoder.waitForFence(fence.get());
+                ensureEqual(what + ": once", device.metalEncoder().mipDraws() - drawsBefore, drawn);
+                for (U32 level = 1; level < desc.mipLevels; ++level)
+                {
+                    const Region region{ 0, 0, std::max(1u, size[0] >> level), std::max(1u, size[1] >> level) };
+                    Ref<Readback> expected = encoder.readback(mainMips.get(), level, 0, region, layout);
+                    Ref<Readback> actual = encoder.readback(threadMips.get(), level, 0, region, layout);
+                    expected->wait();
+                    actual->wait();
+                    const std::span<const std::byte> e = expected->data();
+                    const std::span<const std::byte> a = actual->data();
+                    ensureEqual(what + ": level " + std::to_string(level) + " size", a.size(), e.size());
+                    tut::ensure(what + ": level " + std::to_string(level) + " as the main thread's mips",
+                                !e.empty() && std::equal(e.begin(), e.end(), a.begin(), a.end()));
+                }
+                fence = nullptr;
+            }
+        }
+        finishFrame(device);
+        std::ostringstream warnings;
+        log.streamto(warnings);
+        tut::ensure("t174: no WARN: " + warnings.str(), occurrences(log, "WARNING") == 0);
+    }
+
+    /// P3-03a S3: the viewer's main queue, which LLImageGL finds by name when an image is made, as llrhigl_test.cpp's
+    /// MainLoop. What a check leaves in it runs before it closes, so no posted item keeps its image's reference.
+    struct MainLoop
+    {
+        LL::WorkQueue queue{ "mainloop", 1024, false };
+
+        ~MainLoop()
+        {
+            while (queue.size() > 0)
+            {
+                queue.runOne();
+            }
+            queue.close();
+        }
+    };
+
+    /// P3-03a S3: n bytes from a seeded generator.
+    std::vector<U8> randomBytes(size_t n, U32 seed)
+    {
+        std::vector<U8> bytes(n);
+        std::mt19937 random(seed);
+        for (U8& byte : bytes)
+        {
+            byte = U8(random() & 0xff);
+        }
+        return bytes;
+    }
+
+    /// P3-03a S3: one level of a texture through the main encoder's readback, RGBA8.
+    API_AVAILABLE(macos(26.0)) std::vector<U8> readLevel(MetalDevice& device, Texture* texture, U32 level, U32 side)
+    {
+        const U32 size = std::max(1u, side >> level);
+        Ref<Readback> read = device.encoder().readback(texture, level, 0, Region{ 0, 0, size, size }, PixelLayout());
+        read->wait();
+        const std::span<const std::byte> data = read->data();
+        const U8* bytes = reinterpret_cast<const U8*>(data.data());
+        return std::vector<U8>(bytes, bytes + data.size());
+    }
+
+    /// t175 (P3-03a S3, the design's choices 4 and 5): a fetched texture as LLViewerFetchedTexture makes it with
+    /// LLImageGLThread on: createGLTexture with an image on the upload thread (its own gGL initialised, as
+    /// LLImageGLThread::run does), whose syncToMainThread posts one swap item to the main queue, which then runs it. The
+    /// image gets the thread's texture as its handle; the item's handover is the encoder's waitForFence, so no
+    /// Fence::wait() on the main thread; the thread's mips are noted there and drawn at the handover; level 0 reads the
+    /// image's bytes and level 1 what createGLTexture on the main thread makes for the same image (the main encoder's
+    /// mips). The thread's createGLTexture adds nothing to the main thread's creation time. No WARN line.
+    API_AVAILABLE(macos(26.0)) void fetchedOnThreadTest()
+    {
+        MetalViewerRun run;
+        MetalDevice& device = *run.device;
+        CaptureLog log(LLError::LEVEL_WARN);
+        {
+            MainLoop main;
+            @autoreleasepool
+            {
+                const U32 side = 32;
+                const std::vector<U8> bytes = randomBytes(size_t(side) * side * 4, 175);
+                LLPointer<LLImageRaw> raw = new LLImageRaw(side, side, 4);
+                std::memcpy(raw->getData(), bytes.data(), bytes.size());
+
+                // The main thread's image of the same data: its level 1 is the main encoder's mips
+                LLPointer<LLImageGL> mainImage = new LLImageGL(side, side, 4, true, false);
+                tut::ensure("the main thread's createGLTexture", mainImage->createGLTexture(0, raw.get()));
+                tut::ensure("the main thread's image has its texture", mainImage->getRHITexture() != nullptr);
+
+                LLPointer<LLImageGL> image = new LLImageGL(side, side, 4, true, false);
+                const LLImageGL::SyncCounts before = LLImageGL::syncCounts();
+                const MetalUploadCounts start = metalUploadCounts(device);
+                bool created = false;
+                {
+                    TestUploadThread thread;
+                    thread.run([&]()
+                    {
+                        gGL.init(false);
+                        created = image->createGLTexture(0, raw.get());
+                        gGL.shutdown();
+                    });
+                }
+                const LLImageGL::SyncCounts posted = LLImageGL::syncCounts();
+                tut::ensure("createGLTexture on the upload thread", created);
+                tut::ensure("no texture before the swap item runs", image->getRHITexture() == nullptr);
+                ensureEqual("one sync from the thread", posted.threadSyncs - before.threadSyncs, U64(1));
+                ensureEqual("one fence", posted.fences - before.fences, U64(1));
+                ensureEqual("no main-thread creation time from the thread", posted.mainCreateUs, before.mainCreateUs);
+                ensureEqual("the thread's mips noted for the handover", metalUploadCounts(device).deferredMips - start.deferredMips,
+                            U64(1));
+                ensureEqual("one swap item on the main queue", main.queue.size(), size_t(1));
+                main.queue.runOne();
+
+                const LLImageGL::SyncCounts after = LLImageGL::syncCounts();
+                const MetalUploadCounts counts = metalUploadCounts(device);
+                Texture* swapped = image->getRHITexture();
+                tut::ensure("the image has the thread's texture as its handle", swapped != nullptr);
+                ensureEqual("one handle swap of the upload thread", after.threadHandleSwaps - before.threadHandleSwaps, U64(1));
+                ensureEqual("one handover", after.fenceWaits - before.fenceWaits, U64(1));
+                ensureEqual("one submit on the upload queue", counts.submits - start.submits, U64(1));
+                ensureEqual("the handover waited on the GPU or found the fence signalled",
+                            (counts.queueWaits - start.queueWaits) + (counts.signalledAtHandover - start.signalledAtHandover),
+                            U64(1));
+                ensureEqual("no Fence::wait() on the main thread", counts.mainThreadWaits, U64(0));
+                ensureEqual("no failed command buffer", counts.errors, U64(0));
+                tut::ensure("level 0: the image's bytes", readLevel(device, swapped, 0, side) == bytes);
+                tut::ensure("level 0 of the main thread's image too", readLevel(device, mainImage->getRHITexture(), 0, side) == bytes);
+                const std::vector<U8> mip = readLevel(device, swapped, 1, side);
+                ensureEqual("level 1's size", mip.size(), size_t(side / 2) * (side / 2) * 4);
+                tut::ensure("level 1: the main thread's mips", mip == readLevel(device, mainImage->getRHITexture(), 1, side));
+                image = nullptr;
+                mainImage = nullptr;
+            }
+            finishFrame(device);
+        }
+        std::ostringstream warnings;
+        log.streamto(warnings);
+        tut::ensure("t175: no WARN: " + warnings.str(), occurrences(log, "WARNING") == 0);
+    }
+
+    /// t176 (P3-03a S3, the design's choice 9 and the challenge's M4): t143's media update on the media update thread, as
+    /// doMediaTexUpdate makes it with RenderGLMultiThreadedMedia: the placeholder on the main thread, then on the thread
+    /// createGLTexture with defer_copy (the name 0 on Metal), setSubImage of the whole frame with that name and
+    /// syncToMainThread, whose one swap item the main queue runs. One deferred swap taken by syncToMainThread
+    /// (deferred_thread_swaps 1) and one handle swap of the thread; the image has a new texture, which reads the frame;
+    /// no Fence::wait() on the main thread and no WARN line.
+    API_AVAILABLE(macos(26.0)) void mediaOnThreadTest()
+    {
+        MetalViewerRun run;
+        MetalDevice& device = *run.device;
+        CaptureLog log(LLError::LEVEL_WARN);
+        {
+            MainLoop main;
+            @autoreleasepool
+            {
+                const S32 width = 64, height = 32;
+                auto frame = [&](const std::array<U8, 4>& bgra)
+                {
+                    LLPointer<LLImageRaw> raw = new LLImageRaw(width, height, 4);
+                    for (S32 i = 0; i < width * height; ++i)
+                    {
+                        std::memcpy(raw->getData() + i * 4, bgra.data(), 4);
+                    }
+                    return raw;
+                };
+                LLPointer<LLImageGL> image = new LLImageGL(width, height, 4, false);
+                image->setExplicitFormat(GL_RGB, GL_BGRA, GL_UNSIGNED_BYTE, false);
+                tut::ensure("updateMediaImage's createGLTexture", image->createGLTexture(0, frame({ 255, 255, 255, 255 }).get()));
+                LLPointer<Texture> current = image->getRHITexture();
+                tut::ensure("the placeholder has its texture of the device", current.notNull());
+
+                const std::array<U8, 4> bgra = { 30, 60, 90, 255 };
+                LLPointer<LLImageRaw> raw = frame(bgra);
+                const LLImageGL::SyncCounts before = LLImageGL::syncCounts();
+                const MetalUploadCounts start = metalUploadCounts(device);
+                bool created = false;
+                bool uploaded = false;
+                bool zeroName = false;
+                {
+                    TestUploadThread thread;
+                    thread.run([&]()
+                    {
+                        gGL.init(false);
+                        LLImageGLHandle name;
+                        created = image->createGLTexture(0, raw.get(), 0, true, LLGLTexture::OTHER, true, &name);
+                        zeroName = name == LLImageGLHandle();
+                        uploaded = image->setSubImage(raw->getData(), width, height, 0, 0, width, height, false, name);
+                        image->syncToMainThread(name);
+                        gGL.shutdown();
+                    });
+                }
+                tut::ensure("createGLTexture with defer_copy on the thread", created);
+                tut::ensure("the name 0 on Metal", zeroName);
+                tut::ensure("setSubImage with the name 0 on the thread", uploaded);
+                tut::ensure("until the swap item runs the image keeps its texture", image->getRHITexture() == current.get());
+                ensureEqual("one swap item on the main queue", main.queue.size(), size_t(1));
+                main.queue.runOne();
+
+                const LLImageGL::SyncCounts after = LLImageGL::syncCounts();
+                const MetalUploadCounts counts = metalUploadCounts(device);
+                Texture* swapped = image->getRHITexture();
+                tut::ensure("a texture of the device after the swap item", swapped != nullptr);
+                tut::ensure("a new texture", swapped->id() != current->id());
+                ensureEqual("one deferred swap", after.deferredSwaps - before.deferredSwaps, U64(1));
+                ensureEqual("taken by syncToMainThread (deferred_thread_swaps)",
+                            after.deferredThreadSwaps - before.deferredThreadSwaps, U64(1));
+                ensureEqual("never in place on the thread (P3-03c D4)", after.inPlaceUpdates - before.inPlaceUpdates,
+                            U64(0));
+                ensureEqual("one handle swap of the upload thread", after.threadHandleSwaps - before.threadHandleSwaps, U64(1));
+                ensureEqual("one handover", after.fenceWaits - before.fenceWaits, U64(1));
+                ensureEqual("one upload on the upload queue", counts.uploads - start.uploads, U64(1));
+                ensureEqual("no Fence::wait() on the main thread", counts.mainThreadWaits, U64(0));
+                ensureEqual("no failed command buffer", counts.errors, U64(0));
+                device.submitAndWait();
+                const std::vector<U8> read = levelBytes(device, swapped, 4);
+                ensureEqual("the whole level", read.size(), size_t(width * height * 4));
+                const std::array<U8, 4> texel = { bgra[2], bgra[1], bgra[0], 255 };
+                bool all = true;
+                for (size_t at = 0; at < read.size(); at += 4)
+                {
+                    all = all && std::memcmp(read.data() + at, texel.data(), 4) == 0;
+                }
+                tut::ensure("every texel is the frame's", all);
+                current = nullptr;
+                image = nullptr;
+            }
+            finishFrame(device);
+        }
+        std::ostringstream warnings;
+        log.streamto(warnings);
+        tut::ensure("t176: no WARN: " + warnings.str(), occurrences(log, "WARNING") == 0);
+    }
+
+    /// t177 (P3-03c D1, the challenge's m1 and m6): (a) a resize as updateMediaImage makes it (destroyGLTexture, then
+    /// createGLTexture with the placeholder at the new size, without defer_copy) gives the image a new texture of the new
+    /// size, and the update right after it is made in place in that texture: the name 0, no handle swap, one deferred swap
+    /// and one in-place update, the frame read back. (b) A texture still parked (a format change made the new-texture path
+    /// park one, and no syncTexName took it) blocks the in-place branch even when the image's own texture has the wanted
+    /// description again: the update parks a new texture, which syncTexName swaps in (one handle swap, no in-place
+    /// update); the first parked texture is kept unreleased, as decision D10 keeps one (P2-02c). No WARN line.
+    API_AVAILABLE(macos(26.0)) void mediaInPlaceTest()
+    {
+        MetalViewerRun run;
+        MetalDevice& device = *run.device;
+        CaptureLog log(LLError::LEVEL_WARN);
+        @autoreleasepool
+        {
+            auto frame = [](S32 width, S32 height, const std::array<U8, 4>& bgra)
+            {
+                LLPointer<LLImageRaw> raw = new LLImageRaw(width, height, 4);
+                for (S32 i = 0; i < width * height; ++i)
+                {
+                    std::memcpy(raw->getData() + i * 4, bgra.data(), 4);
+                }
+                return raw;
+            };
+            auto update = [&](LLImageGL* image, LLImageRaw* raw, LLImageGLHandle& name)
+            {
+                tut::ensure("createGLTexture with defer_copy",
+                            image->createGLTexture(0, raw, 0, true, LLGLTexture::OTHER, true, &name));
+                tut::ensure("setSubImage with the name it gave",
+                            image->setSubImage(raw->getData(), raw->getWidth(), raw->getHeight(), 0, 0, raw->getWidth(),
+                                               raw->getHeight(), false, name));
+                image->syncTexName(name);
+            };
+            LLPointer<LLImageGL> image = new LLImageGL(64, 32, 4, false);
+            image->setExplicitFormat(GL_RGB, GL_BGRA, GL_UNSIGNED_BYTE, false);
+            tut::ensure("the placeholder", image->createGLTexture(0, frame(64, 32, { 255, 255, 255, 255 }).get()));
+            LLPointer<Texture> first = image->getRHITexture();
+            LLImageGLHandle name;
+            update(image.get(), frame(64, 32, { 30, 60, 90, 255 }).get(), name);
+            tut::ensure("(a) the first update in place", image->getRHITexture() == first.get());
+
+            // (a) updateMediaImage's resize to 128x64, then the update
+            image->destroyGLTexture();
+            image->setExplicitFormat(GL_RGB, GL_BGRA, GL_UNSIGNED_BYTE, false);
+            tut::ensure("(a) the resized placeholder", image->createGLTexture(0, frame(128, 64, { 0, 0, 0, 255 }).get()));
+            LLPointer<Texture> resized = image->getRHITexture();
+            tut::ensure("(a) a new texture for the new size",
+                        resized.notNull() && resized->id() != first->id() && resized->desc().width == 128
+                            && resized->desc().height == 64);
+            const LLImageGL::SyncCounts before = LLImageGL::syncCounts();
+            const std::array<U8, 4> bgra = { 200, 150, 100, 255 };
+            update(image.get(), frame(128, 64, bgra).get(), name);
+            const LLImageGL::SyncCounts after = LLImageGL::syncCounts();
+            tut::ensure("(a) the name 0", name == LLImageGLHandle());
+            tut::ensure("(a) the update is made in the resized texture", image->getRHITexture() == resized.get());
+            ensureEqual("(a) one deferred swap", after.deferredSwaps - before.deferredSwaps, U64(1));
+            ensureEqual("(a) one in-place update", after.inPlaceUpdates - before.inPlaceUpdates, U64(1));
+            ensureEqual("(a) no handle swap", after.handleSwaps - before.handleSwaps, U64(0));
+            device.submitAndWait();
+            const std::vector<U8> read = levelBytes(device, resized.get(), 4);
+            const std::array<U8, 4> texel = { bgra[2], bgra[1], bgra[0], 255 };
+            bool all = read.size() == size_t(128 * 64 * 4);
+            for (size_t at = 0; all && at < read.size(); at += 4)
+            {
+                all = std::memcmp(read.data() + at, texel.data(), 4) == 0;
+            }
+            tut::ensure("(a) the resized texture reads the update", all);
+
+            // (b) a format change parks a texture; with it still parked the own texture's description is wanted again
+            image->setExplicitFormat(GL_RGBA8, GL_BGRA, GL_UNSIGNED_BYTE, false);
+            LLPointer<LLImageRaw> raw = frame(128, 64, bgra);
+            const LLImageGL::SyncCounts parkedBefore = LLImageGL::syncCounts();
+            tut::ensure("(b) createGLTexture after the format change",
+                        image->createGLTexture(0, raw.get(), 0, true, LLGLTexture::OTHER, true, &name));
+            tut::ensure("(b) the image keeps its texture while the new one is parked", image->getRHITexture() == resized.get());
+            image->setExplicitFormat(GL_RGB, GL_BGRA, GL_UNSIGNED_BYTE, false);
+            update(image.get(), raw.get(), name);
+            const LLImageGL::SyncCounts parkedAfter = LLImageGL::syncCounts();
+            Texture* swapped = image->getRHITexture();
+            tut::ensure("(b) a new texture swapped in, not the update made in place",
+                        swapped != nullptr && swapped != resized.get());
+            ensureEqual("(b) GL_RGB's description again", U32(swapped->desc().glFormat), U32(GL_RGB));
+            ensureEqual("(b) no in-place update", parkedAfter.inPlaceUpdates - parkedBefore.inPlaceUpdates, U64(0));
+            ensureEqual("(b) one handle swap", parkedAfter.handleSwaps - parkedBefore.handleSwaps, U64(1));
+            ensureEqual("(b) one deferred swap", parkedAfter.deferredSwaps - parkedBefore.deferredSwaps, U64(1));
+            image = nullptr;
+            first = nullptr;
+            resized = nullptr;
+            finishFrame(device);
+        }
+        std::ostringstream warnings;
+        log.streamto(warnings);
+        tut::ensure("t177: no WARN: " + warnings.str(), occurrences(log, "WARNING") == 0);
+    }
+
+    /// t178 (P3-03c D2): metalConvertUploadInto's fast paths give byte for byte C3's general loop
+    /// (metalConvertUploadGeneral) over random bytes: U8 RGBA and BGRA into RGBA8Unorm and its sRGB form, with alpha kept
+    /// (GL_RGBA8) and forced (GL_RGB, C4), with and without swapBytes, odd widths, rows longer than the region and regions
+    /// that start inside the source; a general pair (RGB into RGBA) the same way. metalUploadSize gives the vector's size,
+    /// a dst one byte short gives 0 and writes nothing, and a refusal is 0 with one WARN line. Information: a 1024x1024
+    /// BGRA frame (mh-media's) through each, the median of 5 (stdout, no limit).
+    API_AVAILABLE(macos(26.0)) void convertFastPathsTest()
+    {
+        std::mt19937 random(178);
+        struct Target
+        {
+            Format format;
+            U32 glFormat;
+        };
+        const Target targets[] = { { Format::RGBA8Unorm, GL_RGBA8 }, { Format::RGBA8Unorm, GL_RGB },
+                                   { Format::RGBA8Unorm_sRGB, GL_SRGB8_ALPHA8 } };
+        const PixelLayout::Components layouts[] = { PixelLayout::Components::RGBA, PixelLayout::Components::BGRA,
+                                                    PixelLayout::Components::RGB };
+        const U32 widths[] = { 1, 3, 17, 64 };
+        size_t cases = 0;
+        for (const Target& target : targets)
+        {
+            for (const PixelLayout::Components components : layouts)
+            {
+                for (const bool swap : { false, true })
+                {
+                    for (const U32 width : widths)
+                    {
+                        for (const U32 extra : { 0u, 5u })
+                        {
+                            const U32 height = 1 + random() % 6;
+                            TextureDesc desc = sizedDesc(target.format, TEXTURE_SAMPLED, width + 8, height + 8);
+                            desc.glFormat = target.glFormat;
+                            PixelLayout layout;
+                            layout.components = components;
+                            layout.swapBytes = swap;
+                            layout.rowLength = extra ? width + extra : 0;
+                            const U32 rowLength = width + extra;
+                            // A region inside the texture; the source holds its rows with GL's row length
+                            const Region region = { U32(random() % 8), U32(random() % 8), width, height };
+                            std::vector<std::byte> src(size_t(rowLength) * height * layout.bytesPerPixel());
+                            for (std::byte& b : src)
+                            {
+                                b = std::byte(random());
+                            }
+                            const std::string what = "format " + std::to_string(U32(target.format)) + " GL format "
+                                                     + std::to_string(target.glFormat) + " components "
+                                                     + std::to_string(U32(components)) + (swap ? " swapped" : "")
+                                                     + " width " + std::to_string(width) + " row "
+                                                     + std::to_string(rowLength);
+                            std::vector<std::byte> general;
+                            const U32 generalRow = metalConvertUploadGeneral(desc, layout, src, region, general);
+                            std::vector<std::byte> fast;
+                            const U32 fastRow = metalConvertUpload(desc, layout, src, region, fast);
+                            const MetalUploadSize size = metalUploadSize(desc, layout, src.size(), region);
+                            tut::ensure(what + ": converted", generalRow != 0);
+                            ensureEqual(what + ": the same rows", fastRow, generalRow);
+                            ensureEqual(what + ": metalUploadSize's rows", size.rowBytes, generalRow);
+                            ensureEqual(what + ": metalUploadSize's bytes", size.bytes, U64(general.size()));
+                            tut::ensure(what + ": byte for byte the general loop's",
+                                        fast.size() == general.size()
+                                            && std::memcmp(fast.data(), general.data(), fast.size()) == 0);
+                            std::vector<std::byte> shortDst(general.size(), std::byte{ 0x5A });
+                            ensureEqual(what + ": a dst one byte short gives 0",
+                                        metalConvertUploadInto(desc, layout, src, region, shortDst.data(),
+                                                               general.size() - 1),
+                                        0u);
+                            tut::ensure(what + ": and writes nothing",
+                                        std::all_of(shortDst.begin(), shortDst.end(),
+                                                    [](std::byte b) { return b == std::byte{ 0x5A }; }));
+                            ++cases;
+                        }
+                    }
+                }
+            }
+        }
+        ensureEqual("every case", cases, size_t(3 * 3 * 2 * 4 * 2));
+
+        // A refusal: one WARN line in metalUploadSize, and no size
+        {
+            CaptureLog log(LLError::LEVEL_WARN);
+            TextureDesc desc = sizedDesc(Format::RGBA8Unorm, TEXTURE_SAMPLED, 4, 4);
+            desc.glFormat = GL_RGBA8;
+            PixelLayout layout;
+            const std::vector<std::byte> few(10);
+            const MetalUploadSize size = metalUploadSize(desc, layout, few.size(), { 0, 0, 4, 4 });
+            tut::ensure("a source too small: no size", size.rowBytes == 0 && size.bytes == 0);
+            ensureEqual("one WARN line", occurrences(log, "WARNING"), size_t(1));
+        }
+
+        // Information (m5): mh-media's 1024x1024 BGRA frame into RGBA8Unorm without alpha (GL_RGB)
+        TextureDesc desc = sizedDesc(Format::RGBA8Unorm, TEXTURE_SAMPLED, 1024, 1024);
+        desc.glFormat = GL_RGB;
+        PixelLayout bgra;
+        bgra.components = PixelLayout::Components::BGRA;
+        std::vector<std::byte> frame(size_t(1024) * 1024 * 4);
+        for (std::byte& b : frame)
+        {
+            b = std::byte(random());
+        }
+        std::vector<std::byte> out(frame.size());
+        auto median = [&](auto&& convert)
+        {
+            std::vector<double> ms;
+            for (int i = 0; i < 5; ++i)
+            {
+                const auto start = std::chrono::steady_clock::now();
+                convert();
+                ms.push_back(std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - start).count());
+            }
+            std::sort(ms.begin(), ms.end());
+            return ms[2];
+        };
+        std::vector<std::byte> general;
+        const double slow = median([&]() { metalConvertUploadGeneral(desc, bgra, frame, { 0, 0, 1024, 1024 }, general); });
+        const double quick = median(
+            [&]() { metalConvertUploadInto(desc, bgra, frame, { 0, 0, 1024, 1024 }, out.data(), U64(out.size())); });
+        tut::ensure("the frame's two conversions agree", general == out);
+        std::cout << "t178: a 1024x1024 BGRA frame into RGBA8 without alpha: the general loop " << slow
+                  << " ms, the fast path " << quick << " ms (median of 5)" << std::endl;
+    }
+
+    /// t179 (P3-03c D3, the challenge's m2 and m3): large staging is kept per ring slot. Two 4 MiB uploads a frame (two
+    /// 1024x1024 RGBA8 textures, as mh-media's two faces) make two kept buffers per slot in the first three frames,
+    /// different buffers within a frame; six more frames make none and leave the residency count as it was, and the last
+    /// uploads read back. The smallest kept buffer that holds an allocation is the one handed out (best fit), an
+    /// allocation above KEEP_MAX gets a buffer of its own, of its size, which is not kept, and kept buffers unused for
+    /// TRIM_REWINDS rewinds of their slot leave the set through the lifecycle. No WARN line.
+    API_AVAILABLE(macos(26.0)) void keptStagingTest(MetalDevice& device)
+    {
+        CaptureLog log(LLError::LEVEL_WARN);
+        Encoder& encoder = device.encoder();
+        const U32 side = 1024;
+        Ref<Texture> faces[2] = {
+            device.createTexture(sizedDesc(Format::RGBA8Unorm, TEXTURE_SAMPLED | TEXTURE_READBACK, side, side), "face 1"),
+            device.createTexture(sizedDesc(Format::RGBA8Unorm, TEXTURE_SAMPLED | TEXTURE_READBACK, side, side), "face 2")
+        };
+        tut::ensure("the two faces", faces[0].notNull() && faces[1].notNull());
+        std::vector<U8> bytes(size_t(side) * side * 4);
+        auto frameOfUploads = [&](U32 frame)
+        {
+            for (U32 face = 0; face < 2; ++face)
+            {
+                std::fill(bytes.begin(), bytes.end(), U8(frame * 2 + face));
+                encoder.uploadTexture(faces[face].get(), 0, 0, { 0, 0, side, side }, PixelLayout(), asBytes(bytes));
+            }
+            device.endFrame();
+        };
+        const U64 madeBefore = device.ringKeptMade();
+        for (U32 frame = 0; frame < 3; ++frame)
+        {
+            frameOfUploads(frame);
+        }
+        ensureEqual("two kept buffers per slot", device.ringKeptMade() - madeBefore, U64(6));
+        device.residency().commitIfChanged();
+        const U64 resident = device.residency().count();
+        for (U32 frame = 3; frame < 9; ++frame)
+        {
+            frameOfUploads(frame);
+        }
+        ensureEqual("six more frames make no buffer", device.ringKeptMade() - madeBefore, U64(6));
+        ensureEqual("and keep six", device.ringKeptBuffers(), size_t(6));
+        device.residency().commitIfChanged();
+        ensureEqual("the residency count flat", device.residency().count(), resident);
+        // levelBytes reads on a queue of its own, so frame 8's copies must have run first
+        tut::ensure("frame 8 finishes", device.waitForFrame(device.frameNumber() - 1));
+        for (U32 face = 0; face < 2; ++face)
+        {
+            const std::vector<U8> read = levelBytes(device, faces[face].get(), 4);
+            tut::ensure("face " + std::to_string(face + 1) + " reads frame 8's upload",
+                        read.size() == bytes.size()
+                            && std::all_of(read.begin(), read.end(), [&](U8 b) { return b == U8(8 * 2 + face); }));
+        }
+
+        // Within one frame two allocations are two buffers; best fit; above KEEP_MAX a buffer of its own
+        const MetalAllocation four = device.frameAllocation(4 * 1024 * 1024);
+        const MetalAllocation again = device.frameAllocation(4 * 1024 * 1024);
+        tut::ensure("two allocations of a frame, two kept buffers", four.buffer && again.buffer && four.buffer != again.buffer);
+        const MetalAllocation large = device.frameAllocation(6 * 1024 * 1024 + 1);
+        const MetalAllocation small = device.frameAllocation(2 * 1024 * 1024);
+        ensureEqual("a new kept buffer in whole MiB", U64(large.buffer.length), U64(7 * 1024 * 1024));
+        ensureEqual("and another", U64(small.buffer.length), U64(2 * 1024 * 1024));
+        const MetalAllocation own = device.frameAllocation(MetalRing::KEEP_MAX + 1);
+        const U64 madeHere = device.ringKeptMade();
+        ensureEqual("above KEEP_MAX: a buffer of its own, of its size", U64(own.buffer.length), MetalRing::KEEP_MAX + 1);
+        // The same slot again after its rewind (three frames on)
+        for (int i = 0; i < 3; ++i)
+        {
+            device.endFrame();
+        }
+        const MetalAllocation fit = device.frameAllocation(1536 * 1024);
+        tut::ensure("best fit: the 2 MiB buffer for 1.5 MiB", fit.buffer == small.buffer);
+        const MetalAllocation next = device.frameAllocation(5 * 1024 * 1024);
+        tut::ensure("then the 7 MiB one for 5 MiB", next.buffer == large.buffer);
+        ensureEqual("no buffer made for them", device.ringKeptMade(), madeHere);
+
+        // The trim: TRIM_REWINDS rewinds of every slot without a use
+        id<MTLBuffer> kept[] = { four.buffer, again.buffer, large.buffer, small.buffer };
+        for (U32 i = 0; i < (MetalRing::TRIM_REWINDS + 2) * FrameLifecycle::MAX_FRAMES_IN_FLIGHT; ++i) @autoreleasepool
+        {
+            device.endFrame();
+        }
+        ensureEqual("every kept buffer trimmed", device.ringKeptBuffers(), size_t(0));
+        finishFrame(device);
+        device.residency().commitIfChanged();
+        for (id<MTLBuffer> buffer : kept)
+        {
+            tut::ensure("a trimmed buffer has left the residency set", !device.residency().contains(buffer));
+        }
+        endCleanly(device, log);
+    }
+
+    /// t187 (P3-01k, its t184 before batch 3's merge): a fragment stage that reads a const array of its GLSL with an
+    /// index it does not know at compile time, as screenSpaceReflUtil.glsl's POISSON3D_SAMPLES (vec3[128]) through
+    /// getPoissonSample in the loop of tapScreenSpaceReflection (functional's RenderScreenSpaceReflections): in two
+    /// shapes, vec3[4] read in main and vec3[128] read in a function main calls, each once with the name of a Safe math
+    /// program (METAL_SAFE_MATH_PROGRAMS, compiled alone, as "Deferred PBR Alpha Shader" is) and once with another
+    /// name. Each draw reads the array's first three elements, under shader validation (runValidated fails on a
+    /// report). Its pipeline does not blend, so it was a full state before P3-01k's fix as after it: it checks the
+    /// values a constant array reads (also under the Safe math name), not the fix, which t188 proves (P3-01k's review
+    /// n2).
+    API_AVAILABLE(macos(26.0)) void constantArrayTest(MetalDevice& device)
+    {
+        CaptureLog log(LLError::LEVEL_WARN);
+        static const char* const VERTEX = R"(#version 400
+#define VERTEX_SHADER 1
+in vec3 position;
+void main()
+{
+    gl_Position = vec4(position, 1.0);
+}
+)";
+        const auto fragment = [](U32 size, bool helper)
+        {
+            std::string samples = "vec3(0.2, 0.0, 0.0), vec3(0.0, 0.4, 0.0), vec3(0.0, 0.0, 0.6)";
+            for (U32 i = 3; i < size; ++i)
+            {
+                samples += ", vec3(" + std::to_string(F32(i % 7) / 7.f) + ", " + std::to_string(F32(i % 11) / 11.f) + ", " +
+                           std::to_string(F32(i % 13) / 13.f) + ")";
+            }
+            const std::string n = std::to_string(size);
+            return "#version 400\n#define FRAGMENT_SHADER 1\nuniform float sample_count;\nout vec4 frag_color;\n"
+                   "const vec3 SAMPLES[" + n + "] = vec3[" + n + "](" + samples + ");\n"
+                   "vec3 getSample(int i)\n{\n    return SAMPLES[i];\n}\n"
+                   "void main()\n{\n    vec3 sum = vec3(0.0);\n    int count = int(sample_count);\n"
+                   "    for (int i = 0; i < count; i++)\n    {\n        sum += " +
+                   std::string(helper ? "getSample(i)" : "SAMPLES[i]") + ";\n    }\n    frag_color = vec4(sum, 1.0);\n}\n";
+        };
+        for (const auto& [size, helper] : { std::pair<U32, bool>(4, false), std::pair<U32, bool>(128, true) })
+        {
+            const std::string source = fragment(size, helper);
+            for (const std::string& name : { std::string(METAL_SAFE_MATH_PROGRAMS[0]), std::string("constant array test") })
+            {
+                const std::string what = name + ", vec3[" + std::to_string(size) + "]" + (helper ? " in a function" : "");
+                DrawTarget target = drawTarget(device);
+                Ref<Program> program = ready(device.createProgram(programDesc(name, VERTEX, source.c_str())));
+                tut::ensure("the constant array program (" + what + ") is made", program.notNull());
+                PipelineDesc desc = uiPipelineDesc();
+                desc.attributeMask = 1u << 0; // MAP_VERTEX
+                Ref<Pipeline> pipeline = device.getPipeline(*program, desc);
+                tut::ensure("the constant array pipeline (" + what + ") is made", pipeline.notNull());
+                DrawVertices vertices;
+                addRect(vertices, -1, -1, -0.5f, -0.5f, YELLOW); // columns and rows 0-15
+                VertexStreams streams;
+                Ref<Buffer> buffer = vertexBuffer(device, vertices, streams);
+                streams.attributeMask = 1u << 0;
+                Encoder& encoder = device.encoder();
+                tut::ensure("the pass begins", encoder.beginRenderPass(drawPass(target)));
+                encoder.setPipeline(pipeline.get());
+                const std::array<F32, 1> count = { 3.f };
+                encoder.setUniform(program.get(), U32(uniformIndex(program->reflection(), "sample_count")), bytesOf(count));
+                encoder.setVertexBuffer(buffer.get(), streams);
+                encoder.draw(PrimitiveType::Triangles, 0, 6);
+                encoder.endRenderPass();
+                static constexpr Rgba EXPECTED = { 51, 102, 153, 255 };
+                ensureImage("the sum of the array's first three elements (" + what + ")", readTarget(device, target),
+                            [](U32 x, U32 y) -> std::optional<Rgba> { return x < 16 && y < 16 ? EXPECTED : CLEAR_RGBA; });
+            }
+        }
+        endCleanly(device, log);
+    }
+
+    /// t188 (P3-01k, its t185 before batch 3's merge): the fragment stage of "Deferred PBR Alpha Shader" with
+    /// RenderScreenSpaceReflections and mirrors, from its own sources as a manifest of a level 6 session with mirrors and
+    /// screen-space reflections lists them (its thirteen units, classes,
+    /// the program's defines in its own file, the viewer's global ones in all), assembled as
+    /// LLShaderMgr::loadShaderFile does (version, then the extra code at [EXTRA_CODE_HERE]), behind a vertex stage that
+    /// writes its inputs. Its MSL has the program-scope table of POISSON3D_SAMPLES (metalProgramConstants), and a draw
+    /// through the alpha pass's blending reads it in tapScreenSpaceReflection (transparent: glossiness 1, a normal not
+    /// toward the camera, so the vignette is above 0). Shader validation reports each such read in a state made by
+    /// specialization ("Invalid device load at offset 0 ... Out of bounds of user address space, length:1", functional
+    /// on Metal: 5345 lines), so the layout says constantData and the pipeline is a full state, not E14's
+    /// specialization: no validation line (runValidated).
+    API_AVAILABLE(macos(26.0)) void alphaSsrProgramTest(MetalDevice& device)
+    {
+        CaptureLog log(LLError::LEVEL_WARN);
+        tut::ensure("a program-scope constant", metalProgramConstants("#include <metal_stdlib>\nconstant float a = 1.0;\n"));
+        tut::ensure("at the start", metalProgramConstants("constant int b[2] = { 1, 2 };"));
+        tut::ensure("not a member function's address space", !metalProgramConstants("struct S\n{\n    constant T& at() constant;\n};\n"));
+        tut::ensure("not a buffer argument", !metalProgramConstants("fragment float4 f(constant U& u [[buffer(0)]])\n"));
+        tut::ensure("nothing", !metalProgramConstants(""));
+
+        const std::filesystem::path shaders =
+            std::filesystem::path(__FILE__).parent_path().parent_path().parent_path() / "newview/app_settings/shaders";
+        struct Unit
+        {
+            const char* file;
+            S32 shaderClass;
+        };
+        static const Unit UNITS[] = { { "deferred/pbralphaF.glsl", 2 },            { "deferred/globalF.glsl", 1 },
+                                      { "environment/srgbF.glsl", 1 },             { "windlight/atmosphericsVarsF.glsl", 1 },
+                                      { "windlight/atmosphericsHelpersF.glsl", 1 }, { "deferred/deferredUtil.glsl", 1 },
+                                      { "deferred/screenSpaceReflUtil.glsl", 3 },  { "deferred/shadowUtil.glsl", 1 },
+                                      { "deferred/reflectionProbeF.glsl", 3 },     { "windlight/gammaF.glsl", 1 },
+                                      { "windlight/atmosphericsFuncs.glsl", 1 },   { "windlight/atmosphericsF.glsl", 1 },
+                                      { "environment/waterFogF.glsl", 1 } };
+        // The viewer's global defines at graphics level 6 with SSR and mirrors, and the program's (its own file only).
+        const std::map<std::string, std::string> global = {
+            { "HAS_EMISSIVE", "1" }, { "HERO_PROBES", "1" }, { "MAX_JOINTS_PER_MESH_OBJECT", "110" },
+            { "REFMAP_LEVEL", "3" }, { "REF_SAMPLE_COUNT", "32" }, { "SPOT_SHADOW", "1" }, { "SSR", "1" },
+            { "SUN_SHADOW", "1" }, { "TERRAIN_PBR_DETAIL", "-1" }, { "TERRAIN_PLANAR_TEXTURE_SAMPLE_COUNT", "3" },
+            { "TERRAIN_TRIPLANAR_BLEND_FACTOR", "8.00" } };
+        const std::map<std::string, std::string> own = {
+            { "DIFFUSE_ALPHA_MODE", "1" }, { "HAS_EMISSIVE", "1" }, { "HAS_EMISSIVE_MAP", "1" }, { "HAS_NORMAL_MAP", "1" },
+            { "HAS_SPECULAR_MAP", "1" }, { "HAS_SUN_SHADOW", "1" }, { "USE_VERTEX_COLOR", "1" } };
+        StageSource fragment;
+        fragment.stage = ShaderStage::Fragment;
+        for (const Unit& unit : UNITS)
+        {
+            std::map<std::string, std::string> defines = global;
+            if (unit.file == std::string("deferred/pbralphaF.glsl"))
+            {
+                defines.insert(own.begin(), own.end());
+            }
+            std::string extra = "#define FRAGMENT_SHADER 1\n#define GBUFFER_FLAG_SKIP_ATMOS   0.0 \n"
+                                "#define GBUFFER_FLAG_HAS_ATMOS    0.34\n#define GBUFFER_FLAG_HAS_PBR      0.67\n"
+                                "#define GBUFFER_FLAG_HAS_HDRI      1.0\n"
+                                "#define GET_GBUFFER_FLAG(data, flag)    (abs(data-flag)< 0.1)\n";
+            for (const auto& [name, value] : defines)
+            {
+                extra += "#define " + name + " " + value + "\n";
+            }
+            extra += "struct GBufferInfo { vec4 albedo; vec4 specular; vec3 normal; vec4 emissive; float gbufferFlag; "
+                     "float envIntensity; };\n";
+            const std::filesystem::path path = shaders / ("class" + std::to_string(unit.shaderClass)) / unit.file;
+            std::ifstream in(path);
+            tut::ensure("the viewer's " + path.string() + " is read", in.good());
+            std::stringstream text;
+            text << in.rdbuf();
+            std::string body = text.str();
+            const size_t marker = body.find("[EXTRA_CODE_HERE]");
+            if (marker != std::string::npos)
+            {
+                const size_t start = body.rfind('\n', marker);
+                const size_t end = body.find('\n', marker);
+                body = body.substr(0, start == std::string::npos ? 0 : start + 1) + extra +
+                       (end == std::string::npos ? std::string() : body.substr(end + 1));
+            }
+            else
+            {
+                body = extra + body;
+            }
+            fragment.units.push_back("#version 400\n" + body);
+            fragment.files.push_back(unit.file);
+            fragment.classes.push_back(unit.shaderClass);
+        }
+        static const char* const VERTEX = R"(#version 400
+#define VERTEX_SHADER 1
+in vec3 position;
+out vec3 vary_fragcoord;
+out vec3 vary_position;
+out vec2 base_color_texcoord;
+out vec2 normal_texcoord;
+out vec2 metallic_roughness_texcoord;
+out vec2 emissive_texcoord;
+out vec4 vertex_color;
+out vec3 vary_normal;
+out vec3 vary_tangent;
+flat out float vary_sign;
+void main()
+{
+    gl_Position = vec4(position, 1.0);
+    vary_fragcoord = vec3(position.xy, 1.0);
+    vary_position = vec3(position.xy * 0.5, -2.0);
+    base_color_texcoord = position.xy * 0.5 + 0.5;
+    normal_texcoord = base_color_texcoord;
+    metallic_roughness_texcoord = base_color_texcoord;
+    emissive_texcoord = base_color_texcoord;
+    vertex_color = vec4(1.0, 1.0, 1.0, 0.5);
+    vary_normal = vec3(0.0, 1.0, 0.0);
+    vary_tangent = vec3(1.0, 0.0, 0.0);
+    vary_sign = 1.0;
+}
+)";
+        ProgramDesc desc;
+        desc.name = METAL_SAFE_MATH_PROGRAMS[0]; // "Deferred PBR Alpha Shader", compiled alone with Safe math
+        desc.stages = { { ShaderStage::Vertex, { VERTEX } }, fragment };
+        desc.reservedAttributes = RESERVED_ATTRIBUTES;
+        desc.uniformBlocks = BLOCK_NAMES;
+        desc.shaderLevel = 3;
+        Ref<Program> program = ready(device.createProgram(desc));
+        tut::ensure("the program is made from its sources", program.notNull() && program->status() == CompileStatus::Ready);
+        tut::ensure("its MSL has program-scope constant data", metalProgramLayout(program.get())->constantData);
+        const ProgramReflection& reflection = program->reflection();
+        const auto probes = std::find_if(reflection.blocks.begin(), reflection.blocks.end(),
+                                         [](const auto& block) { return block.name == "ReflectionProbes"; });
+        tut::ensure("it reads ReflectionProbes", probes != reflection.blocks.end());
+        BufferDesc blockDesc;
+        blockDesc.size = probes->size;
+        blockDesc.usage = BUFFER_UNIFORM;
+        Ref<Buffer> block = device.createBuffer(blockDesc, std::vector<std::byte>(probes->size), "alpha SSR probes");
+
+        DrawTarget target = drawTarget(device); // its UI pipeline is a full state of its own, before the counts
+        const size_t full = device.fullPipelines();
+        const size_t specialized = device.specializedPipelines();
+        PipelineDesc pipelineDesc = alphaPipelineDesc(); // the alpha pass blends: E14's specialization otherwise
+        pipelineDesc.attributeMask = 1u << 0;            // MAP_VERTEX
+        Ref<Pipeline> pipeline = device.getPipeline(*program, pipelineDesc);
+        tut::ensure("the blended pipeline is made", pipeline.notNull() && metalPipelineState(pipeline.get()) != nil);
+
+        DrawVertices vertices;
+        addRect(vertices, -0.5f, -0.5f, 0.5f, 0.5f, YELLOW); // columns and rows 16-47
+        VertexStreams streams;
+        Ref<Buffer> buffer = vertexBuffer(device, vertices, streams);
+        streams.attributeMask = 1u << 0;
+        Encoder& encoder = device.encoder();
+        tut::ensure("the pass begins", encoder.beginRenderPass(drawPass(target)));
+        encoder.setUniformBuffer(0, block.get(), 0, probes->size);
+        encoder.setPipeline(pipeline.get());
+        // The ray march needs one step and a view-space position in front of the camera (inv_modelview_delta, here
+        // the identity, as LLPipeline gives it with a still camera): without them the table's value is never used, and
+        // Metal does not read it (by a run-time probe).
+        const std::array<F32, 16> identity = { 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1 };
+        const std::array<F32, 1> steps = { 1.f };
+        tut::ensure("the SSR uniforms are in the program", uniformIndex(reflection, "inv_modelview_delta") < reflection.uniforms.size() &&
+                                                               uniformIndex(reflection, "iterationCount") < reflection.uniforms.size());
+        encoder.setUniform(program.get(), U32(uniformIndex(reflection, "inv_modelview_delta")), bytesOf(identity));
+        encoder.setUniform(program.get(), U32(uniformIndex(reflection, "iterationCount")), bytesOf(steps));
+        encoder.setVertexBuffer(buffer.get(), streams);
+        encoder.draw(PrimitiveType::Triangles, 0, 6);
+        encoder.endRenderPass();
+        tut::ensure("the program drew", pixelAt(readTarget(device, target), 32, 32) != CLEAR_RGBA);
+        // Shader validation writes its report from a thread of its own after the command buffer has completed: without a
+        // wait a run-time probe ended before the report of a specialized state's read was written.
+        std::this_thread::sleep_for(std::chrono::milliseconds(500));
+        endCleanly(device, log);
+        // After the draw, so a specialized state's report reaches stderr first (the mutation).
+        ensureEqual("a full state", device.fullPipelines(), full + 1);
+        ensureEqual("no specialized state", device.specializedPipelines(), specialized);
+    }
+
+    /// t190 (P3-08b S1, C5): a buffer's readback on Metal is an ordered GPU copy with a stamp. It gives a static
+    /// buffer's bytes after each earlier update and before a later one (a read between two updates sees only the
+    /// first), a range at an offset, a dynamic buffer's current bytes, and in a pass after a draw it splits the pass
+    /// (Metal 4 has no copy on a render encoder) while the draw still lands. It is not ready before its submit. A
+    /// range outside the buffer is refused by the tracker with one WARN line and no Metal call.
+    API_AVAILABLE(macos(26.0)) void bufferReadbackTest(MetalDevice& device)
+    {
+        Encoder& encoder = device.encoder();
+        MetalEncoder& metal = device.metalEncoder();
+        const auto bytesOf = [](U8 first, size_t count)
+        {
+            std::vector<std::byte> bytes(count);
+            for (size_t i = 0; i < count; ++i)
+            {
+                bytes[i] = std::byte(U8(first + i * 3));
+            }
+            return bytes;
+        };
+        const auto read = [&encoder](Buffer* buffer, U64 offset, U64 size, const std::string& what)
+        {
+            Ref<Readback> readback = encoder.readback(buffer, offset, size);
+            tut::ensure(what + ": a readback", readback.notNull());
+            return readback;
+        };
+        const auto sameBytes = [](const std::string& what, const std::vector<std::byte>& actual,
+                                    const std::vector<std::byte>& expected)
+        {
+            size_t at = 0;
+            while (at < actual.size() && at < expected.size() && actual[at] == expected[at])
+            {
+                ++at;
+            }
+            std::ostringstream message;
+            message << what << ": " << actual.size() << " bytes, expected " << expected.size() << ", first difference at "
+                    << at;
+            tut::ensure(message.str(), actual == expected);
+        };
+        const auto bytesNow = [](Ref<Readback> readback)
+        {
+            readback->wait();
+            const std::span<const std::byte> data = readback->data();
+            return std::vector<std::byte>(data.begin(), data.end());
+        };
+        {
+            CaptureLog log(LLError::LEVEL_WARN);
+            const std::vector<std::byte> a = bytesOf(1, 64);
+            const std::vector<std::byte> x = bytesOf(100, 16);
+            const std::vector<std::byte> y = bytesOf(200, 8);
+            BufferDesc fixed;
+            fixed.size = a.size();
+            fixed.usage = BUFFER_VERTEX;
+            Ref<Buffer> still = device.createBuffer(fixed, a, "buffer readback static");
+            Ref<Readback> first = read(still.get(), 0, 64, "as made");
+            tut::ensure("not ready before its submit", !first->ready());
+            encoder.updateBuffer(still.get(), 0, x);
+            Ref<Readback> between = read(still.get(), 0, 64, "between the updates");
+            encoder.updateBuffer(still.get(), 16, y);
+            Ref<Readback> after = read(still.get(), 0, 64, "after both updates");
+            Ref<Readback> offset = read(still.get(), 12, 8, "at an offset");
+            sameBytes("as made: the creation's bytes", bytesNow(first), a);
+            ensureEqual("as made: its row pitch is its size, as GL's", first->rowPitch(), U32(64));
+            std::vector<std::byte> one = a;
+            std::copy(x.begin(), x.end(), one.begin());
+            sameBytes("between the updates: the first update only", bytesNow(between), one);
+            std::vector<std::byte> two = one;
+            std::copy(y.begin(), y.end(), two.begin() + 16);
+            sameBytes("after both updates: both", bytesNow(after), two);
+            sameBytes("at an offset: bytes 12 to 20", bytesNow(offset),
+                        std::vector<std::byte>(two.begin() + 12, two.begin() + 20));
+
+            BufferDesc moving = fixed;
+            moving.dynamic = true;
+            Ref<Buffer> dynamic = device.createBuffer(moving, a, "buffer readback dynamic");
+            encoder.updateBuffer(dynamic.get(), 8, x);
+            std::vector<std::byte> current = a;
+            std::copy(x.begin(), x.end(), current.begin() + 8);
+            sameBytes("dynamic: its current bytes", bytesNow(read(dynamic.get(), 0, 64, "dynamic")), current);
+
+            endCleanly(device, log);
+            CaptureLog refused(LLError::LEVEL_WARN);
+            const U64 copies = device.copyEncodersBegun();
+            ensureEqual("outside the buffer: refused", encoder.readback(still.get(), 60, 8).isNull(), true);
+            ensureEqual("outside the buffer: one WARN line", occurrences(refused, "WARNING #RHI#"), size_t(1));
+            ensureEqual("outside the buffer: no Metal call", device.copyEncodersBegun(), copies);
+            device.endFrame();
+        }
+        {
+            CaptureLog log(LLError::LEVEL_WARN);
+            TintTarget target = tintTarget(device);
+            const std::vector<std::byte> v1 = vertexBytes(squareAt(0, WHITE_RGBA));
+            BufferDesc fixed;
+            fixed.size = v1.size();
+            fixed.usage = BUFFER_VERTEX;
+            Ref<Buffer> still = device.createBuffer(fixed, v1, "buffer readback in a pass");
+            tut::ensure("the pass begins", encoder.beginRenderPass(tintPass(target, LoadAction::Clear)));
+            tintDraw(encoder, target, still.get(), 0, RED);
+            MTL4RenderPassDescriptor* before = metal.lastPassDescriptor();
+            Ref<Readback> inPass = read(still.get(), 0, fixed.size, "in a pass");
+            MTL4RenderPassDescriptor* split = metal.lastPassDescriptor();
+            tut::ensure("in a pass: the readback ended the segment", split != nil && split != before);
+            tintDraw(encoder, target, still.get(), 1, GREEN_RGBA);
+            encoder.endRenderPass();
+            sameBytes("in a pass: the buffer's bytes", bytesNow(inPass), v1);
+            ensureColumns("in a pass: both draws land", readTint(device, target), { RED, GREEN_RGBA });
+            endCleanly(device, log);
+        }
+    }
+
+    /// t191 (P3-08b S2, decision 9, C4): copyTexture between plain colour formats is a draw on Metal and gives GL's bytes,
+    /// the shared copy cases' (llrhiformatcases.h) that llrhigl_test.cpp's 'LLRHI GL transfers' test<40> proves on GL:
+    /// (a) an offset region of an RGBA8 source, asymmetric in y, into R8, RG8, RGB8, A8 and LA, exact, the rest untouched;
+    /// the same into a destination nothing has written gives GL's zeros around it; a source at level 1 of a cube array's
+    /// layer 7 and a swizzled LA source are read as stored (the challenge's m9). Only the pairs of different formats draw
+    /// (RGB8 is RGBA8Unorm: a blit, as P3-06a's same-format copies). (b) RGBA16F into RGBA8 clamps, within 1 of GL's
+    /// bytes, and into an RGB8 render target it gets the alpha draw (F14). (c) sRGB, BC, depth and integer pairs are
+    /// refused before the tracker (no transfer, no draw, one WARN line each naming P3-08b), and copyRefusal gives every
+    /// pair on GL's capabilities. (d) an upload into a multisampled texture is refused with one WARN line and counts
+    /// nothing (C13). (e) the review's m3: a pair whose format copy pipeline cannot be made is refused before the
+    /// tracker, and MetalDevice::copyRefusalBetween refuses it too. No GPU error.
+    API_AVAILABLE(macos(26.0)) void formatCopyTest(MetalDevice& device)
+    {
+        namespace CC = LL::RHI::CopyCases;
+        Encoder& encoder = device.encoder();
+        MetalEncoder& metal = device.metalEncoder();
+        const Region whole{ 0, 0, CC::SIDE, CC::SIDE };
+        const auto layoutOf = [](PixelLayout::Components components, PixelLayout::Type type)
+        {
+            PixelLayout layout;
+            layout.components = components;
+            layout.type = type;
+            return layout;
+        };
+        const auto bytesOf = [](Ref<Readback> readback)
+        {
+            tut::ensure("read back", readback.notNull());
+            readback->wait();
+            const std::span<const std::byte> data = readback->data();
+            std::vector<U8> bytes(data.size());
+            std::memcpy(bytes.data(), data.data(), data.size());
+            return bytes;
+        };
+        const auto sourceOf = [&](TextureDesc desc, U32 level, U32 layer, const char* name)
+        {
+            desc.usage = TEXTURE_SAMPLED | TEXTURE_READBACK;
+            Ref<Texture> source = device.createTexture(desc, name);
+            tut::ensure(std::string(name) + ": made", source.notNull());
+            const std::vector<U8> bytes = CC::sourceRGBA8();
+            encoder.uploadTexture(source.get(), level, layer, whole, PixelLayout(), asBytes(bytes));
+            return source;
+        };
+        // (a) the shared rows, exact
+        {
+            CaptureLog log(LLError::LEVEL_WARN);
+            Ref<Texture> source = sourceOf(sizedDesc(Format::RGBA8Unorm, 0, CC::SIDE, CC::SIDE), 0, 0, "copy source");
+            for (const CC::Row& row : CC::rows())
+            {
+                for (int written = 1; written >= 0; --written)
+                {
+                    const std::string on = std::string(row.name) + (written ? ": " : " (a first write): ");
+                    Ref<Texture> to = device.createTexture(row.desc, row.name);
+                    tut::ensure(on + "made", to.notNull());
+                    const PixelLayout layout = layoutOf(row.read, PixelLayout::Type::U8);
+                    std::vector<U8> want = CC::expected(row);
+                    if (written)
+                    {
+                        encoder.uploadTexture(to.get(), 0, 0, whole, layout, asBytes(CC::untouched(row)));
+                    }
+                    else
+                    {
+                        // P3-01g: GL's zeros around a first write (alpha 1 where the GL format has none)
+                        const std::vector<U8> rest = CC::untouched(row);
+                        const size_t stride = want.size() / (CC::SIDE * CC::SIDE);
+                        for (size_t i = 0; i < want.size(); ++i)
+                        {
+                            const bool alpha = row.alphaOne && i % stride == 3;
+                            if (want[i] == rest[i] && !alpha)
+                            {
+                                want[i] = 0;
+                            }
+                        }
+                    }
+                    const U64 transfers = encoder.state().transfers();
+                    const U64 draws = metal.formatCopyDraws();
+                    encoder.copyTexture(source.get(), 0, 0, CC::REGION, to.get(), 0, 0, CC::DST_X, CC::DST_Y);
+                    ensureEqual(on + "a transfer", encoder.state().transfers() - transfers, U64(1));
+                    const bool between = row.desc.format != Format::RGBA8Unorm;
+                    ensureEqual(on + (between ? "one copy as a draw" : "a blit, no draw"), metal.formatCopyDraws() - draws,
+                                U64(between ? 1 : 0));
+                    ensureRead(on + "GL's bytes", encoder.readback(to.get(), 0, 0, whole, layout), want);
+                }
+            }
+            // m9: the source's level and layer, and its stored components rather than its swizzle
+            const CC::Row r8 = CC::rows()[0];
+            TextureDesc cubes = sizedDesc(Format::RGBA8Unorm, 0, CC::SIDE * 2, CC::SIDE * 2);
+            cubes.type = TextureType::CubeArray;
+            cubes.layers = 2;
+            cubes.mipLevels = 2;
+            Ref<Texture> deep = sourceOf(cubes, 1, 7, "cube array source");
+            Ref<Texture> fromDeep = device.createTexture(r8.desc, "R8 from level 1, layer 7");
+            encoder.uploadTexture(fromDeep.get(), 0, 0, whole, layoutOf(r8.read, PixelLayout::Type::U8),
+                                  asBytes(CC::untouched(r8)));
+            encoder.copyTexture(deep.get(), 1, 7, CC::REGION, fromDeep.get(), 0, 0, CC::DST_X, CC::DST_Y);
+            ensureRead("level 1 of layer 7 into R8",
+                       encoder.readback(fromDeep.get(), 0, 0, whole, layoutOf(r8.read, PixelLayout::Type::U8)),
+                       CC::expected(r8));
+            const CC::Row la = CC::rows()[4];
+            Ref<Texture> laSource = device.createTexture(la.desc, "LA source");
+            const std::vector<U8> laBytes = numbered(CC::SIDE * CC::SIDE * 2, 30);
+            encoder.uploadTexture(laSource.get(), 0, 0, whole, layoutOf(la.read, PixelLayout::Type::U8), asBytes(laBytes));
+            Ref<Texture> fromLA = device.createTexture(r8.desc, "R8 from LA");
+            encoder.copyTexture(laSource.get(), 0, 0, whole, fromLA.get(), 0, 0, 0, 0);
+            std::vector<U8> storedR(CC::SIDE * CC::SIDE);
+            for (size_t t = 0; t < storedR.size(); ++t)
+            {
+                storedR[t] = laBytes[t * 2];
+            }
+            ensureRead("a swizzled LA source gives its stored R, not its swizzle's",
+                       encoder.readback(fromLA.get(), 0, 0, whole, layoutOf(r8.read, PixelLayout::Type::U8)), storedR);
+            endCleanly(device, log);
+        }
+        // (b) a float source clamps, within 1 of GL's bytes
+        {
+            CaptureLog log(LLError::LEVEL_WARN);
+            Ref<Texture> floats = device.createTexture(sizedDesc(Format::RGBA16Float, TEXTURE_SAMPLED | TEXTURE_READBACK,
+                                                                 CC::SIDE, CC::SIDE), "float source");
+            encoder.uploadTexture(floats.get(), 0, 0, whole, layoutOf(PixelLayout::Components::RGBA, PixelLayout::Type::F16),
+                                  asBytes(CC::sourceRGBA16F()));
+            Ref<Texture> unorm = device.createTexture(sizedDesc(Format::RGBA8Unorm, TEXTURE_SAMPLED | TEXTURE_READBACK,
+                                                                CC::SIDE, CC::SIDE), "RGBA8 from floats");
+            encoder.copyTexture(floats.get(), 0, 0, whole, unorm.get(), 0, 0, 0, 0);
+            const std::vector<U8> got = bytesOf(encoder.readback(unorm.get(), 0, 0, whole, PixelLayout()));
+            const std::vector<U8> want = CC::expectedFromRGBA16F();
+            ensureEqual("RGBA16F into RGBA8: the size", got.size(), want.size());
+            int worst = 0;
+            for (size_t i = 0; i < got.size() && i < want.size(); ++i)
+            {
+                worst = std::max(worst, std::abs(int(got[i]) - int(want[i])));
+            }
+            std::fprintf(stderr, "t191: RGBA16F into RGBA8 on Metal, the largest step from GL's bytes: %d\n", worst);
+            tut::ensure("RGBA16F into RGBA8: within 1 of GL's bytes (the Metal standard)", worst <= 1);
+            // F14: an RGB8 render target gets alpha 1 after the copy brought the source's
+            TextureDesc rgbTarget = sizedDesc(Format::RGBA8Unorm, TEXTURE_RENDER_TARGET | TEXTURE_READBACK, CC::SIDE, CC::SIDE);
+            rgbTarget.glFormat = FormatCases::GL_FORMAT_RGB8;
+            Ref<Texture> rgb = device.createTexture(rgbTarget, "RGB8 target from floats");
+            const U64 alphaDraws = metal.alphaCopyDraws();
+            encoder.copyTexture(floats.get(), 0, 0, whole, rgb.get(), 0, 0, 0, 0);
+            ensureEqual("into an RGB8 render target: the alpha draw", metal.alphaCopyDraws() - alphaDraws, U64(1));
+            endCleanly(device, log);
+        }
+        // (c) the refusals, before the tracker
+        {
+            struct Pair
+            {
+                const char* name;
+                Format from;
+                Format to;
+            };
+            std::vector<Pair> pairs = {
+                { "RGBA8 into sRGB", Format::RGBA8Unorm, Format::RGBA8Unorm_sRGB },
+                { "sRGB into RGBA8", Format::RGBA8Unorm_sRGB, Format::RGBA8Unorm },
+                { "Depth32Float into R32Float", Format::Depth32Float, Format::R32Float },
+                { "RGBA8 into R8Uint", Format::RGBA8Unorm, Format::R8Uint },
+            };
+            if (device.capabilities().bcCompression)
+            {
+                pairs.push_back({ "RGBA8 into BC1", Format::RGBA8Unorm, Format::BC1_RGBA });
+            }
+            Capabilities gl;
+            gl.copyBetweenFormats = true; // GL's (llrhigl.cpp), every pair to glCopyTexSubImage2D
+            for (const Pair& pair : pairs)
+            {
+                const std::string on = std::string(pair.name) + ": ";
+                tut::ensure(on + "copyRefusal refuses it on Metal",
+                            !copyRefusal(device.capabilities(), pair.from, pair.to).empty());
+                tut::ensure(on + "and takes it on GL", copyRefusal(gl, pair.from, pair.to).empty());
+                Ref<Texture> from = device.createTexture(sizedDesc(pair.from, TEXTURE_SAMPLED, CC::SIDE, CC::SIDE),
+                                                         "refused source");
+                Ref<Texture> to = device.createTexture(sizedDesc(pair.to, TEXTURE_SAMPLED, CC::SIDE, CC::SIDE),
+                                                       "refused destination");
+                tut::ensure(on + "made", from.notNull() && to.notNull());
+                CaptureLog log(LLError::LEVEL_WARN);
+                const U64 transfers = encoder.state().transfers();
+                const U64 draws = metal.formatCopyDraws();
+                encoder.copyTexture(from.get(), 0, 0, whole, to.get(), 0, 0, 0, 0);
+                ensureEqual(on + "no transfer", encoder.state().transfers() - transfers, U64(0));
+                ensureEqual(on + "no draw", metal.formatCopyDraws() - draws, U64(0));
+                ensureEqual(on + "one WARN line", occurrences(log, "WARNING"), size_t(1));
+                ensureEqual(on + "naming P3-08b", occurrences(log, "not ported to Metal yet (P3-08b"), size_t(1));
+            }
+            tut::ensure("equal formats on both", copyRefusal(device.capabilities(), Format::BC1_RGBA, Format::BC1_RGBA).empty()
+                                                     && copyRefusal(Capabilities(), Format::R8Unorm, Format::R8Unorm).empty());
+            tut::ensure("no copyBetweenFormats: only equal formats",
+                        !copyRefusal(Capabilities(), Format::RGBA8Unorm, Format::R8Unorm).empty());
+            tut::ensure("Unknown (a raw name) only on GL", !copyRefusal(device.capabilities(), Format::RGBA8Unorm,
+                                                                        Format::Unknown).empty()
+                                                           && copyRefusal(gl, Format::RGBA8Unorm, Format::Unknown).empty());
+            device.endFrame();
+        }
+        // (d) C13: an upload into a multisampled texture is refused and counts nothing
+        {
+            TextureDesc msaa = sizedDesc(Format::RGBA8Unorm, TEXTURE_RENDER_TARGET, CC::SIDE, CC::SIDE);
+            msaa.samples = 4;
+            Ref<Texture> samples = device.createTexture(msaa, "multisampled");
+            tut::ensure("(d) made", samples.notNull());
+            CaptureLog log(LLError::LEVEL_WARN);
+            const U64 transfers = encoder.state().transfers();
+            const std::vector<U8> bytes = CC::sourceRGBA8();
+            encoder.uploadTexture(samples.get(), 0, 0, whole, PixelLayout(), asBytes(bytes));
+            ensureEqual("(d) one WARN line", occurrences(log, "WARNING"), size_t(1));
+            ensureEqual("(d) the refusal's", occurrences(log, "uploadTexture into a multisampled texture"), size_t(1));
+            ensureEqual("(d) no transfer counted", encoder.state().transfers() - transfers, U64(0));
+            device.endFrame();
+        }
+        // (e) P3-08b's review m3: a copy between formats whose pipeline cannot be made (a destination format no copy
+        // has drawn into, failNextCompile with the program made) is refused before the tracker, and the device's rule
+        // for canFromFramebuffer refuses the pair too; a pair whose pipeline is had still copies
+        {
+            Ref<Texture> source = sourceOf(sizedDesc(Format::RGBA8Unorm, 0, CC::SIDE, CC::SIDE), 0, 0, "m3 source");
+            Ref<Texture> half = device.createTexture(sizedDesc(Format::RGBA16Float, TEXTURE_SAMPLED, CC::SIDE, CC::SIDE),
+                                                     "m3 RGBA16F");
+            tut::ensure("(e) made", half.notNull());
+            CaptureLog log(LLError::LEVEL_WARN);
+            tut::ensure("(e) copyRefusal takes RGBA8 into RGBA16F",
+                        copyRefusal(device.capabilities(), Format::RGBA8Unorm, Format::RGBA16Float).empty());
+            device.failNextCompile(); // the program is made, so the next new pipeline state takes it
+            const U64 transfers = encoder.state().transfers();
+            const U64 draws = metal.formatCopyDraws();
+            encoder.copyTexture(source.get(), 0, 0, whole, half.get(), 0, 0, 0, 0);
+            ensureEqual("(e) no transfer", encoder.state().transfers() - transfers, U64(0));
+            ensureEqual("(e) no draw", metal.formatCopyDraws() - draws, U64(0));
+            ensureEqual("(e) the refusal's WARN line",
+                        occurrences(log, "copyTexture between formats: the format copy pipeline"), size_t(1));
+            ensureEqual("(e) not a port missing", occurrences(log, "not ported to Metal yet"), size_t(0));
+            tut::ensure("(e) the device's rule refuses the pair",
+                        !device.copyRefusalBetween(Format::RGBA8Unorm, Format::RGBA16Float).empty());
+            tut::ensure("(e) and takes a pair whose pipeline is had",
+                        device.copyRefusalBetween(Format::RGBA8Unorm, Format::R8Unorm).empty()
+                            && device.copyRefusalBetween(Format::BC1_RGBA, Format::BC1_RGBA).empty());
+            tut::ensure("(e) and refuses what copyRefusal refuses",
+                        !device.copyRefusalBetween(Format::RGBA8Unorm, Format::RGBA8Unorm_sRGB).empty());
+            const CC::Row r8 = CC::rows()[0];
+            Ref<Texture> to = device.createTexture(r8.desc, "m3 R8");
+            const U64 before = encoder.state().transfers();
+            encoder.copyTexture(source.get(), 0, 0, CC::REGION, to.get(), 0, 0, CC::DST_X, CC::DST_Y);
+            ensureEqual("(e) RGBA8 into R8 still a transfer", encoder.state().transfers() - before, U64(1));
+            ensureEqual("(e) and a draw", metal.formatCopyDraws() - draws, U64(1));
+            device.endFrame();
+            ensureEqual("no GPU errors", device.gpuErrors(), U64(0));
+        }
+    }
+
+    /// t184 (P3-03c's review m1; its t180 before batch 2's merge): a ring slot keeps at most MetalRing::KEEP_SLOT_MAX
+    /// of large staging. A burst of ten
+    /// allocations of 4 MiB and 256 bytes in each slot's frame (a login's or teleport's world textures) keeps as many
+    /// 5 MiB buffers as the cap holds and gives each of the others a buffer of its own, of its size, which retires with
+    /// its frame. The same burst after the rewinds makes no buffer; with the slot at its cap a larger allocation no
+    /// unused kept buffer holds gets a buffer of its own while a smaller one still takes a kept buffer; after the trim
+    /// the slot keeps again from 0 bytes. No WARN line.
+    API_AVAILABLE(macos(26.0)) void keptStagingCapTest(MetalDevice& device)
+    {
+        CaptureLog log(LLError::LEVEL_WARN);
+        MetalResidency& residency = device.residency();
+        const U64 mib = 1024 * 1024;
+        const U64 size = 4 * mib + 256;
+        const U64 length = 5 * mib; // whole MiB
+        const U64 perSlot = MetalRing::KEEP_SLOT_MAX / length;
+        const U32 burst = 10;
+        const U32 slots = FrameLifecycle::MAX_FRAMES_IN_FLIGHT;
+        tut::ensure("the cap holds some of the burst, not all", perSlot >= 1 && perSlot < burst);
+        std::vector<id<MTLBuffer>> kept;
+        std::vector<id<MTLBuffer>> own;
+        const auto isKept = [&kept](id<MTLBuffer> buffer)
+        { return std::find(kept.begin(), kept.end(), buffer) != kept.end(); };
+        const U64 madeBefore = device.ringKeptMade();
+        for (U32 frame = 0; frame < slots; ++frame) @autoreleasepool
+        {
+            for (U32 i = 0; i < burst; ++i)
+            {
+                const MetalAllocation staging = device.frameAllocation(size);
+                tut::ensure("a burst's allocation", staging.buffer && staging.offset == 0 && staging.cpu);
+                (i < perSlot ? kept : own).push_back(staging.buffer);
+            }
+            device.endFrame();
+        }
+        ensureEqual("the cap's buffers kept per slot", device.ringKeptMade() - madeBefore, U64(perSlot * slots));
+        ensureEqual("and no more", device.ringKeptBuffers(), size_t(perSlot * slots));
+        ensureEqual("a slot's kept bytes", device.ringKeptBytesMax(), perSlot * length);
+        tut::ensure("within the cap", device.ringKeptBytesMax() <= MetalRing::KEEP_SLOT_MAX);
+        for (id<MTLBuffer> buffer : kept)
+        {
+            ensureEqual("a kept buffer in whole MiB", U64(buffer.length), length);
+        }
+        for (id<MTLBuffer> buffer : own)
+        {
+            ensureEqual("past the cap: a buffer of its own, of its size", U64(buffer.length), size);
+            tut::ensure("not a kept one", !isKept(buffer));
+        }
+        finishFrame(device);
+        residency.commitIfChanged();
+        for (id<MTLBuffer> buffer : own)
+        {
+            tut::ensure("a buffer of its own has left the residency set with its frame", !residency.contains(buffer));
+        }
+        for (id<MTLBuffer> buffer : kept)
+        {
+            tut::ensure("a kept buffer stays resident", residency.contains(buffer));
+        }
+        own.clear();
+
+        // The same burst after every slot's rewind: the kept buffers again, the rest of their own
+        const U64 madeAtCap = device.ringKeptMade();
+        for (U32 frame = 0; frame < slots; ++frame) @autoreleasepool
+        {
+            for (U32 i = 0; i < burst; ++i)
+            {
+                const MetalAllocation staging = device.frameAllocation(size);
+                tut::ensure(i < perSlot ? "a kept buffer again" : "past the cap, of its own",
+                            staging.buffer && isKept(staging.buffer) == (i < perSlot));
+            }
+            device.endFrame();
+        }
+        ensureEqual("the burst again makes no buffer", device.ringKeptMade(), madeAtCap);
+
+        // At the cap: 6 MiB fits no unused kept buffer, so a buffer of its own; 2 MiB still takes a kept one
+        const MetalAllocation larger = device.frameAllocation(6 * mib + 256);
+        tut::ensure("larger than every kept buffer at the cap: of its own, of its size",
+                    larger.buffer && !isKept(larger.buffer) && larger.buffer.length == 6 * mib + 256);
+        const MetalAllocation smaller = device.frameAllocation(2 * mib + 256);
+        tut::ensure("smaller: a kept buffer", smaller.buffer && isKept(smaller.buffer));
+        ensureEqual("no buffer made at the cap", device.ringKeptMade(), madeAtCap);
+
+        // The trim gives the slots' bytes back, and a slot keeps again
+        for (U32 i = 0; i < (MetalRing::TRIM_REWINDS + 2) * slots; ++i) @autoreleasepool
+        {
+            device.endFrame();
+        }
+        ensureEqual("every kept buffer trimmed", device.ringKeptBuffers(), size_t(0));
+        ensureEqual("and their bytes", device.ringKeptBytesMax(), U64(0));
+        const MetalAllocation again = device.frameAllocation(size);
+        tut::ensure("kept again after the trim", again.buffer && again.buffer.length == length);
+        ensureEqual("one buffer made", device.ringKeptMade(), madeAtCap + 1);
+        ensureEqual("the slot's bytes from 0", device.ringKeptBytesMax(), length);
+        endCleanly(device, log);
+    }
+
+    /// t163 (P3-04a S2, R1-14): metalProgramSource gives each unit the description's file and classes, so the
+    /// translator's classes name the files and a fall to a lower shader level changes the disk cache key; an internal
+    /// program's unit keeps "<stage> unit N" and no classes, and a shared object (class 0) no classes either.
+    void fileClassesTest()
+    {
+        ProgramDesc desc = uiProgramDesc();
+        tut::ensure("the UI program has two stages of one unit",
+                    desc.stages.size() == 2 && desc.stages[0].units.size() == 1 && desc.stages[1].units.size() == 1);
+        const MSL::Program internal = metalProgramSource(desc);
+        ensureEqual("an internal unit is named by its stage", internal.units[0].file, std::string("vertex unit 0"));
+        ensureEqual("an internal unit has no class asked", internal.units[0].requestedClass, 0);
+        ensureEqual("an internal unit has no class found", internal.units[0].usedClass, 0);
+
+        desc.shaderLevel = 3;
+        desc.stages[0].files = { "interface/uiV.glsl" };
+        desc.stages[0].classes = { 1 };
+        desc.stages[1].files = { "interface/uiF.glsl" };
+        desc.stages[1].classes = { 1 };
+        const MSL::Program at3 = metalProgramSource(desc);
+        ensureEqual("the vertex unit's file", at3.units[0].file, std::string("interface/uiV.glsl"));
+        ensureEqual("the fragment unit's file", at3.units[1].file, std::string("interface/uiF.glsl"));
+        ensureEqual("asked at the attempt's level", at3.units[0].requestedClass, 3);
+        ensureEqual("compiled at the attempt's level", at3.units[0].compiledClass, 3);
+        ensureEqual("found in its file's class", at3.units[0].usedClass, 1);
+        ensureEqual("the program's levels stay unknown (no cascade)", at3.firstLevel + at3.finalLevel, 0);
+        const MSL::Result translated = MSL::translate(at3);
+        tut::ensure("the program translates: " + translated.error, translated.ok && translated.stages.size() == 2);
+        tut::ensure("the vertex stage's classes name its file",
+                    translated.stages[0].classes ==
+                        std::vector<std::string>{ "interface/uiV.glsl: compiled at class 3, file from class 1" });
+        tut::ensure("the fragment stage's classes name its file",
+                    translated.stages[1].classes ==
+                        std::vector<std::string>{ "interface/uiF.glsl: compiled at class 3, file from class 1" });
+
+        const std::string folder = tempFolder() + "/t163_cache";
+        const MSL::DiskCache cache(folder);
+        const std::string key3 = cache.key(at3, MSL::Options(), "test capabilities");
+        ensureEqual("the same description gives the same key",
+                    cache.key(metalProgramSource(desc), MSL::Options(), "test capabilities"), key3);
+        desc.shaderLevel = 2;
+        const MSL::Program at2 = metalProgramSource(desc);
+        tut::ensure("the same sources at level 2 give another key",
+                    at2.units[0].source == at3.units[0].source &&
+                        cache.key(at2, MSL::Options(), "test capabilities") != key3);
+        desc.stages[0].classes = { 0 };
+        ensureEqual("a shared object's class asked is not known", metalProgramSource(desc).units[0].requestedClass, 0);
+    }
+
+    /// t164 (P3-04a S4, decision 8): the programs of METAL_SAFE_MATH_PROGRAMS and their skinned variants
+    /// compile with Safe math, every other program with the backend's math (the clouds' program among them, which Safe
+    /// math loses in ultra/overview), and a listed program becomes Ready alone.
+    API_AVAILABLE(macos(26.0)) void safeMathTest(MetalDevice& device)
+    {
+        tut::ensure("the list is not empty", !METAL_SAFE_MATH_PROGRAMS.empty());
+        for (const std::string_view name : METAL_SAFE_MATH_PROGRAMS)
+        {
+            tut::ensure("Safe: " + std::string(name), metalSafeMath(std::string(name)));
+            tut::ensure("Safe, its skinned variant: " + std::string(name), metalSafeMath("Skinned " + std::string(name)));
+            tut::ensure("not Safe, another prefix: " + std::string(name), !metalSafeMath("Rigged " + std::string(name)));
+        }
+        tut::ensure("not Safe: the clouds' program", !metalSafeMath("Deferred Windlight Cloud Program"));
+        tut::ensure("not Safe: the UI program", !metalSafeMath(uiProgramDesc().name));
+        tut::ensure("not Safe: the prefix alone", !metalSafeMath("Skinned "));
+        ensureEqual("Safe options: Safe math", int(metalCompileOptions(true).mathMode), int(MTLMathModeSafe));
+        ensureEqual("other options: the backend's math", int(metalCompileOptions(false).mathMode), int(METAL_MATH_MODE));
+        ensureEqual("other options: the backend's functions", int(metalCompileOptions(false).mathFloatingPointFunctions),
+                    int(METAL_MATH_FUNCTIONS));
+        ProgramDesc desc = uiProgramDesc();
+        desc.name = std::string(METAL_SAFE_MATH_PROGRAMS.front());
+        Ref<Program> program = ready(device.createProgram(desc));
+        tut::ensure("a listed program is Ready", program.notNull() && program->status() == CompileStatus::Ready);
+    }
+
+    // P3-08: sample queries on the visibility result buffer ----------------------------------------------------------
+
+    /// P3-08's vertices: a rectangle over the whole target (0-5) and one over its left half (6-11), both at z 0.
+    API_AVAILABLE(macos(26.0)) Ref<Buffer> queryRects(MetalDevice& device, const DrawTarget& target,
+                                                      VertexStreams& streams)
+    {
+        DrawVertices vertices;
+        addRect(vertices, -1.f, -1.f, 1.f, 1.f, YELLOW);
+        addRect(vertices, -1.f, -1.f, 0.f, 1.f, RED);
+        setUiUniforms(device.encoder(), target.program.get(), translation(0, 0));
+        Ref<Buffer> buffer = vertexBuffer(device, vertices, streams);
+        tut::ensure("the vertices", buffer.notNull());
+        return buffer;
+    }
+
+    constexpr U64 QUERY_SAMPLES = U64(DRAW_SIZE) * DRAW_SIZE; // one sample per pixel
+
+    API_AVAILABLE(macos(26.0)) MetalQueryRun* queryRun(const Ref<Query>& query)
+    {
+        return static_cast<MetalQuery*>(query.get())->mRun.get();
+    }
+
+    /// t180 (P3-08, the design's M1-M6): (a) createQueries makes the visibility buffer, and a draw with no query leaves
+    /// it at 0. (b) SamplesPassed counts exactly the samples a visible draw covers (the whole target, its left half),
+    /// AnySamplesPassed is 1; a draw hidden by the depth test (Less against an equal depth) counts 0, and so does a
+    /// clear inside a query (beside a hidden draw: a query no draw reached reads 1, t182 (g)). No result is ready before the frame's submit, nor while that commit waits for a gate;
+    /// once it ran, all are. (c) result(true) in the frame of the end sends what is recorded and waits; the begin
+    /// forgot the last result. No WARN line, no GPU error.
+    API_AVAILABLE(macos(26.0)) void queryCountsTest(MetalDevice& device)
+    {
+        CaptureLog log(LLError::LEVEL_WARN);
+        DrawTarget target = drawTarget(device);
+        VertexStreams streams;
+        Ref<Buffer> buffer = queryRects(device, target, streams);
+        Encoder& encoder = device.encoder();
+        Ref<DepthStencilState> writeLessEqual = device.getDepthStencilState({ true, true, CompareFunc::LessEqual });
+        Ref<DepthStencilState> testLess = device.getDepthStencilState({ true, false, CompareFunc::Less });
+        std::vector<Ref<Query>> counting = device.createQueries(QueryType::SamplesPassed, 4);
+        std::vector<Ref<Query>> any = device.createQueries(QueryType::AnySamplesPassed, 2);
+        ensureEqual("four sample counts", counting.size(), size_t(4));
+        ensureEqual("two any-sample queries", any.size(), size_t(2));
+        tut::ensure("(a) the visibility buffer", device.visibilityBuffer() != nil);
+        tut::ensure("(a) 256 KB", device.visibilityBuffer().length == METAL_VISIBILITY_SLOTS * sizeof(U64));
+
+        tut::ensure("(a) the pass begins", encoder.beginRenderPass(drawPass(target)));
+        bindDraw(encoder, target, buffer, streams);
+        encoder.draw(PrimitiveType::Triangles, 0, 6);
+        encoder.endRenderPass();
+        finishFrame(device);
+        const U64* values = static_cast<const U64*>(device.visibilityBuffer().contents);
+        tut::ensure("(a) a draw with no query counts nothing", values[0] == 0 && values[1] == 0);
+
+        tut::ensure("(b) the pass begins", encoder.beginRenderPass(drawPass(target)));
+        bindDraw(encoder, target, buffer, streams);
+        encoder.setDepthStencilState(writeLessEqual.get());
+        const auto measure = [&](const Ref<Query>& query, U32 first)
+        {
+            tut::ensure("(b) the begin is accepted", encoder.beginQuery(query.get()));
+            encoder.draw(PrimitiveType::Triangles, first, 6);
+            encoder.endQuery(query.get());
+        };
+        measure(counting[0], 0); // the whole target, writing its depth
+        measure(counting[1], 6); // the left half at the same depth: LessEqual passes
+        measure(any[0], 0);
+        encoder.setDepthStencilState(testLess.get());
+        measure(counting[2], 0); // Less against the equal depth: hidden
+        measure(any[1], 6);
+        tut::ensure("(b) the clear's begin is accepted", encoder.beginQuery(counting[3].get()));
+        encoder.clear(true, RED_FLOATS, false, 1.f);
+        encoder.draw(PrimitiveType::Triangles, 0, 6); // hidden: the query has a draw, so its 0 is a result
+        encoder.endQuery(counting[3].get());
+        tut::ensure("(b) not ready before the submit", !counting[0]->ready());
+        encoder.endRenderPass();
+        id<MTLSharedEvent> gate = [device.mtlDevice() newSharedEvent];
+        device.gateNextCommit(gate, 1);
+        const U64 frame = device.frameNumber();
+        device.endFrame();
+        tut::ensure("(b) not ready while the commit waits", !counting[0]->ready() && !any[0]->ready());
+        gate.signaledValue = 1;
+        tut::ensure("(b) the frame finishes", device.waitForFrame(frame));
+        ensureEqual("(b) the whole target", counting[0]->result(true), QUERY_SAMPLES);
+        tut::ensure("(b) then ready", counting[0]->ready() && counting[1]->ready() && any[1]->ready());
+        ensureEqual("(b) the left half", counting[1]->result(true), QUERY_SAMPLES / 2);
+        ensureEqual("(b) at least one sample: 1, whatever non-zero Metal wrote", any[0]->result(true), U64(1));
+        ensureEqual("(b) hidden by the depth test", counting[2]->result(true), U64(0));
+        ensureEqual("(b) hidden: no sample", any[1]->result(true), U64(0));
+        ensureEqual("(b) a clear adds no samples", counting[3]->result(true), U64(0));
+
+        tut::ensure("(c) the pass begins", encoder.beginRenderPass(drawPass(target)));
+        bindDraw(encoder, target, buffer, streams);
+        const U64 waited = device.queryStats().waited;
+        measure(counting[0], 6);
+        ensureEqual("(c) result(true) at once sends and waits: the half, not the last result",
+                    counting[0]->result(true), QUERY_SAMPLES / 2);
+        ensureEqual("(c) one read waited", device.queryStats().waited - waited, U64(1));
+        encoder.endRenderPass();
+        endCleanly(device, log);
+    }
+
+    /// t181 (P3-08, M3, M4): (a) the first query after a segment's encoder opened without the buffer splits the pass
+    /// once and counts. (b) A query over a pass break (an upload in the pass) adds its draws on both sides. (c) A query
+    /// over two render passes adds both. (d) A query begun outside any pass counts the draws of the pass after it, as
+    /// the octree's queries without an open stack pass. (e) and (f) AnySamplesPassed (Boolean, what the octree and the
+    /// probes use) over a pass break: a visible draw before the break and a hidden one after it, and the reverse, both
+    /// read 1, so a later segment with no sample does not overwrite an earlier one's (P3-08's review R2); a sample
+    /// count hidden on both sides reads 0, so the draw after the break is hidden indeed. No WARN line, no GPU error.
+    API_AVAILABLE(macos(26.0)) void querySpansTest(MetalDevice& device)
+    {
+        CaptureLog log(LLError::LEVEL_WARN);
+        DrawTarget target = drawTarget(device);
+        VertexStreams streams;
+        Ref<Buffer> buffer = queryRects(device, target, streams);
+        Encoder& encoder = device.encoder();
+        Ref<Texture> texture = device.createTexture(sizedDesc(Format::RGBA8Unorm, TEXTURE_SAMPLED, 1, 1), "query break");
+
+        tut::ensure("(a) the pass begins", encoder.beginRenderPass(drawPass(target)));
+        bindDraw(encoder, target, buffer, streams);
+        encoder.draw(PrimitiveType::Triangles, 6, 6); // opens the segment's encoder, before any buffer
+        std::vector<Ref<Query>> queries = device.createQueries(QueryType::SamplesPassed, 4);
+        const U64 breaks = device.metalEncoder().stats().passBreaks;
+        tut::ensure("(a) the begin is accepted", encoder.beginQuery(queries[0].get()));
+        ensureEqual("(a) the begin split the pass once", device.metalEncoder().stats().passBreaks - breaks, U64(1));
+        encoder.draw(PrimitiveType::Triangles, 0, 6);
+        encoder.endQuery(queries[0].get());
+
+        tut::ensure("(b) the begin is accepted", encoder.beginQuery(queries[1].get()));
+        encoder.draw(PrimitiveType::Triangles, 6, 6);
+        const U64 before = device.metalEncoder().stats().passBreaks;
+        encoder.uploadTexture(texture.get(), 0, 0, { 0, 0, 1, 1 }, PixelLayout(), bytesOf(RED));
+        ensureEqual("(b) the upload broke the pass", device.metalEncoder().stats().passBreaks - before, U64(1));
+        encoder.draw(PrimitiveType::Triangles, 0, 6);
+        encoder.endQuery(queries[1].get());
+
+        tut::ensure("(c) the begin is accepted", encoder.beginQuery(queries[2].get()));
+        encoder.draw(PrimitiveType::Triangles, 6, 6);
+        encoder.endRenderPass();
+        tut::ensure("(c) the second pass begins", encoder.beginRenderPass(drawPass(target)));
+        bindDraw(encoder, target, buffer, streams);
+        encoder.draw(PrimitiveType::Triangles, 0, 6);
+        encoder.endQuery(queries[2].get());
+        encoder.endRenderPass();
+
+        tut::ensure("(d) the begin outside a pass is accepted", encoder.beginQuery(queries[3].get()));
+        tut::ensure("(d) the pass begins", encoder.beginRenderPass(drawPass(target)));
+        bindDraw(encoder, target, buffer, streams);
+        encoder.draw(PrimitiveType::Triangles, 6, 6);
+        encoder.endQuery(queries[3].get());
+        encoder.endRenderPass();
+
+        std::vector<Ref<Query>> any = device.createQueries(QueryType::AnySamplesPassed, 2);
+        Ref<DepthStencilState> writeLessEqual = device.getDepthStencilState({ true, true, CompareFunc::LessEqual });
+        Ref<DepthStencilState> testLess = device.getDepthStencilState({ true, false, CompareFunc::Less });
+        tut::ensure("(e) the pass begins", encoder.beginRenderPass(drawPass(target)));
+        bindDraw(encoder, target, buffer, streams);
+        encoder.setDepthStencilState(writeLessEqual.get());
+        encoder.draw(PrimitiveType::Triangles, 0, 6); // the whole target's depth, outside any query
+        const auto spanBreak = [&](const Ref<Query>& query, DepthStencilState* first, DepthStencilState* second,
+                                   const char* label)
+        {
+            tut::ensure(std::string(label) + " the begin is accepted", encoder.beginQuery(query.get()));
+            encoder.setDepthStencilState(first);
+            encoder.draw(PrimitiveType::Triangles, 6, 6);
+            const U64 at = device.metalEncoder().stats().passBreaks;
+            encoder.uploadTexture(texture.get(), 0, 0, { 0, 0, 1, 1 }, PixelLayout(), bytesOf(RED));
+            ensureEqual(std::string(label) + " the upload broke the pass", device.metalEncoder().stats().passBreaks - at,
+                        U64(1));
+            encoder.setDepthStencilState(second);
+            encoder.draw(PrimitiveType::Triangles, 6, 6);
+            encoder.endQuery(query.get());
+        };
+        spanBreak(any[0], writeLessEqual.get(), testLess.get(), "(e)"); // visible, then hidden by Less at equal depth
+        spanBreak(any[1], testLess.get(), writeLessEqual.get(), "(f)"); // hidden, then visible
+        std::vector<Ref<Query>> control = device.createQueries(QueryType::SamplesPassed, 1);
+        spanBreak(control[0], testLess.get(), testLess.get(), "(e) control:"); // hidden on both sides of the break
+        encoder.endRenderPass();
+        finishFrame(device);
+        device.feedbackReceived(); // the handlers have run (D21), so no read below waits
+
+        ensureEqual("(a) the whole target", queries[0]->result(true), QUERY_SAMPLES);
+        ensureEqual("(b) the half before the break and the whole after", queries[1]->result(true),
+                    QUERY_SAMPLES + QUERY_SAMPLES / 2);
+        ensureEqual("(c) the half in the first pass and the whole in the second", queries[2]->result(true),
+                    QUERY_SAMPLES + QUERY_SAMPLES / 2);
+        ensureEqual("(d) the half", queries[3]->result(true), QUERY_SAMPLES / 2);
+        ensureEqual("(e) visible before the break, hidden after: 1", any[0]->result(true), U64(1));
+        ensureEqual("(f) hidden before the break, visible after: 1", any[1]->result(true), U64(1));
+        ensureEqual("(e) control: the depth outlives the break, so Less hides on both sides", control[0]->result(true),
+                    U64(0));
+        ensureEqual("no read waited", device.queryStats().waited, U64(0));
+        endCleanly(device, log);
+    }
+
+    /// t182 (P3-08, M6, U4, U5): (a) primitive queries are not made (one WARN line; time queries are, t195). (b) A second
+    /// sample
+    /// query while one is active is refused with the tracker's WARN line (concurrentSampleQueries is false); the
+    /// refused one is ready and reads 1 (visible), the active one counts. (c) A refused second begin of the active query
+    /// leaves it active and counting. (d) A query never begun reads 1. (e) A query active at the frame's end is
+    /// abandoned: the tracker's WARN line, then ready and 1. (f) A query whose command buffer failed is ready and reads
+    /// 1. (g) An ended query no draw reached reads 1, never 0 as GL's would: one with no draw (ready at once), an
+    /// any-sample one likewise, and one whose only draw the tracker refused (no pass is open), as a draw Metal refuses
+    /// in one pass format would otherwise hide its group for good (the review's m1). No GPU error.
+    API_AVAILABLE(macos(26.0)) void queryRefusalsTest(MetalDevice& device)
+    {
+        CaptureLog log(LLError::LEVEL_WARN);
+        DrawTarget target = drawTarget(device);
+        VertexStreams streams;
+        Ref<Buffer> buffer = queryRects(device, target, streams);
+        Encoder& encoder = device.encoder();
+        tut::ensure("(a) no primitive query", device.createQueries(QueryType::PrimitivesGenerated, 1).empty());
+        ensureEqual("(a) one WARN line", occurrences(log, "Could not create query"), size_t(1));
+        std::vector<Ref<Query>> counting = device.createQueries(QueryType::SamplesPassed, 4);
+        std::vector<Ref<Query>> any = device.createQueries(QueryType::AnySamplesPassed, 2);
+
+        tut::ensure("(b) the pass begins", encoder.beginRenderPass(drawPass(target)));
+        bindDraw(encoder, target, buffer, streams);
+        tut::ensure("(b) the first begin is accepted", encoder.beginQuery(any[0].get()));
+        tut::ensure("(b) the second sample query is refused", !encoder.beginQuery(counting[0].get()));
+        ensureEqual("(b) the tracker's WARN line", occurrences(log, "a query of the same kind is already active"),
+                    size_t(1));
+        encoder.draw(PrimitiveType::Triangles, 0, 6);
+        encoder.endQuery(any[0].get());
+        tut::ensure("(b) the refused one is ready", counting[0]->ready());
+        ensureEqual("(b) and reads as visible", counting[0]->result(true), U64(1));
+
+        tut::ensure("(c) the begin is accepted", encoder.beginQuery(counting[1].get()));
+        tut::ensure("(c) its second begin is refused", !encoder.beginQuery(counting[1].get()));
+        encoder.draw(PrimitiveType::Triangles, 6, 6);
+        encoder.endQuery(counting[1].get());
+
+        tut::ensure("(d) never begun: not ready", !counting[2]->ready());
+        ensureEqual("(d) never begun reads as visible", counting[2]->result(true), U64(1));
+
+        tut::ensure("(e) the begin is accepted", encoder.beginQuery(any[1].get()));
+        encoder.draw(PrimitiveType::Triangles, 0, 6);
+        encoder.endRenderPass();
+        finishFrame(device);
+        ensureEqual("(e) the tracker's WARN line", occurrences(log, "queries active"), size_t(1));
+        tut::ensure("(e) the abandoned query is ready", any[1]->ready());
+        ensureEqual("(e) and reads as visible", any[1]->result(true), U64(1));
+        tut::ensure("(b) the active one counted", any[0]->result(true) != 0);
+        ensureEqual("(c) the active query still counted", counting[1]->result(true), QUERY_SAMPLES / 2);
+
+        tut::ensure("(f) the pass begins", encoder.beginRenderPass(drawPass(target)));
+        bindDraw(encoder, target, buffer, streams);
+        tut::ensure("(f) the begin is accepted", encoder.beginQuery(counting[3].get()));
+        encoder.draw(PrimitiveType::Triangles, 0, 6);
+        encoder.endQuery(counting[3].get());
+        encoder.endRenderPass();
+        device.failNextFeedback();
+        device.submitAndWait();
+        tut::ensure("(f) the submission failed", device.lastSubmission()->failed);
+        tut::ensure("(f) ready: reported, failed or not", counting[3]->ready());
+        ensureEqual("(f) a failed command buffer reads as visible", counting[3]->result(true), U64(1));
+        finishFrame(device);
+
+        std::vector<Ref<Query>> drawless = device.createQueries(QueryType::SamplesPassed, 2);
+        std::vector<Ref<Query>> anyDrawless = device.createQueries(QueryType::AnySamplesPassed, 1);
+        ensureEqual("(g) one any-sample query", anyDrawless.size(), size_t(1));
+        tut::ensure("(g) the pass begins", encoder.beginRenderPass(drawPass(target)));
+        bindDraw(encoder, target, buffer, streams);
+        tut::ensure("(g) the begin is accepted", encoder.beginQuery(drawless[0].get()));
+        encoder.endQuery(drawless[0].get());
+        tut::ensure("(g) no draw: ready at once", drawless[0]->ready());
+        ensureEqual("(g) no draw reads as visible", drawless[0]->result(false), U64(1));
+        tut::ensure("(g) the any-sample begin is accepted", encoder.beginQuery(anyDrawless[0].get()));
+        encoder.endQuery(anyDrawless[0].get());
+        encoder.endRenderPass();
+        tut::ensure("(g) the begin outside a pass is accepted", encoder.beginQuery(drawless[1].get()));
+        encoder.draw(PrimitiveType::Triangles, 0, 6);
+        encoder.endQuery(drawless[1].get());
+        ensureEqual("(g) the tracker refused the draw", occurrences(log, "no pass is open"), size_t(1));
+        finishFrame(device);
+        ensureEqual("(g) an any-sample query with no draw reads as visible", anyDrawless[0]->result(true), U64(1));
+        tut::ensure("(g) the refused draw's query is ready", drawless[1]->ready());
+        ensureEqual("(g) a query whose draw was refused reads as visible", drawless[1]->result(true), U64(1));
+        ensureEqual("no GPU error", device.gpuErrors(), U64(0));
+    }
+
+    /// t183 (P3-08, M2, M7, U1, U6) with a ring of 4 slots: (a) a slot is zeroed by the CPU and reused while an earlier
+    /// frame's encoder accumulating into another slot waits for a gate; every count is exact afterwards (U6's
+    /// run-time probe). (b) A query read after the ring reused its slot gives its own count, kept at the reuse (U1).
+    /// (c) The fifth begin in one frame finds the ring full: LL_ERRS under the Metal debug setting, and the query reads
+    /// 1. (d) Queries dropped without an end or a release hold no slot: four new ones in a later frame count exactly.
+    API_AVAILABLE(macos(26.0)) void queryRingTest(MetalDevice& device)
+    {
+        tut::ensure("the tests run with the Metal debug setting", metalDebug());
+        CaptureLog log(LLError::LEVEL_WARN);
+        device.limitVisibilitySlots(4);
+        DrawTarget target = drawTarget(device);
+        VertexStreams streams;
+        Ref<Buffer> buffer = queryRects(device, target, streams);
+        Encoder& encoder = device.encoder();
+        std::vector<Ref<Query>> queries = device.createQueries(QueryType::SamplesPassed, 9);
+        ensureEqual("a ring of 4", device.visibilityBuffer().length, NSUInteger(4 * sizeof(U64)));
+        const auto measure = [&](const Ref<Query>& query, U32 first)
+        {
+            tut::ensure("the begin is accepted", encoder.beginQuery(query.get()));
+            encoder.draw(PrimitiveType::Triangles, first, 6);
+            encoder.endQuery(query.get());
+        };
+
+        tut::ensure("(a) the pass begins", encoder.beginRenderPass(drawPass(target)));
+        bindDraw(encoder, target, buffer, streams);
+        measure(queries[0], 0);
+        encoder.endRenderPass();
+        finishFrame(device);
+        tut::ensure("(a) the pass begins again", encoder.beginRenderPass(drawPass(target)));
+        bindDraw(encoder, target, buffer, streams);
+        measure(queries[1], 0);
+        encoder.endRenderPass();
+        id<MTLSharedEvent> gate = [device.mtlDevice() newSharedEvent];
+        device.gateNextCommit(gate, 1);
+        device.endFrame(); // queries[1]'s encoder waits for the gate
+        tut::ensure("(a) the pass begins a third time", encoder.beginRenderPass(drawPass(target)));
+        bindDraw(encoder, target, buffer, streams);
+        measure(queries[2], 6);
+        measure(queries[3], 6);
+        measure(queries[4], 6); // slot 0 again: queries[0]'s frame has finished
+        ensureEqual("(a) the ring went round", queryRun(queries[4])->slot, S64(0));
+        tut::ensure("(b) queries[0]'s count was kept at the reuse", queryRun(queries[0])->captured);
+        encoder.endRenderPass();
+        const U64 frame = device.frameNumber();
+        device.endFrame();
+        gate.signaledValue = 1;
+        tut::ensure("(a) the frames finish", device.waitForFrame(frame));
+        ensureEqual("(b) read after its slot was reused: its own count", queries[0]->result(true), QUERY_SAMPLES);
+        ensureEqual("(a) the gated frame's count", queries[1]->result(true), QUERY_SAMPLES);
+        ensureEqual("(a) the slot zeroed while it waited counts only its own draw", queries[4]->result(true),
+                    QUERY_SAMPLES / 2);
+        ensureEqual("(a) the others", queries[2]->result(true) + queries[3]->result(true), QUERY_SAMPLES);
+
+        finishFrame(device);
+        tut::ensure("(c) the pass begins", encoder.beginRenderPass(drawPass(target)));
+        bindDraw(encoder, target, buffer, streams);
+        for (size_t i = 5; i < 9; ++i)
+        {
+            measure(queries[i], 6);
+        }
+        std::vector<Ref<Query>> fifth = device.createQueries(QueryType::SamplesPassed, 1);
+        std::string error;
+        {
+            WrapLLErrs errors;
+            error = errors.catch_llerrs([&]() { encoder.beginQuery(fifth[0].get()); });
+        }
+        tut::ensure("(c) LL_ERRS at the full ring: '" + error + "'", error.find("ring is full") != std::string::npos);
+        encoder.endQuery(fifth[0].get());
+        ensureEqual("(c) the query without a slot reads as visible", fifth[0]->result(true), U64(1));
+        encoder.endRenderPass();
+        finishFrame(device);
+        for (size_t i = 5; i < 9; ++i)
+        {
+            ensureEqual("(c) the four before it count", queries[i]->result(true), QUERY_SAMPLES / 2);
+        }
+
+        queries.clear(); // dropped: no slot is held for them
+        fifth.clear();
+        std::vector<Ref<Query>> fresh = device.createQueries(QueryType::SamplesPassed, 4);
+        tut::ensure("(d) the pass begins", encoder.beginRenderPass(drawPass(target)));
+        bindDraw(encoder, target, buffer, streams);
+        for (const Ref<Query>& query : fresh)
+        {
+            measure(query, 0);
+        }
+        encoder.endRenderPass();
+        finishFrame(device);
+        for (Ref<Query>& query : fresh)
+        {
+            ensureEqual("(d) a new query counts", query->result(true), QUERY_SAMPLES);
+        }
+        ensureEqual("no GPU error", device.gpuErrors(), U64(0));
+        ensureEqual("no WARN line", occurrences(log, "WARNING #RHI#"), size_t(0));
+    }
+
+    // P3-04b: golden level 2's test faults on Metal (C1-C3, the challenge's F9, F11) -----------------------------------
+
+    /// t200-t206: the shared fault and Metal's list are off again, and the translator is MSL::translate, when a test goes,
+    /// also when an ensure throws (llrhigl_test.cpp's ProgramFaultRestore).
+    struct MetalFaultRestore
+    {
+        MetalFaultRestore()
+        {
+            setProgramFault({});
+            setMetalProgramFaults({});
+        }
+
+        ~MetalFaultRestore()
+        {
+            setProgramFault({});
+            setMetalProgramFaults({});
+            setMetalTranslator(&MSL::translate);
+        }
+    };
+
+    /// t200 (C1): an inline fault makes the creation Failed at once, before the translator: no WARN line, nothing in
+    /// failedPrograms, one faulted program, no Pending answer, an empty reflection, no group and no translation; the
+    /// next program of the same text compiles alone in its own group.
+    API_AVAILABLE(macos(26.0)) void inlineFaultTest(MetalDevice& device)
+    {
+        MetalFaultRestore restore;
+        recordTranslations();
+        const MetalCompileStats before = metalCompileStats(device);
+        CaptureLog log(LLError::LEVEL_WARN);
+        setProgramFault({ "faulty test", false, 0 });
+        Ref<Program> program = device.createProgram(programDesc("faulty test", UI_VERTEX, UI_FRAGMENT));
+        tut::ensure("a program", program.notNull());
+        ensureEqual("named after the description", program->debugName(), std::string("faulty test"));
+        ensureEqual("Failed at once", int(program->status()), int(CompileStatus::Failed));
+        program->wait();
+        ensureEqual("Failed after wait()", int(program->status()), int(CompileStatus::Failed));
+        tut::ensure("an empty reflection", program->reflection().attributeMask == 0 && program->reflection().uniforms.empty());
+        ensureEqual("one hit", programFaultHits(), 1u);
+        device.endFrame(); // an open group would be closed and sent here
+        ensureEqual("no translation", sTranslations.load(), 0);
+        ensureEqual("no group", device.groupSources().size(), size_t(0));
+        const MetalCompileStats after = metalCompileStats(device);
+        ensureEqual("one faulted program", after.faultedPrograms, before.faultedPrograms + 1);
+        ensureEqual("no Pending answer", after.faultPending, before.faultPending);
+        ensureEqual("not a failed program", after.failedPrograms, before.failedPrograms);
+        ensureEqual("no WARN line", occurrences(log, "WARNING"), size_t(0));
+
+        setProgramFault({});
+        Ref<Program> next = ready(device.createProgram(programDesc("faulty test", UI_VERTEX, UI_FRAGMENT)));
+        ensureEqual("off: the same program is Ready", int(next->status()), int(CompileStatus::Ready));
+        ensureEqual("off: one translation", sTranslations.load(), 1);
+        const std::vector<MetalGroupRecord> groups = device.groupSources();
+        ensureEqual("off: one group", groups.size(), size_t(1));
+        ensureEqual("off: of the one program", groups[0].members, 1u);
+        ensureEqual("off: nothing more faulted", metalCompileStats(device).faultedPrograms, before.faultedPrograms + 1);
+    }
+
+    /// t201 (C1, F11): a deferred fault answers Pending once, then Failed; reflection() takes no Pending answer; wait()
+    /// ends the Pending, so a creation waited for first answers Failed only; each Pending answer is counted.
+    API_AVAILABLE(macos(26.0)) void deferredFaultTest(MetalDevice& device)
+    {
+        MetalFaultRestore restore;
+        const MetalCompileStats before = metalCompileStats(device);
+        CaptureLog log(LLError::LEVEL_WARN);
+        setProgramFault({ "deferred test", true, 0 });
+        Ref<Program> asked = device.createProgram(programDesc("deferred test", UI_VERTEX, UI_FRAGMENT));
+        tut::ensure("asked: an empty reflection", asked->reflection().attributeMask == 0 && asked->reflection().uniforms.empty());
+        tut::ensure("asked: still empty", asked->reflection().blocks.empty());
+        ensureEqual("asked: Pending once, after reflection()", int(asked->status()), int(CompileStatus::Pending));
+        ensureEqual("asked: then Failed", int(asked->status()), int(CompileStatus::Failed));
+        ensureEqual("asked: Failed again", int(asked->status()), int(CompileStatus::Failed));
+        asked->wait();
+        ensureEqual("asked: Failed after wait()", int(asked->status()), int(CompileStatus::Failed));
+        ensureEqual("one Pending answer", metalCompileStats(device).faultPending, before.faultPending + 1);
+
+        Ref<Program> waited = device.createProgram(programDesc("deferred test", UI_VERTEX, UI_FRAGMENT));
+        waited->wait();
+        ensureEqual("waited: wait() ended the Pending", int(waited->status()), int(CompileStatus::Failed));
+        const MetalCompileStats after = metalCompileStats(device);
+        ensureEqual("still one Pending answer", after.faultPending, before.faultPending + 1);
+        ensureEqual("two faulted programs", after.faultedPrograms, before.faultedPrograms + 2);
+        ensureEqual("no failed program", after.failedPrograms, before.failedPrograms);
+        ensureEqual("two hits", programFaultHits(), 2u);
+        ensureEqual("no WARN line", occurrences(log, "WARNING"), size_t(0));
+    }
+
+    /// t202 (C1): times 2 fails two creations in a row, the third compiles to Ready through the recording translator
+    /// (the faulted ones were never translated), and the count starts again.
+    API_AVAILABLE(macos(26.0)) void faultTimesTest(MetalDevice& device)
+    {
+        MetalFaultRestore restore;
+        recordTranslations();
+        const U64 faulted = metalCompileStats(device).faultedPrograms;
+        CaptureLog log(LLError::LEVEL_WARN);
+        setProgramFault({ "twice test", false, 2 });
+        for (int load = 1; load <= 2; ++load)
+        {
+            const std::string at = "load " + std::to_string(load) + ": ";
+            Ref<Program> first = device.createProgram(programDesc("twice test", UI_VERTEX, UI_FRAGMENT));
+            Ref<Program> second = device.createProgram(programDesc("twice test", UI_VERTEX, UI_FRAGMENT));
+            Ref<Program> third = ready(device.createProgram(programDesc("twice test", UI_VERTEX, UI_FRAGMENT)));
+            ensureEqual(at + "the first is Failed", int(first->status()), int(CompileStatus::Failed));
+            ensureEqual(at + "the second is Failed", int(second->status()), int(CompileStatus::Failed));
+            ensureEqual(at + "the third is Ready", int(third->status()), int(CompileStatus::Ready));
+            tut::ensure(at + "the third has its reflection", third->reflection().attributeMask == UI_MASK);
+            ensureEqual(at + "only the third is translated", sTranslations.load(), load);
+            ensureEqual(at + "two hits a load", programFaultHits(), U32(2 * load));
+            ensureEqual(at + "two faulted a load", metalCompileStats(device).faultedPrograms, faulted + U64(2 * load));
+        }
+        ensureEqual("no WARN line", occurrences(log, "WARNING"), size_t(0));
+    }
+
+    /// t203 (C2): the fault takes its exact name only: other names, one it begins and the device's own clear program are
+    /// not taken; the programs made before and after a faulted one share their group, are sent and Ready.
+    API_AVAILABLE(macos(26.0)) void faultScopeTest(MetalDevice& device)
+    {
+        MetalFaultRestore restore;
+        CaptureLog log(LLError::LEVEL_WARN);
+        setProgramFault({ "mate fault test", false, 0 });
+        std::vector<Ref<Program>> mates;
+        mates.push_back(device.createProgram(memberDesc("mate 0 test", 0)));
+        Ref<Program> faulted = device.createProgram(programDesc("mate fault test", UI_VERTEX, UI_FRAGMENT));
+        mates.push_back(device.createProgram(memberDesc("mate 1 test", 1)));
+        mates.push_back(device.createProgram(memberDesc("mate fault", 2)));
+        mates.push_back(device.createProgram(memberDesc("mate fault test 2", 3)));
+        ensureEqual("the faulted one is Failed", int(faulted->status()), int(CompileStatus::Failed));
+        mates.back()->wait(); // closes the group and sends it
+        for (const Ref<Program>& mate : mates)
+        {
+            ensureEqual(mate->debugName() + " is Ready", int(mate->status()), int(CompileStatus::Ready));
+        }
+        const std::vector<MetalGroupRecord> groups = device.groupSources();
+        ensureEqual("one group", groups.size(), size_t(1));
+        ensureEqual("of the four, not the faulted one", groups[0].members, 4u);
+        PassFormats formats;
+        formats.colorCount = 1;
+        formats.colorFormats[0] = Format::RGBA8Unorm;
+        Program* clear = device.clearProgram(formats);
+        tut::ensure("the clear program is Ready", clear != nullptr && clear->status() == CompileStatus::Ready);
+        ensureEqual("only the faulted creation is a hit", programFaultHits(), 1u);
+        ensureEqual("one faulted program", metalCompileStats(device).faultedPrograms, U64(1));
+        ensureEqual("no WARN line", occurrences(log, "WARNING"), size_t(0));
+    }
+
+    /// t204 (C1): getPipeline gives null for a faulted program, inline or deferred (whose Pending answer getPipeline
+    /// takes before it waits), with the pipeline's one WARN line each; the faulted programs go without a WARN line or a
+    /// handler, and the device makes programs and pipelines after them.
+    API_AVAILABLE(macos(26.0)) void faultPipelineTest(MetalDevice& device)
+    {
+        MetalFaultRestore restore;
+        const U64 pending = metalCompileStats(device).faultPending;
+        PipelineDesc pipeline;
+        pipeline.attributeMask = UI_MASK;
+        pipeline.colorFormats[0] = Format::RGBA8Unorm;
+        {
+            CaptureLog log(LLError::LEVEL_WARN);
+            setProgramFault({ "inline pipeline test", false, 0 });
+            Ref<Program> inlined = device.createProgram(programDesc("inline pipeline test", UI_VERTEX, UI_FRAGMENT));
+            tut::ensure("inline: no pipeline", device.getPipeline(*inlined, pipeline).isNull());
+            setProgramFault({ "deferred pipeline test", true, 0 });
+            Ref<Program> deferred = device.createProgram(programDesc("deferred pipeline test", UI_VERTEX, UI_FRAGMENT));
+            tut::ensure("deferred: no pipeline", device.getPipeline(*deferred, pipeline).isNull());
+            ensureEqual("deferred: getPipeline took the Pending answer", metalCompileStats(device).faultPending, pending + 1);
+            ensureEqual("deferred: Failed", int(deferred->status()), int(CompileStatus::Failed));
+            ensureEqual("two WARN lines", occurrences(log, "WARNING"), size_t(2));
+            ensureEqual("the inline one's",
+                        occurrences(log, "getPipeline inline pipeline test: the program failed to compile"), size_t(1));
+            ensureEqual("the deferred one's",
+                        occurrences(log, "getPipeline deferred pipeline test: the program failed to compile"), size_t(1));
+        }
+        CaptureLog log(LLError::LEVEL_WARN);
+        setProgramFault({});
+        finishFrame(device); // the faulted programs went with their Refs above
+        tut::ensure("no handler outstanding", handlersDoneWithin(device.compileState(), 5000));
+        Ref<Program> program = ready(device.createProgram(uiProgramDesc()));
+        ensureEqual("a program after them is Ready", int(program->status()), int(CompileStatus::Ready));
+        tut::ensure("with a pipeline", device.getPipeline(*program, pipeline).notNull());
+        finishFrame(device);
+        ensureEqual("no WARN line after them", occurrences(log, "WARNING"), size_t(0));
+    }
+
+    /// t205 (F9): Metal's fault list: two names with their own times, counts and hits, the deferred one Pending once; a
+    /// name not in the list has 0 hits; the shared fault is asked first and takes a name in both; arming again resets
+    /// the hits; an empty list is off.
+    API_AVAILABLE(macos(26.0)) void faultListTest(MetalDevice& device)
+    {
+        MetalFaultRestore restore;
+        const MetalCompileStats before = metalCompileStats(device);
+        CaptureLog log(LLError::LEVEL_WARN);
+        const auto make = [&device](const std::string& name)
+        {
+            return device.createProgram(programDesc(name, UI_VERTEX, UI_FRAGMENT));
+        };
+        setMetalProgramFaults({ { "list a test", false, 1 }, { "list b test", true, 0 } });
+        ensureEqual("armed: no hits on a", metalProgramFaultHits("list a test"), 0u);
+        ensureEqual("a name not in the list", metalProgramFaultHits("list c test"), 0u);
+        Ref<Program> a1 = make("list a test");
+        Ref<Program> b1 = make("list b test");
+        Ref<Program> a2 = ready(make("list a test"));
+        Ref<Program> a3 = make("list a test");
+        Ref<Program> b2 = make("list b test");
+        ensureEqual("a, times 1: the first is Failed", int(a1->status()), int(CompileStatus::Failed));
+        ensureEqual("a, times 1: the second is Ready", int(a2->status()), int(CompileStatus::Ready));
+        ensureEqual("a, times 1: the count starts again", int(a3->status()), int(CompileStatus::Failed));
+        ensureEqual("b, deferred: Pending once", int(b1->status()), int(CompileStatus::Pending));
+        ensureEqual("b, deferred: then Failed", int(b1->status()), int(CompileStatus::Failed));
+        b2->wait();
+        ensureEqual("b, times 0: the second is Failed too", int(b2->status()), int(CompileStatus::Failed));
+        ensureEqual("a's hits", metalProgramFaultHits("list a test"), 2u);
+        ensureEqual("b's hits", metalProgramFaultHits("list b test"), 2u);
+        ensureEqual("the shared fault's hits", programFaultHits(), 0u);
+        MetalCompileStats after = metalCompileStats(device);
+        ensureEqual("four faulted", after.faultedPrograms, before.faultedPrograms + 4);
+        ensureEqual("one Pending answer", after.faultPending, before.faultPending + 1);
+
+        setProgramFault({ "both test", false, 0 });
+        setMetalProgramFaults({ { "both test", false, 0 }, { "list a test", false, 0 } });
+        ensureEqual("re-armed: a's hits start over", metalProgramFaultHits("list a test"), 0u);
+        ensureEqual("re-armed: b is not in the list", metalProgramFaultHits("list b test"), 0u);
+        Ref<Program> both = make("both test");
+        ensureEqual("both: Failed", int(both->status()), int(CompileStatus::Failed));
+        ensureEqual("both: the shared fault took it", programFaultHits(), 1u);
+        ensureEqual("both: the list's fault did not", metalProgramFaultHits("both test"), 0u);
+        Ref<Program> a4 = make("list a test");
+        ensureEqual("a, times 0 now: Failed", int(a4->status()), int(CompileStatus::Failed));
+        ensureEqual("a's one hit", metalProgramFaultHits("list a test"), 1u);
+
+        setProgramFault({});
+        setMetalProgramFaults({});
+        ensureEqual("off: no hits", metalProgramFaultHits("list a test"), 0u);
+        Ref<Program> a5 = ready(make("list a test"));
+        ensureEqual("off: a is Ready", int(a5->status()), int(CompileStatus::Ready));
+        after = metalCompileStats(device);
+        ensureEqual("six faulted in all", after.faultedPrograms, before.faultedPrograms + 6);
+        ensureEqual("no failed program", after.failedPrograms, before.failedPrograms);
+        ensureEqual("no WARN line", occurrences(log, "WARNING"), size_t(0));
+    }
+
+    /// t206 (C1 through LLShaderMgr, t131's fixture): on the viewer's Metal device an inline fault of times 1 makes the
+    /// shader fall one class, logged by its link and retry lines, and publish at class 1 with its class line and the
+    /// device's class line of the creation that built; a deferred fault of times 1 lets createShader return true with
+    /// the program Pending, and the publication falls one class; times 0 makes createShader fail, and bind refuses the
+    /// shader with one WARN line.
+    API_AVAILABLE(macos(26.0)) void shaderFaultTest()
+    {
+        MetalFaultRestore restore;
+        MetalViewerRun run;
+        MetalDevice& device = *run.device;
+        MetalTestShaderMgr mgr;
+        MetalTestShaderMgr::write("test/immediateV.glsl", IMMEDIATE_VERTEX);
+        MetalTestShaderMgr::write("test/immediateF.glsl", IMMEDIATE_FRAGMENT);
+        LLGLSLShader::writeClassLines(); // from here on each publication logs its class line at once (P3-05a1 holds them)
+        const auto setUp = [](LLGLSLShader& shader, const std::string& name, S32 level)
+        {
+            shader.mName = name;
+            shader.mShaderLevel = level;
+            shader.mShaderFiles = { { "test/immediateV.glsl", GL_VERTEX_SHADER }, { "test/immediateF.glsl", GL_FRAGMENT_SHADER } };
+            shader.mFeatures.attachNothing = true;
+            shader.mShaderGroup = LLGLSLShader::SG_DEFAULT;
+        };
+        CaptureLog log(LLError::LEVEL_INFO);
+        @autoreleasepool
+        {
+            {
+                // (a) Inline, times 1: level 2's creation fails inside createShader, level 1's builds and publishes at bind
+                setProgramFault({ "t206 inline", false, 1 });
+                UnloadingShader shader;
+                setUp(shader, "t206 inline", 2);
+                tut::ensure("(a) createShader", shader.createShader());
+                ensureEqual("(a) at level 1", shader.mShaderLevel, 1);
+                ensureEqual("(a) one hit", programFaultHits(), 1u);
+                shader.bind();
+                tut::ensure("(a) complete and published", shader.isComplete() && shader.isReflectionReady());
+                LLGLSLShader::unbind();
+                ensureEqual("(a) the link line", occurrences(log, "Failed to link shader: t206 inline"), size_t(1));
+                ensureEqual("(a) the retry line",
+                            occurrences(log, "Failed to link using shader level 2 trying again using shader level 1"), size_t(1));
+                ensureEqual("(a) the class line", occurrences(log, "Program 't206 inline': shader class 1 (asked 2)"),
+                            size_t(1));
+                finishFrame(device); // the device's class lines are written at the frame's end
+                ensureEqual("(a) the device's class line of the creation that built",
+                            occurrences(log, "Program 't206 inline' on Metal: "), size_t(1));
+                ensureEqual("(a) at class 1", occurrences(log, "test/immediateV.glsl: compiled at class 1, file from class 1"),
+                            size_t(1));
+            }
+            {
+                // (b) Deferred, times 1: createShader returns with the program Pending; the publication falls one class
+                setProgramFault({ "t206 deferred", true, 1 });
+                const U64 pending = metalCompileStats(device).faultPending;
+                UnloadingShader shader;
+                setUp(shader, "t206 deferred", 2);
+                tut::ensure("(b) createShader returns true", shader.createShader());
+                ensureEqual("(b) at level 2", shader.mShaderLevel, 2);
+                tut::ensure("(b) Pending: complete, not published", shader.isComplete() && !shader.isReflectionReady());
+                ensureEqual("(b) createShader took the Pending answer", metalCompileStats(device).faultPending, pending + 1);
+                ensureEqual("(b) no link line yet", occurrences(log, "Failed to link shader: t206 deferred"), size_t(0));
+                tut::ensure("(b) the publication builds again", shader.publish(shader.getGeneration()));
+                ensureEqual("(b) the link line", occurrences(log, "Failed to link shader: t206 deferred"), size_t(1));
+                ensureEqual("(b) at level 1", shader.mShaderLevel, 1);
+                shader.waitForReflection();
+                tut::ensure("(b) complete and published", shader.isComplete() && shader.isReflectionReady());
+                ensureEqual("(b) the class line", occurrences(log, "Program 't206 deferred': shader class 1 (asked 2)"),
+                            size_t(1));
+                ensureEqual("(b) one hit", programFaultHits(), 1u);
+            }
+            {
+                // (c) Times 0 at level 1: createShader fails, and bind refuses the shader once
+                setProgramFault({ "t206 refused", false, 0 });
+                UnloadingShader shader;
+                setUp(shader, "t206 refused", 1);
+                tut::ensure("(c) createShader fails", !shader.createShader());
+                tut::ensure("(c) not complete", !shader.isComplete());
+                ensureEqual("(c) one hit", programFaultHits(), 1u);
+                // The retry at class 0 finds no file, so it makes no creation, yet publish logs a second link line, with
+                // no retry line after it: only a hit's link line has one (level 2's C6 counts those; P3-04b's review B2)
+                ensureEqual("(c) a link line at class 1 and one at class 0",
+                            occurrences(log, "Failed to link shader: t206 refused"), size_t(2));
+                ensureEqual("(c) one retry line, the hit's",
+                            occurrences(log, "Failed to link using shader level 1 trying again using shader level 0"), size_t(1));
+                shader.bind();
+                shader.bind();
+                LLGLSLShader::unbind();
+                ensureEqual("(c) bind refuses once",
+                            occurrences(log, "Program t206 refused failed: not bound, and its draws are skipped"), size_t(1));
+                ensureEqual("(c) no class line", occurrences(log, "Program 't206 refused'"), size_t(0));
+            }
+            finishFrame(device);
+        }
+        ensureEqual("no shader left in sInstances", LLGLSLShader::sInstances.size(), size_t(0));
+        ensureEqual("nothing tagged RHI warns", occurrences(log, "WARNING #RHI#"), size_t(0));
+        ensureEqual("three faulted programs", metalCompileStats(device).faultedPrograms, U64(3));
+    }
+
+    // P3-08 (lane B): time queries on the timestamp heap -------------------------------------------------------------
+
+    constexpr U32 TIMER_HEAVY_DRAWS = 400; ///< draws of the whole target, so a span has GPU work to measure
+
+    API_AVAILABLE(macos(26.0)) void heavyDraws(Encoder& encoder, U32 count = TIMER_HEAVY_DRAWS)
+    {
+        for (U32 i = 0; i < count; ++i)
+        {
+            encoder.draw(PrimitiveType::Triangles, 0, 6);
+        }
+    }
+
+    API_AVAILABLE(macos(26.0)) MetalTimerRun* timerRun(const Ref<Query>& query)
+    {
+        return static_cast<MetalTimerQuery*>(query.get())->mRun.get();
+    }
+
+    /// t195 (P3-08 lane B, S4, the challenge's F2): (a) the device makes the timestamp heap of 4,096 entries when it is
+    /// made, with a tick rate, so timerQueries is true (timerQueriesWithinPass false) and createQueries makes time
+    /// queries without the visibility buffer. (b) A query begun before the first draw (no encoder open, the pass's clear
+    /// a load action) and ended after the last: one render encoder, one split (the end's), and more than 0 ns for heavy
+    /// draws, no more than the CPU's wall time around the commit and the wait (unit sanity). (e) Not ready before the
+    /// submit, ready after the frame. No WARN line, no GPU error.
+    API_AVAILABLE(macos(26.0)) void timerHeapTest(MetalDevice& device)
+    {
+        CaptureLog log(LLError::LEVEL_WARN);
+        tut::ensure("(a) the heap is made with the device", device.timestampHeap() != nil);
+        ensureEqual("(a) 4,096 entries, Metal's most", device.timestampHeap().count, NSUInteger(METAL_TIMER_PAIRS) * 2);
+        tut::ensure("(a) a tick rate", device.timestampFrequency() > 0);
+        tut::ensure("(a) timerQueries", device.capabilities().timerQueries);
+        tut::ensure("(a) no timerQueriesWithinPass", !device.capabilities().timerQueriesWithinPass);
+        std::vector<Ref<Query>> timers = device.createQueries(QueryType::TimeElapsed, 1);
+        ensureEqual("(a) one time query", timers.size(), size_t(1));
+        tut::ensure("(a) a time query", timers[0]->type() == QueryType::TimeElapsed);
+        tut::ensure("(a) no visibility buffer for it", device.visibilityBuffer() == nil);
+
+        DrawTarget target = drawTarget(device);
+        VertexStreams streams;
+        Ref<Buffer> buffer = queryRects(device, target, streams);
+        Encoder& encoder = device.encoder();
+        finishFrame(device); // the target's upload goes first
+        tut::ensure("(b) the pass begins", encoder.beginRenderPass(drawPass(target)));
+        bindDraw(encoder, target, buffer, streams);
+        const U64 encoders = device.metalEncoder().renderEncoders();
+        const U64 splits = device.metalEncoder().stats().timerSplits;
+        tut::ensure("(b) the begin is accepted", encoder.beginQuery(timers[0].get()));
+        ensureEqual("(b) no split at the begin", device.metalEncoder().stats().timerSplits - splits, U64(0));
+        heavyDraws(encoder);
+        encoder.endQuery(timers[0].get());
+        encoder.endRenderPass();
+        ensureEqual("(b) one render encoder", device.metalEncoder().renderEncoders() - encoders, U64(1));
+        ensureEqual("(b) one split, the end's", device.metalEncoder().stats().timerSplits - splits, U64(1));
+        tut::ensure("(e) not ready before the submit", !timers[0]->ready());
+        const auto start = std::chrono::steady_clock::now();
+        const U64 frame = device.frameNumber();
+        device.endFrame();
+        tut::ensure("(e) the frame finishes", device.waitForFrame(frame));
+        device.feedbackReceived();
+        const U64 wall = U64(std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now() - start)
+                                 .count());
+        tut::ensure("(e) ready after the frame", timers[0]->ready());
+        const U64 ns = timers[0]->result(true);
+        LL_INFOS("RHI") << "t195 probe: " << TIMER_HEAVY_DRAWS << " draws of the whole target: " << ns << " ns (wall "
+                        << wall << " ns, " << device.timestampFrequency() << " ticks per second)" << LL_ENDL;
+        tut::ensure("(b) more than 0 ns: " + std::to_string(ns), ns > 0);
+        tut::ensure("(b) no more than the wall time: " + std::to_string(ns) + " > " + std::to_string(wall), ns <= wall);
+        ensureEqual("(b) a valid pair", device.queryStats().timerInvalid, U64(0));
+        endCleanly(device, log);
+    }
+
+    /// t196 (P3-08 lane B, S4, C1): (c) a query begun and ended mid-pass splits it once at the begin and once at the
+    /// end, and reads more than 0 ns. (d) A span over a pass break (an upload in the pass) and one over two render
+    /// passes read more than 0 ns. The probe (no test condition; P2-09's 49 of 72 on GL): how many short spans (one
+    /// draw) and empty spans (no draw) read 0 ns. (e) A span around a pass that only clears, ended after the pass's end
+    /// (the golden hook's empty span, lane B's review B-m2): the clear's one encoder inside it, no split, more than 0 ns.
+    /// No WARN line, no GPU error.
+    API_AVAILABLE(macos(26.0)) void timerSpansTest(MetalDevice& device)
+    {
+        CaptureLog log(LLError::LEVEL_WARN);
+        DrawTarget target = drawTarget(device);
+        VertexStreams streams;
+        Ref<Buffer> buffer = queryRects(device, target, streams);
+        Encoder& encoder = device.encoder();
+        Ref<Texture> texture = device.createTexture(sizedDesc(Format::RGBA8Unorm, TEXTURE_SAMPLED, 1, 1), "timer break");
+        constexpr U32 PROBES = 24;
+        std::vector<Ref<Query>> timers = device.createQueries(QueryType::TimeElapsed, 3 + 2 * PROBES);
+        ensureEqual("the time queries", timers.size(), size_t(3 + 2 * PROBES));
+
+        tut::ensure("(c) the pass begins", encoder.beginRenderPass(drawPass(target)));
+        bindDraw(encoder, target, buffer, streams);
+        encoder.draw(PrimitiveType::Triangles, 6, 6); // opens the segment's encoder
+        const MetalEncoderStats before = device.metalEncoder().stats();
+        tut::ensure("(c) the begin is accepted", encoder.beginQuery(timers[0].get()));
+        heavyDraws(encoder);
+        encoder.endQuery(timers[0].get());
+        const MetalEncoderStats after = device.metalEncoder().stats();
+        ensureEqual("(c) a split at the begin and one at the end", after.timerSplits - before.timerSplits, U64(2));
+        ensureEqual("(c) both are pass breaks", after.passBreaks - before.passBreaks, U64(2));
+
+        tut::ensure("(d) the begin is accepted", encoder.beginQuery(timers[1].get()));
+        heavyDraws(encoder, TIMER_HEAVY_DRAWS / 2);
+        encoder.uploadTexture(texture.get(), 0, 0, { 0, 0, 1, 1 }, PixelLayout(), bytesOf(RED));
+        heavyDraws(encoder, TIMER_HEAVY_DRAWS / 2);
+        encoder.endQuery(timers[1].get());
+        tut::ensure("(d) the begin before the pass's end is accepted", encoder.beginQuery(timers[2].get()));
+        heavyDraws(encoder, TIMER_HEAVY_DRAWS / 2);
+        encoder.endRenderPass();
+        tut::ensure("(d) the second pass begins", encoder.beginRenderPass(drawPass(target)));
+        bindDraw(encoder, target, buffer, streams);
+        heavyDraws(encoder, TIMER_HEAVY_DRAWS / 2);
+        encoder.endQuery(timers[2].get());
+
+        // The probe: each short span is one draw between its begin and its end, as a shader-profile frame's bind.
+        for (U32 i = 0; i < PROBES; ++i)
+        {
+            encoder.beginQuery(timers[3 + i].get());
+            encoder.draw(PrimitiveType::Triangles, 6, 6);
+            encoder.endQuery(timers[3 + i].get());
+        }
+        for (U32 i = 0; i < PROBES; ++i)
+        {
+            encoder.beginQuery(timers[3 + PROBES + i].get());
+            encoder.endQuery(timers[3 + PROBES + i].get());
+        }
+        encoder.endRenderPass();
+        finishFrame(device);
+        device.feedbackReceived();
+
+        const U64 mid = timers[0]->result(true);
+        const U64 overBreak = timers[1]->result(true);
+        const U64 overPasses = timers[2]->result(true);
+        tut::ensure("(c) more than 0 ns mid-pass: " + std::to_string(mid), mid > 0);
+        tut::ensure("(d) more than 0 ns over a pass break: " + std::to_string(overBreak), overBreak > 0);
+        tut::ensure("(d) more than 0 ns over two passes: " + std::to_string(overPasses), overPasses > 0);
+        const auto probe = [&](U32 first, const char* what)
+        {
+            U32 zeros = 0;
+            U64 least = ~U64(0);
+            U64 most = 0;
+            for (U32 i = 0; i < PROBES; ++i)
+            {
+                const U64 ns = timers[first + i]->result(true);
+                zeros += ns == 0 ? 1 : 0;
+                least = std::min(least, ns);
+                most = std::max(most, ns);
+            }
+            LL_INFOS("RHI") << "t196 probe: " << what << ": " << zeros << " of " << PROBES << " read 0 ns (" << least
+                            << "-" << most << " ns)" << LL_ENDL;
+        };
+        probe(3, "short spans (one draw)");
+        probe(3 + PROBES, "empty spans (no draw)");
+        LL_INFOS("RHI") << "t196 probe: mid-pass " << mid << " ns, over a break " << overBreak << " ns, over two passes "
+                        << overPasses << " ns (" << TIMER_HEAVY_DRAWS << " draws each)" << LL_ENDL;
+
+        // (e) The golden hook's empty span (lane B's review B-m2): a pass that only clears, its query begun after the
+        // clear and ended after the pass's end, as beginEmptySpan does around deferredScreen's flush. The clear's encoder
+        // opens and stores between the stamps, and nothing splits.
+        std::vector<Ref<Query>> span = device.createQueries(QueryType::TimeElapsed, 1);
+        tut::ensure("(e) the pass begins", encoder.beginRenderPass(drawPass(target)));
+        const U64 encoders = device.metalEncoder().renderEncoders();
+        const U64 splits = device.metalEncoder().stats().timerSplits;
+        tut::ensure("(e) the begin is accepted", encoder.beginQuery(span[0].get()));
+        ensureEqual("(e) no encoder at the begin", device.metalEncoder().renderEncoders() - encoders, U64(0));
+        encoder.endRenderPass();
+        ensureEqual("(e) the clear's encoder at the pass's end", device.metalEncoder().renderEncoders() - encoders, U64(1));
+        encoder.endQuery(span[0].get());
+        ensureEqual("(e) no split", device.metalEncoder().stats().timerSplits - splits, U64(0));
+        finishFrame(device);
+        const U64 clearSpan = span[0]->result(true);
+        LL_INFOS("RHI") << "t196 probe: a pass's clear and store, no draw: " << clearSpan << " ns" << LL_ENDL;
+        tut::ensure("(e) more than 0 ns: " + std::to_string(clearSpan), clearSpan > 0);
+        ensureEqual("every pair valid", device.queryStats().timerInvalid, U64(0));
+        endCleanly(device, log);
+    }
+
+    /// t197 (P3-08 lane B, S4 (f), the challenge's F3, m11): a time query is active together with a sample query, which
+    /// counts exactly. A refused begin (another time query active: the tracker's WARN line), a query never begun, one
+    /// abandoned at the frame's end (the tracker's WARN line) and one whose command buffer failed each read 0 ns and
+    /// count in timer_invalid; the refused and the abandoned one are ready, the never begun one is not. result(true) in
+    /// the frame of the end sends what is recorded and waits. No GPU error.
+    API_AVAILABLE(macos(26.0)) void timerRefusalsTest(MetalDevice& device)
+    {
+        CaptureLog log(LLError::LEVEL_WARN);
+        DrawTarget target = drawTarget(device);
+        VertexStreams streams;
+        Ref<Buffer> buffer = queryRects(device, target, streams);
+        Encoder& encoder = device.encoder();
+        std::vector<Ref<Query>> timers = device.createQueries(QueryType::TimeElapsed, 6);
+        std::vector<Ref<Query>> samples = device.createQueries(QueryType::SamplesPassed, 1);
+        ensureEqual("six time queries", timers.size(), size_t(6));
+        const U64 invalid = device.queryStats().timerInvalid;
+
+        tut::ensure("the pass begins", encoder.beginRenderPass(drawPass(target)));
+        bindDraw(encoder, target, buffer, streams);
+        tut::ensure("(m11) the time query's begin is accepted", encoder.beginQuery(timers[0].get()));
+        tut::ensure("(m11) a sample query beside it is accepted", encoder.beginQuery(samples[0].get()));
+        encoder.draw(PrimitiveType::Triangles, 0, 6);
+        encoder.endQuery(samples[0].get());
+        encoder.endQuery(timers[0].get());
+
+        tut::ensure("(refused) the first begin is accepted", encoder.beginQuery(timers[2].get()));
+        tut::ensure("(refused) a second time query is refused", !encoder.beginQuery(timers[1].get()));
+        ensureEqual("(refused) the tracker's WARN line", occurrences(log, "a query of the same kind is already active"),
+                    size_t(1));
+        encoder.draw(PrimitiveType::Triangles, 0, 6);
+        encoder.endQuery(timers[2].get());
+        tut::ensure("(refused) ready", timers[1]->ready());
+        ensureEqual("(refused) 0 ns", timers[1]->result(true), U64(0));
+        tut::ensure("(never begun) not ready", !timers[3]->ready());
+        ensureEqual("(never begun) 0 ns", timers[3]->result(true), U64(0));
+
+        tut::ensure("(abandoned) the begin is accepted", encoder.beginQuery(timers[4].get()));
+        encoder.draw(PrimitiveType::Triangles, 0, 6);
+        encoder.endRenderPass();
+        finishFrame(device);
+        ensureEqual("(abandoned) the tracker's WARN line", occurrences(log, "queries active"), size_t(1));
+        tut::ensure("(abandoned) ready", timers[4]->ready());
+        ensureEqual("(abandoned) 0 ns", timers[4]->result(true), U64(0));
+        ensureEqual("(m11) the sample query counted exactly", samples[0]->result(true), QUERY_SAMPLES);
+        timers[0]->result(true); // valid pairs, whatever their time
+        timers[2]->result(true);
+
+        tut::ensure("(failed) the pass begins", encoder.beginRenderPass(drawPass(target)));
+        bindDraw(encoder, target, buffer, streams);
+        tut::ensure("(failed) the begin is accepted", encoder.beginQuery(timers[5].get()));
+        heavyDraws(encoder);
+        encoder.endQuery(timers[5].get());
+        encoder.endRenderPass();
+        device.failNextFeedback();
+        device.submitAndWait();
+        tut::ensure("(failed) the submission failed", device.lastSubmission()->failed);
+        tut::ensure("(failed) ready: reported, failed or not", timers[5]->ready());
+        ensureEqual("(failed) a failed command buffer reads 0 ns", timers[5]->result(true), U64(0));
+        ensureEqual("refused, never begun, abandoned and failed: timer_invalid",
+                    device.queryStats().timerInvalid - invalid, U64(4));
+        finishFrame(device);
+
+        tut::ensure("(wait) the pass begins", encoder.beginRenderPass(drawPass(target)));
+        bindDraw(encoder, target, buffer, streams);
+        const U64 waited = device.queryStats().timeWaited;
+        tut::ensure("(wait) the begin is accepted", encoder.beginQuery(timers[5].get()));
+        heavyDraws(encoder);
+        encoder.endQuery(timers[5].get());
+        tut::ensure("(wait) not ready before its submit", !timers[5]->ready());
+        const U64 ns = timers[5]->result(true);
+        tut::ensure("(wait) result(true) at once sends and waits: more than 0 ns, " + std::to_string(ns), ns > 0);
+        ensureEqual("(wait) one read waited", device.queryStats().timeWaited - waited, U64(1));
+        encoder.endRenderPass();
+        device.endFrame();
+        ensureEqual("no GPU error", device.gpuErrors(), U64(0));
+    }
+
+    /// t198 (P3-08 lane B, S4 (g), the ring) with a ring of 2 pairs: (a) a third begin in the frame finds the ring full:
+    /// one WARN line, never LL_ERRS (the tests run with the Metal debug setting), and it reads 0 ns. (b) A pair reused in
+    /// a later frame keeps its earlier run's ticks: that run, read after the reuse, gives its own time. (c) Within one
+    /// frame, a pair whose end's submit was signalled (result(true)) is free again, so a shader-profile frame's
+    /// synchronous reads never fill the ring, also when one query is begun again 3 times and its earlier runs are gone
+    /// (lane B's review B-m1). The most time begins in one frame are counted (the review's m7).
+    API_AVAILABLE(macos(26.0)) void timerRingTest(MetalDevice& device)
+    {
+        tut::ensure("the tests run with the Metal debug setting", metalDebug());
+        CaptureLog log(LLError::LEVEL_WARN);
+        device.limitTimerPairs(2);
+        DrawTarget target = drawTarget(device);
+        VertexStreams streams;
+        Ref<Buffer> buffer = queryRects(device, target, streams);
+        Encoder& encoder = device.encoder();
+        std::vector<Ref<Query>> timers = device.createQueries(QueryType::TimeElapsed, 6);
+        const auto measure = [&](const Ref<Query>& query)
+        {
+            tut::ensure("the begin is accepted", encoder.beginQuery(query.get()));
+            heavyDraws(encoder, TIMER_HEAVY_DRAWS / 4);
+            encoder.endQuery(query.get());
+        };
+
+        tut::ensure("(a) the pass begins", encoder.beginRenderPass(drawPass(target)));
+        bindDraw(encoder, target, buffer, streams);
+        measure(timers[0]);
+        measure(timers[1]);
+        measure(timers[2]);
+        encoder.endRenderPass();
+        ensureEqual("(a) the third has no pair", timerRun(timers[2])->pair, S64(-1));
+        ensureEqual("(a) one WARN line", occurrences(log, "The timer query ring is full"), size_t(1));
+        finishFrame(device);
+        ensureEqual("(a) 0 ns", timers[2]->result(true), U64(0));
+
+        tut::ensure("(b) the pass begins", encoder.beginRenderPass(drawPass(target)));
+        bindDraw(encoder, target, buffer, streams);
+        const U64 kept = device.queryStats().timeKept;
+        measure(timers[3]);
+        ensureEqual("(b) the reuse kept the earlier run's ticks", device.queryStats().timeKept - kept, U64(1));
+        encoder.endRenderPass();
+        finishFrame(device);
+        const U64 earlier = timers[0]->result(true);
+        tut::ensure("(b) the earlier run reads its own time: " + std::to_string(earlier), earlier > 0);
+        tut::ensure("(b) the later one too", timers[3]->result(true) > 0);
+
+        tut::ensure("(c) the pass begins", encoder.beginRenderPass(drawPass(target)));
+        bindDraw(encoder, target, buffer, streams);
+        const U64 noPair = device.queryStats().timeNoPair;
+        for (U32 i = 3; i < 6; ++i)
+        {
+            measure(timers[i]);
+            tut::ensure("(c) a read at once: more than 0 ns", timers[i]->result(true) > 0);
+        }
+        // The review's B-m1: one query begun again and again, as LLGLSLShader's profile frame begins its one query at
+        // every bind; each begin drops the query's earlier run, so a pair it held is judged by its end's stamp alone.
+        for (U32 again = 0; again < 3; ++again)
+        {
+            measure(timers[5]);
+            tut::ensure("(c) the same query again, read at once: more than 0 ns (" + std::to_string(again) + ")",
+                        timers[5]->result(true) > 0);
+        }
+        ensureEqual("(c) every begin had a pair", device.queryStats().timeNoPair - noPair, U64(0));
+        encoder.endRenderPass();
+        finishFrame(device);
+        tut::ensure("(m7) the most time begins in one frame", device.queryStats().peakTimeBegins >= 3);
+        ensureEqual("no GPU error", device.gpuErrors(), U64(0));
+        ensureEqual("one WARN line in all", occurrences(log, "WARNING #RHI#"), size_t(1));
+    }
+
+    /// t192 (P3-08b S3): the readback and copy facades' delivered branches on the viewer's Metal device, on a 16x8 GL_RGBA
+    /// target with a depth that holds a texel pattern. (a) readFramebufferRows, rawSnapshot's tile: true, the rows in GL's
+    /// order at the caller's stride, every row tracked and one submit for the tile; the tile's depth rows as F32 (the
+    /// target's depth cleared to 1) and a depth readback's rowPitch() of width x 4. (b) saveChart's and renderMorphMasks'
+    /// calls (newview, so their facade calls as they make them): GL_RGB of the whole target and GL_RGBA of a region, true,
+    /// tracked, the bytes; renderMorphMasks' texture workaround is GL's only. (c) GL_ALPHA, GL_LUMINANCE and
+    /// GL_LUMINANCE_ALPHA stay upload layouts of pixelLayoutFromGL: a readback with them is false, untracked, reaches no
+    /// encoder and delivers nothing, as core GL's GL_INVALID_ENUM (C6). (d) readBackRaw of RGBA8 and RGB8 images: true and
+    /// the bytes; of a one- and a two-component image (GL_LUMINANCE, GL_LUMINANCE_ALPHA): false, untracked, the data
+    /// deleted, as GL's test<38>'s case (c). (e) setSubImageFromFrameBuffer: true, the copy tracked, the image holds the
+    /// target's texels. No WARN line.
+    API_AVAILABLE(macos(26.0)) void facadeDeliveredTest()
+    {
+        MetalViewerRun run;
+        MetalDevice& device = *run.device;
+        CaptureLog log(LLError::LEVEL_WARN);
+        @autoreleasepool
+        {
+            constexpr U32 W = FACADE_WIDTH;
+            constexpr U32 H = FACADE_HEIGHT;
+            LLRenderTarget target;
+            allocateFacadeTarget(target);
+            Texture* colour = target.getRHITexture(0);
+            // Every texel differs, so a row or a column off, or a flipped row order, shows
+            const auto texel = [](U32 x, U32 y) -> std::array<U8, 4>
+            { return { U8(10 * x + 1), U8(20 * y + 3), U8((7 * x + 13 * y + 5) & 255), U8(200 - y) }; };
+            std::vector<U8> pattern;
+            for (U32 y = 0; y < H; ++y)
+            {
+                for (U32 x = 0; x < W; ++x)
+                {
+                    const std::array<U8, 4> t = texel(x, y);
+                    pattern.insert(pattern.end(), t.begin(), t.end());
+                }
+            }
+            target.bindTarget();
+            target.clear(GL_DEPTH_BUFFER_BIT);
+            flushTarget(device, target);
+            device.encoder().uploadTexture(colour, 0, 0, { 0, 0, W, H }, PixelLayout(),
+                                           std::as_bytes(std::span<const U8>(pattern)));
+            target.bindTarget();
+
+            // (a) rawSnapshot's tile: 5 rows of 12 from (2, 1), RGB, at a stride of 40 bytes with padding the reads keep
+            {
+                constexpr S32 X = 2;
+                constexpr S32 Y = 1;
+                constexpr S32 WIDTH = 12;
+                constexpr S32 ROWS = 5;
+                constexpr size_t STRIDE = 40;
+                constexpr size_t ROW_BYTES = size_t(WIDTH) * 3;
+                std::vector<U8> tile(STRIDE * ROWS, 0xEE);
+                const LLGPUReadback::Counts counts = LLGPUReadback::counts();
+                const U64 submissions = device.submissions();
+                tut::ensure("(a) readFramebufferRows: true",
+                            LLGPUReadback::readFramebufferRows(X, Y, WIDTH, ROWS, GL_RGB, GL_UNSIGNED_BYTE, tile.data(),
+                                                               STRIDE, ROW_BYTES));
+                ensureEqual("(a) one submit for the tile", device.submissions() - submissions, U64(1));
+                ensureEqual("(a) every row tracked", LLGPUReadback::counts().tracked - counts.tracked, U64(ROWS));
+                ensureEqual("(a) none untracked", LLGPUReadback::counts().untracked - counts.untracked, U64(0));
+                for (S32 row = 0; row < ROWS; ++row)
+                {
+                    for (size_t at = 0; at < STRIDE; ++at)
+                    {
+                        const U8 got = tile[size_t(row) * STRIDE + at];
+                        U8 expected = 0xEE; // the padding past the row's bytes
+                        if (at < ROW_BYTES)
+                        {
+                            expected = texel(U32(X) + U32(at / 3), U32(Y + row))[at % 3];
+                        }
+                        if (got != expected)
+                        {
+                            tut::fail(llformat("(a) row %d, byte %zu: %u, not %u (GL's order: row r is y + r)", row, at,
+                                               got, expected));
+                        }
+                    }
+                }
+
+                std::vector<F32> depth(size_t(W) * 3, 0.f);
+                const U64 depthSubmissions = device.submissions();
+                tut::ensure("(a) the tile's depth rows: true",
+                            LLGPUReadback::readFramebufferRows(0, 4, S32(W), 3, GL_DEPTH_COMPONENT, GL_FLOAT, depth.data(),
+                                                               W * sizeof(F32), W * sizeof(F32)));
+                ensureEqual("(a) the depth tile: one submit", device.submissions() - depthSubmissions, U64(1));
+                for (size_t i = 0; i < depth.size(); ++i)
+                {
+                    if (depth[i] != 1.f)
+                    {
+                        tut::fail(llformat("(a) depth %zu is %f, not the clear's 1", i, depth[i]));
+                    }
+                }
+                LLGPUReadback one;
+                std::vector<F32> line(W, 0.f);
+                tut::ensure("(a) a depth row read",
+                            one.readFramebuffer(0, 0, S32(W), 1, GL_DEPTH_COMPONENT, GL_FLOAT, line.data(),
+                                                line.size() * sizeof(F32)));
+                ensureEqual(llformat("(a) the depth's rowPitch(): width x 4 (format %u)",
+                                     U32(target.getRHIDepth()->desc().format)),
+                            one.rowPitch(), size_t(W) * sizeof(F32));
+                one.wait();
+                ensureEqual("(a) the depth row delivered", one.data().size(), size_t(W) * sizeof(F32));
+                tut::ensure("(a) the depth row is 1", line[0] == 1.f && line[W - 1] == 1.f);
+            }
+
+            // (b) saveChart's GL_RGB of the whole target, and renderMorphMasks' GL_RGBA of a region (its readPixels
+            // branch: the texture workaround is GL's)
+            {
+                tut::ensure("(b) renderMorphMasks reads with glReadPixels' facade off GL",
+                            !LLGPUReadback::targetsReadThroughTextures());
+                LLPointer<LLImageRaw> chart = new LLImageRaw(W, H, 3);
+                const LLGPUReadback::Counts counts = LLGPUReadback::counts();
+                tut::ensure("(b) saveChart's read: true",
+                            LLGPUReadback::readPixels(0, 0, S32(W), S32(H), GL_RGB, GL_UNSIGNED_BYTE, chart->getData(),
+                                                      size_t(chart->getDataSize())));
+                std::vector<U8> rgb;
+                for (size_t i = 0; i < pattern.size(); i += 4)
+                {
+                    rgb.insert(rgb.end(), pattern.begin() + i, pattern.begin() + i + 3);
+                }
+                tut::ensure("(b) saveChart's bytes",
+                            std::equal(rgb.begin(), rgb.end(), chart->getData()) &&
+                                size_t(chart->getDataSize()) == rgb.size());
+                std::vector<U8> mask(size_t(8) * 4 * 4, 0);
+                tut::ensure("(b) renderMorphMasks' read: true",
+                            LLGPUReadback::readPixels(3, 2, 8, 4, GL_RGBA, GL_UNSIGNED_BYTE, mask.data(), mask.size()));
+                for (U32 y = 0; y < 4; ++y)
+                {
+                    for (U32 x = 0; x < 8; ++x)
+                    {
+                        const std::array<U8, 4> t = texel(3 + x, 2 + y);
+                        tut::ensure(llformat("(b) renderMorphMasks' texel %u, %u", x, y),
+                                    std::equal(t.begin(), t.end(), mask.begin() + (size_t(y) * 8 + x) * 4));
+                    }
+                }
+                ensureEqual("(b) both tracked", LLGPUReadback::counts().tracked - counts.tracked, U64(2));
+            }
+
+            // (c) The upload-only layouts
+            for (const U32 format : { U32(GL_ALPHA), U32(GL_LUMINANCE), U32(GL_LUMINANCE_ALPHA) })
+            {
+                const std::string at = llformat("(c) format 0x%x: ", format);
+                tut::ensure(at + "an upload layout of pixelLayoutFromGL",
+                            LL::RHI::pixelLayoutFromGL(format, GL_UNSIGNED_BYTE).has_value());
+                const LLGPUReadback::Counts counts = LLGPUReadback::counts();
+                const U64 transfers = device.encoder().state().transfers();
+                std::vector<U8> bytes(size_t(W) * H * 2, 0x5A);
+                LLGPUReadback read;
+                tut::ensure(at + "false", !read.readFramebuffer(0, 0, S32(W), S32(H), format, GL_UNSIGNED_BYTE,
+                                                                bytes.data(), bytes.size()));
+                read.wait();
+                ensureEqual(at + "untracked", LLGPUReadback::counts().untracked - counts.untracked, U64(1));
+                ensureEqual(at + "not tracked", LLGPUReadback::counts().tracked - counts.tracked, U64(0));
+                ensureEqual(at + "not refused", LLGPUReadback::counts().refused - counts.refused, U64(0));
+                ensureEqual(at + "no transfer reached the encoder", device.encoder().state().transfers(), transfers);
+                ensureEqual(at + "nothing delivered", read.data().size(), size_t(0));
+                tut::ensure(at + "the caller's memory untouched",
+                            std::all_of(bytes.begin(), bytes.end(), [](U8 b) { return b == 0x5A; }));
+            }
+            target.flush();
+
+            // (d) readBackRaw
+            for (const S32 components : { 4, 3, 1, 2 })
+            {
+                const std::string at = llformat("(d) %d components: ", components);
+                LLPointer<LLImageRaw> source = new LLImageRaw(W, H, S8(components));
+                for (S32 i = 0; i < source->getDataSize(); ++i)
+                {
+                    source->getData()[i] = U8(i * 11 + 7);
+                }
+                LLPointer<LLImageGL> image = new LLImageGL(false);
+                tut::ensure(at + "createGLTexture", image->createGLTexture(0, source.get()));
+                gGL.getTexUnit(0)->unbind(LLTexUnit::TT_TEXTURE);
+                tut::ensure(at + "a texture of the device", image->getRHITexture() != nullptr);
+                const LLGPUReadback::Counts counts = LLGPUReadback::counts();
+                LLPointer<LLImageRaw> raw = new LLImageRaw;
+                const bool read = image->readBackRaw(-1, raw, false);
+                gGL.getTexUnit(0)->unbind(LLTexUnit::TT_TEXTURE);
+                if (components >= 3)
+                {
+                    tut::ensure(at + "true", read);
+                    ensureEqual(at + "tracked", LLGPUReadback::counts().tracked - counts.tracked, U64(1));
+                    tut::ensure(at + "the image's bytes",
+                                raw->getDataSize() == source->getDataSize() &&
+                                    std::equal(source->getData(), source->getData() + source->getDataSize(),
+                                               raw->getData()));
+                }
+                else
+                {
+                    tut::ensure(at + "false, as GL's GL_INVALID_ENUM", !read);
+                    ensureEqual(at + "untracked", LLGPUReadback::counts().untracked - counts.untracked, U64(1));
+                    ensureEqual(at + "not tracked", LLGPUReadback::counts().tracked - counts.tracked, U64(0));
+                    tut::ensure(at + "the data deleted", raw->getData() == nullptr);
+                }
+            }
+
+            // (e) setSubImageFromFrameBuffer from the bound target into an RGBA image of its size
+            {
+                LLPointer<LLImageRaw> blank = new LLImageRaw(W, H, 4);
+                std::memset(blank->getData(), 0, size_t(blank->getDataSize()));
+                LLPointer<LLImageGL> image = new LLImageGL(false);
+                tut::ensure("(e) createGLTexture", image->createGLTexture(0, blank.get()));
+                gGL.getTexUnit(0)->unbind(LLTexUnit::TT_TEXTURE);
+                target.bindTarget();
+                const LLGPUReadback::Counts copies = LLGPUCopy::counts();
+                tut::ensure("(e) setSubImageFromFrameBuffer: true",
+                            image->setSubImageFromFrameBuffer(0, 0, 0, 0, S32(W), S32(H)));
+                gGL.getTexUnit(0)->unbind(LLTexUnit::TT_TEXTURE);
+                ensureEqual("(e) the copy tracked", LLGPUCopy::counts().tracked - copies.tracked, U64(1));
+                flushTarget(device, target);
+                tut::ensure("(e) the image holds the target's texels",
+                            levelBytesAt(device, image->getRHITexture(), 0, 4) == pattern);
+            }
+            target.release();
+            finishFrame(device);
+        }
+        ensureEqual("t192: no WARN", occurrences(log, "WARNING"), size_t(0));
+    }
+
+    // P3-09b: the speed knobs, the GPU time, the split barriers' hazards and the discarded stores -------------------
+
+    /// t210 (P3-09b D1, D5): the speed knobs from their variables ("full" and "0" are the old ways, "split" and "1",
+    /// not set or empty the new, any other value the default and named; review m3); MetalGpuBusy's rule (overlap once,
+    /// an interval reported after a later one counts only past the latest end and is counted late (review m2), one
+    /// without times or not forward is left out); the static index buffers' CPU copies (R04) while they
+    /// live; the GPU time's window line only once its window has passed (a clock read per frame, no line), the busy
+    /// time of real frames, and the total and the counters when a device goes; a million feedbacks counted cheaply.
+    API_AVAILABLE(macos(26.0)) void speedKnobsTest(MetalDevice& device)
+    {
+        // The defaults are MetalSpeedKnobs' initializers, which the batch's A/B may set either way (one line each).
+        const MetalSpeedKnobs defaults;
+        const MetalSpeedKnobs unset = metalParseSpeedKnobs(nullptr, nullptr);
+        tut::ensure("not set: the defaults", unset.splitBarriers == defaults.splitBarriers
+                                                 && unset.discardStores == defaults.discardStores);
+        tut::ensure("LL_METAL_BARRIER=full: the full barrier", !metalParseSpeedKnobs("full", nullptr).splitBarriers);
+        tut::ensure("LL_METAL_BARRIER=split: split", metalParseSpeedKnobs("split", nullptr).splitBarriers);
+        tut::ensure("LL_METAL_BARRIER empty: the default",
+                    metalParseSpeedKnobs("", nullptr).splitBarriers == defaults.splitBarriers);
+        tut::ensure("LL_METAL_DISCARD=0: every segment stores", !metalParseSpeedKnobs(nullptr, "0").discardStores);
+        tut::ensure("LL_METAL_DISCARD=1: discarded", metalParseSpeedKnobs(nullptr, "1").discardStores);
+        tut::ensure("each variable sets its own knob",
+                    metalParseSpeedKnobs("full", "1").discardStores && metalParseSpeedKnobs("split", "0").splitBarriers);
+        tut::ensure("the known values: nothing unknown",
+                    metalParseSpeedKnobs("full", "0").unknown.empty() && metalParseSpeedKnobs("split", "1").unknown.empty()
+                        && metalParseSpeedKnobs("", "").unknown.empty() && unset.unknown.empty());
+        // m3: no guessing; another value keeps the knob's default and is named for the device's WARN line
+        const MetalSpeedKnobs odd = metalParseSpeedKnobs("Full", "off");
+        tut::ensure("LL_METAL_BARRIER=Full, LL_METAL_DISCARD=off: the defaults",
+                    odd.splitBarriers == defaults.splitBarriers && odd.discardStores == defaults.discardStores);
+        ensureEqual("and both named", odd.unknown, std::string("LL_METAL_BARRIER=Full, LL_METAL_DISCARD=off"));
+        const MetalSpeedKnobs oneOdd = metalParseSpeedKnobs("full", "false");
+        tut::ensure("one known, one not: the known one set",
+                    !oneOdd.splitBarriers && oneOdd.discardStores == defaults.discardStores);
+        ensureEqual("only the other named", oneOdd.unknown, std::string("LL_METAL_DISCARD=false"));
+        const MetalSpeedKnobs environment = metalSpeedKnobs();
+        tut::ensure("the device has the environment's knobs", device.speedKnobs().splitBarriers == environment.splitBarriers
+                                                                  && device.speedKnobs().discardStores
+                                                                         == environment.discardStores);
+
+        auto busyOf = [](std::initializer_list<std::pair<double, double>> intervals)
+        {
+            MetalGpuBusy busy;
+            for (const std::pair<double, double>& interval : intervals)
+            {
+                busy.add(interval.first, interval.second);
+            }
+            return busy;
+        };
+        ensureEqual("one after another: the sum", busyOf({ { 1, 2 }, { 3, 5 } }).busy, 3.0);
+        ensureEqual("overlapping: the union", busyOf({ { 1, 3 }, { 2, 4 } }).busy, 3.0);
+        ensureEqual("one inside another: the outer one", busyOf({ { 1, 5 }, { 2, 3 } }).busy, 4.0);
+        ensureEqual("one inside another: two command buffers", busyOf({ { 1, 5 }, { 2, 3 } }).commandBuffers, U64(2));
+        ensureEqual("reported after a later one, overlapping: only past the latest end",
+                    busyOf({ { 2, 4 }, { 1, 5 } }).busy, 3.0);
+        ensureEqual("reported after a later one, before its end: nothing more", busyOf({ { 3, 4 }, { 1, 2 } }).busy, 1.0);
+        ensureEqual("in the order they began: no late report", busyOf({ { 1, 3 }, { 2, 4 }, { 2, 5 }, { 6, 7 } }).late,
+                    U64(0));
+        ensureEqual("each that began before one added earlier is late",
+                    busyOf({ { 3, 4 }, { 1, 2 }, { 2, 5 }, { 5, 6 } }).late, U64(2));
+        const MetalGpuBusy left = busyOf({ { 1, 2 }, { 0, 3 }, { 3, 3 }, { 4, 3 } });
+        ensureEqual("no times, empty or backwards: no command buffer", left.commandBuffers, U64(1));
+        ensureEqual("no times, empty or backwards: no time", left.busy, 1.0);
+
+        // R04: a static index buffer's CPU copy counts while the buffer lives; a dynamic one and a vertex buffer have none.
+        const U64 copies = device.indexCopyBytes();
+        const U64 peak = device.indexCopyPeak();
+        {
+            BufferDesc fixed;
+            fixed.size = 1000;
+            fixed.usage = BUFFER_INDEX;
+            Ref<Buffer> indices = device.createBuffer(fixed, {}, "static indices");
+            ensureEqual("a static index buffer's copy", device.indexCopyBytes(), copies + 1000);
+            tut::ensure("the most at once", device.indexCopyPeak() >= copies + 1000 && device.indexCopyPeak() >= peak);
+            BufferDesc dynamic = fixed;
+            dynamic.dynamic = true;
+            Ref<Buffer> other = device.createBuffer(dynamic, {}, "dynamic indices");
+            BufferDesc vertices;
+            vertices.size = 1000;
+            vertices.usage = BUFFER_VERTEX;
+            Ref<Buffer> third = device.createBuffer(vertices, {}, "static vertices");
+            tut::ensure("the buffers", indices.notNull() && other.notNull() && third.notNull());
+            ensureEqual("no copy for a dynamic index buffer or a vertex buffer", device.indexCopyBytes(), copies + 1000);
+        }
+        finishFrame(device);
+        ensureEqual("the copy goes with its buffer", device.indexCopyBytes(), copies);
+        tut::ensure("the most stays", device.indexCopyPeak() >= copies + 1000);
+
+        {
+            CaptureLog log(LLError::LEVEL_INFO);
+            DrawTarget target = drawTarget(device);
+            Encoder& encoder = device.encoder();
+            DrawVertices square;
+            addRect(square, -1, -1, 1, 1, WHITE_RGBA);
+            VertexStreams streams;
+            Ref<Buffer> buffer = vertexBuffer(device, square, streams);
+            setUiUniforms(encoder, target.program.get(), translation(0, 0));
+            finishFrame(device);
+            const MetalGpuBusy before = device.gpuBusy();
+            tut::ensure("the pass begins", encoder.beginRenderPass(drawPass(target)));
+            bindDraw(encoder, target, buffer, streams);
+            encoder.draw(PrimitiveType::Triangles, 0, 6);
+            encoder.endRenderPass();
+            device.setGpuTimeWindowForTest(std::chrono::steady_clock::duration::zero());
+            finishFrame(device); // two frame ends, each past the window
+            device.setGpuTimeWindowForTest(std::chrono::seconds(10));
+            for (U32 frame = 0; frame < 20; ++frame)
+            {
+                device.endFrame(); // inside the window: no line
+            }
+            ensureEqual("a window line at each frame end past the window, none inside it",
+                        occurrences(log, "Metal GPU time: "), size_t(2));
+            const std::string line = log.messageWith("Metal GPU time: ");
+            for (const char* part :
+                 { " frames in ", " s, GPU busy ", " ms per frame (", " command buffers, ", " late); barriers " })
+            {
+                tut::ensure("the window line has '" + std::string(part) + "': " + line, line.find(part) != std::string::npos);
+            }
+            const MetalGpuBusy after = device.gpuBusy();
+            tut::ensure("the frames' command buffers are counted", after.commandBuffers > before.commandBuffers);
+            tut::ensure("and their GPU time", after.busy > before.busy);
+            {
+                Ref<Device> other = anotherDevice();
+                MetalDevice& second = *static_cast<MetalDevice*>(other.get());
+                Ref<Texture> texel = second.createTexture(sizedDesc(Format::RGBA8Unorm, TEXTURE_SAMPLED | TEXTURE_READBACK, 1, 1),
+                                                          "one texel");
+                second.encoder().uploadTexture(texel.get(), 0, 0, { 0, 0, 1, 1 }, PixelLayout(), bytesOf(WHITE_RGBA));
+                Ref<Readback> read = second.encoder().readback(texel.get(), 0, 0, { 0, 0, 1, 1 }, PixelLayout());
+                tut::ensure("the other device's readback", read.notNull());
+                read->wait();
+                second.endFrame();
+            }
+            ensureEqual("the other device's knobs line", occurrences(log, "Metal speed knobs: "), size_t(1));
+            ensureEqual("its total when it goes", occurrences(log, "Metal GPU time (total): "), size_t(1));
+            ensureEqual("and its counters", occurrences(log, "Metal speed counters: "), size_t(1));
+            const std::string counters = log.messageWith("Metal speed counters: ");
+            for (const char* part : { "producer barriers ", "vertex barriers ", "passes after copies ", "discarded stores ",
+                                      "static index copies " })
+            {
+                tut::ensure("the counters have '" + std::string(part) + "': " + counters,
+                            counters.find(part) != std::string::npos);
+            }
+            ensureEqual("no WARN line", occurrences(log, "WARNING"), size_t(0));
+        }
+        {
+            // m3: a device made while a knob has a value it does not know says so once and keeps the knob's default.
+            CaptureLog log(LLError::LEVEL_WARN);
+            const char* was = getenv("LL_METAL_DISCARD");
+            const std::optional<std::string> saved = was ? std::optional<std::string>(was) : std::nullopt;
+            setenv("LL_METAL_DISCARD", "off", 1);
+            {
+                Ref<Device> other = anotherDevice();
+                tut::ensure("an unknown value: the default", static_cast<MetalDevice*>(other.get())->speedKnobs().discardStores
+                                                                 == MetalSpeedKnobs().discardStores);
+            }
+            if (saved)
+            {
+                setenv("LL_METAL_DISCARD", saved->c_str(), 1);
+            }
+            else
+            {
+                unsetenv("LL_METAL_DISCARD");
+            }
+            ensureEqual("one WARN line naming it",
+                        occurrences(log, "Metal speed knob values not understood: LL_METAL_DISCARD=off"), size_t(1));
+            ensureEqual("no other WARN line", occurrences(log, "WARNING"), size_t(1));
+        }
+
+        // Cheap: the feedback handler's few additions under its mutex.
+        const auto began = std::chrono::steady_clock::now();
+        MetalGpuBusy many;
+        for (U32 i = 0; i < 1000000; ++i)
+        {
+            many.add(1.0 + i * 1e-3, 1.0 + i * 1e-3 + 5e-4);
+        }
+        const double ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - began).count();
+        ensureEqual("a million feedbacks counted", many.commandBuffers, U64(1000000));
+        tut::ensure("a million feedbacks in under 250 ms: " + std::to_string(ms) + " ms", ms < 250.0);
+        ensureEqual("no GPU errors", device.gpuErrors(), U64(0));
+    }
+
+    /// P3-09b: a pass's heavy fragment work, so that a later encoder that does not wait for the pass reads before it is
+    /// done: `work` steps a fragment, which change nothing the target shows (the tint times the vertex colour).
+    const char* HEAVY_FRAGMENT = R"(#version 400
+#define FRAGMENT_SHADER 1
+out vec4 frag_color;
+uniform vec4 tint;
+uniform float work;
+in vec2 vary_texcoord0;
+in vec4 vertex_color;
+void main()
+{
+    float c = vertex_color.g * 0.5 + 0.25;
+    for (float i = 0.0; i < work; i += 1.0)
+    {
+        c = fract(c * 1.37 + 0.11);
+    }
+    frag_color = vertex_color * tint + vec4(c * 1e-20);
+}
+)";
+
+    /// P3-09b: a vertex stage that samples, as no viewer shader does: each vertex's colour is its colour times the texel
+    /// in the middle of vertexMap.
+    const char* SAMPLING_VERTEX = R"(#version 400
+#define VERTEX_SHADER 1
+uniform mat4 texture_matrix0;
+uniform mat4 modelview_projection_matrix;
+uniform sampler2D vertexMap;
+in vec3 position;
+in vec4 diffuse_color;
+in vec2 texcoord0;
+out vec4 vertex_color;
+out vec2 vary_texcoord0;
+void main()
+{
+    gl_Position = modelview_projection_matrix * vec4(position, 1);
+    vary_texcoord0 = (texture_matrix0 * vec4(texcoord0, 0, 1)).xy;
+    vertex_color = diffuse_color * textureLod(vertexMap, vec2(0.5, 0.5), 0.0);
+}
+)";
+
+    const char* VERTEX_COLOR_FRAGMENT = R"(#version 400
+#define FRAGMENT_SHADER 1
+out vec4 frag_color;
+in vec2 vary_texcoord0;
+in vec4 vertex_color;
+void main() { frag_color = vertex_color; }
+)";
+
+    /// P3-09b: a square colour target without depth and HEAVY_FRAGMENT's pipeline for it.
+    struct HeavyTarget
+    {
+        Ref<Texture> color;
+        Ref<Program> program;
+        Ref<Pipeline> pipeline;
+        Ref<Buffer> square; ///< the whole target
+    };
+
+    API_AVAILABLE(macos(26.0)) HeavyTarget heavyTarget(MetalDevice& device, U32 size, U8 usage, const char* name)
+    {
+        HeavyTarget target;
+        target.color = device.createTexture(sizedDesc(Format::RGBA8Unorm, usage, size, size), name);
+        target.program = ready(device.createProgram(programDesc("heavy test", UI_VERTEX, HEAVY_FRAGMENT)));
+        PipelineDesc colorOnly = uiPipelineDesc();
+        colorOnly.depthFormat = Format::Unknown;
+        target.pipeline = target.program.notNull() ? device.getPipeline(*target.program, colorOnly) : nullptr;
+        DrawVertices whole;
+        addRect(whole, -1, -1, 1, 1, WHITE_RGBA);
+        VertexStreams streams;
+        target.square = vertexBuffer(device, whole, streams);
+        tut::ensure(std::string(name) + " is made",
+                    target.color.notNull() && target.pipeline.notNull() && target.square.notNull());
+        return target;
+    }
+
+    /// A pass that fills the heavy target with the tint, `work` steps a fragment.
+    API_AVAILABLE(macos(26.0)) void heavyPass(Encoder& encoder, const HeavyTarget& target, const Rgba& tint, F32 work)
+    {
+        RenderPassDesc pass = passOn(target.color, nullptr);
+        pass.color[0].load = LoadAction::Clear;
+        pass.color[0].clear = CLEAR_COLOR;
+        pass.name = "heavy pass";
+        tut::ensure("the heavy pass begins", encoder.beginRenderPass(pass));
+        Program* program = target.program.get();
+        const ProgramReflection& reflection = program->reflection();
+        encoder.setUniform(program, U32(uniformIndex(reflection, "modelview_projection_matrix")),
+                           bytesOf(translation(0, 0)));
+        encoder.setUniform(program, U32(uniformIndex(reflection, "texture_matrix0")), bytesOf(translation(0, 0)));
+        encoder.setUniform(program, U32(uniformIndex(reflection, "tint")), bytesOf(tintOf(tint)));
+        encoder.setUniform(program, U32(uniformIndex(reflection, "work")), bytesOf(std::array<F32, 1>{ work }));
+        encoder.setPipeline(target.pipeline.get());
+        encoder.setVertexBuffer(target.square.get(), uiStreams(6));
+        encoder.draw(PrimitiveType::Triangles, 0, 6);
+        encoder.endRenderPass();
+    }
+
+    /// t211 (P3-09b M01, D2): with split barriers and with the full one (LL_METAL_BARRIER=full, the old way), what a
+    /// heavy pass or a copy writes is there for the encoders after it, in one command buffer:
+    /// (a) a static vertex buffer drawn, then updated by a copy right after a heavy pass, then drawn by the next pass:
+    ///     the first draw has the old vertices, the second the new (the copies' producer barrier, split only);
+    /// (b) a render target a heavy pass writes, sampled by the next pass's vertex stage: the vertex stage has the write
+    ///     (split: the geometry barrier before the pass's first sampling draw, once per encoder; one WARN line a device);
+    /// (c) the same target written again by a heavy pass and sampled by the next pass's fragment stage only: the pass
+    ///     barrier alone orders it, and the heavy pass's write waits for (b)'s vertex reads.
+    /// (d) batch 4's copy paths (P3-08b, merged into P3-09b): a buffer readback and a copy between formats give their
+    ///     bytes, and every copies encoder they begin ends with a producer barrier (split) or none (full).
+    /// One barrier per native encoder either way; with split every render encoder's is split and every copies encoder
+    /// ends with a producer barrier, with full none.
+    API_AVAILABLE(macos(26.0)) void splitBarrierTest(MetalDevice& device)
+    {
+        constexpr F32 WORK = 3000.f;
+        CaptureLog log(LLError::LEVEL_WARN);
+        Encoder& encoder = device.encoder();
+        MetalEncoder& metal = device.metalEncoder();
+        TintTarget tint = tintTarget(device);
+        DrawTarget sampled = drawTarget(device);
+        DrawTarget fragment = drawTarget(device);
+        HeavyTarget heavy = heavyTarget(device, 2048, TEXTURE_RENDER_TARGET, "heavy target");
+        HeavyTarget written = heavyTarget(device, 1024, TEXTURE_RENDER_TARGET | TEXTURE_SAMPLED, "written target");
+        StageProgram sampling;
+        sampling.program = ready(device.createProgram(programDesc("vertex sampling test", SAMPLING_VERTEX,
+                                                                  VERTEX_COLOR_FRAGMENT)));
+        tut::ensure("the vertex sampling program is Ready",
+                    sampling.program.notNull() && sampling.program->status() == CompileStatus::Ready);
+        sampling.pipeline = device.getPipeline(*sampling.program, uiPipelineDesc());
+        tut::ensure("its pipeline", sampling.pipeline.notNull());
+        tut::ensure("its vertex stage samples", !metalProgramLayout(sampling.program.get())->vertex.textureUniforms.empty());
+        Program* program = sampling.program.get();
+        const ProgramReflection& reflection = program->reflection();
+        encoder.setUniform(program, U32(uniformIndex(reflection, "modelview_projection_matrix")),
+                           bytesOf(translation(0, 0)));
+        encoder.setUniform(program, U32(uniformIndex(reflection, "texture_matrix0")), bytesOf(translation(0, 0)));
+        encoder.setSamplerChannel(program, U32(uniformIndex(reflection, "vertexMap")), 0);
+        setUiUniforms(encoder, sampled.program.get(), translation(0, 0));
+        setUiUniforms(encoder, fragment.program.get(), translation(0, 0));
+        DrawVertices left;
+        addRect(left, -1, -1, 0, 1, WHITE_RGBA);
+        DrawVertices bottomRight;
+        addRect(bottomRight, 0, -1, 1, 0, WHITE_RGBA);
+        DrawVertices topRight;
+        addRect(topRight, 0, 0, 1, 1, WHITE_RGBA);
+        DrawVertices whole;
+        addRect(whole, -1, -1, 1, 1, WHITE_RGBA);
+        VertexStreams streams;
+        Ref<Buffer> leftBuffer = vertexBuffer(device, left, streams);
+        Ref<Buffer> bottomRightBuffer = vertexBuffer(device, bottomRight, streams);
+        Ref<Buffer> topRightBuffer = vertexBuffer(device, topRight, streams);
+        Ref<Buffer> wholeBuffer = vertexBuffer(device, whole, streams);
+        const std::vector<std::byte> v1 = vertexBytes(squareAt(0, WHITE_RGBA));
+        const std::vector<std::byte> v2 = vertexBytes(squareAt(1, WHITE_RGBA));
+        finishFrame(device);
+        for (const bool split : { true, false })
+        {
+            device.setSpeedKnobsForTest({ split, true });
+            const std::string at = split ? "split: " : "full: ";
+            // The written target is red from a frame before.
+            RenderPassDesc red = passOn(written.color, nullptr);
+            red.color[0].load = LoadAction::Clear;
+            red.color[0].clear = RED_FLOATS;
+            tut::ensure(at + "the red pass begins", encoder.beginRenderPass(red));
+            encoder.endRenderPass();
+            BufferDesc fixed;
+            fixed.size = v1.size();
+            fixed.usage = BUFFER_VERTEX;
+            Ref<Buffer> still = device.createBuffer(fixed, v1, "static vertices after a heavy pass");
+            finishFrame(device);
+            const U64 barriers = device.barriers();
+            const U64 renders = metal.renderEncoders();
+            const U64 copyEncoders = device.copyEncodersBegun();
+            const U64 splits = device.splitBarriers();
+            const U64 producers = device.producerBarriers();
+            const U64 vertexWaits = device.vertexBarriers();
+
+            // (a)
+            tut::ensure(at + "(a) the first pass begins", encoder.beginRenderPass(tintPass(tint, LoadAction::Clear)));
+            tintDraw(encoder, tint, still.get(), 0, RED);
+            encoder.endRenderPass();
+            heavyPass(encoder, heavy, GREEN_RGBA, WORK);
+            const U64 producersBefore = device.producerBarriers();
+            encoder.updateBuffer(still.get(), 0, v2);
+            const U64 updateProducers = device.producerBarriers() - producersBefore;
+            const U64 afterCopies = device.passesAfterCopies();
+            tut::ensure(at + "(a) the second pass begins", encoder.beginRenderPass(tintPass(tint, LoadAction::Load)));
+            tintDraw(encoder, tint, still.get(), 0, GREEN_RGBA);
+            encoder.endRenderPass();
+            const U64 secondAfterCopies = device.passesAfterCopies() - afterCopies;
+
+            // (b)
+            heavyPass(encoder, written, BLUE_RGBA, WORK);
+            const U64 vertexBefore = device.vertexBarriers();
+            tut::ensure(at + "(b) the pass begins", encoder.beginRenderPass(drawPass(sampled)));
+            encoder.setPipeline(sampling.pipeline.get());
+            encoder.setTexture(0, written.color.get(), pointClamp());
+            encoder.setVertexBuffer(leftBuffer.get(), streams);
+            encoder.draw(PrimitiveType::Triangles, 0, 6);
+            const U64 firstSamplingDraw = device.vertexBarriers() - vertexBefore;
+            bindDraw(encoder, sampled, bottomRightBuffer, streams); // the UI program: no texture in its vertex stage
+            encoder.draw(PrimitiveType::Triangles, 0, 6);
+            encoder.setPipeline(sampling.pipeline.get());
+            encoder.setTexture(0, written.color.get(), pointClamp());
+            encoder.setVertexBuffer(topRightBuffer.get(), streams);
+            encoder.draw(PrimitiveType::Triangles, 0, 6);
+            encoder.endRenderPass();
+            const U64 samplingPass = device.vertexBarriers() - vertexBefore;
+
+            // (c)
+            heavyPass(encoder, written, YELLOW, WORK);
+            tut::ensure(at + "(c) the pass begins", encoder.beginRenderPass(drawPass(fragment)));
+            encoder.setPipeline(fragment.pipeline.get());
+            encoder.setTexture(0, written.color.get(), pointClamp());
+            encoder.setVertexBuffer(wholeBuffer.get(), streams);
+            encoder.draw(PrimitiveType::Triangles, 0, 6);
+            encoder.endRenderPass();
+            const U64 fragmentPass = device.vertexBarriers() - vertexBefore - samplingPass;
+
+            // The images first: each read waits for the whole command buffer.
+            ensureColumns(at + "(a) the draw before the copy has the old vertices, the one after it the new",
+                          readTint(device, tint), { RED, GREEN_RGBA });
+            ensureImage(at + "(b) the vertex stage has what the heavy pass wrote", readTarget(device, sampled),
+                        [](U32 x, U32 y) -> std::optional<Rgba>
+                        { return x < DRAW_SIZE / 2 || y >= DRAW_SIZE / 2 ? BLUE : WHITE_RGBA; });
+            ensureImage(at + "(c) the fragment stage has what the heavy pass wrote", readTarget(device, fragment),
+                        [](U32, U32) -> std::optional<Rgba> { return YELLOW; });
+            ensureEqual(at + "(a) the update's copies end with a producer barrier with split barriers only",
+                        updateProducers, U64(split ? 1 : 0));
+            ensureEqual(at + "(a) the pass after the update follows copies", secondAfterCopies, U64(1));
+            ensureEqual(at + "(b) the geometry barrier before the first sampling draw, split only", firstSamplingDraw,
+                        U64(split ? 1 : 0));
+            ensureEqual(at + "(b) once in the pass", samplingPass, U64(split ? 1 : 0));
+            ensureEqual(at + "(c) none for a fragment stage that samples", fragmentPass, U64(0));
+            const U64 renderDelta = metal.renderEncoders() - renders;
+            const U64 copyDelta = device.copyEncodersBegun() - copyEncoders;
+            ensureEqual(at + "one barrier per native encoder", device.barriers() - barriers, renderDelta + copyDelta);
+            ensureEqual(at + "split: every render encoder's barrier is split", device.splitBarriers() - splits,
+                        split ? renderDelta : U64(0));
+            ensureEqual(at + "split: every copies encoder ends with a producer barrier",
+                        device.producerBarriers() - producers, split ? copyDelta : U64(0));
+            ensureEqual(at + "the vertex barriers", device.vertexBarriers() - vertexWaits, U64(split ? 1 : 0));
+
+            // (d) batch 4's copy paths (P3-08b): a buffer readback's copy and a copy between formats (copies, a render
+            //     encoder, copies) deliver their bytes, and each of their copies encoders ends like every other.
+            {
+                namespace CC = LL::RHI::CopyCases;
+                const U64 copiesBefore = device.copyEncodersBegun();
+                const U64 producersAtD = device.producerBarriers();
+                std::vector<std::byte> bytes(16);
+                for (size_t i = 0; i < bytes.size(); ++i)
+                {
+                    bytes[i] = std::byte(U8(7 * i + 1));
+                }
+                BufferDesc readable;
+                readable.size = bytes.size();
+                readable.usage = BUFFER_VERTEX;
+                Ref<Buffer> source = device.createBuffer(readable, bytes, "readback source with split barriers");
+                Ref<Readback> fromBuffer = encoder.readback(source.get(), 0, bytes.size());
+                tut::ensure(at + "(d) the buffer readback", fromBuffer.notNull());
+                fromBuffer->wait();
+                tut::ensure(at + "(d) the buffer's bytes",
+                            std::vector<std::byte>(fromBuffer->data().begin(), fromBuffer->data().end()) == bytes);
+                const Region whole{ 0, 0, CC::SIDE, CC::SIDE };
+                PixelLayout halves;
+                halves.components = PixelLayout::Components::RGBA;
+                halves.type = PixelLayout::Type::F16;
+                Ref<Texture> floats = device.createTexture(
+                    sizedDesc(Format::RGBA16Float, TEXTURE_SAMPLED | TEXTURE_READBACK, CC::SIDE, CC::SIDE),
+                    "split float source");
+                encoder.uploadTexture(floats.get(), 0, 0, whole, halves, asBytes(CC::sourceRGBA16F()));
+                Ref<Texture> unorm = device.createTexture(
+                    sizedDesc(Format::RGBA8Unorm, TEXTURE_SAMPLED | TEXTURE_READBACK, CC::SIDE, CC::SIDE),
+                    "split RGBA8 copy");
+                encoder.copyTexture(floats.get(), 0, 0, whole, unorm.get(), 0, 0, 0, 0);
+                Ref<Readback> fromCopy = encoder.readback(unorm.get(), 0, 0, whole, PixelLayout());
+                tut::ensure(at + "(d) the copy's readback", fromCopy.notNull());
+                fromCopy->wait();
+                const std::vector<U8> want = CC::expectedFromRGBA16F();
+                const std::span<const std::byte> got = fromCopy->data();
+                ensureEqual(at + "(d) the copy's size", got.size(), want.size());
+                int worst = 0;
+                for (size_t i = 0; i < got.size() && i < want.size(); ++i)
+                {
+                    worst = std::max(worst, std::abs(int(U8(got[i])) - int(want[i])));
+                }
+                tut::ensure(at + "(d) the copy within 1 of GL's bytes: " + std::to_string(worst), worst <= 1);
+                const U64 dCopies = device.copyEncodersBegun() - copiesBefore;
+                tut::ensure(at + "(d) the copies encoders: " + std::to_string(dCopies), dCopies >= 3);
+                ensureEqual(at + "(d) each ends with a producer barrier with split barriers only",
+                            device.producerBarriers() - producersAtD, split ? dCopies : U64(0));
+            }
+        }
+        device.endFrame();
+        ensureEqual("no GPU errors", device.gpuErrors(), U64(0));
+        ensureEqual("one WARN line for the device's sampling vertex stage",
+                    occurrences(log, "a vertex stage samples a texture"), size_t(1));
+        ensureEqual("no other WARN line", occurrences(log, "WARNING"), size_t(1));
+    }
+
+    /// t212 (P3-09b M02, D3): with discarded stores (LL_METAL_DISCARD on) and without (the old way):
+    /// (a) a draw, a full clear of colour and depth, a draw: the segment the clear splits off stores neither (with
+    ///     discard; counted), and the image has the clear and the draw after it in front of the cleared depth;
+    /// (b) a colour clear while the depth mask is off: the depth is stored and still tests the draw after it;
+    /// (c) a clear inside a scissor is a clear draw: no split, nothing unstored;
+    /// (d) a full clear, a readback in the pass and the pass's end: the readback and the target have the clear;
+    /// (e) a readback before the clear has the draw before it: the segment it reads is stored.
+    /// The images are the same either way; without discard every segment stores.
+    API_AVAILABLE(macos(26.0)) void discardStoresTest(MetalDevice& device)
+    {
+        CaptureLog log(LLError::LEVEL_WARN);
+        DrawTarget target = drawTarget(device);
+        Encoder& encoder = device.encoder();
+        MetalEncoder& metal = device.metalEncoder();
+        DrawVertices left;
+        addRect(left, -1, -1, 0, 1, YELLOW); // depth 0.5
+        DrawVertices right;
+        addRect(right, 0, -1, 1, 1, BLUE);
+        DrawVertices behindLeft;
+        addRect(behindLeft, -1, -1, 0, 1, BLUE);
+        DrawVertices behindWhole;
+        addRect(behindWhole, -1, -1, 1, 1, BLUE);
+        for (DrawVertices* behind : { &behindLeft, &behindWhole })
+        {
+            for (std::array<F32, 4>& position : behind->positions)
+            {
+                position[2] = 0.5f; // depth 0.75
+            }
+        }
+        VertexStreams streams;
+        Ref<Buffer> leftBuffer = vertexBuffer(device, left, streams);
+        Ref<Buffer> rightBuffer = vertexBuffer(device, right, streams);
+        Ref<Buffer> behindLeftBuffer = vertexBuffer(device, behindLeft, streams);
+        Ref<Buffer> behindWholeBuffer = vertexBuffer(device, behindWhole, streams);
+        Ref<DepthStencilState> writes = device.getDepthStencilState({ true, true, CompareFunc::LessEqual });
+        Ref<DepthStencilState> keeps = device.getDepthStencilState({ true, false, CompareFunc::LessEqual });
+        setUiUniforms(encoder, target.program.get(), translation(0, 0));
+        finishFrame(device);
+        const Region all{ 0, 0, DRAW_SIZE, DRAW_SIZE };
+        auto beginWithLeft = [&](const std::string& what)
+        {
+            tut::ensure(what + " the pass begins", encoder.beginRenderPass(drawPass(target)));
+            bindDraw(encoder, target, leftBuffer, streams);
+            encoder.setDepthStencilState(writes.get());
+            encoder.draw(PrimitiveType::Triangles, 0, 6);
+        };
+        for (const bool discard : { true, false })
+        {
+            device.setSpeedKnobsForTest({ true, discard });
+            const std::string at = discard ? "discard: " : "no discard: ";
+            const U64 unstored = U64(discard ? MTLStoreActionDontCare : MTLStoreActionStore);
+            const U64 store = U64(MTLStoreActionStore);
+
+            // (a)
+            beginWithLeft(at + "(a)");
+            U64 stores = metal.discardedStores();
+            encoder.clear(true, RED_FLOATS, true, 1.f);
+            MTL4RenderPassDescriptor* first = metal.lastPassDescriptor();
+            U64 firstColor = U64(first.colorAttachments[0].storeAction);
+            U64 firstDepth = U64(first.depthAttachment.storeAction);
+            U64 discarded = metal.discardedStores() - stores;
+            encoder.setVertexBuffer(behindLeftBuffer.get(), streams);
+            encoder.draw(PrimitiveType::Triangles, 0, 6);
+            encoder.endRenderPass();
+            MTL4RenderPassDescriptor* last = metal.lastPassDescriptor();
+            tut::ensure(at + "(a) the clear split the pass", first != nil && last != first);
+            ensureEqual(at + "(a) the split-off segment's colour store action", firstColor, unstored);
+            ensureEqual(at + "(a) its depth store action", firstDepth, unstored);
+            ensureEqual(at + "(a) discarded stores", discarded, U64(discard ? 2 : 0));
+            tut::ensure(at + "(a) the next segment clears colour and depth",
+                        last.colorAttachments[0].loadAction == MTLLoadActionClear
+                            && last.depthAttachment.loadAction == MTLLoadActionClear);
+            ensureEqual(at + "(a) the last segment stores colour as the pass says", U64(last.colorAttachments[0].storeAction),
+                        store);
+            ensureEqual(at + "(a) and depth", U64(last.depthAttachment.storeAction), store);
+            ensureImage(at + "(a) the clear, and the draw after it in front of the cleared depth", readTarget(device, target),
+                        [](U32 x, U32) -> std::optional<Rgba> { return x < DRAW_SIZE / 2 ? BLUE : RED; });
+
+            // (b)
+            beginWithLeft(at + "(b)");
+            encoder.setDepthStencilState(keeps.get());
+            stores = metal.discardedStores();
+            encoder.clear(true, RED_FLOATS, true, 1.f); // GL's glClear writes no depth while the depth mask is off
+            first = metal.lastPassDescriptor();
+            firstColor = U64(first.colorAttachments[0].storeAction);
+            firstDepth = U64(first.depthAttachment.storeAction);
+            discarded = metal.discardedStores() - stores;
+            encoder.setVertexBuffer(behindWholeBuffer.get(), streams);
+            encoder.draw(PrimitiveType::Triangles, 0, 6);
+            encoder.endRenderPass();
+            last = metal.lastPassDescriptor();
+            ensureEqual(at + "(b) the colour the clear covers", firstColor, unstored);
+            ensureEqual(at + "(b) the depth it does not write is stored", firstDepth, store);
+            ensureEqual(at + "(b) discarded stores", discarded, U64(discard ? 1 : 0));
+            tut::ensure(at + "(b) the next segment loads the depth", last.depthAttachment.loadAction == MTLLoadActionLoad);
+            ensureImage(at + "(b) the clear, and the draw after it behind the kept depth", readTarget(device, target),
+                        [](U32 x, U32) -> std::optional<Rgba> { return x < DRAW_SIZE / 2 ? RED : BLUE; });
+
+            // (c)
+            beginWithLeft(at + "(c)");
+            const U64 renders = metal.renderEncoders();
+            const U64 clearDraws = metal.clearDraws();
+            stores = metal.discardedStores();
+            encoder.setScissor(true, 0, 0, 16, S32(DRAW_SIZE));
+            encoder.clear(true, RED_FLOATS, true, 1.f);
+            encoder.setScissor(false, 0, 0, 0, 0);
+            encoder.endRenderPass();
+            last = metal.lastPassDescriptor();
+            ensureEqual(at + "(c) a clear inside a scissor is a clear draw", metal.clearDraws() - clearDraws, U64(1));
+            ensureEqual(at + "(c) no split", metal.renderEncoders(), renders);
+            ensureEqual(at + "(c) nothing unstored", metal.discardedStores() - stores, U64(0));
+            ensureEqual(at + "(c) the pass stores colour", U64(last.colorAttachments[0].storeAction), store);
+            ensureEqual(at + "(c) and depth", U64(last.depthAttachment.storeAction), store);
+            ensureImage(at + "(c) the scissor's clear and the draw beside it", readTarget(device, target),
+                        [](U32 x, U32) -> std::optional<Rgba>
+                        { return x < 16 ? RED : x < DRAW_SIZE / 2 ? YELLOW : CLEAR_RGBA; });
+
+            // (d)
+            beginWithLeft(at + "(d)");
+            stores = metal.discardedStores();
+            encoder.clear(true, RED_FLOATS, true, 1.f);
+            first = metal.lastPassDescriptor();
+            firstColor = U64(first.colorAttachments[0].storeAction);
+            firstDepth = U64(first.depthAttachment.storeAction);
+            discarded = metal.discardedStores() - stores;
+            Ref<Readback> inPass = encoder.readback(target.color.get(), 0, 0, all, PixelLayout());
+            encoder.endRenderPass();
+            tut::ensure(at + "(d) the readback in the pass", inPass.notNull());
+            inPass->wait();
+            last = metal.lastPassDescriptor();
+            ensureEqual(at + "(d) the split-off segment's colour", firstColor, unstored);
+            ensureEqual(at + "(d) and depth", firstDepth, unstored);
+            ensureEqual(at + "(d) discarded stores", discarded, U64(discard ? 2 : 0));
+            tut::ensure(at + "(d) the clear's own segment clears", last != first
+                                                                      && last.colorAttachments[0].loadAction == MTLLoadActionClear);
+            ensureEqual(at + "(d) and stores, for the readback", U64(last.colorAttachments[0].storeAction), store);
+            ensureImage(at + "(d) the readback in the pass after the clear has the clear", inPass,
+                        [](U32, U32) -> std::optional<Rgba> { return RED; });
+            ensureImage(at + "(d) the target after the pass", readTarget(device, target),
+                        [](U32, U32) -> std::optional<Rgba> { return RED; });
+
+            // (e)
+            beginWithLeft(at + "(e)");
+            Ref<Readback> before = encoder.readback(target.color.get(), 0, 0, all, PixelLayout());
+            stores = metal.discardedStores();
+            encoder.clear(true, RED_FLOATS, true, 1.f);
+            first = metal.lastPassDescriptor();
+            firstColor = U64(first.colorAttachments[0].storeAction);
+            firstDepth = U64(first.depthAttachment.storeAction);
+            discarded = metal.discardedStores() - stores;
+            encoder.setVertexBuffer(rightBuffer.get(), streams);
+            encoder.draw(PrimitiveType::Triangles, 0, 6);
+            encoder.endRenderPass();
+            tut::ensure(at + "(e) the readback before the clear", before.notNull());
+            before->wait();
+            ensureEqual(at + "(e) the segment the readback reads stores colour", firstColor, store);
+            ensureEqual(at + "(e) and depth", firstDepth, store);
+            ensureEqual(at + "(e) nothing unstored", discarded, U64(0));
+            ensureImage(at + "(e) the readback before the clear has the draw before it", before,
+                        [](U32 x, U32) -> std::optional<Rgba> { return x < DRAW_SIZE / 2 ? YELLOW : CLEAR_RGBA; });
+            ensureImage(at + "(e) the target: the clear and the draw after it", readTarget(device, target),
+                        [](U32 x, U32) -> std::optional<Rgba> { return x < DRAW_SIZE / 2 ? RED : BLUE; });
+        }
+        endCleanly(device, log);
+    }
+
+    /// t213 (P3-R4, B-4): a program's E14 base keys go with it, and E14's count of unspecialized states keeps them; the
+    /// group hash is the sent groups' digests' sum, kept beside their records.
+    API_AVAILABLE(macos(26.0)) void forgottenBasesTest(MetalDevice& device)
+    {
+        CaptureLog log(LLError::LEVEL_WARN);
+        const U64 before = metalCompileStats(device).e14Unspecialized;
+        const size_t held = device.pipelineStates().heldBases();
+        Ref<Program> program = ready(device.createProgram(uiProgramDesc()));
+        tut::ensure("the program is Ready", program.notNull() && program->status() == CompileStatus::Ready);
+        Ref<Pipeline> pipeline = device.getPipeline(*program, uiPipelineDesc());
+        tut::ensure("a pipeline", pipeline.notNull());
+        ensureEqual("one base more", device.pipelineStates().heldBases(), held + 1);
+        ensureEqual("counted", metalCompileStats(device).e14Unspecialized, before + 1);
+        pipeline = nullptr;
+        program = nullptr;
+        ensureEqual("the base went with the program", device.pipelineStates().heldBases(), held);
+        ensureEqual("and is still counted", metalCompileStats(device).e14Unspecialized, before + 1);
+        U64 sum = 0;
+        for (const MetalGroupRecord& record : device.groupSources())
+        {
+            sum += U64(record.digest);
+        }
+        ensureEqual("the group hash is the records' sum", metalCompileStats(device).groupHash, sum);
+        endCleanly(device, log);
+    }
+
+    /// t215: a render encoder of the backend's own (here a resolve's) begun while a debug group is open and no command
+    /// buffer exists: the command buffer is made first, so the groups it begins with leave it before the encoder and
+    /// go on in the encoder; the command buffer holds no group while the encoder is open. No WARN line, no GPU error.
+    API_AVAILABLE(macos(26.0)) void ownEncoderGroupsTest(MetalDevice& device)
+    {
+        CaptureLog log(LLError::LEVEL_WARN);
+        Encoder& encoder = device.encoder();
+        const Region whole{ 0, 0, DRAW_SIZE, DRAW_SIZE };
+        TextureDesc multisampled = sizedDesc(Format::RGBA8Unorm, TEXTURE_RENDER_TARGET, DRAW_SIZE, DRAW_SIZE);
+        multisampled.samples = 4;
+        Ref<Texture> ms = device.createTexture(multisampled, "groups msaa 4x");
+        Ref<Texture> resolved = device.createTexture(sizedDesc(Format::RGBA8Unorm, TEXTURE_READBACK, DRAW_SIZE, DRAW_SIZE),
+                                                     "groups resolved");
+        tut::ensure("the textures are made", ms.notNull() && resolved.notNull());
+        RenderPassDesc pass;
+        pass.color[0].texture = ms;
+        pass.color[0].load = LoadAction::Clear;
+        pass.color[0].clear = { 0.f, 1.f, 0.f, 1.f };
+        pass.colorCount = 1;
+        pass.name = "groups msaa 4x";
+        tut::ensure("the 4x pass begins", encoder.beginRenderPass(pass));
+        encoder.endRenderPass();
+        encoder.copyTexture(ms.get(), 0, 0, whole, resolved.get(), 0, 0, 0, 0);
+
+        encoder.pushDebugGroup("zone across the submit");
+        Ref<Readback> first = encoder.readback(resolved.get(), 0, 0, whole, PixelLayout());
+        tut::ensure("the first readback is made", first.notNull());
+        first->wait(); // the command buffer is sent; the group stays open
+        tut::ensure("no command buffer after the wait", !device.hasCommandBuffer());
+        const U64 encoders = device.metalEncoder().renderEncoders();
+        encoder.copyTexture(ms.get(), 0, 0, whole, resolved.get(), 0, 0, 0, 0);
+        ensureEqual("the resolve's own render encoder", device.metalEncoder().renderEncoders() - encoders, U64(1));
+        encoder.popDebugGroup();
+        ensureEqual("no group on the command buffer while an encoder was open",
+                    device.groupsOnCommandBufferWhileEncoding(), U32(0));
+        Ref<Readback> second = encoder.readback(resolved.get(), 0, 0, whole, PixelLayout());
+        tut::ensure("the second readback is made", second.notNull());
+        second->wait();
+        tut::ensure("the resolve wrote green: " + describe(pixelAt(second, 1, 1)), pixelAt(second, 1, 1) == GREEN);
+        endCleanly(device, log);
+    }
+
+    /// t216: a flip pass whose binding fails (no back buffer) opens no render encoder on the drawable: one WARN line, no
+    /// flip pass. The drawable is a bare BGRA8 texture, which the binding's failure never reaches.
+    API_AVAILABLE(macos(26.0)) void presentBindFirstTest(MetalDevice& device)
+    {
+        MTLTextureDescriptor* desc = [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:MTLPixelFormatBGRA8Unorm
+                                                                                        width:DRAW_SIZE
+                                                                                       height:DRAW_SIZE
+                                                                                    mipmapped:NO];
+        desc.usage = MTLTextureUsageRenderTarget;
+        desc.storageMode = MTLStorageModePrivate;
+        IdMTLTexture drawable = [device.mtlDevice() newTextureWithDescriptor:desc];
+        tut::ensure("the drawable is made", drawable != nil);
+        MetalEncoder& metal = device.metalEncoder();
+        CaptureLog log(LLError::LEVEL_WARN);
+        const U64 encoders = metal.renderEncoders();
+        const U64 draws = metal.presentDraws();
+        tut::ensure("no back buffer: not drawn", !metal.presentDraw(drawable, nullptr));
+        ensureEqual("no back buffer: one WARN line", occurrences(log, "WARNING #RHI#"), size_t(1));
+        ensureEqual("no back buffer: the binding's WARN", occurrences(log, "the back buffer is missing"), size_t(1));
+        ensureEqual("no back buffer: no render encoder", metal.renderEncoders() - encoders, U64(0));
+        ensureEqual("no back buffer: no flip pass", metal.presentDraws() - draws, U64(0));
+        device.endFrame();
+        ensureEqual("no GPU errors", device.gpuErrors(), U64(0));
+    }
+
+    /// t217: a clear that writes nothing (no colour asked, and a bound depth state that does not write) after a draw
+    /// does not break the pass: no pass break, one render encoder, and the draw's pixels stay.
+    API_AVAILABLE(macos(26.0)) void emptyClearTest(MetalDevice& device)
+    {
+        CaptureLog log(LLError::LEVEL_WARN);
+        DrawTarget target = drawTarget(device);
+        VertexStreams streams;
+        Ref<Buffer> buffer = wholeRect(device, target, streams);
+        Encoder& encoder = device.encoder();
+        Ref<DepthStencilState> noWrite = device.getDepthStencilState({ true, false, CompareFunc::AlwaysPass });
+        tut::ensure("the depth state", noWrite.notNull());
+        const MetalEncoderStats before = metalEncoderStats(device);
+        const U64 encoders = device.metalEncoder().renderEncoders();
+        tut::ensure("the pass begins", encoder.beginRenderPass(drawPass(target)));
+        bindDraw(encoder, target, buffer, streams);
+        encoder.draw(PrimitiveType::Triangles, 0, 6);
+        encoder.setDepthStencilState(noWrite.get());
+        encoder.clear(false, RED_FLOATS, true, 0.5f);
+        encoder.clear(false, RED_FLOATS, false, 1.f);
+        encoder.draw(PrimitiveType::Triangles, 0, 6);
+        encoder.endRenderPass();
+        ensureEqual("no pass break", metalEncoderStats(device).passBreaks - before.passBreaks, U64(0));
+        ensureEqual("one render encoder", device.metalEncoder().renderEncoders() - encoders, U64(1));
+        ensureImage("the draw's yellow stays", readTarget(device, target),
+                    [](U32, U32) -> std::optional<Rgba> { return YELLOW; });
+        endCleanly(device, log);
+    }
+
+    /// t214 (P3-R4, B-1): the commit feedback handler's GPU error lines are written on the main thread, the first
+    /// MetalFailureLog::FIRST_LINES of them; the rest are counted, and the device's end sums them up in one line.
+    API_AVAILABLE(macos(26.0)) void failureLinesTest()
+    {
+        const U64 first = MetalFailureLog::FIRST_LINES;
+        CaptureLog log(LLError::LEVEL_WARN);
+        {
+            Ref<Device> made = anotherDevice();
+            MetalDevice& device = *static_cast<MetalDevice*>(made.get());
+            for (U64 i = 0; i < first + 5; ++i)
+            {
+                device.injectNextFeedbackError([NSError errorWithDomain:MTL4CommandQueueErrorDomain
+                                                                   code:MTL4CommandQueueErrorOutOfMemory
+                                                               userInfo:@{ NSLocalizedDescriptionKey: @"t214" }]);
+                device.endFrame();
+            }
+            device.drainFeedback();
+            ensureEqual("every error counted", device.gpuErrorCount(), first + 5);
+            ensureEqual("the first lines written", occurrences(log, "(OutOfMemory): t214"), size_t(first));
+            ensureEqual("no summary before the interval", occurrences(log, "more GPU error lines"), size_t(0));
+            device.submitAndWait();
+        }
+        ensureEqual("the device's end sums up the rest",
+                    occurrences(log, llformat("5 more GPU error lines (%llu in all, the first %llu written); the last: "
+                                              "GPU error in frame ",
+                                              (unsigned long long)(first + 5), (unsigned long long)first)),
+                    size_t(1));
+    }
+
+    // Native programs and compute passes ------------------------------------------------------------------------------
+
+    /// The test kernels and functions: a fill, a copy with its channels turned (bgra), a 3D slice's copy, and a
+    /// fullscreen triangle in GL's order with a constant colour.
+    constexpr const char* NATIVE_TEST_MSL = R"MSL(
+#include <metal_stdlib>
+using namespace metal;
+struct Fill { float4 color; };
+kernel void t_fill(texture2d<float, access::write> dst [[texture(0)]], constant Fill& k [[buffer(0)]],
+                   uint2 gid [[thread_position_in_grid]])
+{
+    if (gid.x < dst.get_width() && gid.y < dst.get_height()) { dst.write(k.color, gid); }
+}
+kernel void t_copy(texture2d<float, access::read> src [[texture(0)]], texture2d<float, access::write> dst [[texture(1)]],
+                   uint2 gid [[thread_position_in_grid]])
+{
+    if (gid.x < dst.get_width() && gid.y < dst.get_height()) { dst.write(src.read(gid).bgra, gid); }
+}
+kernel void t_slice(texture3d<float, access::read> volume [[texture(0)]], texture2d<float, access::write> dst [[texture(1)]],
+                    constant uint& z [[buffer(0)]], uint2 gid [[thread_position_in_grid]])
+{
+    if (gid.x < dst.get_width() && gid.y < dst.get_height()) { dst.write(volume.read(uint3(gid, z)), gid); }
+}
+struct TriangleOut { float4 position [[position]]; };
+vertex TriangleOut t_triangle(uint vid [[vertex_id]])
+{
+    const float2 p = float2(float((vid << 1) & 2), float(vid & 2)) * 2.0 - 1.0;
+    TriangleOut out;
+    out.position = float4(p.x, -p.y, 0.5, 1.0);
+    return out;
+}
+fragment float4 t_colour(constant Fill& k [[buffer(0)]]) { return k.color; }
+)MSL";
+
+    struct NativeFill
+    {
+        std::array<F32, 4> color;
+    };
+
+    API_AVAILABLE(macos(26.0)) Ref<NativeLibrary> nativeTestLibrary(MetalDevice& device)
+    {
+        NativeSource source;
+        source.name = "native test";
+        source.text = NATIVE_TEST_MSL;
+        Ref<NativeLibrary> library = device.createNativeLibrary(source);
+        tut::ensure("the library is made", library.notNull());
+        library->wait();
+        tut::ensure("the library compiles: " + library->log(), library->status() == CompileStatus::Ready);
+        return library;
+    }
+
+    API_AVAILABLE(macos(26.0)) Ref<ComputePipeline> nativeKernel(MetalDevice& device, NativeLibrary& library,
+                                                                 const std::string& function)
+    {
+        Ref<ComputePipeline> pipeline = device.getComputePipeline(library, { function, { 8, 8, 1 } });
+        tut::ensure(function + ": the pipeline is made", pipeline.notNull());
+        pipeline->wait();
+        tut::ensure(function + ": it compiles", pipeline->status() == CompileStatus::Ready);
+        return pipeline;
+    }
+
+    /// A 64x64 RGBA8Unorm texture native programs write, which can be read back.
+    API_AVAILABLE(macos(26.0)) Ref<Texture> storageTarget(MetalDevice& device, const char* name)
+    {
+        Ref<Texture> texture =
+            device.createTexture(sizedDesc(Format::RGBA8Unorm, TEXTURE_SAMPLED | TEXTURE_STORAGE | TEXTURE_READBACK,
+                                           DRAW_SIZE, DRAW_SIZE),
+                                 name);
+        tut::ensure(std::string(name) + ": made", texture.notNull());
+        return texture;
+    }
+
+    API_AVAILABLE(macos(26.0)) Ref<Readback> readWhole(MetalDevice& device, Texture* texture)
+    {
+        Ref<Readback> readback = device.encoder().readback(texture, 0, 0, { 0, 0, DRAW_SIZE, DRAW_SIZE }, PixelLayout());
+        tut::ensure("the readback is made", readback.notNull());
+        readback->wait();
+        return readback;
+    }
+
+    API_AVAILABLE(macos(26.0)) void fill(Encoder& encoder, ComputePipeline* kernel, Texture* texture, const Rgba& color)
+    {
+        encoder.setComputePipeline(kernel);
+        setNativeConstants(encoder, NativeStage::Compute, 0,
+                           NativeFill{ { color[0] / 255.f, color[1] / 255.f, color[2] / 255.f, color[3] / 255.f } });
+        encoder.setNativeTexture(NativeStage::Compute, 0, texture, Access::Write);
+        encoder.dispatchThreads({ DRAW_SIZE, DRAW_SIZE, 1 }, { 8, 8, 1 });
+    }
+
+    /// t218: a library compiled from source, a compute pipeline, one dispatch writing a storage texture. The
+    /// dispatch marks the level written, so a later partial upload into it keeps what the dispatch wrote around the
+    /// region (an unmarked level would get GL's zeros there first); the capabilities say compute and native programs.
+    API_AVAILABLE(macos(26.0)) void nativeComputeTest(MetalDevice& device)
+    {
+        CaptureLog log(LLError::LEVEL_WARN);
+        const Capabilities& caps = device.capabilities();
+        tut::ensure("Metal has compute passes, native programs and 3D textures",
+                    caps.computePasses && caps.nativePrograms && caps.textures3D);
+        Ref<NativeLibrary> library = nativeTestLibrary(device);
+        Ref<ComputePipeline> kernel = nativeKernel(device, *library, "t_fill");
+        tut::ensure("the execution width", kernel->executionWidth() > 0);
+        tut::ensure("the cache gives the same pipeline", device.getComputePipeline(*library, { "t_fill", { 8, 8, 1 } }) == kernel);
+        Ref<Texture> texture = storageTarget(device, "t218 storage");
+        Encoder& encoder = device.encoder();
+        const U64 dispatches = device.metalEncoder().nativeDispatches();
+        const U64 computes = device.metalEncoder().computeEncoders();
+        tut::ensure("the compute pass begins", encoder.beginComputePass({ "t218" }));
+        tut::ensure("a compute encoder is open", device.metalEncoder().computeEncoder() != nil);
+        fill(encoder, kernel.get(), texture.get(), RED);
+        encoder.endComputePass();
+        tut::ensure("the compute encoder is closed", device.metalEncoder().computeEncoder() == nil);
+        ensureEqual("one dispatch", device.metalEncoder().nativeDispatches() - dispatches, U64(1));
+        ensureEqual("one compute encoder", device.metalEncoder().computeEncoders() - computes, U64(1));
+        tut::ensure("the written level is marked", metalWritten(texture.get(), 0, 0));
+        encoder.uploadTexture(texture.get(), 0, 0, { 5, 7, 1, 1 }, PixelLayout(), bytesOf(GREEN));
+        ensureImage("the dispatch's red around the upload's green", readWhole(device, texture.get()),
+                    [](U32 x, U32 y) -> std::optional<Rgba> { return x == 5 && y == 7 ? GREEN : RED; });
+        endCleanly(device, log);
+    }
+
+    /// t219: a dispatch that reads what the one before it wrote gets a barrier between them; an unrelated dispatch
+    /// gets none, and the result is the first texture's colour with its channels turned.
+    API_AVAILABLE(macos(26.0)) void dependentDispatchTest(MetalDevice& device)
+    {
+        CaptureLog log(LLError::LEVEL_WARN);
+        Ref<NativeLibrary> library = nativeTestLibrary(device);
+        Ref<ComputePipeline> filler = nativeKernel(device, *library, "t_fill");
+        Ref<ComputePipeline> copier = nativeKernel(device, *library, "t_copy");
+        Ref<Texture> first = storageTarget(device, "t219 first");
+        Ref<Texture> second = storageTarget(device, "t219 second");
+        Ref<Texture> third = storageTarget(device, "t219 third");
+        Encoder& encoder = device.encoder();
+        const U64 barriers = device.metalEncoder().dispatchBarriers();
+        tut::ensure("the compute pass begins", encoder.beginComputePass({ "t219" }));
+        fill(encoder, filler.get(), first.get(), RED);
+        encoder.setComputePipeline(copier.get());
+        encoder.setNativeTexture(NativeStage::Compute, 0, first.get(), Access::Read);
+        encoder.setNativeTexture(NativeStage::Compute, 1, second.get(), Access::Write);
+        encoder.dispatchThreads({ DRAW_SIZE, DRAW_SIZE, 1 }, { 8, 8, 1 });
+        ensureEqual("a barrier before the copy", device.metalEncoder().dispatchBarriers() - barriers, U64(1));
+        encoder.setNativeTexture(NativeStage::Compute, 1, nullptr);
+        fill(encoder, filler.get(), third.get(), GREEN);
+        ensureEqual("no barrier before an unrelated fill", device.metalEncoder().dispatchBarriers() - barriers, U64(1));
+        encoder.endComputePass();
+        ensureImage("the copy read the fill", readWhole(device, second.get()),
+                    [](U32, U32) -> std::optional<Rgba> { return BLUE; });
+        endCleanly(device, log);
+    }
+
+    /// t220: a compute pass inside a stack pass: what the stack pass drew is stored, the compute pass runs, and
+    /// the stack pass goes on loading its attachments with its pipeline and dynamic state as they were.
+    API_AVAILABLE(macos(26.0)) void computeInStackPassTest(MetalDevice& device)
+    {
+        CaptureLog log(LLError::LEVEL_WARN);
+        DrawTarget target = drawTarget(device);
+        Ref<NativeLibrary> library = nativeTestLibrary(device);
+        Ref<ComputePipeline> filler = nativeKernel(device, *library, "t_fill");
+        Ref<Texture> storage = storageTarget(device, "t220 storage");
+        DrawVertices left;
+        addRect(left, -1, -1, 0, 1, YELLOW);
+        DrawVertices right;
+        addRect(right, 0, -1, 1, 1, YELLOW);
+        VertexStreams leftStreams;
+        VertexStreams rightStreams;
+        Ref<Buffer> leftBuffer = vertexBuffer(device, left, leftStreams);
+        Ref<Buffer> rightBuffer = vertexBuffer(device, right, rightStreams);
+        Encoder& encoder = device.encoder();
+        setUiUniforms(encoder, target.program.get(), translation(0, 0));
+        RenderPassDesc stack = drawPass(target);
+        stack.stack = true;
+        tut::ensure("the stack pass begins", encoder.beginRenderPass(stack));
+        bindDraw(encoder, target, leftBuffer, leftStreams);
+        encoder.setViewport(0, 0, DRAW_SIZE, DRAW_SIZE);
+        encoder.draw(PrimitiveType::Triangles, 0, 6);
+        tut::ensure("the compute pass begins in the stack pass", encoder.beginComputePass({ "t220" }));
+        tut::ensure("the stack pass is suspended", !encoder.state().inPass() && encoder.state().suspendedPass());
+        fill(encoder, filler.get(), storage.get(), RED);
+        encoder.endComputePass();
+        tut::ensure("the stack pass goes on", encoder.state().inPass() && encoder.state().pass().stack);
+        tut::ensure("its color loads", encoder.state().pass().color[0].load == LoadAction::Load);
+        tut::ensure("its pipeline is back", encoder.state().pipeline() == target.pipeline.get());
+        tut::ensure("its viewport is back", encoder.state().dynamicState().viewport.has_value());
+        encoder.setVertexBuffer(rightBuffer.get(), rightStreams);
+        encoder.draw(PrimitiveType::Triangles, 0, 6);
+        device.endFrame(); // a stack pass ends with the frame
+        ensureImage("both halves drawn, the first kept across the compute pass", readTarget(device, target),
+                    [](U32, U32) -> std::optional<Rgba> { return YELLOW; });
+        ensureImage("the compute pass's fill", readWhole(device, storage.get()),
+                    [](U32, U32) -> std::optional<Rgba> { return RED; });
+        endCleanly(device, log);
+    }
+
+    /// t221: a native render pipeline (a fullscreen triangle of its own vertices, no vertex buffer) draws in a
+    /// native pass begun inside a stack pass, with its colour from the frame's ring; the stack pass goes on after it.
+    /// The pipeline cache keeps native pipelines apart, and a native pipeline is refused outside a native pass.
+    API_AVAILABLE(macos(26.0)) void nativeRenderTest(MetalDevice& device)
+    {
+        CaptureLog log(LLError::LEVEL_WARN);
+        DrawTarget target = drawTarget(device);
+        Ref<NativeLibrary> library = nativeTestLibrary(device);
+        PipelineDesc desc;
+        desc.colorFormats[0] = Format::RGBA8Unorm;
+        desc.depthFormat = Format::Depth32Float;
+        Ref<Pipeline> pipeline = device.getNativePipeline(*library, { "t_triangle", "t_colour" }, desc);
+        tut::ensure("the native pipeline is made", pipeline.notNull() && pipeline->native());
+        tut::ensure("it compiles", metalNativePipelineState(pipeline.get()) != nil);
+        tut::ensure("the cache gives the same", device.getNativePipeline(*library, { "t_triangle", "t_colour" }, desc) == pipeline);
+        PipelineDesc vertexStreams = desc;
+        vertexStreams.attributeMask = 1;
+        {
+            CaptureLog refused(LLError::LEVEL_WARN);
+            tut::ensure("a native pipeline reads no streams",
+                        device.getNativePipeline(*library, { "t_triangle", "t_colour" }, vertexStreams).isNull());
+        }
+        Encoder& encoder = device.encoder();
+        RenderPassDesc stack = drawPass(target);
+        stack.stack = true;
+        tut::ensure("the stack pass begins", encoder.beginRenderPass(stack));
+        RenderPassDesc native = passOn(target.color, target.depth);
+        native.native = true;
+        native.name = "t221 native";
+        tut::ensure("the native pass begins in the stack pass", encoder.beginRenderPass(native));
+        encoder.setPipeline(pipeline.get());
+        setNativeConstants(encoder, NativeStage::Fragment, 0, NativeFill{ { 1.f, 1.f, 0.f, 1.f } });
+        encoder.draw(PrimitiveType::Triangles, 0, 3);
+        encoder.endRenderPass();
+        tut::ensure("the stack pass goes on", encoder.state().inPass() && encoder.state().pass().stack);
+        device.endFrame();
+        ensureImage("the native draw", readTarget(device, target), [](U32, U32) -> std::optional<Rgba> { return YELLOW; });
+        endCleanly(device, log);
+    }
+
+    /// t222: residency follows a view to the texture it views: a level view of an admitted texture is resident,
+    /// a texture made around the device's residency is not.
+    API_AVAILABLE(macos(26.0)) void viewResidencyTest(MetalDevice& device)
+    {
+        TextureDesc desc = sizedDesc(Format::RGBA8Unorm, TEXTURE_SAMPLED | TEXTURE_STORAGE, 64, 64);
+        desc.mipLevels = 3;
+        Ref<Texture> texture = device.createTexture(desc, "t222 mips");
+        tut::ensure("made", texture.notNull());
+        IdMTLTexture view = metalLevelView(texture.get(), 1, 2);
+        tut::ensure("a view of level 1", view != nil && view != metalTexture(texture.get()));
+        tut::ensure("the view is kept", metalLevelView(texture.get(), 1, 2) == view);
+        tut::ensure("every level is the texture itself", metalLevelView(texture.get(), 0, 3) == metalTexture(texture.get()));
+        tut::ensure("the view is resident through its texture", device.residency().containsTexture(view));
+        tut::ensure("the view itself is not in the set", !device.residency().contains(view));
+        MTLTextureDescriptor* outside = [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:MTLPixelFormatRGBA8Unorm
+                                                                                          width:4
+                                                                                         height:4
+                                                                                      mipmapped:NO];
+        IdMTLTexture stray = [device.mtlDevice() newTextureWithDescriptor:outside];
+        tut::ensure("a texture outside the set is not resident", stray && !device.residency().containsTexture(stray));
+    }
+
+    /// t223: a 3D texture, its slices uploaded one by one (the layer is z), read by a kernel slice by slice.
+    API_AVAILABLE(macos(26.0)) void volumeTest(MetalDevice& device)
+    {
+        CaptureLog log(LLError::LEVEL_WARN);
+        TextureDesc desc = sizedDesc(Format::RGBA8Unorm, TEXTURE_SAMPLED, DRAW_SIZE, DRAW_SIZE);
+        desc.type = TextureType::Tex3D;
+        desc.layers = 3;
+        Ref<Texture> volume = device.createTexture(desc, "t223 volume");
+        tut::ensure("the 3D texture is made", volume.notNull());
+        const Rgba colors[3] = { RED, GREEN, BLUE };
+        Encoder& encoder = device.encoder();
+        for (U32 z = 0; z < 3; ++z)
+        {
+            std::vector<Rgba> slice(size_t(DRAW_SIZE) * DRAW_SIZE, colors[z]);
+            encoder.uploadTexture(volume.get(), 0, z, { 0, 0, DRAW_SIZE, DRAW_SIZE }, PixelLayout(),
+                                  std::as_bytes(std::span<const Rgba>(slice)));
+        }
+        Ref<NativeLibrary> library = nativeTestLibrary(device);
+        Ref<ComputePipeline> slicer = nativeKernel(device, *library, "t_slice");
+        Ref<Texture> out = storageTarget(device, "t223 out");
+        for (U32 z = 0; z < 3; ++z)
+        {
+            tut::ensure("the compute pass begins", encoder.beginComputePass({ "t223" }));
+            encoder.setComputePipeline(slicer.get());
+            encoder.setNativeTexture(NativeStage::Compute, 0, volume.get(), Access::Read);
+            encoder.setNativeTexture(NativeStage::Compute, 1, out.get(), Access::Write);
+            setNativeConstants(encoder, NativeStage::Compute, 0, z);
+            encoder.dispatchThreads({ DRAW_SIZE, DRAW_SIZE, 1 }, { 8, 8, 1 });
+            encoder.endComputePass();
+            const Rgba expected = colors[z];
+            ensureImage("slice " + std::to_string(z), readWhole(device, out.get()),
+                        [expected](U32, U32) -> std::optional<Rgba> { return expected; });
+        }
+        endCleanly(device, log);
+    }
+
+    /// t224: LLNativeProgram's source from a manifest in a folder of its own: the library's file includes a header
+    /// from the folder's root, the defines reach the compiler, and the device compiles the result.
+    API_AVAILABLE(macos(26.0)) void nativeSourceTest(MetalDevice& device)
+    {
+        CaptureLog log(LLError::LEVEL_WARN);
+        const std::filesystem::path root = std::filesystem::temp_directory_path() / "llrhimetal-t224";
+        std::filesystem::create_directories(root / "group");
+        std::filesystem::create_directories(root / "common");
+        std::ofstream(root / "common" / "header.h") << "#ifndef T224_HEADER\n#define T224_HEADER\n"
+                                                       "constant float T224_SCALE = 2.0;\n#endif\n";
+        std::ofstream(root / "group" / "kernel.metal")
+            << "#include <metal_stdlib>\nusing namespace metal;\n#include \"common/header.h\"\n"
+               "kernel void t224_kernel(device float* out [[buffer(1)]], uint i [[thread_position_in_grid]])\n"
+               "{ out[i] = T224_SCALE * T224_VALUE; }\n";
+        std::ofstream(root / "group" / "programs.json")
+            << R"({ "libraries": [ { "name": "t224", "files": ["group/kernel.metal"], "defines": { "T224_VALUE": "1.0" },
+                  "compute": [ { "function": "t224_kernel", "threadsPerThreadgroup": [32, 1, 1] } ] } ] })";
+        NativeSource source;
+        std::map<std::string, DispatchSize> threads;
+        std::string error;
+        tut::ensure("readSource: " + error, LLNativeProgram::readSource(root.string(), "group/programs.json", "t224",
+                                                                         { { "T224_VALUE", "3.0" } }, source, &threads,
+                                                                         error));
+        tut::ensure("the header is in the source", source.text.find("T224_SCALE") != std::string::npos);
+        ensureEqual("one define, the caller's", source.defines.size(), size_t(1));
+        tut::ensure("the caller's value wins", source.defines[0].second == "3.0");
+        tut::ensure("the threadgroup size", threads["t224_kernel"] == DispatchSize{ 32, 1, 1 });
+        tut::ensure("an unknown library is refused",
+                    !LLNativeProgram::readSource(root.string(), "group/programs.json", "none", {}, source, nullptr, error));
+        tut::ensure("readSource again", LLNativeProgram::readSource(root.string(), "group/programs.json", "t224", {}, source,
+                                                                    nullptr, error));
+        Ref<NativeLibrary> library = device.createNativeLibrary(source);
+        library->wait();
+        tut::ensure("the device compiles it: " + library->log(), library->status() == CompileStatus::Ready);
+        Ref<ComputePipeline> kernel = device.getComputePipeline(*library, { "t224_kernel", { 32, 1, 1 } });
+        kernel->wait();
+        tut::ensure("its kernel compiles", kernel->status() == CompileStatus::Ready);
+        std::filesystem::remove_all(root);
+        endCleanly(device, log);
+    }
+
+    /// t225: the common SPD kernel makes every level of a 128x128 texture from level 0 in one dispatch: a
+    /// one-pixel checker of black and white gives grey (0.5) on every level below. Its counter buffer must be zero
+    /// before the dispatch and is zero again after it.
+    API_AVAILABLE(macos(26.0)) void spdTest(MetalDevice& device)
+    {
+        CaptureLog log(LLError::LEVEL_WARN);
+        // The tree's shaders, from this file's place: indra/llrender/tests -> indra/newview/app_settings/shaders/metal.
+        const std::filesystem::path root =
+            std::filesystem::path(__FILE__).parent_path() / ".." / ".." / "newview" / "app_settings" / "shaders" / "metal";
+        if (!std::filesystem::exists(root / "luminous" / "common" / "programs.json"))
+        {
+            LL_INFOS("RHI") << "t225: no shader tree at " << root.string() << "; skipped" << LL_ENDL;
+            return;
+        }
+        NativeSource source;
+        std::string error;
+        tut::ensure("the common library's source: " + error,
+                    LLNativeProgram::readSource(root.string(), "luminous/common/programs.json", "common", {}, source,
+                                                nullptr, error));
+        Ref<NativeLibrary> library = device.createNativeLibrary(source);
+        library->wait();
+        tut::ensure("the common library compiles: " + library->log(), library->status() == CompileStatus::Ready);
+        Ref<ComputePipeline> spd = device.getComputePipeline(*library, { "luminous_spd_downsample", { 256, 1, 1 } });
+        spd->wait();
+        tut::ensure("the SPD kernel compiles", spd->status() == CompileStatus::Ready);
+
+        constexpr U32 SIZE = 128;
+        constexpr U32 MIPS = 7; // 64 down to 1
+        TextureDesc desc = sizedDesc(Format::RGBA8Unorm, TEXTURE_SAMPLED | TEXTURE_STORAGE | TEXTURE_READBACK, SIZE, SIZE);
+        desc.mipLevels = MIPS + 1;
+        Ref<Texture> chain = device.createTexture(desc, "t225 chain");
+        std::vector<Rgba> checker(size_t(SIZE) * SIZE);
+        for (U32 y = 0; y < SIZE; ++y)
+        {
+            for (U32 x = 0; x < SIZE; ++x)
+            {
+                checker[size_t(y) * SIZE + x] = ((x + y) & 1) ? Rgba{ 255, 255, 255, 255 } : Rgba{ 0, 0, 0, 255 };
+            }
+        }
+        Encoder& encoder = device.encoder();
+        encoder.uploadTexture(chain.get(), 0, 0, { 0, 0, SIZE, SIZE }, PixelLayout(),
+                              std::as_bytes(std::span<const Rgba>(checker)));
+        const U32 groups = (SIZE + 63) / 64;
+        BufferDesc counterDesc;
+        counterDesc.size = 16;
+        counterDesc.usage = BUFFER_STORAGE;
+        const std::array<U32, 4> zero{};
+        Ref<Buffer> counter = device.createBuffer(counterDesc, std::as_bytes(std::span<const U32>(zero)), "t225 counter");
+        BufferDesc tailDesc;
+        tailDesc.size = U64(groups) * groups * 16;
+        tailDesc.usage = BUFFER_STORAGE;
+        Ref<Buffer> tail = device.createBuffer(tailDesc, {}, "t225 tail");
+        tut::ensure("the buffers", counter.notNull() && tail.notNull());
+
+        struct SpdConstants
+        {
+            U32 sourceSize[2];
+            U32 groups[2];
+            U32 mips;
+            U32 pad[3];
+        };
+        static_assert(sizeof(SpdConstants) == 32, "commonshared.h's LuminousSPDConstants");
+        tut::ensure("the compute pass begins", encoder.beginComputePass({ "t225 spd" }));
+        encoder.setComputePipeline(spd.get());
+        setNativeConstants(encoder, NativeStage::Compute, 0, SpdConstants{ { SIZE, SIZE }, { groups, groups }, MIPS, {} });
+        encoder.setNativeBuffer(NativeStage::Compute, 1, counter.get(), 0, Access::ReadWrite);
+        encoder.setNativeBuffer(NativeStage::Compute, 2, tail.get(), 0, Access::ReadWrite);
+        encoder.setNativeTexture(NativeStage::Compute, 0, chain.get(), Access::Read, { 0, 1 });
+        for (U32 level = 1; level <= MIPS; ++level)
+        {
+            encoder.setNativeTexture(NativeStage::Compute, level, chain.get(), Access::Write, { level, 1 });
+        }
+        encoder.dispatchThreadgroups({ groups, groups, 1 }, { 256, 1, 1 });
+        encoder.endComputePass();
+        for (U32 level = 1; level <= MIPS; ++level)
+        {
+            const U32 side = SIZE >> level;
+            Ref<Readback> readback = encoder.readback(chain.get(), level, 0, { 0, 0, side, side }, PixelLayout());
+            readback->wait();
+            const std::span<const std::byte> data = readback->data();
+            for (size_t i = 0; i + 3 < data.size(); i += 4)
+            {
+                const int grey = std::to_integer<int>(data[i]);
+                if (std::abs(grey - 128) > 1)
+                {
+                    tut::fail("level " + std::to_string(level) + ": texel " + std::to_string(i / 4) + " is " +
+                              std::to_string(grey) + ", expected 128");
+                }
+            }
+        }
+        Ref<Readback> after = encoder.readback(counter.get(), 0, 4);
+        after->wait();
+        U32 left = 1;
+        std::memcpy(&left, after->data().data(), sizeof(left));
+        ensureEqual("the counter is zero again", left, U32(0));
+        endCleanly(device, log);
+    }
+
+    /// t226: a translated program's sampler3D (the Look's tables in Firestorm's tonemap) reads the channel's Tex3D slot:
+    /// (0, 0, 0, 1) with nothing bound; an RGBA16Float 3D texture uploaded slice by slice from RGB floats (alpha 1, as
+    /// luminousphotomode.cpp uploads its tables) gives each slice where z picks it; a 2D texture given to the same
+    /// channel afterwards leaves the 3D slot as it was; and the draw's sampler is the sampling the channel was given,
+    /// linear and clamped on all three axes.
+    API_AVAILABLE(macos(26.0)) void sampler3DTest(MetalDevice& device)
+    {
+        DrawTarget target = drawTarget(device);
+        Encoder& encoder = device.encoder();
+        VertexStreams streams;
+        Ref<Buffer> buffer = texturedQuad(device, streams);
+        CaptureLog log(LLError::LEVEL_WARN);
+        StageProgram volume = fragmentProgram(device, "sampler3D test", R"(#version 400
+#define FRAGMENT_SHADER 1
+uniform sampler3D lut;
+in vec4 vertex_color;
+in vec2 vary_texcoord0;
+out vec4 frag_color;
+void main() { frag_color = vertex_color * texture(lut, vec3(0.5, 0.5, vary_texcoord0.x)); }
+)");
+        Program* program = volume.program.get();
+        const size_t lut = uniformIndex(program->reflection(), "lut");
+        tut::ensure("lut is reflected as a Sampler3D", lut < program->reflection().uniforms.size()
+                                                         && program->reflection().uniforms[lut].type == UniformType::Sampler3D);
+        setVertexUniforms(encoder, program, translation(0, 0));
+        encoder.setSamplerChannel(program, U32(lut), 1);
+        const auto drawOnce = [&](const std::string& what)
+        {
+            tut::ensure(what + ": the pass begins", encoder.beginRenderPass(drawPass(target)));
+            encoder.setPipeline(volume.pipeline.get());
+            encoder.setVertexBuffer(buffer.get(), streams);
+            encoder.setTexture(0, target.white.get(), pointClamp());
+            encoder.draw(PrimitiveType::Triangles, 0, 6);
+            encoder.endRenderPass();
+            return readTarget(device, target);
+        };
+        ensureImage("unbound: (0, 0, 0, 1) everywhere", drawOnce("unbound"),
+                    [](U32, U32) -> std::optional<Rgba> { return Rgba{ 0, 0, 0, 255 }; });
+
+        TextureDesc desc = sizedDesc(Format::RGBA16Float, TEXTURE_SAMPLED, 1, 1);
+        desc.type = TextureType::Tex3D;
+        desc.layers = 3;
+        Ref<Texture> table = device.createTexture(desc, "t226 table");
+        tut::ensure("the 3D texture is made", table.notNull());
+        const std::array<F32, 3> slices[3] = { { 1.f, 0.f, 0.f }, { 0.f, 1.f, 0.f }, { 0.f, 0.f, 1.f } };
+        PixelLayout rgb;
+        rgb.components = PixelLayout::Components::RGB;
+        rgb.type = PixelLayout::Type::F32;
+        for (U32 z = 0; z < 3; ++z)
+        {
+            encoder.uploadTexture(table.get(), 0, z, { 0, 0, 1, 1 }, rgb, std::as_bytes(std::span<const F32>(slices[z])));
+        }
+        // Column x samples z = (x + 0.5) / 64: slice 0 below 64 / 3, slice 2 from 128 / 3; the columns at the
+        // boundaries are not checked.
+        const auto slicesExpected = [](U32 x, U32) -> std::optional<Rgba>
+        {
+            if (x == 21 || x == 42)
+            {
+                return std::nullopt;
+            }
+            return x < 21 ? RED : x < 42 ? GREEN : BLUE;
+        };
+        encoder.setTexture(1, table.get(), pointClamp());
+        ensureImage("bound: each slice", drawOnce("bound"), slicesExpected);
+
+        // A 2D texture on the channel fills its 2D slot; the sampler3D still reads the table.
+        encoder.setTexture(1, target.white.get(), pointClamp());
+        ensureImage("a 2D texture after it: still each slice", drawOnce("2D after"), slicesExpected);
+
+        SamplerDesc linear;
+        linear.filter = Filter::Bilinear;
+        linear.mipmapped = false;
+        linear.addressU = linear.addressV = linear.addressW = AddressMode::ClampToEdge;
+        encoder.setTexture(1, table.get(), linear);
+        drawOnce("linear");
+        const std::optional<SamplerDesc> chosen = device.metalEncoder().lastSamplerDesc(1);
+        tut::ensure("the table's sampler is linear, clamped on all three axes, no mips",
+                    chosen && chosen->filter == Filter::Bilinear && !chosen->mipmapped && !chosen->compare
+                        && chosen->addressU == AddressMode::ClampToEdge && chosen->addressV == AddressMode::ClampToEdge
+                        && chosen->addressW == AddressMode::ClampToEdge);
+        Texture* empty = device.defaultTexture(UniformType::Sampler3D);
+        tut::ensure("a 3D default texture, made once", empty && empty == device.defaultTexture(UniformType::Sampler3D)
+                                                           && empty->desc().type == TextureType::Tex3D);
+        encoder.setTexture(1, nullptr, pointClamp());
+        endCleanly(device, log);
+    }
+
+    bool runOnDevice(int test)
+    {
+        if (@available(macOS 26.0, *))
+        {
+            using namespace LL::RHI;
+            const BackendChoice choice = chooseBackend(BackendType::Metal);
+            if (choice.type != BackendType::Metal)
+            {
+                LL_INFOS("RHI") << "No Metal device on this Mac: " << choice.reason << LL_ENDL;
+                return false;
+            }
+            DeviceCreateInfo info;
+            info.backend = choice;
+            Ref<Device> owner = Device::create(info);
+            tut::ensure("Device::create gives a Metal device when chooseBackend gives Metal", owner.notNull());
+            MetalDevice& device = *static_cast<MetalDevice*>(owner.get());
+            // B18: the tests register the translator themselves; the viewer registers it only on its Metal path (M19)
+            setMetalTranslator(&MSL::translate);
+            switch (test)
+            {
+            case 1: deviceTest(device); break;
+            case 2: texturesTest(device); break;
+            case 3: residencyTest(device); break;
+            case 4: framesTest(device); break;
+            case 5: destroyAfterSubmitTest(owner, device); break;
+            case 6: clearAsLoadActionTest(device); break;
+            case 7: depthClearsTest(device); break;
+            case 8: scissorClearTest(device); break;
+            case 9: depthStateTest(device); break;
+            case 10: clearRoundTripTest(device); break;
+            case 11: clearOverLoadTest(device); break;
+            case 12: readbackInPassTest(device, StoreAction::Store); break;
+            case 13: readbackInPassTest(device, StoreAction::DontCare); break;
+            case 14: rowOrderTest(device); break;
+            case 15: refusedReadbackTest(device); break;
+            case 16: readbackFramesTest(owner, device); break;
+            case 17: failedFeedbackTest(device); break;
+            case 18: submitAndWaitTimeoutTest(device); break;
+            case 19: formatTableTest(); break;
+            case 20: buffersTest(device); break;
+            case 21: uploadTest(device); break;
+            case 22: samplerTest(owner, device); break;
+            case 23: programTest(device); break;
+            case 24: layoutTest(device); break;
+            case 25: programFailuresTest(device); break;
+            case 26: compileOptionsTest(device); break;
+            case 27: pipelineTest(owner, device); break;
+            case 28: drawTest(device); break;
+            case 29: viewportScissorTest(device); break;
+            case 30: uniformsTest(device); break;
+            case 31: segmentsTest(device); break;
+            case 32: drawRefusalsTest(device); break;
+            case 33: textureIndexTest(device); break;
+            case 34: storageTest(device); break;
+            case 35: formatCasesTest(device); break;
+            case 36: levelsSlicesTest(device); break;
+            case 37: copyTest(device); break;
+            case 38: refusedLayoutTest(device); break;
+            case 39: residencyChecksTest(device); break;
+            case 40: vertexRangeTest(device); break;
+            case 41: indexRangeTest(device); break;
+            case 42: bufferStorageTest(device); break;
+            case 43: updateSemanticsTest(device); break;
+            case 44: framesInFlightTest(device); break;
+            case 144: ringRewindTest(device); break; // t44b
+            case 45: releaseTest(device); break;
+            case 46: churnTest(device); break;
+            case 47: vertexBufferTest(); break;
+            case 48: textureNamesTest(); break;
+            case 49: respecifyTest(); break;
+            case 50: accountingTest(); break;
+            case 51: cubeMapTest(); break;
+            case 52: screenBufferTest(); break;
+            case 53: resizeTargetTest(); break;
+            case 54: subImageTest(); break;
+            case 154: textureKeyTest(); break; // t54b
+            case 55: inactiveUniformTest(device); break;
+            case 56: uniformBlockTest(device); break;
+            case 57: stageLimitsTest(device); break;
+            case 58: stageArraySizeTest(device); break;
+            case 59: loginFirstTest(device); break;
+            case 60: pullForwardTest(device); break;
+            case 61: descCopyTest(device); break;
+            case 62: translatorAtCreateTest(device); break;
+            case 63: lockTest(); break;
+            case 64: failedPathsTest(device); break;
+            case 65: cancelTest(device); break;
+            case 66: shutdownTest(owner, device); break;
+            case 67: groupProbeTest(device); break;
+            case 69: stableGroupsTest(device); break;
+            case 70: closeAtWaitTest(device); break;
+            case 71: closeAtEndFrameTest(device); break;
+            case 72: fallBackTest(device); break;
+            case 73: shutdownGroupsTest(owner, device); break;
+            case 74: flagBTest(device); break;
+            case 75: sharedStatesTest(device); break;
+            case 76: blendTest(device); break;
+            case 77: asyncPipelineTest(device); break;
+            case 78: forgetStatesTest(device); break;
+            case 79: primitiveClassesTest(device); break;
+            case 80: shutdownPipelinesTest(owner, device); break;
+            case 81: blockBindingTest(device); break;
+            case 82: changedBlocksTest(device); break;
+            case 83: channelPlacesTest(device); break;
+            case 84: forgetProgramStateTest(device); break;
+            case 85: samplerChoiceTest(device); break;
+            case 86: defaultTextureTest(device); break;
+            case 87: indexedDrawTest(device); break;
+            case 88: firstCountTest(device); break;
+            case 89: indexCheckTest(device); break;
+            case 90: tableShadowTest(device); break;
+            case 91: refusedDrawsTest(device); break;
+            case 92: nativeLinesTest(device); break;
+            case 93: toldTest(); break;
+            case 94: staticUpdateInPassTest(device); break;
+            case 95: stackPassReadbackTest(); break;
+            case 96: uploadInPassTest(device); break;
+            case 97: copyInPassTest(device); break;
+            case 98: countersTest(device); break;
+            case 99: clearAfterDrawTest(device); break;
+            case 100: scissorClearDrawTest(device); break;
+            case 101: maskedClearTest(device); break;
+            case 102: scissorClearFormatsTest(device); break;
+            case 103: noTranslatorClearTest(device); break;
+            case 104: loadActionAndClearDrawTest(device); break;
+            case 105: clearDrawShutdownTest(); break;
+            case 106: mipFilterTest(device); break;
+            case 107: mipCubeTest(device); break;
+            case 108: mipsInPassTest(device); break;
+            case 109: noTranslatorMipsTest(device); break;
+            case 110: mipsShutdownTest(); break;
+            case 111: mipPriceTest(device); break;
+            case 112: facadeDepthClearTest(); break;
+            case 113: interfaceClearInStackPassTest(); break;
+            case 114: facadeColorMaskClearTest(); break;
+            case 115: facadeScissorClearTest(); break;
+            case 116: foreignStackPassEndTest(); break;
+            case 117: listDrawsTest(device); break;
+            case 118: listOrderTest(device); break;
+            case 119: pointsTest(device); break;
+            case 120: lineWidthTest(device); break;
+            case 121: labelsTest(device); break;
+            case 122: groupsTest(device); break;
+            case 123: teardownInPassTest(); break;
+            case 124: releasedTexturesTest(device); break;
+            case 125: alphaLessTargetsTest(device); break;
+            case 126: cubeFacesTest(device); break;
+            case 127: listResidencyTest(device); break;
+            case 128: mipGroupsTest(device); break;
+            case 129: facadeScissorSendsTest(); break;
+            case 130: surfaceWindowTest(device); break;
+            case 131: immediateModeTest(); break;
+            case 132: drawableFlipTest(); break;
+            case 133: surfaceResizeTest(); break;
+            case 134: zeroSizeTargetTest(); break;
+            case 135: storeRoundTripTest(); break;
+            case 136: scaleDownTest(); break;
+            case 137: dontCareAlphaTest(device); break;
+            case 138: bindDepthTest(); break;
+            case 139: storeKeyTest(device); break;
+            case 140: capabilitiesTest(device); break;
+            case 141: lazyScissorTest(device); break;
+            case 142: getGLStringTest(); break;
+            case 143: mediaDeferTest(); break;
+            case 145: passBreaksTest(device); break;
+            case 146: msaaResolveTest(device); break;
+            case 147: zeroAroundTest(device); break;
+            case 148: uniformBlockUpdatesTest(device); break;
+            case 150: depthAccessBreakTest(); break;
+            case 151: ownTextureLevelsTest(); break;
+            case 152: backBufferCopyTest(); break;
+            case 153: backBufferRegionTest(); break;
+            case 155: backBufferOverlapTest(); break;
+            case 156: floatImageTest(); break;
+            case 157: lazyStateTest(device); break;
+            case 158: rasterStateTest(device); break;
+            case 159: integerSamplerTest(device); break;
+            case 160: presentsInOneFrameTest(); break;
+            case 161: rgbReadbackTest(device); break;
+            case 162: typeSlotTest(device); break;
+            case 163: fileClassesTest(); break;
+            case 164: safeMathTest(device); break;
+            case 165: gpuFaultsTest(); break;
+            case 170: uploadQueueOrderTest(device); break;
+            case 171: foreignFenceTest(device); break;
+            case 172: recordingThreadTest(device); break;
+            case 173: uploadThreadsTest(device); break;
+            case 174: deferredMipsTest(device); break;
+            case 175: fetchedOnThreadTest(); break;
+            case 176: mediaOnThreadTest(); break;
+            case 177: mediaInPlaceTest(); break;
+            case 178: convertFastPathsTest(); break;
+            case 179: keptStagingTest(device); break;
+            case 180: queryCountsTest(device); break;
+            case 181: querySpansTest(device); break;
+            case 182: queryRefusalsTest(device); break;
+            case 183: queryRingTest(device); break;
+            case 184: keptStagingCapTest(device); break;
+            case 185: presentPacingTest(); break;
+            case 186: compileCountsTest(device); break;
+            case 187: constantArrayTest(device); break;
+            case 188: alphaSsrProgramTest(device); break;
+            case 189: compileDrainTest(device); break;
+            case 190: bufferReadbackTest(device); break;
+            case 191: formatCopyTest(device); break;
+            case 192: facadeDeliveredTest(); break;
+            case 195: timerHeapTest(device); break;
+            case 196: timerSpansTest(device); break;
+            case 197: timerRefusalsTest(device); break;
+            case 198: timerRingTest(device); break;
+            case 200: inlineFaultTest(device); break;
+            case 201: deferredFaultTest(device); break;
+            case 202: faultTimesTest(device); break;
+            case 203: faultScopeTest(device); break;
+            case 204: faultPipelineTest(device); break;
+            case 205: faultListTest(device); break;
+            case 206: shaderFaultTest(); break;
+            case 210: speedKnobsTest(device); break;
+            case 211: splitBarrierTest(device); break;
+            case 212: discardStoresTest(device); break;
+            case 213: forgottenBasesTest(device); break;
+            case 214: failureLinesTest(); break;
+            case 215: ownEncoderGroupsTest(device); break;
+            case 216: presentBindFirstTest(device); break;
+            case 217: emptyClearTest(device); break;
+            case 218: nativeComputeTest(device); break;
+            case 219: dependentDispatchTest(device); break;
+            case 220: computeInStackPassTest(device); break;
+            case 221: nativeRenderTest(device); break;
+            case 222: viewResidencyTest(device); break;
+            case 223: volumeTest(device); break;
+            case 224: nativeSourceTest(device); break;
+            case 225: spdTest(device); break;
+            case 226: sampler3DTest(device); break;
+            default: tut::fail("no Metal test " + std::to_string(test));
+            }
+            return true;
+        }
+        LL_INFOS("RHI") << "No Metal device: macOS is older than 26" << LL_ENDL;
+        return false;
+    }
+}
+
+#endif // LL_RHI_METAL
+
+namespace
+{
+    // stderr in an anonymous file while a test runs (the review of P3-01b). Shader validation
+    // reports only there (MTL_SHADER_VALIDATION_REPORT_TO_STDERR), and a report neither ends the
+    // program nor fails the commit (S4's calibration), so the test reads the file afterwards. An
+    // abort while it runs (the debug layer's assert mode) copies the file to the real stderr first.
+    int sRealStderr = -1;
+    int sCaptured = -1;
+    struct sigaction sAbortBefore;
+    bool sShaderValidationSeen = false; // the banner, which Metal writes once per process
+
+    /// Copies the file from its start; only calls that are safe in a signal handler.
+    void copyCaptured(int from, int to)
+    {
+        if (lseek(from, 0, SEEK_SET) < 0)
+        {
+            return;
+        }
+        char buffer[4096];
+        ssize_t count = 0;
+        while ((count = read(from, buffer, sizeof(buffer))) > 0)
+        {
+            for (ssize_t done = 0; done < count;)
+            {
+                const ssize_t written = write(to, buffer + done, size_t(count - done));
+                if (written <= 0)
+                {
+                    return;
+                }
+                done += written;
+            }
+        }
+    }
+
+    void abortWhileCaptured(int signal)
+    {
+        copyCaptured(sCaptured, sRealStderr);
+        dup2(sRealStderr, STDERR_FILENO);
+        sigaction(SIGABRT, &sAbortBefore, nullptr);
+        raise(signal);
+    }
+
+    class StderrCapture
+    {
+    public:
+        StderrCapture()
+        {
+            std::fflush(stderr);
+            mFile = std::tmpfile();
+            sRealStderr = mFile ? dup(STDERR_FILENO) : -1;
+            if (sRealStderr < 0)
+            {
+                return;
+            }
+            sCaptured = fileno(mFile);
+            struct sigaction onAbort = {};
+            onAbort.sa_handler = abortWhileCaptured;
+            sigemptyset(&onAbort.sa_mask);
+            sigaction(SIGABRT, &onAbort, &sAbortBefore);
+            mOn = dup2(sCaptured, STDERR_FILENO) >= 0;
+        }
+
+        ~StderrCapture()
+        {
+            finish();
+        }
+
+        bool on() const
+        {
+            return mOn;
+        }
+
+        /// Puts stderr back, writes what came in the meantime to it, and gives that text.
+        std::string finish()
+        {
+            std::string text;
+            if (sRealStderr >= 0)
+            {
+                std::fflush(stderr);
+                dup2(sRealStderr, STDERR_FILENO);
+                sigaction(SIGABRT, &sAbortBefore, nullptr);
+                copyCaptured(sCaptured, STDERR_FILENO);
+                close(sRealStderr);
+                sRealStderr = -1;
+                lseek(sCaptured, 0, SEEK_SET);
+                char buffer[4096];
+                ssize_t count = 0;
+                while ((count = read(sCaptured, buffer, sizeof(buffer))) > 0)
+                {
+                    text.append(buffer, size_t(count));
+                }
+                sCaptured = -1;
+            }
+            if (mFile)
+            {
+                std::fclose(mFile);
+                mFile = nullptr;
+            }
+            return text;
+        }
+
+    private:
+        FILE* mFile = nullptr;
+        bool mOn = false;
+    };
+
+    /// The lines scripts/metal/test.sh counts as validation lines: the debug layer's, shader
+    /// validation's reports and NSLog lines besides the two banners. Notes the GPU banner.
+    std::vector<std::string> validationLines(const std::string& text)
+    {
+        static const std::regex nslog(R"(^[0-9]{4}-[0-9]{2}-[0-9]{2} [0-9:.]+ [^ ]+\[[0-9]+:[0-9a-f]+\] )");
+        static const std::regex banner(
+            R"(^[0-9]{4}-[0-9]{2}-[0-9]{2} [0-9:.]+ [^ ]+\[[0-9]+:[0-9a-f]+\] Metal (API|GPU) Validation Enabled$)");
+        static const std::regex report(R"(failed assertion|MTLDebug|MTL4Debug|[Vv]alidation| executing [a-z]+ function: )");
+        std::vector<std::string> lines;
+        std::istringstream in(text);
+        std::string line;
+        while (std::getline(in, line))
+        {
+            if (std::regex_search(line, banner))
+            {
+                sShaderValidationSeen = sShaderValidationSeen || line.find("GPU Validation") != std::string::npos;
+            }
+            else if (std::regex_search(line, report) || std::regex_search(line, nslog))
+            {
+                lines.push_back(line);
+            }
+        }
+        return lines;
+    }
+
+    /// Runs the test with stderr captured, then fails it on a validation line, also when the test
+    /// failed by itself (both are named). A test that made a Metal device (it gives true) also
+    /// needs shader validation's banner in this process.
+    template <class Test>
+    void validated(Test test)
+    {
+        std::string text;
+        std::exception_ptr failure;
+        bool madeDevice = false;
+        {
+            StderrCapture capture;
+            if (!capture.on())
+            {
+                tut::fail("stderr could not go to a file, so shader validation's reports cannot be read");
+            }
+            try
+            {
+                madeDevice = test();
+            }
+            catch (...)
+            {
+                failure = std::current_exception();
+            }
+            text = capture.finish();
+        }
+        const std::vector<std::string> lines = validationLines(text);
+        if (!lines.empty())
+        {
+            std::string message = std::to_string(lines.size()) + " validation lines on stderr, the first: " + lines[0];
+            if (failure)
+            {
+                try
+                {
+                    std::rethrow_exception(failure);
+                }
+                catch (const std::exception& e)
+                {
+                    message += " (the test failed too: " + std::string(e.what()) + ")";
+                }
+                catch (...)
+                {
+                    message += " (the test failed too)";
+                }
+            }
+            tut::fail(message);
+        }
+        if (failure)
+        {
+            std::rethrow_exception(failure);
+        }
+        if (madeDevice && !sShaderValidationSeen)
+        {
+            tut::fail("shader validation is not live: no \"Metal GPU Validation Enabled\" line on stderr in this process");
+        }
+    }
+}
+
+void runValidated(void (*test)())
+{
+    validated([test]()
+    {
+        test();
+        return false;
+    });
+}
+
+void runMetalTest(int test)
+{
+#if LL_RHI_METAL
+    validated([test]() { return runOnDevice(test); });
+#else
+    LL_INFOS("RHI") << "No Metal device: this build has no Metal backend" << LL_ENDL;
+#endif
+}
