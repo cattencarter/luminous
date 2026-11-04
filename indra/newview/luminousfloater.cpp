@@ -1694,10 +1694,31 @@ void LuminousFloater::draw()
         refreshShapeButtons();
         if (LLTextBox* live = findChild<LLTextBox>("live_view_size"))
         {
-            // What the live view renders, before it is scaled up.
-            const F32 scale = LuminousPhotoMode::chosenLiveScale();
-            live->setText(llformat("%u x %u", (U32)(gViewerWindow->getWorldViewWidthRaw() * scale),
-                                   (U32)(gViewerWindow->getWorldViewHeightRaw() * scale)));
+            // What the live view renders, before it is scaled up. FXAA keeps it at full size
+            // (chosenLiveScale), so the menu is greyed and says what it needs.
+            static LLCachedControl<U32> aa(gSavedSettings, "RenderFSAAType", 2);
+            const bool fxaa = aa() == 1;
+            LLUICtrl* combo = findChild<LLUICtrl>("live_view_combo");
+            if (combo && combo->getEnabled() == fxaa)
+            {
+                static const std::string preview_tip = combo->getToolTip();
+                const std::string tip = fxaa ? std::string("FXAA keeps the live view at full size. Choose SMAA under "
+                                                           "Preferences > Graphics > Hardware Settings to make it smaller.")
+                                             : preview_tip;
+                combo->setEnabled(!fxaa);
+                combo->setToolTip(tip);
+                live->setToolTip(fxaa ? tip : LLStringUtil::null);
+            }
+            if (fxaa)
+            {
+                live->setText(std::string("Needs SMAA anti-aliasing"));
+            }
+            else
+            {
+                const F32 scale = LuminousPhotoMode::chosenLiveScale();
+                live->setText(llformat("%u x %u", (U32)(gViewerWindow->getWorldViewWidthRaw() * scale),
+                                       (U32)(gViewerWindow->getWorldViewHeightRaw() * scale)));
+            }
         }
     }
     LLFloater::draw();

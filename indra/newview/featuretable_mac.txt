@@ -198,7 +198,7 @@ RenderVolumeLODFactor		1	1.5
 RenderDeferredSSAO			1	0
 RenderShadowDetail			1	0
 WLSkyDetail					1	96
-RenderFSAAType			    1	1
+RenderFSAAType			    1	2
 RenderFSAASamples			1	0
 RenderReflectionsEnabled    1   1
 RenderReflectionProbeDetail	1	0
@@ -240,7 +240,7 @@ RenderVolumeLODFactor		1	2.0
 RenderDeferredSSAO			1	0
 RenderShadowDetail			1	0
 WLSkyDetail					1	96
-RenderFSAAType			    1	1
+RenderFSAAType			    1	2
 RenderFSAASamples			1	1
 RenderReflectionsEnabled    1   1
 RenderReflectionProbeDetail	1	0
@@ -282,7 +282,7 @@ RenderVolumeLODFactor		1	2.0
 RenderDeferredSSAO			1	1
 RenderShadowDetail			1	1
 WLSkyDetail					1	96
-RenderFSAAType			    1	1
+RenderFSAAType			    1	2
 RenderFSAASamples			1	2
 RenderReflectionsEnabled    1   1
 RenderReflectionProbeDetail	1	1

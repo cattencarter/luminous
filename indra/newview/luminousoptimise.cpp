@@ -34,7 +34,9 @@
 #include "llappviewer.h"
 #include "llbutton.h"
 #include "llcallbacklist.h"
+#include "llfeaturemanager.h"
 #include "llfloaterreg.h"
+#include "llrhi.h"
 #include "llfocusmgr.h"
 #include "llframetimer.h"
 #include "llnotificationsutil.h"
@@ -178,21 +180,45 @@ namespace
         return cores;
     }
 
-    // Base chips have up to 10 graphics cores, Pro up to 20, Max and Ultra
-    // more. The count, not the name, so a new chip falls into place.
-    enum class Tier { Base, Pro, Max };
+    // Base chips have up to 10 graphics cores, Pro up to 20, Max up to 40 and
+    // Ultra more. The count, not the name, so a new chip falls into place.
+    enum class Tier { Base, Pro, Max, Ultra };
 
     Tier tierOf(S32 cores, const std::string& chip)
     {
         if (cores <= 0)
         {
-            if (chip.find("Max") != std::string::npos || chip.find("Ultra") != std::string::npos)
+            if (chip.find("Ultra") != std::string::npos)
+            {
+                return Tier::Ultra;
+            }
+            if (chip.find("Max") != std::string::npos)
             {
                 return Tier::Max;
             }
             return chip.find("Pro") != std::string::npos ? Tier::Pro : Tier::Base;
         }
-        return cores <= 10 ? Tier::Base : (cores <= 20 ? Tier::Pro : Tier::Max);
+        return cores <= 10 ? Tier::Base : (cores <= 20 ? Tier::Pro : (cores <= 40 ? Tier::Max : Tier::Ultra));
+    }
+
+    // Second Life's graphics level for the tier. Second Life caps every Apple GPU at Mid-High
+    // (LLFeatureManager::init: "high throughput, low capability"), which leaves shadows, transparent
+    // water and ambient occlusion off, and with them soft shadows, volumetric light and GTAO. Metal
+    // draws faster than OpenGL, so a Pro or Max chip gets a level more on Metal.
+    U32 levelFor(Tier tier, bool metal)
+    {
+        switch (tier)
+        {
+        case Tier::Ultra: return 6;                // Ultra
+        case Tier::Max:   return metal ? 6 : 5;    // Ultra, or High-Ultra (projectors' shadows too)
+        case Tier::Pro:   return metal ? 5 : 4;    // High-Ultra, or High
+        default:          return 4;                // High: sun shadows, transparent water, AO
+        }
+    }
+
+    const char* levelName(U32 level)
+    {
+        return level >= 6 ? "Ultra" : (level == 5 ? "High-Ultra" : "High");
     }
 
     // tell: the message that says what was set; without it the settings are
@@ -207,13 +233,26 @@ namespace
         const bool retina = gHiDPISupport && backing > 1.01f;
 
         std::vector<std::string> chosen;
+        const bool metal = LL::RHI::viewerBackend() == LL::RHI::BackendType::Metal;
+        const U32 level = levelFor(tier, metal);
+        LLFeatureManager::getInstance()->setGraphicsLevel(level, false);
+        gSavedSettings.setU32("RenderQualityPerformance", level);
+        // SMAA: FXAA keeps the live view at full size (chosenLiveScale). No level picks FXAA now.
+        if (gSavedSettings.getU32("RenderFSAAType") == 1)
+        {
+            gSavedSettings.setU32("RenderFSAAType", 2);
+        }
+        chosen.push_back(std::string("graphics quality ") + levelName(level) + " on " + (metal ? "Metal" : "OpenGL")
+                         + ": shadows, transparent water and ambient occlusion on, with SMAA anti-aliasing");
+
+        // A Retina display draws four times the pixels; the smaller live view pays for the level.
         F32 live_scale = 1.f;
         if (retina && tier == Tier::Base)
         {
             live_scale = 0.f; // automatic: half each way on this display
             chosen.push_back("the live view at half resolution each way on this display");
         }
-        else if (retina && tier == Tier::Pro)
+        else if (retina && (tier == Tier::Pro || tier == Tier::Max))
         {
             live_scale = 0.75f;
             chosen.push_back("the live view at three quarters resolution on this display");
@@ -245,7 +284,8 @@ namespace
             mac += ", a Retina or scaled display";
         }
         gSavedSettings.setString("LuminousSetUpFor", mac);
-        LL_INFOS("LuminousOptimise") << "Set up for " << mac << ": live scale " << live_scale
+        LL_INFOS("LuminousOptimise") << "Set up for " << mac << ": graphics level " << level << " ("
+            << (metal ? "Metal" : "OpenGL") << "), live scale " << live_scale
             << (tier == Tier::Base ? ", volumetric light and projector beams in renders only" : "") << LL_ENDL;
 
         std::string message = "Luminous has set itself up for this Mac (" + mac + "):\n";
