@@ -7,17 +7,18 @@ derivative to state what it changed in that work. This is that statement; it
 names upstream files and features where Luminous changes them, which
 implies no involvement of the upstream projects in Luminous.
 
-Upstream baseline: the master branch, last merged at `ccfb6e02c7` (the
-7.2.5 pre-release, on Linden Lab's 26.3). Edits to upstream files are marked
-by comments in the code. Some file and setting names keep an earlier working
-name, `lumen`.
+Upstream baseline: the 7.2.5 release, `Firestorm_Release_7.2.5.81788`
+(`4ac201fdc5`, on Linden Lab's 26.3). Edits to upstream files are marked by
+comments in the code: `<Luminous>`, `<Lumen>`, or `[Viewer Lab]` for the
+render device layer below. Some file and setting names keep an earlier
+working name, `lumen`.
 
 To see the changes exactly, rather than taking this file's word for it,
 compare with the upstream commit Luminous is based on:
 
 ```sh
-git fetch https://github.com/FirestormViewer/phoenix-firestorm.git master
-git diff ccfb6e02c759176beb29271a47344a9ac429cbf6 HEAD
+git fetch https://github.com/FirestormViewer/phoenix-firestorm.git tag Firestorm_Release_7.2.5.81788
+git diff 4ac201fdc56127de27de34567286885f4e75d194 HEAD
 ```
 
 Luminous is built for macOS only, on Apple silicon. The upstream Windows and
@@ -57,6 +58,8 @@ simple.
 | `indra/newview/llagentcamera.cpp` | the camera orbits round the avatar without turning her (`LuminousOrbitTurnsAvatar` brings the old way back) |
 | `indra/newview/app_settings/settings.xml` | `FSTurnAvatarToSelectedObject` off by default; the Avatar Welcome Pack no longer opens by itself on the first login (`llstartup.cpp`, `llviewerwindow.cpp`) |
 | `indra/newview/skins/default/toolbars.xml`, `xui/en/*` | default toolbar and wording changes |
+| `indra/newview/luminousoptimise.{h,cpp}`, `llappviewer.cpp` | at the very first start, settings for the Mac: the graphics level from the chip's graphics cores and the backend (upstream starts every Apple GPU at Mid-High, without shadows, transparent water or ambient occlusion), SMAA, and on a Retina display a smaller live view; and an Optimise window that measures where the user stands and proposes the fewest changes |
+| `indra/newview/featuretable_mac.txt` | no graphics level chooses FXAA, which keeps the live view at full size; SMAA instead |
 
 ## Photo rendering
 
@@ -87,6 +90,25 @@ its own, the live view shows that in their place.
 | `class1/deferred/postDeferredNoDoFF.glsl` | the live view can render at three quarters or half the window's size, scaled up with Catmull-Rom; renders are always at full size |
 | `indra/newview/lldrawpoolwater.cpp` | the water exclusion mask is not drawn when nothing excludes water (white is read in its place) |
 | `indra/newview/luminousbenchmark.{h,cpp}` | a frame-time benchmark, run from a script |
+
+## Drawing with Metal
+
+On macOS 26 or later with Apple silicon, Luminous draws with Metal instead of
+OpenGL. OpenGL stays: on macOS 15, and by choice in Preferences > Graphics from
+the next start. After a Metal session that did not end normally, the next start
+is on OpenGL.
+
+| Where | Change |
+|---|---|
+| `indra/llrender/llrhi.{h,cpp}`, `llrhigl.{h,cpp}`, `llrhimetal*.{h,mm}`, `llrhimsl.{h,cpp}`, `llnativeprogram.{h,cpp}`, `llmslinclude.h` | a render device layer between the viewer and the graphics API, with an OpenGL and a Metal backend: textures, buffers, render targets, pipelines and frames; GLSL programs translated to Metal's shading language as they load |
+| `indra/llrender/llrender.{h,cpp}`, `llimagegl.{h,cpp}`, `llglslshader.{h,cpp}`, `llvertexbuffer.{h,cpp}`, `llrendertarget.{h,cpp}`, `llshadermgr.{h,cpp}`, `llgl.{h,cpp}`, `llglstates.h`, `llgltexture.{h,cpp}`, `llcubemap*.{h,cpp}`, `llpostprocess.cpp`, `indra/llui/lllocalcliprect.cpp` | the upstream drawing code goes through that layer; on OpenGL it draws as before |
+| `indra/llwindow/llwindowmacosx*.{h,cpp,mm}`, `llopenglview-objc.{h,mm}`, `llwindow.h`, and the new `llwindowmacosxcontext-objc.h`, `llopenglviewcontext-objc.h` | a Metal layer for the window; on Metal the graphics capabilities are read from a short-lived OpenGL context |
+| `indra/newview/pipeline.{h,cpp}`, `llviewershadermgr.{h,cpp}`, `lldrawpool*.cpp`, `llviewerdisplay.{h,cpp}`, `llviewerwindow.cpp`, `llreflectionmap*.{h,cpp}`, `llheroprobemanager.cpp`, `llspatialpartition.cpp`, `llvieweroctree.{h,cpp}`, `llface.cpp`, `llvovolume.cpp`, `llvoavatar*.{h,cpp}`, `llviewerjoint*.cpp`, `gltf/*`, `gltfscenemanager.cpp`, and other drawing code in `indra/newview` and `indra/llappearance` | the world, avatars, water, sky, reflection probes and the interface drawn through the layer |
+| `app_settings/shaders/class1/deferred/SMAA.glsl`, `aoUtil.glsl`, `fullbrightF.glsl`, `class1/gltf/pbrmetallicroughnessV.glsl`, `class1/windlight/atmosphericsVarsV.glsl`, `class2/deferred/alphaF.glsl`, `pbralphaF.glsl`, `class3/deferred/fullbrightShinyF.glsl`, `materialF.glsl`, `screenSpaceReflUtil.glsl`, `softenLightF.glsl`, `class3/environment/waterF.glsl` | shaders written so that they translate to Metal as well; on Metal, worn alpha is sorted by a hash of position |
+| `indra/newview/luminousmetal*.{h,cpp}`, `app_settings/shaders/metal/luminous/` | Luminous's photo effects drawn natively on Metal |
+| `indra/newview/llappviewer.{h,cpp}`, `llstartup.cpp`, `llfeaturemanager.{h,cpp}`, `llfloaterpreference.{h,cpp}`, `skins/default/xui/en/panel_preferences_graphics1.xml`, `notifications.xml`, `strings.xml`, `app_settings/settings.xml`, `cmd_line.xml` | choosing the backend (Preferences > Graphics, "Graphics backend"; `--backend` for one start); the start on OpenGL after a Metal session that did not end normally; Help > About names the backend |
+| `indra/third_party/glslang/`, `indra/third_party/spirv-cross/`, `indra/cmake/Glslang.cmake`, `SPIRVCross.cmake`, `Metal.cmake` | the Khronos Group's glslang and SPIRV-Cross, which translate the GLSL shaders for Metal, built from source; their licences are beside them |
+| `indra/llrender/tests/`, `indra/newview/llgoldentest.{h,cpp}`, `llgoldenwait.{h,cpp}`, `luminous/scripts/msl-check*` | tests of the layer, and a picture test of the whole viewer that runs only when asked for |
 
 ## Renders
 
