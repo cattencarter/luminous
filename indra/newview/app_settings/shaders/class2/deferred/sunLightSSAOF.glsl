@@ -38,6 +38,13 @@ float sampleDirectionalShadow(vec3 shadow_pos, vec3 norm, vec2 pos_screen);
 float sampleSpotShadow(vec3 shadow_pos, vec3 norm, int index, vec2 pos_screen);
 float calcAmbientOcclusion(vec4 pos, vec3 norm, vec2 pos_screen);
 
+// <Luminous> The projector shadow slots no projector holds this frame: bit 0
+// the first (b), bit 1 the second (a). Such a slot's channel is written as 1
+// without reading its map, since only a projector holding the slot reads it
+// (spotLightF.glsl, proj_shadow_idx). 0, as when unset: both maps are read.
+uniform int luminous_spot_slots_empty;
+// </Luminous>
+
 // <Luminous> Contact shadows: from the point toward the sun or moon, a short
 // march on screen; a surface in front of the ray, but not far in front (so
 // not something merely nearer the camera), shades the point. The shadow maps
@@ -166,8 +173,18 @@ void main()
     }
     // </Luminous>
     col.g = calcAmbientOcclusion(pos, norm.xyz, pos_screen);
-    col.b = sampleSpotShadow(pos.xyz, norm.xyz, 0, pos_screen);
-    col.a = sampleSpotShadow(pos.xyz, norm.xyz, 1, pos_screen);
+    // <Luminous> an empty projector slot's map is not read (luminous_spot_slots_empty)
+    col.b = 1.0;
+    col.a = 1.0;
+    if ((luminous_spot_slots_empty & 1) == 0)
+    {
+        col.b = sampleSpotShadow(pos.xyz, norm.xyz, 0, pos_screen);
+    }
+    if ((luminous_spot_slots_empty & 2) == 0)
+    {
+        col.a = sampleSpotShadow(pos.xyz, norm.xyz, 1, pos_screen);
+    }
+    // </Luminous>
 
     frag_color = clamp(col, vec4(0), vec4(1));
 }

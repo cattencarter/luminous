@@ -57,6 +57,7 @@
 
 #if LL_DARWIN
 #include <CoreFoundation/CoreFoundation.h>
+#include <CoreGraphics/CoreGraphics.h>
 #include <IOKit/IOKitLib.h>
 #include <sys/sysctl.h>
 #endif
@@ -180,6 +181,21 @@ namespace
         return cores;
     }
 
+    // The pixels the main display draws in its current mode: a scaled Retina mode's backing pixels with
+    // HiDPI on, its points without. 0 x 0 when macOS does not say.
+    void displayPixels(S32& width, S32& height)
+    {
+        width = height = 0;
+#if LL_DARWIN
+        if (CGDisplayModeRef mode = CGDisplayCopyDisplayMode(CGMainDisplayID()))
+        {
+            width = (S32)(gHiDPISupport ? CGDisplayModeGetPixelWidth(mode) : CGDisplayModeGetWidth(mode));
+            height = (S32)(gHiDPISupport ? CGDisplayModeGetPixelHeight(mode) : CGDisplayModeGetHeight(mode));
+            CGDisplayModeRelease(mode);
+        }
+#endif
+    }
+
     // Base chips have up to 10 graphics cores, Pro up to 20, Max up to 40 and
     // Ultra more. The count, not the name, so a new chip falls into place.
     enum class Tier { Base, Pro, Max, Ultra };
@@ -221,16 +237,38 @@ namespace
         return level >= 6 ? "Ultra" : (level == 5 ? "High-Ultra" : "High");
     }
 
+    // The live view a tier draws well at its level: about 1920 x 1080 on a base chip, 2560 x 1440 on a Pro,
+    // 3840 x 2160 on a Max; an Ultra draws all of them (0).
+    F64 pixelBudget(Tier tier)
+    {
+        switch (tier)
+        {
+        case Tier::Base: return 1920.0 * 1080.0;
+        case Tier::Pro:  return 2560.0 * 1440.0;
+        case Tier::Max:  return 3840.0 * 2160.0;
+        default:         return 0.0;
+        }
+    }
+
     // tell: the message that says what was set; without it the settings are
     // only written (photo mode off, where none of them shows yet).
     void setUp(bool tell = true)
     {
+        LuminousPhotoMode::HoldSettingTips quiet; // set for the user: no tips that answer a change of theirs
         const std::string chip = chipName();
         const S32 cores = graphicsCores();
         const Tier tier = tierOf(cores, chip);
-        const F32 backing = gViewerWindow && gViewerWindow->getWindow() ? gViewerWindow->getWindow()->getSystemUISize() : 1.f;
-        // A Retina or scaled display draws backing-scale squared the pixels.
-        const bool retina = gHiDPISupport && backing > 1.01f;
+        // What the display draws, not whether it is Retina: a 4K display at 1x is no Retina display, and a
+        // base chip drew its full 3840 x 2160 at 8 frames a second.
+        S32 display_x = 0;
+        S32 display_y = 0;
+        displayPixels(display_x, display_y);
+        if (display_x <= 0 || display_y <= 0)
+        {
+            display_x = gViewerWindow ? gViewerWindow->getWindowWidthRaw() : 0;
+            display_y = gViewerWindow ? gViewerWindow->getWindowHeightRaw() : 0;
+        }
+        const F64 pixels = (F64)display_x * (F64)display_y;
 
         std::vector<std::string> chosen;
         const bool metal = LL::RHI::viewerBackend() == LL::RHI::BackendType::Metal;
@@ -245,17 +283,18 @@ namespace
         chosen.push_back(std::string("graphics quality ") + levelName(level) + " on " + (metal ? "Metal" : "OpenGL")
                          + ": shadows, transparent water and ambient occlusion on, with SMAA anti-aliasing");
 
-        // A Retina display draws four times the pixels; the smaller live view pays for the level.
+        // The live view made smaller where the display has more pixels than the tier's budget (15% over is
+        // let through, for 1920 x 1200 and the like): three quarters each way, or half. It pays for the level.
+        const F64 budget = pixelBudget(tier);
         F32 live_scale = 1.f;
-        if (retina && tier == Tier::Base)
+        if (budget > 0.0 && pixels > budget * 1.15)
         {
-            live_scale = 0.f; // automatic: half each way on this display
-            chosen.push_back("the live view at half resolution each way on this display");
+            live_scale = std::sqrt(budget / pixels) >= 0.75 ? 0.75f : 0.5f;
         }
-        else if (retina && (tier == Tier::Pro || tier == Tier::Max))
+        if (live_scale < 1.f)
         {
-            live_scale = 0.75f;
-            chosen.push_back("the live view at three quarters resolution on this display");
+            chosen.push_back(std::string("the live view at ") + (live_scale > 0.7f ? "three quarters" : "half")
+                             + llformat(" resolution each way: this display draws %d x %d pixels", display_x, display_y));
         }
         else
         {
@@ -271,7 +310,11 @@ namespace
         }
         else
         {
-            chosen.push_back("volumetric light, projector beams and GTAO live, at low quality");
+            // As the settings have it, which first start leaves as Luminous ships them.
+            const bool gtao_live = !gSavedSettings.getBOOL("LuminousPhotoAORenderOnly");
+            chosen.push_back(gtao_live ? "volumetric light, projector beams and GTAO live, at low quality"
+                                       : "volumetric light and projector beams live, at low quality; GTAO in renders "
+                                         "only: it shows in every render, not while you set up the shot");
         }
 
         std::string mac = chip.empty() ? std::string("this Mac") : chip;
@@ -279,9 +322,9 @@ namespace
         {
             mac += llformat(", %d graphics cores", cores);
         }
-        if (retina)
+        if (display_x > 0 && display_y > 0)
         {
-            mac += ", a Retina or scaled display";
+            mac += llformat(", a %d x %d display", display_x, display_y);
         }
         gSavedSettings.setString("LuminousSetUpFor", mac);
         LL_INFOS("LuminousOptimise") << "Set up for " << mac << ": graphics level " << level << " ("
@@ -525,10 +568,11 @@ void LuminousOptimiseFloater::onMeasure()
         }
     }
     // A lower preview resolution: the next step down from what is set.
-    // FXAA keeps the live view at full resolution, so with FXAA the step is
-    // SMAA and three quarters together, proposed as one change; the
-    // shaders are made again for it, so it settles longer.
-    if (gSavedSettings.getU32("RenderFSAAType") == 1)
+    // FXAA keeps the live view at full resolution (unless MetalFX temporal
+    // smooths the edges in its place), so with FXAA the step is SMAA and
+    // three quarters together, proposed as one change; the shaders are
+    // made again for it, so it settles longer.
+    if (LuminousPhotoMode::fxaaKeepsFullSize())
     {
         Step s;
         s.label = "Anti-aliasing SMAA and preview resolution three quarters";
@@ -538,8 +582,10 @@ void LuminousOptimiseFloater::onMeasure()
         s.resolution = true;
         mSteps.push_back(s);
     }
-    else
+    else if (!LuminousPhotoMode::temporalHeldAtFull())
     {
+        // Not while MetalFX temporal holds the live view at full size (something it cannot scale shows live): a
+        // lower preview resolution would change nothing until that goes.
         const F32 chosen = LuminousPhotoMode::chosenLiveScale();
         const F32 lower = chosen > 0.99f ? 0.75f : (chosen > 0.74f ? 0.5f : 0.f);
         if (lower > 0.f)
@@ -578,6 +624,7 @@ void LuminousOptimiseFloater::onMeasure()
 
 void LuminousOptimiseFloater::beginStep()
 {
+    LuminousPhotoMode::HoldSettingTips quiet; // a measure, not the user's change
     Step& s = mSteps[mStep];
     for (Setting& setting : s.settings)
     {
@@ -603,6 +650,7 @@ void LuminousOptimiseFloater::beginStep()
 
 void LuminousOptimiseFloater::endStep()
 {
+    LuminousPhotoMode::HoldSettingTips quiet;
     Step& s = mSteps[mStep];
     for (auto setting = s.settings.rbegin(); setting != s.settings.rend(); ++setting)
     {
@@ -882,6 +930,7 @@ void LuminousOptimiseFloater::propose()
 
 void LuminousOptimiseFloater::onApply()
 {
+    LuminousPhotoMode::HoldSettingTips quiet; // the window says what it changed
     for (const Change& change : mChanges)
     {
         for (const auto& [name, value] : change.settings)
@@ -908,6 +957,7 @@ void LuminousOptimiseFloater::onApply()
 
 void LuminousOptimiseFloater::onPutBack()
 {
+    LuminousPhotoMode::HoldSettingTips quiet;
     for (const auto& [setting, value] : mPutBack)
     {
         if (LLControlVariable* control = gSavedSettings.getControl(setting))

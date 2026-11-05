@@ -544,23 +544,7 @@ std::string metalReflection(const MSL::Result& result, std::span<const char* con
     // Every uniform has a place in each stage; size 0 where the stage does not use it.
     layout.vertex.places.resize(reflection.uniforms.size());
     layout.fragment.places.resize(reflection.uniforms.size());
-    layout.constantData = metalProgramConstants(vertex->msl) || metalProgramConstants(fragment->msl);
     return why;
-}
-
-bool metalProgramConstants(const std::string& msl)
-{
-    constexpr std::string_view declaration = "constant ";
-    for (size_t line = 0; line < msl.size();)
-    {
-        if (std::string_view(msl).substr(line, declaration.size()) == declaration)
-        {
-            return true;
-        }
-        const size_t end = msl.find('\n', line);
-        line = end == std::string::npos ? msl.size() : end + 1;
-    }
-    return false;
 }
 
 U32 metalVertexStride(U32 type)
@@ -1310,6 +1294,11 @@ public:
 
     void wait() override
     {
+        // A program an earlier wait() saw Ready has nothing left to wait for, send or write: no lock is taken.
+        if (mWaitedReady.load(std::memory_order_acquire))
+        {
+            return;
+        }
         mFaultPending.store(false, std::memory_order_relaxed); // [Viewer Lab] a deferred test fault is Failed now
         // wait() closes the job's group; its members still in the queue are taken from it
         // and translated here, so the group is sent before this waits, from this thread unless a
@@ -1360,6 +1349,10 @@ public:
         }
         lock.unlock();
         mDevice.writeFailureLines(); // a failed program's line before wait() returns
+        if (mJob->phase.load(std::memory_order_acquire) == MetalJobPhase::Ready)
+        {
+            mWaitedReady.store(true, std::memory_order_release);
+        }
     }
 
     /// Complete after wait(); empty while Pending and when Failed. [Viewer Lab] It reads the job's phase, never status(),
@@ -1467,6 +1460,8 @@ private:
     const ProgramReflection mNone{};
     /// [Viewer Lab] status() answers Pending once for a deferred test fault; wait() clears it.
     mutable std::atomic<bool> mFaultPending{ false };
+    /// A wait() has returned with the program Ready; the later ones return at once.
+    std::atomic<bool> mWaitedReady{ false };
 };
 
 Ref<Program> createMetalProgram(MetalDevice& device, const ProgramDesc& desc)
@@ -1542,18 +1537,16 @@ MetalProgramFunctions metalProgramFunctions(Program* program)
 // Pipelines --------------------------------------------------------------------------------------
 
 /// One render pipeline state in the making: Pending until its handler reports, then Ready with
-/// the state, which is written before the release-store, or Failed. An unspecialized state keeps
-/// the specializations asked for before it was Ready, and its handler sends them.
+/// the state, which is written before the release-store, or Failed.
 struct API_AVAILABLE(macos(26.0)) MetalPipelineHolder
 {
     std::string name;  ///< the program's, for the WARN line
-    PipelineDesc desc; ///< a specialization's attachments, blend and color mask
+    PipelineDesc desc; ///< the state's attachments, blend and color mask
     std::mutex mutex;
     std::condition_variable changed;
     std::atomic<CompileStatus> status{ CompileStatus::Pending };
     IdMTLRenderPipelineState state = nil;
-    std::vector<std::shared_ptr<MetalPipelineHolder>> waiting; ///< under mutex while Pending
-    MetalWaitKind kind = MetalWaitKind::Specialized; ///< what a draw waiting for it waits for
+    MetalWaitKind kind = MetalWaitKind::Full; ///< what a draw waiting for it waits for
 };
 
 namespace
@@ -1617,12 +1610,10 @@ namespace
         state.changed.notify_all();
     }
 
-    /// Stores a handler's result and gives the specializations that waited for it. A failure writes
-    /// one WARN line before Failed is stored, unless it is quiet: an unspecialized state that failed
-    /// wrote the line for its specializations, and nothing is written for a device that is gone.
-    std::vector<std::shared_ptr<MetalPipelineHolder>> pipelineDone(MetalPipelineHolder& holder,
-                                                                   IdMTLRenderPipelineState made, const std::string& why,
-                                                                   bool quiet) API_AVAILABLE(macos(26.0))
+    /// Stores a handler's result. A failure writes one WARN line before Failed is stored, unless it is
+    /// quiet: nothing is written for a device that is gone.
+    void pipelineDone(MetalPipelineHolder& holder, IdMTLRenderPipelineState made, const std::string& why, bool quiet)
+        API_AVAILABLE(macos(26.0))
     {
         std::lock_guard<std::mutex> lock(holder.mutex);
         if (!made && !quiet)
@@ -1632,39 +1623,6 @@ namespace
         holder.state = made;
         holder.status.store(made ? CompileStatus::Ready : CompileStatus::Failed, std::memory_order_release);
         holder.changed.notify_all();
-        return std::exchange(holder.waiting, {});
-    }
-
-    /// The unspecialized key: the program's attributes, the primitive class and the sample count, no attachments.
-    PipelineDesc unspecializedKey(const PipelineDesc& desc, U32 attributes)
-    {
-        PipelineDesc base;
-        base.attributeMask = attributes;
-        base.primitiveClass = desc.primitiveClass;
-        base.samples = desc.samples;
-        base.colorCount = 0;
-        return base;
-    }
-
-    /// Full pipelines: Metal API Validation warns at run time when a color attachment whose blending
-    /// ends Disabled had any unspecialized property in the unspecialized state, even only its format
-    /// or write mask (seen in run-time probes; no header says so).
-    /// So a description with such an attachment gets a full pipeline: blending off, or an integer
-    /// attachment, which GL does not blend (llrhi.h:128-130), with blending on.
-    bool endsDisabled(const PipelineDesc& desc)
-    {
-        if (!desc.blend.enabled)
-        {
-            return true;
-        }
-        for (U32 i = 0; i < std::min(desc.colorCount, PipelineDesc::MAX_COLOR_ATTACHMENTS); ++i)
-        {
-            if (isInteger(desc.colorFormats[i]))
-            {
-                return true;
-            }
-        }
-        return false;
     }
 
     /// The blend factors and operations of an attachment (MTL4RenderPipeline.h:40-90).
@@ -1724,7 +1682,7 @@ namespace
     /// The attachments of a full descriptor. Below colorCount each attachment has its format and write
     /// mask, without alpha for the attachments in alphaOff (bit i for attachment i), and blending
     /// Enabled with the factors when the description blends and the format is not an integer one, else
-    /// Disabled; the others have no format. Nothing is unspecialized.
+    /// Disabled; the others have no format.
     void setFullAttachments(MTL4RenderPipelineDescriptor* descriptor, const PipelineDesc& desc, U32 alphaOff)
         API_AVAILABLE(macos(26.0))
     {
@@ -1746,11 +1704,10 @@ namespace
         }
     }
 
-    /// (f): the full descriptor of a description with an attachment that ends Disabled. Below
-    /// colorCount each attachment has its format and write mask, and blending Enabled with the
-    /// factors when the description blends and the format is not an integer one, else Disabled; the
-    /// others have no format (a new descriptor's values otherwise: Disabled, One, Zero, Add, all
-    /// channels; MTL4RenderPipeline.h:53-83). Nothing is unspecialized.
+    /// The full descriptor of a description. Below colorCount each attachment has its format and write
+    /// mask, and blending Enabled with the factors when the description blends and the format is not an
+    /// integer one, which GL does not blend (llrhi.h:128-130), else Disabled; the others have no format (a new
+    /// descriptor's values otherwise: Disabled, One, Zero, Add, all channels; MTL4RenderPipeline.h:53-83).
     MTL4RenderPipelineDescriptor* fullDescriptor(Program& program, const PipelineDesc& desc, U32 attributes)
         API_AVAILABLE(macos(26.0))
     {
@@ -1759,89 +1716,15 @@ namespace
         return descriptor;
     }
 
-    /// The unspecialized descriptor of the descriptions whose attachments all blend:
-    /// all eight color attachments (MTL4RenderPipeline.h:196, :40-90) have blending Enabled
-    /// (MTL4PipelineState.h:57-61), as GL's blend applies to all draw buffers, and the format
-    /// (MTLPixelFormat.h:339), the write mask (MTLRenderPipeline.h:76), the factors (:50) and the
-    /// operations (:62) unspecialized. The fragment writes some of them.
-    MTL4RenderPipelineDescriptor* unspecializedDescriptor(Program& program, const PipelineDesc& desc, U32 attributes)
-        API_AVAILABLE(macos(26.0))
-    {
-        MTL4RenderPipelineDescriptor* descriptor = programDescriptor(program, desc, attributes);
-        for (U32 i = 0; i < PipelineDesc::MAX_COLOR_ATTACHMENTS; ++i)
-        {
-            MTL4RenderPipelineColorAttachmentDescriptor* attachment = descriptor.colorAttachments[i];
-            attachment.pixelFormat = MTLPixelFormatUnspecialized;
-            attachment.blendingState = MTL4BlendStateEnabled;
-            attachment.writeMask = MTLColorWriteMaskUnspecialized;
-            attachment.sourceRGBBlendFactor = MTLBlendFactorUnspecialized;
-            attachment.destinationRGBBlendFactor = MTLBlendFactorUnspecialized;
-            attachment.rgbBlendOperation = MTLBlendOperationUnspecialized;
-            attachment.sourceAlphaBlendFactor = MTLBlendFactorUnspecialized;
-            attachment.destinationAlphaBlendFactor = MTLBlendFactorUnspecialized;
-            attachment.alphaBlendOperation = MTLBlendOperationUnspecialized;
-        }
-        return descriptor;
-    }
-
-    /// A Ready unspecialized state specialized for the holder's attachments, blend and
-    /// mask (MTLRenderPipeline.h:396-412, MTL4Compiler.h:345-348), only for a description whose
-    /// attachments all blend: the attachments below colorCount get their format and write mask, the
-    /// others no format and all channels; all eight get the blend's factors and operations, with the
-    /// blending they had (MTL4Compiler.h:195-205). Counted before it is sent and refused once the
-    /// device has stopped waiting. The caller holds no lock: Metal may run the handler on this
-    /// thread.
-    void sendSpecialization(IdMTL4Compiler compiler, const std::shared_ptr<MetalCompileState>& counter,
-                            IdMTLRenderPipelineState unspecialized, const std::shared_ptr<MetalPipelineHolder>& holder)
-        API_AVAILABLE(macos(26.0))
-    {
-        if (!countHandler(*counter))
-        {
-            pipelineDone(*holder, nil, std::string(), true); // nothing is sent after the device's wait
-            return;
-        }
-        @autoreleasepool // also on Metal's handler threads
-        {
-            // A descriptor of its own, so every attachment's value is the one set here. Only the
-            // unspecialized properties are taken from it (MTL4Compiler.h:197-200).
-            MTL4RenderPipelineDescriptor* descriptor = [MTL4RenderPipelineDescriptor new];
-            const PipelineDesc& desc = holder->desc;
-            const U32 count = std::min(desc.colorCount, PipelineDesc::MAX_COLOR_ATTACHMENTS);
-            for (U32 i = 0; i < PipelineDesc::MAX_COLOR_ATTACHMENTS; ++i)
-            {
-                MTL4RenderPipelineColorAttachmentDescriptor* attachment = descriptor.colorAttachments[i];
-                attachment.pixelFormat = i < count ? metalPixelFormat(desc.colorFormats[i]) : MTLPixelFormatInvalid;
-                attachment.blendingState = desc.blend.enabled ? MTL4BlendStateEnabled : MTL4BlendStateDisabled;
-                setBlend(attachment, desc.blend);
-                attachment.writeMask = writeMask(i < count ? desc.colorMask : COLOR_MASK_ALL);
-            }
-            const std::shared_ptr<MetalCompileState> state = counter;
-            __block std::shared_ptr<MetalPipelineHolder> held = holder;
-            [compiler newRenderPipelineStateBySpecializationWithDescriptor:descriptor
-                                                                  pipeline:unspecialized
-                                                         completionHandler:^(id<MTLRenderPipelineState> made, NSError* error)
-            {
-                pipelineDone(*held, made, made ? std::string() : metalError(error), false);
-                held.reset();
-                handlerDone(*state);
-            }];
-        }
-    }
-
-    /// An unspecialized state, or a full one, compiled asynchronously
-    /// (MTL4Compiler.h:303-305) and counted in MetalCompileState. Its handler sends the
-    /// specializations that waited for it (a full state has none) before it counts itself down, so
-    /// ~MetalDevice's wait covers them. The caller holds no lock.
+    /// A full state compiled asynchronously (MTL4Compiler.h:303-305) and counted in
+    /// MetalCompileState, so ~MetalDevice's wait covers its handler. The caller holds no lock.
     void sendPipeline(IdMTL4Compiler compiler, const std::shared_ptr<MetalCompileState>& counter,
                       MTL4RenderPipelineDescriptor* descriptor, const std::shared_ptr<MetalPipelineHolder>& holder,
                       U32 sleepMs, bool fail) API_AVAILABLE(macos(26.0))
     {
         if (!countHandler(*counter))
         {
-            for (const std::shared_ptr<MetalPipelineHolder>& special : pipelineDone(*holder, nil, std::string(), true))
-            {
-                pipelineDone(*special, nil, std::string(), true);
-            }
+            pipelineDone(*holder, nil, std::string(), true); // nothing is sent after the device's wait
             return;
         }
         const std::shared_ptr<MetalCompileState> state = counter;
@@ -1858,17 +1741,7 @@ namespace
             id<MTLRenderPipelineState> kept = fail ? nil : made;
             const std::string why = fail ? std::string("the state does not compile (failNextCompile)")
                                          : kept ? std::string() : metalError(error);
-            for (const std::shared_ptr<MetalPipelineHolder>& special : pipelineDone(*held, kept, why, false))
-            {
-                if (kept)
-                {
-                    sendSpecialization(compiler, state, kept, special);
-                }
-                else
-                {
-                    pipelineDone(*special, nil, std::string(), true);
-                }
-            }
+            pipelineDone(*held, kept, why, false);
             held.reset();
             handlerDone(*state);
         }];
@@ -1878,104 +1751,44 @@ namespace
 std::shared_ptr<MetalPipelineHolder> MetalPipelineStates::state(MetalDevice& device, Program& program,
                                                                 const PipelineDesc& desc, U32 attributes)
 {
-    // The keys: none has the depth format, and the unspecialized one has no attachments. A key
+    // The key has no depth format, so a state is shared across depth formats and unread attributes. A key
     // with blending off has no factors (normalized, llrhi.cpp).
     PipelineDesc special = normalized(desc);
     special.attributeMask = attributes;
     special.depthFormat = Format::Unknown;
-    // A device made for a frame capture has full states only (MetalDevice::fullPipelineStates); the full
-    // descriptor blends as the specialization would. So has a program with program-scope constant data, whose
-    // reads shader validation reports in a specialized state (MetalProgramLayout::constantData).
-    if (device.fullPipelineStates() || endsDisabled(special) || metalProgramLayout(&program)->constantData)
-    {
-        // (f): a full state of its own, shared across depth formats and unread attributes.
-        std::shared_ptr<MetalPipelineHolder> full;
-        {
-            std::lock_guard<std::mutex> lock(mMutex);
-            std::shared_ptr<MetalPipelineHolder>& found = mFull[PipelineKey{ program.id(), special }];
-            if (found)
-            {
-                return found;
-            }
-            found = std::make_shared<MetalPipelineHolder>();
-            found->name = program.debugName();
-            found->desc = special;
-            found->kind = MetalWaitKind::Full;
-            full = found;
-            ++mSent.full;
-            mBases.insert(PipelineKey{ program.id(), unspecializedKey(desc, attributes) }); // the would-be unspecialized one
-        }
-        MTL4RenderPipelineDescriptor* descriptor = fullDescriptor(program, special, attributes);
-        // For tests: what is sent, read back from the descriptor, so a full state that blends with
-        // One, Zero and Add instead of Disabled is seen.
-        U32 disabled = 0;
-        for (U32 i = 0; i < std::min(special.colorCount, PipelineDesc::MAX_COLOR_ATTACHMENTS); ++i)
-        {
-            if (descriptor.colorAttachments[i].blendingState == MTL4BlendStateDisabled)
-            {
-                disabled |= 1u << i;
-            }
-        }
-        {
-            std::lock_guard<std::mutex> lock(mMutex);
-            mLastFullDisabled = disabled;
-        }
-        sendPipeline(device.compiler(), device.compileState(), descriptor, full, device.takeHandlerSleep(),
-                     device.takeCompileFault());
-        return full;
-    }
-    const PipelineDesc base = unspecializedKey(desc, attributes);
-
-    std::shared_ptr<MetalPipelineHolder> specialized;
-    std::shared_ptr<MetalPipelineHolder> made; // a new unspecialized state, sent below
-    IdMTLRenderPipelineState ready = nil;      // a Ready unspecialized state, specialized below
+    std::shared_ptr<MetalPipelineHolder> full;
     {
         std::lock_guard<std::mutex> lock(mMutex);
-        auto found = mSpecialized.find({ program.id(), special });
-        if (found != mSpecialized.end())
+        std::shared_ptr<MetalPipelineHolder>& found = mFull[PipelineKey{ program.id(), special }];
+        if (found)
         {
-            return found->second;
+            return found;
         }
-        specialized = std::make_shared<MetalPipelineHolder>();
-        specialized->name = program.debugName();
-        specialized->desc = special;
-        mSpecialized.emplace(PipelineKey{ program.id(), special }, specialized);
-        ++mSent.specialized;
-        std::shared_ptr<MetalPipelineHolder>& unspecialized = mUnspecialized[PipelineKey{ program.id(), base }];
-        if (!unspecialized)
-        {
-            unspecialized = std::make_shared<MetalPipelineHolder>();
-            unspecialized->name = program.debugName();
-            made = unspecialized;
-            ++mSent.unspecialized;
-            mBases.insert(PipelineKey{ program.id(), base });
-        }
-        // The holder's lock after this one; the handlers take the holder's alone.
-        std::lock_guard<std::mutex> holderLock(unspecialized->mutex);
-        switch (unspecialized->status.load(std::memory_order_acquire))
-        {
-        case CompileStatus::Pending:
-            unspecialized->waiting.push_back(specialized); // its handler sends it
-            break;
-        case CompileStatus::Ready:
-            ready = unspecialized->state;
-            break;
-        case CompileStatus::Failed:
-            specialized->status.store(CompileStatus::Failed, std::memory_order_release); // its WARN line is written
-            break;
-        }
+        found = std::make_shared<MetalPipelineHolder>();
+        found->name = program.debugName();
+        found->desc = special;
+        found->kind = MetalWaitKind::Full;
+        full = found;
+        ++mSent.full;
     }
-    if (made)
+    MTL4RenderPipelineDescriptor* descriptor = fullDescriptor(program, special, attributes);
+    // For tests: what is sent, read back from the descriptor, so a full state that blends with
+    // One, Zero and Add instead of Disabled is seen.
+    U32 disabled = 0;
+    for (U32 i = 0; i < std::min(special.colorCount, PipelineDesc::MAX_COLOR_ATTACHMENTS); ++i)
     {
-        sendPipeline(device.compiler(), device.compileState(), unspecializedDescriptor(program, desc, attributes), made,
-                     device.takeHandlerSleep(),
-                     device.takeCompileFault());
+        if (descriptor.colorAttachments[i].blendingState == MTL4BlendStateDisabled)
+        {
+            disabled |= 1u << i;
+        }
     }
-    else if (ready)
     {
-        sendSpecialization(device.compiler(), device.compileState(), ready, specialized);
+        std::lock_guard<std::mutex> lock(mMutex);
+        mLastFullDisabled = disabled;
     }
-    return specialized;
+    sendPipeline(device.compiler(), device.compileState(), descriptor, full, device.takeHandlerSleep(),
+                 device.takeCompileFault());
+    return full;
 }
 
 bool MetalPipelineStates::refuse(const PipelineKey& key)
@@ -1995,49 +1808,23 @@ void MetalPipelineStates::countVariant()
 MetalCompileStats MetalPipelineStates::stats() const
 {
     std::lock_guard<std::mutex> lock(mMutex);
-    MetalCompileStats stats = mSent;
-    stats.e14Unspecialized = mBases.size() + mForgottenBases;
-    return stats;
-}
-
-size_t MetalPipelineStates::heldBases() const
-{
-    std::lock_guard<std::mutex> lock(mMutex);
-    return mBases.size();
+    return mSent;
 }
 
 void MetalPipelineStates::forgetProgram(U64 programId)
 {
     const auto ofProgram = [programId](const auto& entry) { return entry.first.programId == programId; };
     std::lock_guard<std::mutex> lock(mMutex);
-    std::erase_if(mUnspecialized, ofProgram);
-    std::erase_if(mSpecialized, ofProgram);
     std::erase_if(mFull, ofProgram);
     std::erase_if(mRefused, [programId](const PipelineKey& key) { return key.programId == programId; });
-    // The program's unspecialized base keys are only counted from now on
-    mForgottenBases += std::erase_if(mBases, [programId](const PipelineKey& key) { return key.programId == programId; });
 }
 
 void MetalPipelineStates::clear()
 {
     std::lock_guard<std::mutex> lock(mMutex);
-    mUnspecialized.clear();
-    mSpecialized.clear();
     mFull.clear();
     mRefused.clear();
     mLastFullDisabled = 0;
-}
-
-size_t MetalPipelineStates::unspecialized() const
-{
-    std::lock_guard<std::mutex> lock(mMutex);
-    return mUnspecialized.size();
-}
-
-size_t MetalPipelineStates::specialized() const
-{
-    std::lock_guard<std::mutex> lock(mMutex);
-    return mSpecialized.size();
 }
 
 size_t MetalPipelineStates::full() const
@@ -2059,7 +1846,7 @@ U32 MetalPipelineStates::lastFullDisabled() const
 }
 
 /// One pipeline per full key in PipelineCache, so the tracker compares its depth format
-/// with the pass's (llrhi.cpp:1026). Its state is the shared specialized or full one, which it holds
+/// with the pass's (llrhi.cpp:1026). Its state is the shared full one, which it holds
 /// until the frames that may have used it have finished.
 class API_AVAILABLE(macos(26.0)) MetalPipeline final : public Pipeline
 {
@@ -2094,6 +1881,12 @@ public:
     /// Waits while the state is being made (Pipeline's contract, llrhi.h:790-791); nil when it failed.
     IdMTLRenderPipelineState state() const
     {
+        // pipelineDone writes the state before its release-store of the status, once: a state that is no longer
+        // Pending is read without the lock.
+        if (mHolder->status.load(std::memory_order_acquire) != CompileStatus::Pending)
+        {
+            return mHolder->state;
+        }
         std::unique_lock<std::mutex> lock(mHolder->mutex);
         if (mHolder->status.load(std::memory_order_relaxed) == CompileStatus::Pending)
         {
@@ -2136,6 +1929,10 @@ public:
             sendPipeline(device.compiler(), device.compileState(), descriptor, variant, device.takeHandlerSleep(),
                          device.takeCompileFault());
             device.pipelineStates().countVariant();
+        }
+        if (variant->status.load(std::memory_order_acquire) != CompileStatus::Pending)
+        {
+            return variant->state; // as state(): written before the status
         }
         std::unique_lock<std::mutex> lock(variant->mutex);
         if (variant->status.load(std::memory_order_relaxed) == CompileStatus::Pending)

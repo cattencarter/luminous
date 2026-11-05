@@ -63,8 +63,8 @@ namespace tut
     // t188 are tests 187 and 188 (P3-01k, its t184 and t185 before batch 3's merge; its review M1); t190-t192 are tests
     // 190-192 (P3-08b, a block of its own to 194); t195-t198 are tests 195-198 (P3-08 lane B); t200-t206 are tests
     // 200-206 (P3-04b, from 200 likewise); t210-t212 are tests 210-212 (P3-09b, from 210 likewise); t213 and t214 are tests
-    // 213 and 214 (P3-R4); t215-t217 are tests 215-217
-    typedef test_group<rhimetal_data, 226> rhimetal_group;
+    // 213 and 214 (P3-R4); t215-t217 are tests 215-217; t231 is test 231 (vsync-present2)
+    typedef test_group<rhimetal_data, 231> rhimetal_group;
     typedef rhimetal_group::object object;
     rhimetal_group rhimetal_test_group("Metal backend");
 
@@ -608,14 +608,14 @@ namespace tut
     template<> template<>
     void object::test<76>()
     {
-        set_test_name("t74: flag B with (f): blending off is a full state sent Disabled that draws; an unspecialized pipeline with blending Enabled on all eight color attachments, specialized for one blended RGBA8 attachment, draws; four attachments and R32Uint are Ready, R32Uint alone Disabled beside a blended one, under validation");
+        set_test_name("t74: flag B: blending off is a full state sent Disabled that draws; blending on one RGBA8 attachment is a full state sent Enabled that draws; four attachments and R32Uint are Ready, R32Uint alone Disabled beside a blended one, under validation");
         runMetalTest(74);
     }
 
     template<> template<>
     void object::test<77>()
     {
-        set_test_name("t75: two attribute masks that differ outside the program's, two depth formats and 12 formats x blend x masks give one unspecialized, 6 specialized and 6 full states shared by 48 cached pipelines");
+        set_test_name("t75: two attribute masks that differ outside the program's, two depth formats and 12 formats x blend x masks give 12 full states shared by 48 cached pipelines");
         runMetalTest(75);
     }
 
@@ -650,7 +650,7 @@ namespace tut
     template<> template<>
     void object::test<82>()
     {
-        set_test_name("t80: ~MetalDevice with an unspecialized pipeline compiling, two specializations chained to it and a full state returns after every handler has reported, and none reports after it");
+        set_test_name("t80: ~MetalDevice with a pipeline compiling and two more sent after it returns after every handler has reported, and none reports after it");
         runMetalTest(80);
     }
 
@@ -1412,8 +1412,8 @@ namespace tut
     template<> template<>
     void object::test<185>()
     {
-        set_test_name("t185: with displaySync off a present leaves the frame in the back buffer while the window server "
-                      "holds all drawables but one, never for a drawable readback or displaySync on, not once stale "
+        set_test_name("t185: with VSync off a present leaves the frame in the back buffer while the window server "
+                      "holds all drawables but one, never for a drawable readback or VSync on, not once stale "
                       "(P3-09 S1, F51)");
         runMetalTest(185);
     }
@@ -1597,7 +1597,7 @@ namespace tut
     template<> template<>
     void object::test<213>()
     {
-        set_test_name("t213: a released program's E14 base keys leave the device and stay counted; the group hash is the "
+        set_test_name("t213: a released program's full states leave the device and stay counted; the group hash is the "
                       "records' sum (P3-R4 B-4)");
         runMetalTest(213);
     }
@@ -1693,5 +1693,44 @@ namespace tut
     {
         set_test_name("t226: a translated sampler3D reads the channel's 3D slot, the default 3D texture when it is empty");
         runMetalTest(226);
+    }
+
+    template<> template<>
+    void object::test<227>()
+    {
+        set_test_name("t227: without the Metal debug setting an unchanged sampler place takes its remembered texture and sampler, and each change of the channel shows; with it every place is compared and none differs");
+        runMetalTest(227);
+    }
+
+    template<> template<>
+    void object::test<228>()
+    {
+        set_test_name("t228: a strip's list of an index buffer's indices is kept while the buffer has no update; another range and an update each make their own, static and dynamic, with and without the Metal debug setting");
+        runMetalTest(228);
+    }
+
+    template<> template<>
+    void object::test<229>()
+    {
+        set_test_name("t229: MetalFX's spatial upscaler keeps a flat colour flat at 2x, 4x and between, scales only the content, "
+                      "breaks a stack pass that goes on, and leaves nothing behind when made and let go at changing sizes");
+        runMetalTest(229);
+    }
+
+    template<> template<>
+    void object::test<230>()
+    {
+        set_test_name("t230: a pass that only clears a depth nothing samples makes no render encoder; the next pass with that "
+                      "depth clears it as its load action, and a copy of it or the frame's end encodes the clear first");
+        runMetalTest(230);
+    }
+
+    template<> template<>
+    void object::test<231>()
+    {
+        set_test_name("t231: with VSync off the window server gets the newest finished frame through the present queue: "
+                      "a present flips into a finished frame, endFrame copies it into a drawable once the GPU has "
+                      "finished it, held frames wait and only the newest goes, a readback and VSync on present directly");
+        runMetalTest(231);
     }
 }

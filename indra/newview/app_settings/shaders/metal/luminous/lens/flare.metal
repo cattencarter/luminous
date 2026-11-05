@@ -11,6 +11,10 @@
 //   (the common downsampler)    the starburst light's mip levels, with Star blur;
 //   luminous_lens_flare         ghosts, halo, the sun and the starburst;
 //   luminous_lens_flare_fs      added to the frame with the dirt.
+// In a frame settled for MetalFX temporal the light is taken where the camera without the jitter saw the frame, with the
+// starburst's light in its alpha and the sun's seen share in a 1 x 1 texture; both are averaged with the frames before
+// (luminousmetaltone.cpp's settle) and luminous_lens_flare_core then makes the starburst's light from the average. The
+// flare, dirt and all, is added where this frame shows each place, so the scaler sees it as jittered as the scene.
 
 #include "lenscommon.h"
 #include "luminous/common/fullscreen.h"
@@ -84,24 +88,38 @@ kernel void luminous_lens_flare_bright(
     depth2d<float> depth [[texture(LUMINOUS_LENS_TEXTURE_DEPTH)]],
     texture2d<float, access::write> bright [[texture(3)]],
     texture2d<float, access::write> core [[texture(4)]],
+    texture2d<float, access::write> sunSeen [[texture(5)]],
     uint2 gid [[thread_position_in_grid]])
 {
     using namespace luminous_lens;
+    if (k.settled != 0 && all(gid == uint2(0)))
+    {
+        // the sun's seen share, as luminous_lens_flare takes it, where this frame shows the sun's place
+        float seen = 0.0;
+        const float2 aspect = float2(p.aspect, 1.0);
+        for (int i = 0; i < 9; ++i)
+        {
+            const float2 o = i == 0 ? float2(0.0) : 0.008 * float2(cos(0.785398 * float(i)), sin(0.785398 * float(i))) / aspect;
+            seen += step(0.99999, lensDepthAt(depth, p.sunUV + k.jitter + o));
+        }
+        sunSeen.write(float4(seen / 9.0, 0.0, 0.0, 1.0), gid);
+    }
     if (any(gid >= k.halfSize))
     {
         return;
     }
     const float2 uv = (float2(gid) + 0.5) / float2(k.halfSize);
+    const float2 at = uv + k.jitter; // where this frame shows the place (settled; else uv)
     const float e = max(lensExposure(exposure), 1e-4);
-    float3 s = min(frame.sample(lensLinearClamp, uv, level(0.0)).rgb, float3(65000.0));
+    float3 s = min(frame.sample(lensLinearClamp, at, level(0.0)).rgb, float3(65000.0));
     float l = dot(s, LENS_LUMA);
-    if (lensDepthAt(depth, uv) >= 1.0)
+    if (lensDepthAt(depth, at) >= 1.0)
     {
         const float2 px = p.flareErode / p.frameSize;
-        const float lx = min(dot(frame.sample(lensLinearClamp, uv + float2(px.x, 0.0), level(0.0)).rgb, LENS_LUMA),
-                             dot(frame.sample(lensLinearClamp, uv - float2(px.x, 0.0), level(0.0)).rgb, LENS_LUMA));
-        const float ly = min(dot(frame.sample(lensLinearClamp, uv + float2(0.0, px.y), level(0.0)).rgb, LENS_LUMA),
-                             dot(frame.sample(lensLinearClamp, uv - float2(0.0, px.y), level(0.0)).rgb, LENS_LUMA));
+        const float lx = min(dot(frame.sample(lensLinearClamp, at + float2(px.x, 0.0), level(0.0)).rgb, LENS_LUMA),
+                             dot(frame.sample(lensLinearClamp, at - float2(px.x, 0.0), level(0.0)).rgb, LENS_LUMA));
+        const float ly = min(dot(frame.sample(lensLinearClamp, at + float2(0.0, px.y), level(0.0)).rgb, LENS_LUMA),
+                             dot(frame.sample(lensLinearClamp, at - float2(0.0, px.y), level(0.0)).rgb, LENS_LUMA));
         const float eroded = min(l, min(lx, ly));
         s *= eroded / max(l, 1e-4);
         l = eroded;
@@ -113,8 +131,23 @@ kernel void luminous_lens_flare_bright(
     const float over = max(soft, l - threshold);
     const float share = clamp(over / max(l, 1e-4), 0.0, 1.0);
     const float brightest = max(l - 5.0 / e, 0.0) * e / 5.0;
-    bright.write(float4(s * share * share, 1.0), gid);
-    core.write(float4(brightest * awayFromSun(p, lensToPicture(p, uv))), gid);
+    const float starburst = brightest * awayFromSun(p, lensToPicture(p, uv));
+    bright.write(float4(s * share * share, k.settled != 0 ? starburst : 1.0), gid);
+    core.write(float4(starburst), gid);
+}
+
+// A settled frame: the starburst's light from the settled light's alpha.
+kernel void luminous_lens_flare_core(
+    constant LuminousLensFlareConstants& k [[buffer(LUMINOUS_LENS_BUFFER_PASS)]],
+    texture2d<float> bright [[texture(3)]],
+    texture2d<float, access::write> core [[texture(4)]],
+    uint2 gid [[thread_position_in_grid]])
+{
+    if (any(gid >= k.halfSize))
+    {
+        return;
+    }
+    core.write(float4(max(bright.read(gid).a, 0.0)), gid);
 }
 
 // Ghosts, halo and starburst, at half size.
@@ -127,6 +160,7 @@ kernel void luminous_lens_flare(
     texture2d<float> soft [[texture(4)]],
     texture2d<float> core [[texture(5)]],
     texture2d<float, access::write> out [[texture(6)]],
+    texture2d<float> sunSeen [[texture(7)]],
     uint2 gid [[thread_position_in_grid]])
 {
     using namespace luminous_lens;
@@ -147,10 +181,17 @@ kernel void luminous_lens_flare(
     if (p.sunWeight > 0.0)
     {
         float seen = 0.0;
-        for (int i = 0; i < 9; ++i)
+        if (k.settled != 0)
         {
-            const float2 o = i == 0 ? float2(0.0) : 0.008 * float2(cos(0.785398 * float(i)), sin(0.785398 * float(i))) / aspect;
-            seen += step(0.99999, lensDepthAt(depth, p.sunUV + o));
+            seen = 9.0 * saturate(sunSeen.read(uint2(0)).r); // settled, from the bright pass
+        }
+        else
+        {
+            for (int i = 0; i < 9; ++i)
+            {
+                const float2 o = i == 0 ? float2(0.0) : 0.008 * float2(cos(0.785398 * float(i)), sin(0.785398 * float(i))) / aspect;
+                seen += step(0.99999, lensDepthAt(depth, p.sunUV + o));
+            }
         }
         const float sun = seen / 9.0 * p.sunWeight;
         if (sun > 0.0)
@@ -314,11 +355,12 @@ namespace luminous_lens
 fragment float4 luminous_lens_flare_fs(
     LuminousFullscreenOut in [[stage_in]],
     constant LuminousLensParams& p [[buffer(LUMINOUS_LENS_BUFFER_PARAMS)]],
+    constant LuminousLensFlareConstants& k [[buffer(LUMINOUS_LENS_BUFFER_PASS)]],
     texture2d<float> soft [[texture(4)]],
     texture2d<float> flare [[texture(6)]])
 {
     using namespace luminous_lens;
-    const float2 uv = in.uv;
+    const float2 uv = in.uv - k.jitter; // settled: the place this frame shows here, as the flare was made
     float3 light = flare.sample(lensLinearClamp, uv, level(0.0)).rgb;
     if (p.flareDirt > 0.0)
     {

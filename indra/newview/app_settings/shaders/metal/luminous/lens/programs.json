@@ -15,7 +15,8 @@
         { "function": "luminous_lens_bloom_up_in_place", "threadsPerThreadgroup": [16, 16, 1] },
         { "function": "luminous_lens_streak", "threadsPerThreadgroup": [256, 1, 1] },
         { "function": "luminous_lens_flare_bright", "threadsPerThreadgroup": [16, 16, 1] },
-        { "function": "luminous_lens_flare", "threadsPerThreadgroup": [16, 16, 1] }
+        { "function": "luminous_lens_flare", "threadsPerThreadgroup": [16, 16, 1] },
+        { "function": "luminous_lens_flare_core", "threadsPerThreadgroup": [16, 16, 1] }
       ],
       "render": [
         { "vertex": "luminous_fullscreen_vs", "fragment": "luminous_lens_tone_fs", "colorFormats": ["RGBA16Float"], "depthFormat": "", "blend": "none" },

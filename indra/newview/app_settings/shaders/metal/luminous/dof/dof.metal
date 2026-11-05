@@ -24,6 +24,14 @@
 //    gather at each pixel, coarse tiles are scaled up bilinearly.
 // The mip levels come from the common single-pass downsampler into a texture of their own, so the
 // source needs none.
+//
+// In a frame drawn for MetalFX temporal the camera is jittered by a sub-pixel offset each frame, and a blur
+// gathered from that frame changes its shape at focus edges from frame to frame, which the scaler passes on.
+// There (p.layer) the blur goes into a layer of its own instead, each texel the place the camera without the
+// jitter saw, read from the source that far on (p.jitterX, p.jitterY): the samples' part of each gather and its
+// weight (luminous_dof_layer_fs, the coarse tiles alike). The frame settles the layer (averaged with the frames
+// before, moved by the camera), and luminous_dof_settled_fs adds it back where this frame shows each place: the
+// frame keeps the rest of its own pixel, so what is in focus stays jittered as the scene is.
 
 #include <metal_stdlib>
 #include "luminous/common/fullscreen.h"
@@ -103,9 +111,10 @@ namespace luminous_dof
         return s;
     }
 
-    /// The gather at x, in the source's pixels (a pixel's centre is at i + 0.5), around `centre`.
+    /// The gather at x, in the source's pixels (a pixel's centre is at i + 0.5), around `centre`. centre_share:
+    /// the centre's weight in the mean, the samples' the rest.
     inline float3 gather(texture2d<float> source, texture2d<float> chain, float2 x, float4 centre, Spiral s,
-                         constant LuminousDoFParams& p)
+                         constant LuminousDoFParams& p, thread float& centre_share)
     {
         const float2 texel = 1.0 / p.screenRes;
         const float2 tc = x * texel;
@@ -115,6 +124,7 @@ namespace luminous_dof
         // The running mean of what has been gathered. A sample that does not reach this pixel counts as
         // that mean, so it changes nothing; the first sample after the centre weighs 1/2, the next 1/3.
         float3 mean = centre.rgb;
+        centre_share = 1.0;
         float angle = 0.0;
         for (int i = 0; i < s.samples; ++i)
         {
@@ -132,6 +142,7 @@ namespace luminous_dof
 
             const float reach = smoothstep(radius - 0.5, radius + 0.5, size);
             mean += (sample.rgb - mean) * (reach / float(i + 2));
+            centre_share *= 1.0 - reach / float(i + 2);
 
             angle += GOLDEN_ANGLE;
             angle = angle >= TWO_PI ? angle - TWO_PI : angle;
@@ -142,6 +153,27 @@ namespace luminous_dof
     inline uint tileIndex(uint2 tile, constant LuminousDoFParams& p)
     {
         return tile.y * p.tiles.x + tile.x;
+    }
+
+    /// Where a texel at x reads the source: in the layer, where this frame shows the place the camera without the
+    /// jitter saw at x; else x.
+    inline float2 readAt(float2 x, constant LuminousDoFParams& p)
+    {
+        return x + float2(p.jitterX, p.jitterY);
+    }
+
+    /// The source's pixel at x, the nearest.
+    inline float4 centreAt(texture2d<float> source, float2 x)
+    {
+        const uint2 size = uint2(source.get_width(), source.get_height());
+        return source.read(min(uint2(max(x, float2(0.0))), size - 1));
+    }
+
+    /// A gather as the layer holds it: the samples' part of the mean and their weight, so that a pixel where this
+    /// frame shows the place stands in for the centre (frame * (1 - a) + rgb). Rounding never makes it negative.
+    inline float4 layerOf(float3 mean, float centre_share, float3 centre)
+    {
+        return float4(max(mean - centre * centre_share, float3(0.0)), 1.0 - centre_share);
     }
 }
 
@@ -352,14 +384,15 @@ kernel void luminous_dof_coarse(constant LuminousDoFParams& p [[buffer(LUMINOUS_
         return;
     }
 
-    // The texel's centre in the source's pixels, and the pixel there as the centre.
-    const float2 x = (float2(texel) + 0.5) * float(scale);
-    const uint2 source_size = uint2(source.get_width(), source.get_height());
-    const float4 centre = source.read(min(uint2(x), source_size - 1));
+    // The texel's centre in the source's pixels, and the pixel there as the centre; in the layer, that far on.
+    const float2 x = readAt((float2(texel) + 0.5) * float(scale), p);
+    const float4 centre = centreAt(source, x);
     const int total = scale == 2 ? p.halfSamples : p.quarterSamples;
     const float lod = scale == 2 ? p.halfLod : p.quarterLod;
     const Spiral s = spiral(state[index].x, total, lod, min(p.budget, total), p.maxCoF);
-    const float4 colour = float4(gather(source, chain, x, centre, s, p), 1.0);
+    float centre_share;
+    const float3 mean = gather(source, chain, x, centre, s, p, centre_share);
+    const float4 colour = p.layer != 0 ? layerOf(mean, centre_share, centre.rgb) : float4(mean, 1.0);
     if (scale == 2)
     {
         half_size.write(colour, uint2(texel));
@@ -403,5 +436,54 @@ fragment float4 luminous_dof_composite_fs(LuminousFullscreenOut in [[stage_in]],
     }
     const float4 centre = source.read(pixel);
     const Spiral s = spiral(here.x, p.samples, p.lod, p.budget, p.maxCoF);
-    return float4(gather(source, chain, in.position.xy, centre, s, p), 1.0);
+    float centre_share;
+    return float4(gather(source, chain, in.position.xy, centre, s, p, centre_share), 1.0);
+}
+
+/// The layer in a frame drawn for MetalFX temporal: each texel the place the camera without the jitter saw, the
+/// samples' part of its gather and their weight (layerOf); the coarse tiles' textures hold the same. Sharp tiles
+/// are left as the pass cleared them: nothing to add.
+fragment float4 luminous_dof_layer_fs(LuminousFullscreenOut in [[stage_in]],
+                                      constant LuminousDoFParams& p [[buffer(LUMINOUS_DOF_BUFFER_PARAMS)]],
+                                      device const float2* state [[buffer(LUMINOUS_DOF_BUFFER_STATE)]],
+                                      texture2d<float> source [[texture(LUMINOUS_DOF_TEXTURE_SOURCE)]],
+                                      texture2d<float> chain [[texture(LUMINOUS_DOF_TEXTURE_CHAIN)]],
+                                      texture2d<float> half_size [[texture(LUMINOUS_DOF_TEXTURE_HALF)]],
+                                      texture2d<float> quarter_size [[texture(LUMINOUS_DOF_TEXTURE_QUARTER)]])
+{
+    using namespace luminous_dof;
+    constexpr sampler scaled(coord::pixel, filter::linear, address::clamp_to_edge);
+
+    const uint2 pixel = uint2(in.position.xy);
+    const float2 here = state[tileIndex(pixel / uint(LUMINOUS_DOF_TILE), p)];
+    const uint kind = uint(here.y);
+    if (kind == LUMINOUS_DOF_KIND_SHARP)
+    {
+        discard_fragment();
+        return float4(0.0);
+    }
+    if (kind == LUMINOUS_DOF_KIND_HALF)
+    {
+        return half_size.sample(scaled, in.position.xy * 0.5);
+    }
+    if (kind == LUMINOUS_DOF_KIND_QUARTER)
+    {
+        return quarter_size.sample(scaled, in.position.xy * 0.25);
+    }
+    const float2 x = readAt(in.position.xy, p);
+    const float4 centre = centreAt(source, x);
+    const Spiral s = spiral(here.x, p.samples, p.lod, p.budget, p.maxCoF);
+    float centre_share;
+    const float3 mean = gather(source, chain, x, centre, s, p, centre_share);
+    return layerOf(mean, centre_share, centre.rgb);
+}
+
+/// The settled layer added back where this frame shows each place, at uv minus the jitter: blended One,
+/// OneMinusSourceAlpha into the frame, colour only, so the frame keeps 1 - a of its own pixel.
+fragment float4 luminous_dof_settled_fs(LuminousFullscreenOut in [[stage_in]],
+                                        constant LuminousDoFParams& p [[buffer(LUMINOUS_DOF_BUFFER_PARAMS)]],
+                                        texture2d<float> layer [[texture(LUMINOUS_DOF_TEXTURE_LAYER)]])
+{
+    constexpr sampler linear(filter::linear, address::clamp_to_edge);
+    return layer.sample(linear, in.uv - float2(p.jitterX, p.jitterY) / p.screenRes);
 }

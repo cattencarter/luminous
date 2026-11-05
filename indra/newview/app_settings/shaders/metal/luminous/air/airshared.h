@@ -96,8 +96,11 @@ struct LuminousAirDraw
 {
     simd_float2 depthSize;   ///< the depth buffer's pixels
     simd_float2 targetSize;  ///< the pixels this dispatch or draw writes
-    simd_float2 maskSize;    ///< the shafts' mask (and the half-size sum)
+    simd_float2 maskSize;    ///< the shafts' mask
     simd_float2 airTexel;    ///< one texel of the half-size sum, in uv
+    simd_float2 jitter;      ///< a frame settled for MetalFX temporal: its jitter in uv, else 0. The mask and the sum are
+                             ///< then made where the camera without it saw the frame, and read back that far off; what
+                             ///< reads the depth (volumetric light, beams) reads it that far on, where this frame shows it
     float shaftReach;        ///< luminous_shaft_reach: beyond this from the sun the mask is 0, in the frame's heights
     int maskHalo;            ///< the mask kernel's halo in mask texels
     int vol;                 ///< add the volumetric light
@@ -108,6 +111,6 @@ struct LuminousAirDraw
     int addAir;              ///< the full-size draw adds the half-size sum with the tent
 };
 
-static_assert(sizeof(LuminousAirDraw) == 64, "LuminousAirDraw must be 64 bytes in C++ and MSL");
+static_assert(sizeof(LuminousAirDraw) == 72, "LuminousAirDraw must be 72 bytes in C++ and MSL");
 
 #endif // LUMINOUS_AIR_SHARED_H

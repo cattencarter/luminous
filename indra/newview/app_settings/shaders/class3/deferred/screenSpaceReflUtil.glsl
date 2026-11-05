@@ -44,10 +44,16 @@ float random (vec2 uv)
 // Based off of https://github.com/RoundedGlint585/ScreenSpaceReflection/
 // A few tweaks here and there to suit our needs.
 
+// <Luminous> MetalFX temporal: the scene map's jitter minus this frame's, in clip units. The scene map and its
+// depth were drawn last frame with last frame's jitter, projection_matrix carries this frame's, so the point is
+// moved to where last frame's picture has it. 0 without the jitter (always on OpenGL).
+uniform vec2 luminous_ssr_jitter;
+// </Luminous>
+
 vec2 generateProjectedPosition(vec3 pos)
 {
     vec4 samplePosition = projection_matrix * vec4(pos, 1.f);
-    samplePosition.xy = (samplePosition.xy / samplePosition.w) * 0.5 + 0.5;
+    samplePosition.xy = (samplePosition.xy / samplePosition.w + luminous_ssr_jitter) * 0.5 + 0.5; // <Luminous/>
     return samplePosition.xy;
 }
 

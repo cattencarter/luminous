@@ -798,9 +798,10 @@ bool isSampler(UniformType type)
 
 namespace
 {
-    // Builds the reason only when there is one, because textures are created often (media).
+    // Builds the reason only when there is one, because textures are created often (media). Out of line and cold, so
+    // the checks that call it keep a small frame on their passing path: the encoder tracker's run at every draw.
     template <class... Parts>
-    std::string reason(const Parts&... parts)
+    [[gnu::noinline, gnu::cold]] std::string reason(const Parts&... parts)
     {
         std::ostringstream why;
         (why << ... << parts);
@@ -1288,6 +1289,97 @@ std::string validate(const SamplerDesc& desc, const Capabilities& caps)
     return {};
 }
 
+std::string validate(const UpscalerDesc& desc, const Capabilities& caps)
+{
+    if (!caps.spatialUpscaler)
+    {
+        return reason("the device has no spatial upscaler");
+    }
+    if (desc.inputWidth == 0 || desc.inputHeight == 0 || desc.outputWidth == 0 || desc.outputHeight == 0)
+    {
+        return reason("a size is 0");
+    }
+    if (caps.maxTextureSize > 0 && (desc.outputWidth > caps.maxTextureSize || desc.outputHeight > caps.maxTextureSize))
+    {
+        return reason("the output ", desc.outputWidth, "x", desc.outputHeight, " is larger than the maximum size ",
+                      caps.maxTextureSize);
+    }
+    if (desc.outputWidth < desc.inputWidth || desc.outputHeight < desc.inputHeight)
+    {
+        return reason("the output ", desc.outputWidth, "x", desc.outputHeight, " is smaller than the input ",
+                      desc.inputWidth, "x", desc.inputHeight);
+    }
+    const auto colour = [](Format format)
+    {
+        return format != Format::Unknown && format < Format::Count && format != Format::BGRA8Unorm && !isCompressed(format)
+               && !isDepth(format) && !isInteger(format);
+    };
+    if (!colour(desc.inputFormat) || !colour(desc.outputFormat))
+    {
+        return reason("the formats ", U32(desc.inputFormat), " and ", U32(desc.outputFormat),
+                      " are not both uncompressed colour formats");
+    }
+    if (U8(desc.color) > U8(UpscaleColor::HDR))
+    {
+        return reason("the colour ", U32(desc.color), " is not an UpscaleColor");
+    }
+    return {};
+}
+
+std::string validate(const TemporalUpscalerDesc& desc, const Capabilities& caps)
+{
+    if (!caps.temporalUpscaler)
+    {
+        return reason("the device has no temporal upscaler");
+    }
+    if (desc.inputWidth == 0 || desc.inputHeight == 0 || desc.outputWidth == 0 || desc.outputHeight == 0)
+    {
+        return reason("a size is 0");
+    }
+    if (caps.maxTextureSize > 0 && (desc.outputWidth > caps.maxTextureSize || desc.outputHeight > caps.maxTextureSize))
+    {
+        return reason("the output ", desc.outputWidth, "x", desc.outputHeight, " is larger than the maximum size ",
+                      caps.maxTextureSize);
+    }
+    if (desc.outputWidth < desc.inputWidth || desc.outputHeight < desc.inputHeight)
+    {
+        return reason("the output ", desc.outputWidth, "x", desc.outputHeight, " is smaller than the input ",
+                      desc.inputWidth, "x", desc.inputHeight);
+    }
+    const F32 scale_x = F32(desc.outputWidth) / F32(desc.inputWidth);
+    const F32 scale_y = F32(desc.outputHeight) / F32(desc.inputHeight);
+    const F32 scale = std::max(scale_x, scale_y);
+    if (caps.temporalMaxScale > 0.f && (scale > caps.temporalMaxScale * 1.001f || scale < caps.temporalMinScale * 0.999f))
+    {
+        return reason("the scale ", scale, " is outside the device's ", caps.temporalMinScale, " to ",
+                      caps.temporalMaxScale);
+    }
+    const auto colour = [](Format format)
+    {
+        return format != Format::Unknown && format < Format::Count && format != Format::BGRA8Unorm && !isCompressed(format)
+               && !isDepth(format) && !isInteger(format);
+    };
+    if (!colour(desc.colorFormat) || !colour(desc.outputFormat))
+    {
+        return reason("the formats ", U32(desc.colorFormat), " and ", U32(desc.outputFormat),
+                      " are not both uncompressed colour formats");
+    }
+    if (desc.depthFormat != Format::Depth32Float)
+    {
+        return reason("the depth format ", U32(desc.depthFormat), " is not Depth32Float");
+    }
+    if (desc.motionFormat != Format::RG16Float && desc.motionFormat != Format::RG32Float)
+    {
+        return reason("the motion format ", U32(desc.motionFormat), " is not RG16Float or RG32Float");
+    }
+    if (desc.reactiveFormat != Format::Unknown && desc.reactiveFormat != Format::R8Unorm
+        && desc.reactiveFormat != Format::R16Float)
+    {
+        return reason("the reactive format ", U32(desc.reactiveFormat), " is not Unknown, R8Unorm or R16Float");
+    }
+    return {};
+}
+
 SamplerDesc samplerForDraw(const SamplerDesc& bound, UniformType samplerType, Format format)
 {
     SamplerDesc sampler = bound;
@@ -1683,6 +1775,30 @@ Ref<TransientPool> Device::createTransientPool(const TransientPoolDesc& desc)
     return pool;
 }
 
+Ref<Upscaler> Device::createUpscaler(const UpscalerDesc& /*desc*/)
+{
+    warnCreateFailed("upscaler", {}, "the spatial upscaler needs Metal");
+    return nullptr;
+}
+
+bool Encoder::upscale(Upscaler* /*upscaler*/, Texture* /*input*/, U32 /*width*/, U32 /*height*/, Texture* /*output*/)
+{
+    LL_WARNS("RHI") << "upscale: the spatial upscaler needs Metal" << LL_ENDL;
+    return false;
+}
+
+Ref<TemporalUpscaler> Device::createTemporalUpscaler(const TemporalUpscalerDesc& /*desc*/)
+{
+    warnCreateFailed("temporal upscaler", {}, "the temporal upscaler needs Metal");
+    return nullptr;
+}
+
+bool Encoder::upscaleTemporal(TemporalUpscaler* /*upscaler*/, const TemporalUpscaleInputs& /*inputs*/)
+{
+    LL_WARNS("RHI") << "upscaleTemporal: the temporal upscaler needs Metal" << LL_ENDL;
+    return false;
+}
+
 bool Encoder::beginComputePass(const ComputePassDesc& /*pass*/)
 {
     refuseNative("beginComputePass");
@@ -1978,12 +2094,13 @@ namespace
     }
 }
 
-EncoderTracker::EncoderTracker(const Capabilities& caps, bool checks)
+EncoderTracker::EncoderTracker(const Capabilities& caps, bool checks, bool drawChecks)
 :   mMaxChannels(caps.maxSamplersPerStage),
     mTimerQueries(caps.timerQueries),
     mPrimitivesQueries(caps.primitivesGeneratedQuery),
     mConcurrentSampleQueries(caps.concurrentSampleQueries),
     mChecks(checks),
+    mDrawChecks(checks && drawChecks),
     mLineWidthRange{ caps.lineWidthRange[0], caps.lineWidthRange[1] }
 {
 }
@@ -2459,29 +2576,40 @@ std::string EncoderTracker::setPipeline(Pipeline* pipeline)
             why = pipeline->native() ? reason("a native pipeline outside a native pass")
                                      : reason("a translated program's pipeline in native pass '", mPass.name, "'");
         }
-        else if (mChecks && mInPass)
+        else if (mDrawChecks && mInPass)
         {
             why = checkPipelineForPass(pipeline->desc(), mPass);
             checked = true;
         }
     }
-    mPipeline = why.empty() ? pipeline : nullptr;
+    // An object bound again keeps its reference as it is: no count goes up and down.
+    Pipeline* const bound = why.empty() ? pipeline : nullptr;
+    if (mPipeline.get() != bound)
+    {
+        mPipeline = bound;
+    }
     mFitsFormats = checked && why.empty() ? passFormatsSerial() : 0;
     return why;
 }
 
 std::string EncoderTracker::setDepthStencilState(DepthStencilState* state)
 {
-    mDepthStencil = state;
+    if (mDepthStencil.get() != state)
+    {
+        mDepthStencil = state;
+    }
     return {};
 }
 
 std::string EncoderTracker::setVertexBuffer(Buffer* buffer, const VertexStreams& streams)
 {
-    std::string why;
-    if (mChecks && buffer)
+    if (mDrawChecks && buffer)
     {
-        if (!(buffer->desc().usage & BUFFER_VERTEX))
+        // The description is read once, the streams' attributes visited by their bits in ascending order, and a
+        // reason is made only for the refusal.
+        const BufferDesc& desc = buffer->desc();
+        std::string why;
+        if (!(desc.usage & BUFFER_VERTEX))
         {
             why = reason("buffer '", buffer->debugName(), "' is not a vertex buffer");
         }
@@ -2489,29 +2617,45 @@ std::string EncoderTracker::setVertexBuffer(Buffer* buffer, const VertexStreams&
         {
             why = reason("the streams have unknown attributes");
         }
-        for (U32 i = 0; why.empty() && i < VertexStreams::MAX_ATTRIBUTES; ++i)
+        else
         {
-            if ((streams.attributeMask & (1u << i)) && streams.offset[i] >= buffer->desc().size)
+            for (U32 bits = streams.attributeMask; bits != 0; bits &= bits - 1)
             {
-                why = reason("attribute ", i, "'s stream starts beyond buffer '",
-                             buffer->debugName(), "'");
+                const U32 i = U32(std::countr_zero(bits));
+                if (streams.offset[i] >= desc.size)
+                {
+                    why = reason("attribute ", i, "'s stream starts beyond buffer '", buffer->debugName(), "'");
+                    break;
+                }
             }
         }
+        if (!why.empty())
+        {
+            mVertexBuffer = nullptr;
+            mStreams = VertexStreams();
+            return why;
+        }
     }
-    const bool bound = why.empty() && buffer;
-    mVertexBuffer = bound ? buffer : nullptr;
-    mStreams = bound ? streams : VertexStreams();
-    return why;
+    if (mVertexBuffer.get() != buffer)
+    {
+        mVertexBuffer = buffer;
+    }
+    mStreams = buffer ? streams : VertexStreams();
+    return {};
 }
 
 std::string EncoderTracker::setIndexBuffer(Buffer* buffer, IndexType type)
 {
     std::string why;
-    if (mChecks && buffer && !(buffer->desc().usage & BUFFER_INDEX))
+    if (mDrawChecks && buffer && !(buffer->desc().usage & BUFFER_INDEX))
     {
         why = reason("buffer '", buffer->debugName(), "' is not an index buffer");
     }
-    mIndexBuffer = why.empty() ? buffer : nullptr;
+    Buffer* const bound = why.empty() ? buffer : nullptr;
+    if (mIndexBuffer.get() != bound)
+    {
+        mIndexBuffer = bound;
+    }
     mIndexType = type;
     return why;
 }
@@ -2519,11 +2663,11 @@ std::string EncoderTracker::setIndexBuffer(Buffer* buffer, IndexType type)
 std::string EncoderTracker::setTexture(U32 channel, Texture* texture)
 {
     std::string why;
-    if (mChecks && mMaxChannels != 0 && channel >= mMaxChannels)
+    if (mDrawChecks && mMaxChannels != 0 && channel >= mMaxChannels)
     {
         return reason("channel ", channel, " is beyond the ", mMaxChannels, " channels");
     }
-    if (mChecks && texture && !(texture->desc().usage & TEXTURE_SAMPLED))
+    if (mDrawChecks && texture && !(texture->desc().usage & TEXTURE_SAMPLED))
     {
         why = reason("texture '", texture->debugName(), "' cannot be sampled");
     }
@@ -2532,7 +2676,10 @@ std::string EncoderTracker::setTexture(U32 channel, Texture* texture)
         const auto bound = mTextures.find(channel);
         if (bound != mTextures.end())
         {
-            bound->second = texture;
+            if (bound->second.get() != texture)
+            {
+                bound->second = texture;
+            }
         }
         else if (!mSpareTextureEntries.empty())
         {
@@ -2752,35 +2899,39 @@ std::string EncoderTracker::checkDraw(PrimitiveType type) const
     {
         return {};
     }
-    const PipelineDesc& pipeline = mPipeline->desc();
-    // checkPipelineForPass reads only the pass's formats, and its reasons name no pass; the bound
-    // pipeline's description never changes. So its verdict holds for every pass with the formats
-    // serial it was given for.
-    const U64 formats = passFormatsSerial();
-    if (mFitsFormats == 0 || mFitsFormats != formats)
+    if (mDrawChecks)
     {
-        std::string why = checkPipelineForPass(pipeline, mPass);
-        if (!why.empty())
+        const PipelineDesc& pipeline = mPipeline->desc();
+        // checkPipelineForPass reads only the pass's formats, and its reasons name no pass; the bound
+        // pipeline's description never changes. So its verdict holds for every pass with the formats
+        // serial it was given for.
+        const U64 formats = passFormatsSerial();
+        if (mFitsFormats == 0 || mFitsFormats != formats)
         {
-            return why;
+            std::string why = checkPipelineForPass(pipeline, mPass);
+            if (!why.empty())
+            {
+                return why;
+            }
+            mFitsFormats = formats;
         }
-        mFitsFormats = formats;
+        if (primitiveClass(type) != pipeline.primitiveClass)
+        {
+            return reason("a ", className(primitiveClass(type)), " draw with a ",
+                          className(pipeline.primitiveClass), " pipeline");
+        }
+        // The names in quotes, so that a refusal on LLVertexBuffer's draws stays one reason category.
+        if (pipeline.attributeMask != 0 && mVertexBuffer.isNull())
+        {
+            return reason("no vertex buffer is bound for pipeline '", mPipeline->debugName(), "'");
+        }
+        if ((pipeline.attributeMask & ~mStreams.attributeMask) != 0)
+        {
+            return reason("the vertex buffer '", mVertexBuffer->debugName(), "' lacks attributes pipeline '",
+                          mPipeline->debugName(), "' reads");
+        }
     }
-    if (primitiveClass(type) != pipeline.primitiveClass)
-    {
-        return reason("a ", className(primitiveClass(type)), " draw with a ",
-                      className(pipeline.primitiveClass), " pipeline");
-    }
-    // The names in quotes, so that a refusal on LLVertexBuffer's draws stays one reason category.
-    if (pipeline.attributeMask != 0 && mVertexBuffer.isNull())
-    {
-        return reason("no vertex buffer is bound for pipeline '", mPipeline->debugName(), "'");
-    }
-    if ((pipeline.attributeMask & ~mStreams.attributeMask) != 0)
-    {
-        return reason("the vertex buffer '", mVertexBuffer->debugName(), "' lacks attributes pipeline '",
-                      mPipeline->debugName(), "' reads");
-    }
+    // Also with draw checks off: nothing else keeps a draw from writing a depth that the pass samples.
     if (mPass.depth.readOnly && mDepthStencil.notNull() && mDepthStencil->desc().depthWrite)
     {
         return reason("depth writes are on, but pass '", mPass.name, "' has a read-only depth");
@@ -2800,6 +2951,8 @@ std::string EncoderTracker::drawIndexed(PrimitiveType type, U32 firstIndex, U32 
     {
         return why;
     }
+    // Also with draw checks off: the Metal encoder reads the index buffer's description and its size from the first
+    // index for the draw.
     if (mIndexBuffer.isNull())
     {
         return reason("no index buffer is bound");
@@ -2879,6 +3032,145 @@ std::string EncoderTracker::copyTexture(Texture* src, U32 srcLevel, U32 srcLayer
     acceptTransfer({ Transfer::Kind::Copy, src ? src->id() : 0, srcLevel, srcLayer, srcRegion, dst ? dst->id() : 0, dstLevel,
                      dstLayer, dstX, dstY });
     return why;
+}
+
+std::string EncoderTracker::upscale(Upscaler* upscaler, Texture* input, U32 width, U32 height, Texture* output)
+{
+    if (mInCompute)
+    {
+        return outsideCompute();
+    }
+    if (mInPass && !mPass.stack)
+    {
+        return reason("pass '", mPass.name, "' is open, and only a stack pass can be broken for an upscale");
+    }
+    if (!mChecks)
+    {
+        return {};
+    }
+    if (!upscaler || !input || !output)
+    {
+        return reason("no upscaler or no texture");
+    }
+    if (input == output)
+    {
+        return reason("the input is the output");
+    }
+    const UpscalerDesc& desc = upscaler->desc();
+    const TextureDesc& from = input->desc();
+    const TextureDesc& to = output->desc();
+    if (from.type != TextureType::Tex2D || to.type != TextureType::Tex2D || from.samples != 1 || to.samples != 1)
+    {
+        return reason("the input and the output are not both 2D textures of one sample");
+    }
+    if (from.format != desc.inputFormat || from.width != desc.inputWidth || from.height != desc.inputHeight)
+    {
+        return reason("the input '", input->debugName(), "' is not the upscaler's ", desc.inputWidth, "x",
+                      desc.inputHeight, " of format ", U32(desc.inputFormat));
+    }
+    if (to.format != desc.outputFormat || to.width != desc.outputWidth || to.height != desc.outputHeight)
+    {
+        return reason("the output '", output->debugName(), "' is not the upscaler's ", desc.outputWidth, "x",
+                      desc.outputHeight, " of format ", U32(desc.outputFormat));
+    }
+    if ((from.usage & upscaler->inputUsage()) != upscaler->inputUsage()
+        || (to.usage & upscaler->outputUsage()) != upscaler->outputUsage())
+    {
+        return reason("the input's usage ", U32(from.usage), " or the output's ", U32(to.usage),
+                      " lacks the upscaler's ", U32(upscaler->inputUsage()), " or ", U32(upscaler->outputUsage()));
+    }
+    if (width == 0 || height == 0 || width > from.width || height > from.height)
+    {
+        return reason("the content ", width, "x", height, " is empty or larger than the input ", from.width, "x",
+                      from.height);
+    }
+    return {};
+}
+
+std::string EncoderTracker::upscaleTemporal(TemporalUpscaler* upscaler, const TemporalUpscaleInputs& inputs)
+{
+    if (mInCompute)
+    {
+        return outsideCompute();
+    }
+    if (mInPass && !mPass.stack)
+    {
+        return reason("pass '", mPass.name, "' is open, and only a stack pass can be broken for an upscale");
+    }
+    if (!mChecks)
+    {
+        return {};
+    }
+    if (!upscaler || !inputs.color || !inputs.depth || !inputs.motion || !inputs.output)
+    {
+        return reason("no upscaler, or no colour, depth, motion or output texture");
+    }
+    const TemporalUpscalerDesc& desc = upscaler->desc();
+    if ((desc.reactiveFormat != Format::Unknown) != (inputs.reactive != nullptr))
+    {
+        return reason(inputs.reactive ? "a reactive mask for an upscaler made without one"
+                                      : "no reactive mask for an upscaler made with one");
+    }
+    const auto check = [](Texture* texture, const char* what, Format format, U32 width, U32 height, U8 usage)
+        -> std::string
+    {
+        const TextureDesc& d = texture->desc();
+        if (d.type != TextureType::Tex2D || d.samples != 1)
+        {
+            return reason("the ", what, " '", texture->debugName(), "' is not a 2D texture of one sample");
+        }
+        if (d.format != format || d.width != width || d.height != height)
+        {
+            return reason("the ", what, " '", texture->debugName(), "' is not the upscaler's ", width, "x", height,
+                          " of format ", U32(format));
+        }
+        if ((d.usage & usage) != usage)
+        {
+            return reason("the ", what, " '", texture->debugName(), "' has usage ", U32(d.usage), ", not the upscaler's ",
+                          U32(usage));
+        }
+        return {};
+    };
+    std::string why = check(inputs.color, "colour", desc.colorFormat, desc.inputWidth, desc.inputHeight,
+                            upscaler->colorUsage());
+    if (why.empty())
+    {
+        why = check(inputs.depth, "depth", desc.depthFormat, desc.inputWidth, desc.inputHeight, upscaler->depthUsage());
+    }
+    if (why.empty())
+    {
+        why = check(inputs.motion, "motion", desc.motionFormat, desc.inputWidth, desc.inputHeight,
+                    upscaler->motionUsage());
+    }
+    if (why.empty() && inputs.reactive)
+    {
+        why = check(inputs.reactive, "reactive mask", desc.reactiveFormat, desc.inputWidth, desc.inputHeight,
+                    upscaler->reactiveUsage());
+    }
+    if (why.empty())
+    {
+        why = check(inputs.output, "output", desc.outputFormat, desc.outputWidth, desc.outputHeight,
+                    upscaler->outputUsage());
+    }
+    if (!why.empty())
+    {
+        return why;
+    }
+    if (inputs.output == inputs.color || inputs.output == inputs.motion || inputs.output == inputs.reactive)
+    {
+        return reason("the output is one of the inputs");
+    }
+    if (inputs.width == 0 || inputs.height == 0 || inputs.width > desc.inputWidth || inputs.height > desc.inputHeight)
+    {
+        return reason("the content ", inputs.width, "x", inputs.height, " is empty or larger than the input ",
+                      desc.inputWidth, "x", desc.inputHeight);
+    }
+    if (!std::isfinite(inputs.jitterX) || !std::isfinite(inputs.jitterY) || std::fabs(inputs.jitterX) > 1.f
+        || std::fabs(inputs.jitterY) > 1.f)
+    {
+        return reason("the jitter ", inputs.jitterX, ", ", inputs.jitterY, " is not within a texel");
+    }
+    return {};
 }
 
 std::string EncoderTracker::generateMipmaps(Texture* texture)

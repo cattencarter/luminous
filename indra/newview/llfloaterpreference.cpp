@@ -128,6 +128,7 @@
 #include "llsearchableui.h"
 #include "llperfstats.h"
 #include "luminousphotomode.h" // <Luminous/>
+#include "luminousfloater.h" // <Luminous/>
 #include "llrhi.h"
 #include "llsys.h"
 
@@ -4043,6 +4044,18 @@ bool LLPanelPreferenceGraphics::postBuild()
 }
 void LLPanelPreferenceGraphics::draw()
 {
+    // <Luminous> under MetalFX temporal's check box, while it rests or is held at full size: why
+    if (!mTemporalRest)
+    {
+        mTemporalRest = getChild<LLTextBox>("luminous_metalfx_temporal_rest");
+    }
+    const std::string rest = LuminousPhotoMode::temporalRestText();
+    if (mTemporalRest->getText() != rest)
+    {
+        mTemporalRest->setText(rest);
+    }
+    mTemporalRest->setVisible(!rest.empty()); // empty unless Metal runs
+    // </Luminous>
     LLPanelPreference::draw();
 }
 
@@ -4187,6 +4200,15 @@ void LLPanelPreferenceGraphics::refreshBackendSwitch()
     backend->setVisible(selectable);
     backend->selectByValue(LLSD(LL::RHI::graphicsBackendEntry(gSavedSettings.getString("GraphicsBackend"))));
     backend->resetDirty();
+    // <Luminous> MetalFX temporal (LuminousMetalFXTemporal), under the backend switch and shown with it; it applies
+    // at once, and only while Metal runs, so it is greyed on OpenGL and its hint says so
+    const bool on_metal = LL::RHI::viewerBackend() == LL::RHI::BackendType::Metal;
+    LLUICtrl* temporal = getChild<LLUICtrl>("luminous_metalfx_temporal");
+    static const std::string temporal_tip = temporal->getToolTip();
+    temporal->setVisible(selectable);
+    temporal->setEnabled(on_metal);
+    temporal->setToolTip(on_metal ? temporal_tip : temporal_tip + " It works with Metal only.");
+    // </Luminous>
 }
 
 void LLPanelPreferenceGraphics::apply()
@@ -4226,6 +4248,20 @@ void LLPanelPreferenceGraphics::saveSettings()
     //}
     // </FS:Ansariel>
     LLPanelPreference::saveSettings();
+    // <Luminous> Cancel and X also put back what the Luminous tab's menus and the MetalFX upscaling check box set
+    // beside the settings bound here: the menus are bound to none, and switching MetalFX upscaling on sets Preview
+    // resolution (LuminousPhotoMode::initTemporalTips). Cancel holds the tips while it restores them.
+    std::vector<std::string> names;
+    LuminousFloater::prefsEffectSettings(this, names);
+    names.emplace_back("LuminousPhotoLiveScale");
+    for (const std::string& name : names)
+    {
+        if (LLControlVariable* control = gSavedSettings.getControl(name))
+        {
+            mSavedValues[control] = control->getValue();
+        }
+    }
+    // </Luminous>
 }
 void LLPanelPreferenceGraphics::setHardwareDefaults()
 {
@@ -5853,6 +5889,11 @@ void FSPanelPreferenceBackup:: doRestoreSettings(const LLSD& notification, const
     {
         instance->onBtnOK(LLSD());
     }
+
+    // <Luminous> the restored settings are not the user's own change: no tips, and nothing set in answer to them
+    // (switching MetalFX upscaling on would set Preview resolution into the restored settings)
+    LuminousPhotoMode::HoldSettingTips hold_tips;
+    // </Luminous>
 
     if (gSavedSettings.getBOOL("RestoreGlobalSettings"))
     {

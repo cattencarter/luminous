@@ -33,6 +33,10 @@ uniform mat4 inv_proj;
 uniform vec2 screen_res;
 uniform float max_cof;
 uniform float res_scale;
+// <Luminous> MetalFX temporal's jitter in texture coordinates: the gather
+// reads the frame where the camera without the jitter saw it. 0 otherwise.
+uniform vec2 luminous_jitter_uv;
+// </Luminous>
 
 in vec2 vary_fragcoord;
 
@@ -73,9 +77,9 @@ vec3 clampHDRRange(vec3 color);
 
 void main()
 {
-    vec2 tc = vary_fragcoord.xy;
+    vec2 tc = vary_fragcoord.xy + luminous_jitter_uv; // <Luminous/>
 
-    vec4 diff = texture(diffuseRect, vary_fragcoord.xy);
+    vec4 diff = texture(diffuseRect, tc); // <Luminous/>
 
     {
         float w = 1.0;
@@ -96,7 +100,7 @@ void main()
                     float samp_x = sc*sin(ang);
                     float samp_y = sc*cos(ang);
                     // you could test sample coords against an interesting non-circular aperture shape here, if desired.
-                    dofSampleNear(diff, w, sc, vary_fragcoord.xy + (vec2(samp_x,samp_y) / screen_res));
+                    dofSampleNear(diff, w, sc, tc + (vec2(samp_x,samp_y) / screen_res)); // <Luminous/>
                 }
                 sc -= 1.0;
             }
@@ -113,7 +117,7 @@ void main()
                     float samp_x = sc*sin(ang);
                     float samp_y = sc*cos(ang);
                     // you could test sample coords against an interesting non-circular aperture shape here, if desired.
-                    dofSample(diff, w, sc, vary_fragcoord.xy + (vec2(samp_x,samp_y) / screen_res));
+                    dofSample(diff, w, sc, tc + (vec2(samp_x,samp_y) / screen_res)); // <Luminous/>
                 }
                 sc -= 1.0;
             }

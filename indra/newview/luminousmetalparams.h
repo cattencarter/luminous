@@ -49,8 +49,15 @@ namespace LuminousPhotoMode
 {
     /// The Look's tonemap uniforms, grain and Worn photo in the tonemap and the sharpening
     /// passes, the light leak, and the picture frame's rect. tonemapType is the setting's; the
-    /// translated tonemap falls back to Neutral when Tony McMapface's table is missing.
-    void fillToneParams(LuminousToneParams& params);
+    /// translated tonemap falls back to Neutral when Tony McMapface's table is missing. In a live
+    /// frame drawn for MetalFX temporal's scaler the light leak and Worn photo are 0, left to its
+    /// present (fillTemporalScreen), unless screen_kept asks for them as they are drawn live.
+    void fillToneParams(LuminousToneParams& params, bool screen_kept = false);
+
+    /// What a live frame drawn for MetalFX temporal's scaler leaves out because it is fixed to the screen, for the
+    /// present to draw on the scaled frame of width x height pixels (the world view). False, with nothing set to
+    /// draw, in any other frame or when nothing was left out.
+    bool fillTemporalScreen(LuminousTemporalScreenConstants& constants, F32 width, F32 height);
 
     /// Every lens pass's values for a frame of width x height pixels.
     void fillLensParams(LuminousLensParams& params, U32 width, U32 height);

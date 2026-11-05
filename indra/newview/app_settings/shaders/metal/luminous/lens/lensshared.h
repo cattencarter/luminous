@@ -161,9 +161,14 @@ struct LuminousLensFlareConstants
 {
     simd_uint2 halfSize;
     simd_uint2 quarterSize;
+    simd_float2 jitter; ///< a frame settled for MetalFX temporal: its jitter in uv, else 0. The light and the sun's seen
+                        ///< share are then taken where the camera without it saw the frame, and the flare added that far off
+    int settled;        ///< 1: the bright pass also writes the starburst's light into the light's alpha and the sun's seen
+                        ///< share into the 1 x 1 sun texture, settled before the rest reads them
+    int pad0;
 };
 
-static_assert(sizeof(LuminousLensFlareConstants) == 16, "LuminousLensFlareConstants must be 16 bytes in C++ and MSL");
+static_assert(sizeof(LuminousLensFlareConstants) == 32, "LuminousLensFlareConstants must be 32 bytes in C++ and MSL");
 
 /// The finish pass: which of aberration, distortion and glitch it draws.
 struct LuminousLensFinishConstants

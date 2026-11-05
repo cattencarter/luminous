@@ -77,6 +77,13 @@
 // llrhimetal_test.cpp's tests call runMetalTest with their number; the device's tests are here,
 // because they read Metal's objects. They run under Metal API Validation (llrender/CMakeLists.txt).
 
+namespace
+{
+    /// The MetalFX spatial upscales the running test made (upscalerTest sets it, validated() sets it to 0 first): up to
+    /// one shader validation report in MetalFX's own fragment function each is counted apart (sMetalFXReports).
+    size_t sSpatialUpscales = 0;
+}
+
 #if LL_RHI_METAL
 
 namespace
@@ -1442,7 +1449,7 @@ void main() { frag_color = vertex_color * tint; }
         Ref<Pipeline> pipeline = device.getPipeline(*program, desc);
         tut::ensure("the pipeline is made", pipeline.notNull());
         ensureEqual("the pipeline's program", pipeline->programId(), program->id());
-        // P3-01d E14: it is made in the background; its state waits for it.
+        // P3-01d: it is made in the background; its state waits for it.
         tut::ensure("the pipeline has a state", metalPipelineState(pipeline.get()) != nil);
         tut::ensure("the pipeline is Ready", pipeline->status() == CompileStatus::Ready);
         tut::ensure("the state is labelled with the program",
@@ -5196,7 +5203,7 @@ void main()
                     std::string("user-initiated+utility"));
         ensureEqual("an empty mask's text", metalQosMaskText(0), std::string("none"));
         const std::string text = metalCompileStallText(done);
-        for (const char* part : { "waits (count/total ms/longest ms): program ", ", point 0/0.0/0.0", ", specialized ",
+        for (const char* part : { "waits (count/total ms/longest ms): program ", ", point 0/0.0/0.0",
                                   ", full ", ", variant ", "; translations on the caller ", "; groups 2 sent (",
                                   " 2 done, latency ", ", handlers at ", ", hash ",
                                   "; translation threads at user-initiated, LL_METAL_COMPILE_SLOW off" })
@@ -5209,7 +5216,7 @@ void main()
 namespace
 {
     /// One device test on a device of its own; false when there is none.
-    // E14: pipelines with specialization, shared, asynchronous and gone with their program (P3-01d S7)
+    // Pipelines: full states, shared, asynchronous and gone with their program
 
     /// The UI program with a vertex text of its own, so neither its libraries nor its pipelines are
     /// in Metal's system cache and their handlers run on Metal's threads (S6, t66). vertex holds the
@@ -5249,13 +5256,11 @@ namespace
         return desc;
     }
 
-    /// t74, flag B with choice (f): blending off on RGBA8 is a full state, sent with
-    /// blending Disabled, and draws; the unspecialized state has blending Enabled and the rest
-    /// unspecialized on all eight color attachments while the fragment writes one, and specialized
-    /// for one RGBA8 attachment with alpha blending it is Ready and draws. Four attachments with
-    /// blending off (all four Disabled) and on, and an R32Uint attachment beside a blended one (a
-    /// full state with only R32Uint Disabled: GL does not blend integers), are Ready. All under
-    /// validation in assert mode.
+    /// t74, flag B: blending off on RGBA8 is a full state, sent with blending Disabled, and draws; with
+    /// alpha blending on one RGBA8 attachment it is a full state too, sent with blending Enabled, Ready, and
+    /// draws. Four attachments with blending off (all four Disabled) and on (none Disabled), and an R32Uint
+    /// attachment beside a blended one (only R32Uint Disabled: GL does not blend integers), are Ready. All
+    /// under validation in assert mode.
     API_AVAILABLE(macos(26.0)) void flagBTest(MetalDevice& device)
     {
         CaptureLog log(LLError::LEVEL_WARN);
@@ -5263,14 +5268,13 @@ namespace
         tut::ensure("blending off: the full state is made", metalPipelineState(target.pipeline.get()) != nil);
         tut::ensure("blending off: Ready", target.pipeline->status() == CompileStatus::Ready);
         ensureEqual("blending off: full states", device.fullPipelines(), size_t(1));
-        ensureEqual("blending off: unspecialized states", device.unspecializedPipelines(), size_t(0));
         ensureEqual("blending off: RGBA8 is sent Disabled", device.lastFullDisabledAttachments(), U32(0x1));
         ensureImage("blending off: the square", drawSquare(device, target), yellowIn({ { 40, 8, 56, 24 } }));
         target.pipeline = device.getPipeline(*target.program, alphaPipelineDesc());
-        tut::ensure("blending on: the specialized state is made", metalPipelineState(target.pipeline.get()) != nil);
+        tut::ensure("blending on: the full state is made", metalPipelineState(target.pipeline.get()) != nil);
         tut::ensure("blending on: Ready", target.pipeline->status() == CompileStatus::Ready);
-        ensureEqual("blending on: unspecialized states", device.unspecializedPipelines(), size_t(1));
-        ensureEqual("blending on: specialized states", device.specializedPipelines(), size_t(1));
+        ensureEqual("blending on: full states", device.fullPipelines(), size_t(2));
+        ensureEqual("blending on: RGBA8 is sent Enabled", device.lastFullDisabledAttachments(), U32(0));
         ensureImage("blending on: the square", drawSquare(device, target), yellowIn({ { 40, 8, 56, 24 } }));
         PipelineDesc four = uiPipelineDesc();
         four.colorCount = 4;
@@ -5280,9 +5284,8 @@ namespace
         PipelineDesc integer = alphaPipelineDesc();
         integer.colorCount = 2;
         integer.colorFormats[1] = Format::R32Uint;
-        // The attachments the last full state was sent with blending Disabled; a specialization
-        // sends none, so four blended leaves four's.
-        const std::pair<PipelineDesc, U32> cases[3] = { { four, 0xFu }, { fourBlended, 0xFu }, { integer, 0x2u } };
+        // The attachments the last full state was sent with blending Disabled.
+        const std::pair<PipelineDesc, U32> cases[3] = { { four, 0xFu }, { fourBlended, 0u }, { integer, 0x2u } };
         for (const auto& [desc, disabled] : cases)
         {
             const std::string what = desc.colorCount == 2 ? "R32Uint" : desc.blend.enabled ? "four blended" : "four";
@@ -5292,22 +5295,16 @@ namespace
             tut::ensure(what + ": Ready", pipeline->status() == CompileStatus::Ready);
             ensureEqual(what + ": the attachments sent Disabled", device.lastFullDisabledAttachments(), disabled);
         }
-        ensureEqual("unspecialized states", device.unspecializedPipelines(), size_t(1));
-        ensureEqual("specialized states: one and four blended", device.specializedPipelines(), size_t(2));
-        ensureEqual("full states: off, four and R32Uint", device.fullPipelines(), size_t(3));
-        // P3-04a S3 (R08): the same as states sent; E14 alone would have one unspecialized state for all five keys.
+        ensureEqual("full states: off, on, four, four blended and R32Uint", device.fullPipelines(), size_t(5));
+        // P3-04a S3 (R08): the same as states sent.
         const MetalCompileStats stats = metalCompileStats(device);
-        ensureEqual("R08: unspecialized sent", stats.unspecialized, U64(1));
-        ensureEqual("R08: specialized sent", stats.specialized, U64(2));
-        ensureEqual("R08: full sent", stats.full, U64(3));
-        ensureEqual("R08: E14 alone, unspecialized", stats.e14Unspecialized, U64(1));
+        ensureEqual("R08: full sent", stats.full, U64(5));
         ensureEqual("R08: no alpha variant, no refusal", stats.alphaVariants + stats.refused, U64(0));
         endCleanly(device, log);
     }
 
     /// t75: one program, two attribute masks that differ only outside the program's, two depth
-    /// formats, and three color formats x blend on and off x two color masks: with choice
-    /// (f) one unspecialized state, 6 specializations (blend on) and 6 full states (blend off), which
+    /// formats, and three color formats x blend on and off x two color masks: 12 full states, which
     /// PipelineCache's 48 pipelines share.
     API_AVAILABLE(macos(26.0)) void sharedStatesTest(MetalDevice& device)
     {
@@ -5345,17 +5342,11 @@ namespace
             }
         }
         ensureEqual("pipelines cached", device.pipelines().size(), size_t(48));
-        ensureEqual("unspecialized states", device.unspecializedPipelines(), size_t(1));
-        ensureEqual("specialized states", device.specializedPipelines(), size_t(6));
-        ensureEqual("full states", device.fullPipelines(), size_t(6));
-        // P3-04a S3 (R08): the 48 pipelines cost 7 full compilations under (f); E14 alone would make 1 and 12
-        // specializations.
+        ensureEqual("full states", device.fullPipelines(), size_t(12));
+        // P3-04a S3 (R08): the 48 pipelines cost 12 full compilations.
         const MetalCompileStats stats = metalCompileStats(device);
         ensureEqual("R08: cached", stats.cached, U64(48));
-        ensureEqual("R08: unspecialized sent", stats.unspecialized, U64(1));
-        ensureEqual("R08: specialized sent", stats.specialized, U64(6));
-        ensureEqual("R08: full sent", stats.full, U64(6));
-        ensureEqual("R08: E14 alone, unspecialized", stats.e14Unspecialized, U64(1));
+        ensureEqual("R08: full sent", stats.full, U64(12));
         std::vector<IdMTLRenderPipelineState> states;
         for (size_t i = 0; i < pipelines.size(); ++i)
         {
@@ -5439,13 +5430,11 @@ namespace
         {
             return x < 48 ? expected[x / 16] : CLEARED;
         });
-        ensureEqual("unspecialized states", device.unspecializedPipelines(), size_t(1));
-        ensureEqual("specialized states: alpha and additive", device.specializedPipelines(), size_t(2));
-        ensureEqual("full states: the target's and R+A", device.fullPipelines(), size_t(2));
+        ensureEqual("full states: the target's, alpha, additive and R+A", device.fullPipelines(), size_t(4));
         endCleanly(device, log);
     }
 
-    /// t77: getPipeline comes back at once while the unspecialized state's handler sleeps, and a
+    /// t77: getPipeline comes back at once while the state's handler sleeps, and a
     /// draw with the pipeline waits and draws; a refused key gives one WARN line, and asking again
     /// gives none.
     API_AVAILABLE(macos(26.0)) void asyncPipelineTest(MetalDevice& device)
@@ -5471,10 +5460,9 @@ namespace
             const U64 waited = metalCompileStats(device).pipelineWaitUs - waitedBefore;
             tut::ensure("R08: the draw's pipeline wait is counted: " + std::to_string(waited) + " us",
                         waited >= 50000 && waited < 5000000);
-            // P3-04c B: by its kind, E14's specialized or (f)'s full state, with its longest single wait
+            // P3-04c B: by its kind, a full state, with its longest single wait
             const MetalCompileStats kinds = metalCompileStats(device);
-            const U64 longest = std::max(kinds.waits[size_t(MetalWaitKind::Specialized)].longestUs,
-                                         kinds.waits[size_t(MetalWaitKind::Full)].longestUs);
+            const U64 longest = kinds.waits[size_t(MetalWaitKind::Full)].longestUs;
             tut::ensure("B: the draw's wait by its kind: " + std::to_string(longest) + " us",
                         longest >= 50000 && longest < 5000000);
             endCleanly(device, log);
@@ -5500,7 +5488,7 @@ namespace
         CaptureLog log(LLError::LEVEL_WARN);
         Ref<Program> program = ready(device.createProgram(uiProgramDesc()));
         const PipelineDesc rgba8 = uiPipelineDesc();
-        PipelineDesc rgba16 = alphaPipelineDesc(); // specialized; rgba8 is a full state
+        PipelineDesc rgba16 = alphaPipelineDesc(); // blended; rgba8 is not
         rgba16.colorFormats[0] = Format::RGBA16Float;
         PipelineDesc point = uiPipelineDesc();
         point.primitiveClass = PrimitiveClass::Point;
@@ -5511,15 +5499,11 @@ namespace
         Ref<Pipeline> third = device.getPipeline(*program, point); // P3-01e S8: a full state of its own
         tut::ensure("points are made", third.notNull() && metalPipelineState(third.get()) != nil);
         ensureEqual("pipelines cached", device.pipelines().size(), size_t(3));
-        ensureEqual("unspecialized states", device.unspecializedPipelines(), size_t(1));
-        ensureEqual("specialized states", device.specializedPipelines(), size_t(1));
-        ensureEqual("full states", device.fullPipelines(), size_t(2));
+        ensureEqual("full states", device.fullPipelines(), size_t(3));
         ensureEqual("refused keys", device.refusedPipelines(), size_t(0));
         const U64 gone = program->id();
         program = nullptr;
         ensureEqual("after the program: pipelines cached", device.pipelines().size(), size_t(0));
-        ensureEqual("after the program: unspecialized states", device.unspecializedPipelines(), size_t(0));
-        ensureEqual("after the program: specialized states", device.specializedPipelines(), size_t(0));
         ensureEqual("after the program: full states", device.fullPipelines(), size_t(0));
         ensureEqual("after the program: refused keys", device.refusedPipelines(), size_t(0));
         tut::ensure("a pipeline still held keeps its state", metalPipelineState(first.get()) != nil);
@@ -5530,7 +5514,6 @@ namespace
         tut::ensure("the reload's pipeline is new", reloaded.notNull() && reloaded != first);
         tut::ensure("the reload's pipeline has a state", metalPipelineState(reloaded.get()) != nil);
         ensureEqual("after the reload: pipelines cached", device.pipelines().size(), size_t(1));
-        ensureEqual("after the reload: unspecialized states", device.unspecializedPipelines(), size_t(0));
         ensureEqual("after the reload: full states", device.fullPipelines(), size_t(1));
         first = nullptr;
         second = nullptr;
@@ -5541,8 +5524,8 @@ namespace
         ensureEqual("no WARN line", occurrences(log, "WARNING #RHI#"), size_t(0));
     }
 
-    /// t79: PrimitiveClass::Point (since P3-01e S8), Line and 4 samples, with blending off (full states)
-    /// and on (specialized), make pipelines that become Ready, with no draw and no WARN line.
+    /// t79: PrimitiveClass::Point (since P3-01e S8), Line and 4 samples, with blending off and on, make
+    /// full states that become Ready, with no draw and no WARN line.
     API_AVAILABLE(macos(26.0)) void primitiveClassesTest(MetalDevice& device)
     {
         CaptureLog log(LLError::LEVEL_WARN);
@@ -5570,16 +5553,14 @@ namespace
             tut::ensure(what + ": a state", metalPipelineState(pipeline.get()) != nil);
             tut::ensure(what + ": Ready", pipeline->status() == CompileStatus::Ready);
         }
-        ensureEqual("unspecialized states: lines, and triangles with 4 samples", device.unspecializedPipelines(), size_t(2));
-        ensureEqual("specialized states", device.specializedPipelines(), size_t(2));
-        ensureEqual("full states: points, lines, 4 samples", device.fullPipelines(), size_t(3));
+        ensureEqual("full states: points, lines, 4 samples, and lines and 4 samples blended", device.fullPipelines(),
+                    size_t(5));
         ensureEqual("no WARN line", occurrences(log, "WARNING #RHI#"), size_t(0));
         device.endFrame();
     }
 
-    /// t80: ~MetalDevice with an unspecialized state compiling, whose handler sleeps, two
-    /// specializations chained to it and a full state returns after every handler has reported, and
-    /// none reports after it.
+    /// t80: ~MetalDevice with a state compiling, whose handler sleeps, and two more sent after it
+    /// returns after every handler has reported, and none reports after it.
     API_AVAILABLE(macos(26.0)) void shutdownPipelinesTest(Ref<Device>& owner, MetalDevice& device)
     {
         const std::shared_ptr<MetalCompileState> state = device.compileState();
@@ -5593,11 +5574,8 @@ namespace
                                                  device.getPipeline(*program, rgba16),
                                                  device.getPipeline(*program, uiPipelineDesc()) };
             tut::ensure("all are made", pipelines[0].notNull() && pipelines[1].notNull() && pipelines[2].notNull());
-            tut::ensure("the specialized are Pending", pipelines[0]->status() == CompileStatus::Pending &&
-                                                           pipelines[1]->status() == CompileStatus::Pending);
-            ensureEqual("unspecialized states", device.unspecializedPipelines(), size_t(1));
-            ensureEqual("specialized states", device.specializedPipelines(), size_t(2));
-            ensureEqual("full states", device.fullPipelines(), size_t(1));
+            tut::ensure("the first, whose handler sleeps, is Pending", pipelines[0]->status() == CompileStatus::Pending);
+            ensureEqual("full states", device.fullPipelines(), size_t(3));
             std::lock_guard<std::mutex> lock(state->mutex);
             tut::ensure("a handler is outstanding", state->outstanding > 0);
         }
@@ -9925,25 +9903,20 @@ void main()
         return label ? std::string(label.UTF8String) : std::string();
     }
 
-    /// t121, P3-01g: a device made while a frame capture is asked for makes every render pipeline state full, as Metal
-    /// refuses to capture a device that has specialized one: blending on, which the test's own device specializes
-    /// (t74), gives a full state and no unspecialized or specialized one, and draws the same square. The request is
+    /// t121, P3-01g: a device made while a frame capture is asked for makes full render pipeline states, as every
+    /// device does, which Metal can capture: blending on gives a full state, and draws the same square. The request is
     /// taken back before the device's first frame, so no WARN line.
-    API_AVAILABLE(macos(26.0)) void captureStatesTest(MetalDevice& ordinary)
+    API_AVAILABLE(macos(26.0)) void captureStatesTest(MetalDevice&)
     {
-        tut::ensure("the test's own device specializes", !ordinary.fullPipelineStates());
         CaptureLog log(LLError::LEVEL_WARN);
         setMetalFrameCapture("/nonexistent/t121-states.gputrace");
         Ref<Device> other = anotherDevice();
-        setMetalFrameCapture(""); // the device keeps its full states
+        setMetalFrameCapture("");
         MetalDevice& device = *static_cast<MetalDevice*>(other.get());
-        tut::ensure("a device made while a capture is asked for has full states", device.fullPipelineStates());
         DrawTarget target = drawTarget(device);
         target.pipeline = device.getPipeline(*target.program, alphaPipelineDesc());
         tut::ensure("blending on: a state", metalPipelineState(target.pipeline.get()) != nil);
         tut::ensure("blending on: Ready", target.pipeline->status() == CompileStatus::Ready);
-        ensureEqual("unspecialized states", device.unspecializedPipelines(), size_t(0));
-        ensureEqual("specialized states", device.specializedPipelines(), size_t(0));
         ensureEqual("full states: blending off and on", device.fullPipelines(), size_t(2));
         ensureImage("blending on: the square", drawSquare(device, target), yellowIn({ { 40, 8, 56, 24 } }));
         endCleanly(device, log);
@@ -10720,8 +10693,9 @@ void main()
     /// no WARN line (no 'not ported (P3-01f)'), and the surface interface calls do nothing then; with a CAMetalLayer as
     /// the window it is made as decision 7 says: back buffer RGBA8Unorm and Depth32Float of the window's size, both
     /// resident, the layer on the device, BGRA8Unorm, framebufferOnly, opaque, no colorspace, three drawables with the
-    /// timeout and drawableSize set; setVSync sets displaySyncEnabled. A 0x0 window gives 1x1 buffers and leaves the
-    /// drawable size alone, and a window that is not a CAMetalLayer gives no device. P3-01g: metalSurfaceStats reports
+    /// timeout and drawableSize set; the layer is display synced, and setVSync leaves it so and sets only the presents'
+    /// pacing (stats.displaySync), unless LL_METAL_PRESENT_UNSYNCED is set. A 0x0 window gives 1x1 buffers and leaves
+    /// the drawable size alone, and a window that is not a CAMetalLayer gives no device. P3-01g: metalSurfaceStats reports
     /// the layer's state (G8: opaque, no colorspace, pixelFormat 80), and the residency records the layer's set after
     /// the surface's creation and clears it when the device ends (G14, the bookkeeping; residency-site.py checks the
     /// queue calls beside it).
@@ -10778,10 +10752,15 @@ void main()
             ensureEqual("drawable width", U32(layer.drawableSize.width), 16u);
             ensureEqual("drawable height", U32(layer.drawableSize.height), 8u);
             tut::ensure("the layer has its residency set", layer.residencySet != nil);
+            tut::ensure("display synced", layer.displaySyncEnabled && metalSurfaceStats(device).layerDisplaySync);
+            const bool unsynced = metalPresentUnsyncedKnob();
             surface->setVSync(false);
-            tut::ensure("setVSync(false)", !layer.displaySyncEnabled && !metalSurfaceStats(device).displaySync);
+            tut::ensure("setVSync(false): the presents paced, the layer still display synced",
+                        !metalSurfaceStats(device).displaySync && bool(layer.displaySyncEnabled) == !unsynced &&
+                            metalSurfaceStats(device).layerDisplaySync == !unsynced);
             surface->setVSync(true);
-            tut::ensure("setVSync(true)", layer.displaySyncEnabled && metalSurfaceStats(device).displaySync);
+            tut::ensure("setVSync(true)", layer.displaySyncEnabled && metalSurfaceStats(device).displaySync &&
+                                              metalSurfaceStats(device).layerDisplaySync);
             const MetalSurfaceStats stats = metalSurfaceStats(device);
             ensureEqual("stats: drawable width", stats.drawableWidth, 16u);
             ensureEqual("stats: drawable height", stats.drawableHeight, 8u);
@@ -11000,22 +10979,29 @@ void main()
         endCleanly(device, log);
     }
 
-    /// t185 (P3-09 S1, F51): metalPresentPaced leaves a present out only with displaySync off, no drawable readback and
+    /// t185 (P3-09 S1, F51): metalPresentPaced leaves a present out only with VSync off, no drawable readback and
     /// the window server holding every drawable but one, and not once it has taken nothing for
     /// METAL_WINDOW_SERVER_STALE_NS. On a surface (a CAMetalLayer without a view, its handlers' timing unknown, so the
-    /// held drawables are holdDrawablesForTest's): with displaySync off and two of the three held, a present asks for no
+    /// held drawables are holdDrawablesForTest's): with VSync off and two of the three held, a present asks for no
     /// drawable and the frame's work still reaches the GPU at endFrame (an upload read back); a drawable readback and
-    /// displaySync on each present a drawable all the same; presents == drawablesPresented + presentsSkippedZero +
+    /// VSync on each present a drawable all the same; presents == drawablesPresented + presentsSkippedZero +
     /// presentsPaced + drawableTimeouts. On a second surface, held drawables older than the limit get a present, and the
     /// present after it is left out again. The surfaces' limit is 1 s (setStaleLimitForTest, P3-09's review m2): the
     /// windows a check needs below the limit (hold to present; the stale present's progress to the next present) then
-    /// hold on a loaded machine, and the free function's own checks keep METAL_WINDOW_SERVER_STALE_NS. No WARN line.
+    /// hold on a loaded machine, and the free function's own checks keep METAL_WINDOW_SERVER_STALE_NS. On a third, with
+    /// VSync off, a drawable just refused (refuseDrawableForTest) leaves the next present out without asking, and a
+    /// presented handler since the ask (holdDrawablesForTest's progress) lets the one after ask. On a fourth, with held
+    /// drawables past the stale limit, a hidden window (setWindowHiddenForTest) leaves a VSync off present out and not a
+    /// VSync on one, and a refusal older than METAL_DRAWABLE_RETRY_NS lets the present ask. On a fifth, a hidden window
+    /// with nothing queued still asks (the occlusion state is read only once the window server has stalled). No WARN
+    /// line.
     API_AVAILABLE(macos(26.0)) void presentPacingTest()
     {
         const U64 stale = METAL_WINDOW_SERVER_STALE_NS;
         const U64 testStale = 1'000'000'000; // the surfaces' limit here (setStaleLimitForTest)
-        tut::ensure("displaySync on: never", !metalPresentPaced(true, false, 2, 3, 0));
+        tut::ensure("VSync on: never", !metalPresentPaced(true, false, 2, 3, 0));
         tut::ensure("a drawable readback: never", !metalPresentPaced(false, true, 2, 3, 0));
+        tut::ensure("none of three with the window server: presented", !metalPresentPaced(false, false, 0, 3, 0));
         tut::ensure("one of three with the window server: presented", !metalPresentPaced(false, false, 1, 3, 0));
         tut::ensure("two of three: left out", metalPresentPaced(false, false, 2, 3, 0));
         tut::ensure("three of three: left out", metalPresentPaced(false, false, 3, 3, 0));
@@ -11035,6 +11021,7 @@ void main()
             MetalDevice& device = *static_cast<MetalDevice*>(owner.get());
             MetalSurface* surface = device.metalSurface();
             tut::ensure("a surface", surface != nullptr);
+            surface->setPresentDirect(true); // the direct path's pacing; the finished path's is t231
             Encoder& encoder = device.encoder();
             Texture* back = surface->backBuffer();
             std::vector<U8> pattern(64 * 32 * 4);
@@ -11084,8 +11071,8 @@ void main()
             surface->present();
             device.endFrame();
             stats = metalSurfaceStats(device);
-            ensureEqual("displaySync on presents", stats.drawablesPresented, U64(2));
-            ensureEqual("displaySync on: still one paced", stats.presentsPaced, U64(1));
+            ensureEqual("VSync on presents", stats.drawablesPresented, U64(2));
+            ensureEqual("VSync on: still one paced", stats.presentsPaced, U64(1));
             ensureEqual("presents", stats.presents, U64(3));
             ensureEqual("every present counted once", stats.presents,
                         stats.drawablesPresented + stats.presentsSkippedZero + stats.presentsPaced + stats.drawableTimeouts);
@@ -11100,6 +11087,7 @@ void main()
             tut::ensure("a second device on a layer", owner.notNull());
             MetalDevice& device = *static_cast<MetalDevice*>(owner.get());
             MetalSurface* surface = device.metalSurface();
+            surface->setPresentDirect(true); // the direct path's pacing; the finished path's is t231
             surface->setVSync(false);
             surface->setStaleLimitForTest(testStale);
             surface->holdDrawablesForTest(2);
@@ -11117,6 +11105,182 @@ void main()
             ensureEqual("no timeout", stats.drawableTimeouts, U64(0));
             endCleanly(device, log);
         }
+        {
+            CAMetalLayer* layer = [CAMetalLayer layer];
+            Ref<Device> owner = deviceOnLayer(layer, 16, 8);
+            tut::ensure("a third device on a layer", owner.notNull());
+            MetalDevice& device = *static_cast<MetalDevice*>(owner.get());
+            MetalSurface* surface = device.metalSurface();
+            surface->setPresentDirect(true); // the direct path's pacing; the finished path's is t231
+            surface->setVSync(false);
+            surface->refuseDrawableForTest(0);
+            surface->present();
+            device.endFrame();
+            MetalSurfaceStats stats = metalSurfaceStats(device);
+            ensureEqual("refused: paced", stats.presentsPaced, U64(1));
+            ensureEqual("refused: counted after the timeout", stats.presentsAfterTimeout, U64(1));
+            ensureEqual("refused: no drawable", stats.drawablesPresented, U64(0));
+            surface->holdDrawablesForTest(0); // a presented handler's progress, after the refused ask
+            surface->present();
+            device.endFrame();
+            stats = metalSurfaceStats(device);
+            ensureEqual("a handler since the ask: presented", stats.drawablesPresented, U64(1));
+            ensureEqual("a handler since the ask: still one paced", stats.presentsPaced, U64(1));
+            ensureEqual("a handler since the ask: still one after the timeout", stats.presentsAfterTimeout, U64(1));
+            ensureEqual("refused: no timeout counted", stats.drawableTimeouts, U64(0));
+            endCleanly(device, log);
+        }
+        {
+            CAMetalLayer* layer = [CAMetalLayer layer];
+            Ref<Device> owner = deviceOnLayer(layer, 16, 8);
+            tut::ensure("a fourth device on a layer", owner.notNull());
+            MetalDevice& device = *static_cast<MetalDevice*>(owner.get());
+            MetalSurface* surface = device.metalSurface();
+            surface->setPresentDirect(true); // the direct path's pacing; the finished path's is t231
+            surface->setVSync(false);
+            // The window server has stalled: two drawables held, past a stale limit of 0.
+            surface->holdDrawablesForTest(2);
+            surface->setStaleLimitForTest(0);
+            surface->setWindowHiddenForTest(true);
+            surface->present();
+            device.endFrame();
+            MetalSurfaceStats stats = metalSurfaceStats(device);
+            ensureEqual("hidden: paced", stats.presentsPaced, U64(1));
+            ensureEqual("hidden: counted hidden", stats.presentsWindowHidden, U64(1));
+            ensureEqual("hidden: no drawable", stats.drawablesPresented, U64(0));
+            surface->setVSync(true);
+            surface->present();
+            device.endFrame();
+            stats = metalSurfaceStats(device);
+            ensureEqual("hidden, VSync on: presented", stats.drawablesPresented, U64(1));
+            ensureEqual("hidden, VSync on: still one paced", stats.presentsPaced, U64(1));
+            // A drawable presented with VSync on is not the window server's count, so the next present asks.
+            surface->setVSync(false);
+            surface->setWindowHiddenForTest(false);
+            surface->refuseDrawableForTest(METAL_DRAWABLE_RETRY_NS);
+            surface->present();
+            device.endFrame();
+            stats = metalSurfaceStats(device);
+            ensureEqual("the retry: presented", stats.drawablesPresented, U64(2));
+            ensureEqual("the retry: still one paced", stats.presentsPaced, U64(1));
+            ensureEqual("the retry: none after the timeout", stats.presentsAfterTimeout, U64(0));
+            ensureEqual("every present counted once", stats.presents,
+                        stats.drawablesPresented + stats.presentsSkippedZero + stats.presentsPaced + stats.drawableTimeouts);
+            ensureEqual("no timeout", stats.drawableTimeouts, U64(0));
+            endCleanly(device, log);
+        }
+        {
+            CAMetalLayer* layer = [CAMetalLayer layer];
+            Ref<Device> owner = deviceOnLayer(layer, 16, 8);
+            tut::ensure("a fifth device on a layer", owner.notNull());
+            MetalDevice& device = *static_cast<MetalDevice*>(owner.get());
+            MetalSurface* surface = device.metalSurface();
+            surface->setPresentDirect(true); // the direct path's pacing; the finished path's is t231
+            surface->setVSync(false);
+            surface->setWindowHiddenForTest(true);
+            surface->present();
+            device.endFrame();
+            MetalSurfaceStats stats = metalSurfaceStats(device);
+            ensureEqual("hidden, nothing queued: presented", stats.drawablesPresented, U64(1));
+            ensureEqual("hidden, nothing queued: not counted hidden", stats.presentsWindowHidden, U64(0));
+            ensureEqual("hidden, nothing queued: none paced", stats.presentsPaced, U64(0));
+            endCleanly(device, log);
+        }
+        ensureEqual("no WARN line", occurrences(log, "WARNING"), size_t(0));
+    }
+
+    /// t231 (vsync-present2): VSync off's finished path, the default (setPresentDirect false). A present flips the back
+    /// buffer into a finished frame and sends it at once (finishedFlips); with no older flip on the GPU the present
+    /// queue copies it into a drawable at once, its copy waiting on the GPU for that frame: one drawable, one wait and
+    /// one signal (finishedPresented), none more at endFrame. With two drawables held (holdDrawablesForTest) two finished
+    /// frames wait (finishedHeld), and once the hold is stale endFrame (frameEnded) gives only the newer: one drawable
+    /// more. A drawable readback and VSync on
+    /// present the frame's own drawable. presents == drawablesPresented - finishedPresented + presentsSkippedZero +
+    /// presentsPaced + drawableTimeouts - finishedTimeouts + finishedFlips + finishedSkipped. No WARN line.
+    API_AVAILABLE(macos(26.0)) void finishedPresentTest()
+    {
+        const U64 testStale = 1'000'000'000;
+        CaptureLog log(LLError::LEVEL_WARN);
+        CAMetalLayer* layer = [CAMetalLayer layer];
+        Ref<Device> owner = deviceOnLayer(layer, 64, 32);
+        tut::ensure("a device on the layer", owner.notNull());
+        MetalDevice& device = *static_cast<MetalDevice*>(owner.get());
+        MetalSurface* surface = device.metalSurface();
+        tut::ensure("a surface", surface != nullptr);
+        Encoder& encoder = device.encoder();
+        Texture* back = surface->backBuffer();
+        std::vector<U8> pattern(64 * 32 * 4);
+        for (size_t i = 0; i < pattern.size(); ++i)
+        {
+            pattern[i] = U8(i * 11 + 3);
+        }
+        surface->setVSync(false);
+        surface->setStaleLimitForTest(testStale);
+        encoder.uploadTexture(back, 0, 0, { 0, 0, 64, 32 }, PixelLayout(),
+                              { reinterpret_cast<const std::byte*>(pattern.data()), pattern.size() });
+        surface->present();
+        MetalSurfaceStats stats = metalSurfaceStats(device);
+        ensureEqual("flipped", stats.finishedFlips, U64(1));
+        ensureEqual("its flip pass", device.metalEncoder().presentDraws(), U64(1));
+        ensureEqual("not paced", stats.presentsPaced, U64(0));
+        ensureEqual("no older flip: presented at once", stats.finishedPresented, U64(1));
+        ensureEqual("one drawable", stats.drawablesPresented, U64(1));
+        device.submitAndWait(); // the GPU has finished the flip
+        device.endFrame();
+        stats = metalSurfaceStats(device);
+        ensureEqual("endFrame: nothing newer", stats.finishedPresented, U64(1));
+        ensureEqual("still one drawable", stats.drawablesPresented, U64(1));
+        ensureEqual("one wait", stats.drawableWaits, U64(1));
+        ensureEqual("one signal", stats.drawableSignals, U64(1));
+        // Its presented handler first (a layer without a view gets its drawables back within milliseconds, t160), so
+        // no handler refreshes the window server's progress during the stale wait below.
+        for (int i = 0; i < 200 && metalSurfaceStats(device).drawablesWithWindowServer > 0; ++i)
+        {
+            std::this_thread::sleep_for(std::chrono::milliseconds(5));
+        }
+
+        // Two finished frames while the window server has all drawables but one: both wait, then only the newer goes.
+        surface->holdDrawablesForTest(2);
+        surface->present();
+        surface->present();
+        device.submitAndWait();
+        device.endFrame();
+        stats = metalSurfaceStats(device);
+        ensureEqual("held: flipped", stats.finishedFlips, U64(3));
+        tut::ensure("held: waited", stats.finishedHeld >= 1);
+        ensureEqual("held: no drawable", stats.drawablesPresented, U64(1));
+        std::this_thread::sleep_for(std::chrono::nanoseconds(testStale + 10'000'000));
+        device.endFrame();
+        stats = metalSurfaceStats(device);
+        ensureEqual("stale: the newer presented", stats.finishedPresented, U64(2));
+        ensureEqual("stale: one drawable more", stats.drawablesPresented, U64(2));
+        device.endFrame();
+        stats = metalSurfaceStats(device);
+        ensureEqual("the older one never", stats.finishedPresented, U64(2));
+
+        // A drawable readback and VSync on present the frame's own drawable.
+        setMetalDrawableReadback(device, true);
+        surface->present();
+        device.endFrame();
+        std::vector<U8> drawable;
+        U32 width = 0;
+        U32 height = 0;
+        tut::ensure("a drawable readback presents", readMetalDrawable(device, drawable, width, height));
+        setMetalDrawableReadback(device, false);
+        surface->setVSync(true);
+        surface->present();
+        device.endFrame();
+        stats = metalSurfaceStats(device);
+        ensureEqual("the readback's and VSync on's drawables", stats.drawablesPresented, U64(4));
+        ensureEqual("no more flips", stats.finishedFlips, U64(3));
+        ensureEqual("presents", stats.presents, U64(5));
+        ensureEqual("every present counted once", stats.presents,
+                    stats.drawablesPresented - stats.finishedPresented + stats.presentsSkippedZero + stats.presentsPaced +
+                        stats.drawableTimeouts - stats.finishedTimeouts + stats.finishedFlips + stats.finishedSkipped);
+        ensureEqual("one wait per drawable", stats.drawableWaits, stats.drawablesPresented);
+        ensureEqual("one signal per drawable", stats.drawableSignals, stats.drawablesPresented);
+        ensureEqual("no timeout", stats.drawableTimeouts, U64(0));
+        endCleanly(device, log);
         ensureEqual("no WARN line", occurrences(log, "WARNING"), size_t(0));
     }
 
@@ -13264,21 +13428,13 @@ void main()
     /// screen-space reflections lists them (its thirteen units, classes,
     /// the program's defines in its own file, the viewer's global ones in all), assembled as
     /// LLShaderMgr::loadShaderFile does (version, then the extra code at [EXTRA_CODE_HERE]), behind a vertex stage that
-    /// writes its inputs. Its MSL has the program-scope table of POISSON3D_SAMPLES (metalProgramConstants), and a draw
-    /// through the alpha pass's blending reads it in tapScreenSpaceReflection (transparent: glossiness 1, a normal not
-    /// toward the camera, so the vignette is above 0). Shader validation reports each such read in a state made by
-    /// specialization ("Invalid device load at offset 0 ... Out of bounds of user address space, length:1", functional
-    /// on Metal: 5345 lines), so the layout says constantData and the pipeline is a full state, not E14's
-    /// specialization: no validation line (runValidated).
+    /// writes its inputs. Its MSL has the program-scope table of POISSON3D_SAMPLES, and a draw through the alpha pass's
+    /// blending reads it in tapScreenSpaceReflection (transparent: glossiness 1, a normal not toward the camera, so the
+    /// vignette is above 0). The pipeline is a full state, in which shader validation reports no such read
+    /// (runValidated).
     API_AVAILABLE(macos(26.0)) void alphaSsrProgramTest(MetalDevice& device)
     {
         CaptureLog log(LLError::LEVEL_WARN);
-        tut::ensure("a program-scope constant", metalProgramConstants("#include <metal_stdlib>\nconstant float a = 1.0;\n"));
-        tut::ensure("at the start", metalProgramConstants("constant int b[2] = { 1, 2 };"));
-        tut::ensure("not a member function's address space", !metalProgramConstants("struct S\n{\n    constant T& at() constant;\n};\n"));
-        tut::ensure("not a buffer argument", !metalProgramConstants("fragment float4 f(constant U& u [[buffer(0)]])\n"));
-        tut::ensure("nothing", !metalProgramConstants(""));
-
         const std::filesystem::path shaders =
             std::filesystem::path(__FILE__).parent_path().parent_path().parent_path() / "newview/app_settings/shaders";
         struct Unit
@@ -13379,7 +13535,6 @@ void main()
         desc.shaderLevel = 3;
         Ref<Program> program = ready(device.createProgram(desc));
         tut::ensure("the program is made from its sources", program.notNull() && program->status() == CompileStatus::Ready);
-        tut::ensure("its MSL has program-scope constant data", metalProgramLayout(program.get())->constantData);
         const ProgramReflection& reflection = program->reflection();
         const auto probes = std::find_if(reflection.blocks.begin(), reflection.blocks.end(),
                                          [](const auto& block) { return block.name == "ReflectionProbes"; });
@@ -13391,8 +13546,7 @@ void main()
 
         DrawTarget target = drawTarget(device); // its UI pipeline is a full state of its own, before the counts
         const size_t full = device.fullPipelines();
-        const size_t specialized = device.specializedPipelines();
-        PipelineDesc pipelineDesc = alphaPipelineDesc(); // the alpha pass blends: E14's specialization otherwise
+        PipelineDesc pipelineDesc = alphaPipelineDesc(); // the alpha pass blends
         pipelineDesc.attributeMask = 1u << 0;            // MAP_VERTEX
         Ref<Pipeline> pipeline = device.getPipeline(*program, pipelineDesc);
         tut::ensure("the blended pipeline is made", pipeline.notNull() && metalPipelineState(pipeline.get()) != nil);
@@ -13419,13 +13573,11 @@ void main()
         encoder.draw(PrimitiveType::Triangles, 0, 6);
         encoder.endRenderPass();
         tut::ensure("the program drew", pixelAt(readTarget(device, target), 32, 32) != CLEAR_RGBA);
-        // Shader validation writes its report from a thread of its own after the command buffer has completed: without a
-        // wait a run-time probe ended before the report of a specialized state's read was written.
+        // Shader validation writes its report from a thread of its own after the command buffer has completed, so the
+        // test waits for it before it ends.
         std::this_thread::sleep_for(std::chrono::milliseconds(500));
         endCleanly(device, log);
-        // After the draw, so a specialized state's report reaches stderr first (the mutation).
         ensureEqual("a full state", device.fullPipelines(), full + 1);
-        ensureEqual("no specialized state", device.specializedPipelines(), specialized);
     }
 
     /// t190 (P3-08b S1, C5): a buffer's readback on Metal is an ordered GPU copy with a stamp. It gives a static
@@ -15832,23 +15984,23 @@ void main() { frag_color = vertex_color; }
         endCleanly(device, log);
     }
 
-    /// t213 (P3-R4, B-4): a program's E14 base keys go with it, and E14's count of unspecialized states keeps them; the
+    /// t213 (P3-R4, B-4): a program's full states go with it, and the count of full states sent keeps them; the
     /// group hash is the sent groups' digests' sum, kept beside their records.
-    API_AVAILABLE(macos(26.0)) void forgottenBasesTest(MetalDevice& device)
+    API_AVAILABLE(macos(26.0)) void forgottenStatesTest(MetalDevice& device)
     {
         CaptureLog log(LLError::LEVEL_WARN);
-        const U64 before = metalCompileStats(device).e14Unspecialized;
-        const size_t held = device.pipelineStates().heldBases();
+        const U64 before = metalCompileStats(device).full;
+        const size_t held = device.fullPipelines();
         Ref<Program> program = ready(device.createProgram(uiProgramDesc()));
         tut::ensure("the program is Ready", program.notNull() && program->status() == CompileStatus::Ready);
         Ref<Pipeline> pipeline = device.getPipeline(*program, uiPipelineDesc());
         tut::ensure("a pipeline", pipeline.notNull());
-        ensureEqual("one base more", device.pipelineStates().heldBases(), held + 1);
-        ensureEqual("counted", metalCompileStats(device).e14Unspecialized, before + 1);
+        ensureEqual("one full state more", device.fullPipelines(), held + 1);
+        ensureEqual("counted", metalCompileStats(device).full, before + 1);
         pipeline = nullptr;
         program = nullptr;
-        ensureEqual("the base went with the program", device.pipelineStates().heldBases(), held);
-        ensureEqual("and is still counted", metalCompileStats(device).e14Unspecialized, before + 1);
+        ensureEqual("the state went with the program", device.fullPipelines(), held);
+        ensureEqual("and is still counted", metalCompileStats(device).full, before + 1);
         U64 sum = 0;
         for (const MetalGroupRecord& record : device.groupSources())
         {
@@ -15949,6 +16101,117 @@ void main() { frag_color = vertex_color; }
         ensureEqual("no pass break", metalEncoderStats(device).passBreaks - before.passBreaks, U64(0));
         ensureEqual("one render encoder", device.metalEncoder().renderEncoders() - encoders, U64(1));
         ensureImage("the draw's yellow stays", readTarget(device, target),
+                    [](U32, U32) -> std::optional<Rgba> { return YELLOW; });
+        endCleanly(device, log);
+    }
+
+    /// t230: a pass that only clears a depth nothing samples (the draw target's, as the window's) makes no render
+    /// encoder: the next pass with that depth clears it as its load action, and a draw there is tested against the
+    /// clear. A copy of the depth, and the frame's end, encode the waiting clear in a pass of its own first; so does a
+    /// copy inside a pass whose open segment has only cleared the depth. A depth that can be sampled
+    /// keeps a pass for its clear.
+    API_AVAILABLE(macos(26.0)) void carriedDepthClearTest(MetalDevice& device)
+    {
+        CaptureLog log(LLError::LEVEL_WARN);
+        DrawTarget target = drawTarget(device);
+        VertexStreams streams;
+        Ref<Buffer> yellow = wholeRect(device, target, streams); // depth 0.5
+        DrawVertices redRect;
+        addRect(redRect, -1.f, -1.f, 1.f, 1.f, RED);
+        VertexStreams redStreams;
+        Ref<Buffer> red = vertexBuffer(device, redRect, redStreams);
+        Encoder& encoder = device.encoder();
+        MetalEncoder& metal = device.metalEncoder();
+        Ref<DepthStencilState> lessEqual = device.getDepthStencilState({ true, true, CompareFunc::LessEqual });
+        auto clearDepthOnly = [&](const Ref<Texture>& depth, F32 value)
+        {
+            RenderPassDesc pass = passOn(target.color, depth);
+            pass.depth.load = LoadAction::Clear;
+            pass.depth.clear = value;
+            tut::ensure("the clearing pass begins", encoder.beginRenderPass(pass));
+            encoder.endRenderPass();
+        };
+        auto drawOver = [&](const Ref<Texture>& depth, const Ref<Buffer>& buffer, const VertexStreams& bufferStreams)
+        {
+            tut::ensure("the drawing pass begins", encoder.beginRenderPass(passOn(target.color, depth)));
+            bindDraw(encoder, target, buffer, bufferStreams);
+            encoder.setDepthStencilState(lessEqual.get());
+            encoder.draw(PrimitiveType::Triangles, 0, 6);
+            encoder.endRenderPass();
+        };
+
+        // (a) Carried into the next pass: the clear colour stays, as the depth 0.25 is in front of the quad's 0.5.
+        tut::ensure("the first pass begins", encoder.beginRenderPass(drawPass(target)));
+        encoder.endRenderPass();
+        U64 encoders = metal.renderEncoders();
+        const U64 carried = metal.depthClearsCarried();
+        clearDepthOnly(target.depth, 0.25f);
+        ensureEqual("(a) no render encoder for the clear", metal.renderEncoders() - encoders, U64(0));
+        drawOver(target.depth, yellow, streams);
+        ensureEqual("(a) one render encoder for the draw", metal.renderEncoders() - encoders, U64(1));
+        ensureEqual("(a) the clear carried", metal.depthClearsCarried() - carried, U64(1));
+        MTL4RenderPassDescriptor* last = metal.lastPassDescriptor();
+        tut::ensure("(a) the drawing pass clears its depth", last.depthAttachment.loadAction == MTLLoadActionClear);
+        ensureEqual("(a) to the carried value", F32(last.depthAttachment.clearDepth), 0.25f);
+        tut::ensure("(a) and loads its colour", last.colorAttachments[0].loadAction == MTLLoadActionLoad);
+        ensureImage("(a) the quad behind the carried clear", readTarget(device, target),
+                    [](U32, U32) -> std::optional<Rgba> { return CLEAR_RGBA; });
+        clearDepthOnly(target.depth, 1.f);
+        drawOver(target.depth, yellow, streams);
+        ensureImage("(a) the quad in front of a carried clear to 1", readTarget(device, target),
+                    [](U32, U32) -> std::optional<Rgba> { return YELLOW; });
+
+        // (b) A copy of the depth sees the clear: it is encoded first.
+        Ref<Texture> copied = device.createTexture(sizedDesc(Format::Depth32Float, TEXTURE_RENDER_TARGET, DRAW_SIZE, DRAW_SIZE),
+                                                   "copied depth");
+        U64 encoded = metal.depthClearsEncoded();
+        clearDepthOnly(target.depth, 0.25f);
+        encoder.copyTexture(target.depth.get(), 0, 0, { 0, 0, DRAW_SIZE, DRAW_SIZE }, copied.get(), 0, 0, 0, 0);
+        ensureEqual("(b) the clear encoded before the copy", metal.depthClearsEncoded() - encoded, U64(1));
+        drawOver(copied, red, redStreams);
+        ensureImage("(b) the copy holds the clear", readTarget(device, target),
+                    [](U32, U32) -> std::optional<Rgba> { return YELLOW; });
+        drawOver(target.depth, red, redStreams);
+        ensureImage("(b) so does the depth", readTarget(device, target),
+                    [](U32, U32) -> std::optional<Rgba> { return YELLOW; });
+
+        // (c) The frame's end encodes a clear no pass took; the next frame draws against it.
+        encoded = metal.depthClearsEncoded();
+        clearDepthOnly(target.depth, 0.25f);
+        device.endFrame();
+        ensureEqual("(c) the clear encoded at the frame's end", metal.depthClearsEncoded() - encoded, U64(1));
+        drawOver(target.depth, red, redStreams);
+        ensureImage("(c) the next frame's draw behind it", readTarget(device, target),
+                    [](U32, U32) -> std::optional<Rgba> { return YELLOW; });
+
+        // (e) A copy inside a pass whose open segment has only cleared the depth (nothing recorded, so no encoder) sees
+        // the clear: the clear is split off and encoded before the copy. The depth holds 0.5 before, the quad's own.
+        clearDepthOnly(target.depth, 1.f);
+        drawOver(target.depth, yellow, streams);
+        encoded = metal.depthClearsEncoded();
+        tut::ensure("(e) the pass begins", encoder.beginRenderPass(passOn(target.color, target.depth)));
+        encoder.setDepthStencilState(lessEqual.get());
+        encoder.clear(false, RED_FLOATS, true, 0.25f);
+        encoder.copyTexture(target.depth.get(), 0, 0, { 0, 0, DRAW_SIZE, DRAW_SIZE }, copied.get(), 0, 0, 0, 0);
+        encoder.endRenderPass();
+        ensureEqual("(e) the clear encoded before the copy", metal.depthClearsEncoded() - encoded, U64(1));
+        drawOver(copied, red, redStreams);
+        ensureImage("(e) the copy holds the clear", readTarget(device, target),
+                    [](U32, U32) -> std::optional<Rgba> { return YELLOW; });
+        drawOver(target.depth, red, redStreams);
+        ensureImage("(e) so does the depth", readTarget(device, target),
+                    [](U32, U32) -> std::optional<Rgba> { return YELLOW; });
+
+        // (d) A depth that can be sampled keeps its own pass.
+        Ref<Texture> sampled = device.createTexture(
+            sizedDesc(Format::Depth32Float, TEXTURE_RENDER_TARGET | TEXTURE_SAMPLED, DRAW_SIZE, DRAW_SIZE), "sampled depth");
+        encoders = metal.renderEncoders();
+        const U64 carriedBefore = metal.depthClearsCarried();
+        clearDepthOnly(sampled, 0.25f);
+        ensureEqual("(d) a render encoder for the clear", metal.renderEncoders() - encoders, U64(1));
+        drawOver(sampled, red, redStreams);
+        ensureEqual("(d) nothing carried", metal.depthClearsCarried() - carriedBefore, U64(0));
+        ensureImage("(d) the draw behind the clear", readTarget(device, target),
                     [](U32, U32) -> std::optional<Rgba> { return YELLOW; });
         endCleanly(device, log);
     }
@@ -16498,6 +16761,416 @@ void main() { frag_color = vertex_color * texture(lut, vec3(0.5, 0.5, vary_texco
         endCleanly(device, log);
     }
 
+    /// t227: bindForDraw's remembered resolve of a sampler place. On a device without the Metal debug setting, a place whose
+    /// channel has had no setTexture that changed it takes the texture and sampler of its last resolve; draws after a new
+    /// texture, the same texture told again, a null tell, a new sampling, a texture of another type on the channel and a
+    /// frame's end each show the texture they should, and the type slot reads are counted as a full resolve counts them.
+    /// With the setting every place is resolved again and compared with what was remembered, and none differs.
+    API_AVAILABLE(macos(26.0)) void rememberedResolve(MetalDevice& device, bool checked)
+    {
+        CaptureLog log(LLError::LEVEL_WARN);
+        DrawTarget target = drawTarget(device);
+        DrawVertices vertices;
+        addRect(vertices, -1, -1, 1, 1, YELLOW);
+        VertexStreams streams;
+        Ref<Buffer> buffer = vertexBuffer(device, vertices, streams);
+        Encoder& encoder = device.encoder();
+        const auto colored = [&](const Rgba& rgba, const char* name)
+        {
+            Ref<Texture> texture = device.createTexture(sizedDesc(Format::RGBA8Unorm, TEXTURE_SAMPLED, 1, 1), name);
+            tut::ensure(std::string(name) + " is made", texture.notNull());
+            encoder.uploadTexture(texture.get(), 0, 0, { 0, 0, 1, 1 }, PixelLayout(), bytesOf(rgba));
+            return texture;
+        };
+        Ref<Texture> red = colored(RED, "t227 red");
+        Ref<Texture> green = colored(GREEN, "t227 green");
+        TextureDesc cubeDesc = textureDesc(Format::RGBA8Unorm, TEXTURE_SAMPLED);
+        cubeDesc.type = TextureType::Cube;
+        Ref<Texture> cube = device.createTexture(cubeDesc, "t227 cube");
+        tut::ensure("the cube is made", cube.notNull());
+        setUiUniforms(encoder, target.program.get(), translation(0, 0));
+        // The UI program multiplies the yellow vertex colour by diffuseMap on channel 0.
+        const auto drawShows = [&](const std::string& what, const Rgba& expected)
+        {
+            tut::ensure(what + ": the pass begins", encoder.beginRenderPass(drawPass(target)));
+            encoder.setPipeline(target.pipeline.get());
+            encoder.setVertexBuffer(buffer.get(), streams);
+            encoder.draw(PrimitiveType::Triangles, 0, 6);
+            encoder.endRenderPass();
+            ensureImage(what, readTarget(device, target), [expected](U32, U32) -> std::optional<Rgba> { return expected; });
+        };
+        constexpr Rgba NONE = { 0, 0, 0, 255 };
+        MetalEncoder& metal = device.metalEncoder();
+        const U64 hits = metal.resolveHits();
+        encoder.setTexture(0, red.get(), pointClamp());
+        drawShows("red", RED);
+        drawShows("red again", RED);
+        encoder.setTexture(0, green.get(), pointClamp());
+        drawShows("green after red", GREEN);
+        encoder.setTexture(0, green.get(), pointClamp());
+        drawShows("green told again", GREEN);
+        encoder.setTexture(0, nullptr, pointClamp());
+        drawShows("after a null tell: the default texture", NONE);
+        SamplerDesc linear;
+        linear.filter = Filter::Bilinear;
+        linear.mipmapped = false;
+        linear.addressU = linear.addressV = linear.addressW = AddressMode::ClampToEdge;
+        encoder.setTexture(0, red.get(), linear);
+        drawShows("red, linear", RED);
+        const std::optional<SamplerDesc> chosen = metal.lastSamplerDesc(0);
+        tut::ensure("the remembered sampler is the linear one", chosen && chosen->filter == Filter::Bilinear);
+        drawShows("red, linear, again", RED);
+        tut::ensure("still the linear one", metal.lastSamplerDesc(0) && metal.lastSamplerDesc(0)->filter == Filter::Bilinear);
+        encoder.setTexture(0, red.get(), pointClamp());
+        drawShows("red, point", RED);
+        tut::ensure("the point one", metal.lastSamplerDesc(0) && metal.lastSamplerDesc(0)->filter == Filter::Point);
+        // A cube on the channel: the 2D sampler reads the 2D slot's red, a type slot read at each draw.
+        const U64 reads = metal.stats().typeSlotReads;
+        encoder.setTexture(0, cube.get(), pointClamp());
+        drawShows("a cube on the channel: the 2D slot's red", RED);
+        drawShows("again", RED);
+        ensureEqual("a type slot read at each draw", metal.stats().typeSlotReads, reads + 2);
+        encoder.setTexture(0, green.get(), pointClamp());
+        drawShows("green after the cube", GREEN);
+        ensureEqual("no type slot read with the channel's own texture", metal.stats().typeSlotReads, reads + 2);
+        device.endFrame();
+        drawShows("green in the next frame", GREEN);
+        drawShows("and again", GREEN);
+        if (checked)
+        {
+            ensureEqual("with the debug setting nothing is taken from the remembered resolve", metal.resolveHits(), hits);
+        }
+        else
+        {
+            tut::ensure("without it the unchanged places are taken from it", metal.resolveHits() >= hits + 5);
+        }
+        ensureEqual("no remembered resolve differs from a full one", metal.resolveMismatches(), U64(0));
+        encoder.setTexture(0, nullptr, pointClamp());
+        endCleanly(device, log);
+    }
+
+    API_AVAILABLE(macos(26.0)) void rememberedResolveTest(MetalDevice& device)
+    {
+        tut::ensure("the tests run with the Metal debug setting (LL_METAL_DEBUG=1)", metalDebug() && device.debugChecks());
+        rememberedResolve(device, true);
+        MetalDebugOff off;
+        Ref<Device> quiet = anotherDevice();
+        MetalDevice& unchecked = *static_cast<MetalDevice*>(quiet.get());
+        tut::ensure("a device made without the setting has no checks", !unchecked.debugChecks());
+        rememberedResolve(unchecked, false);
+    }
+
+    /// t228: drawIndexed keeps a strip's list of an index buffer's indices and gives it again while the buffer has had no
+    /// update; another range and an update of the indices each make their own, and every draw shows what its indices
+    /// say. For a static and a dynamic index buffer, on a device with the Metal debug setting, where each kept list is made
+    /// again and compared and none differs, and on one without it.
+    API_AVAILABLE(macos(26.0)) void keptIndexLists(MetalDevice& device, bool dynamic)
+    {
+        CaptureLog log(LLError::LEVEL_WARN);
+        DrawTarget target = drawTarget(device);
+        VertexStreams streams;
+        Ref<Buffer> buffer = twoRects(device, streams);
+        Encoder& encoder = device.encoder();
+        setUiUniforms(encoder, target.program.get(), translation(0, 0));
+        // A strip of four vertices over each rectangle: A's corners 0, 1, 5, 2, then B's 6, 7, 11, 8.
+        const std::vector<U16> strips = { 0, 1, 5, 2, 6, 7, 11, 8 };
+        Ref<Buffer> indices = indexBufferOf(device, strips, "t228 strips", dynamic);
+        const auto drawShows = [&](const std::string& what, U32 first, std::vector<std::array<U32, 4>> rects)
+        {
+            tut::ensure(what + ": the pass begins", encoder.beginRenderPass(drawPass(target)));
+            bindDraw(encoder, target, buffer, streams);
+            encoder.setIndexBuffer(indices.get(), IndexType::U16);
+            encoder.drawIndexed(PrimitiveType::TriangleStrip, first, 4);
+            encoder.endRenderPass();
+            ensureImage(what, readTarget(device, target), yellowIn(std::move(rects)));
+        };
+        MetalEncoder& metal = device.metalEncoder();
+        const U64 made = metal.indexConversionsMade();
+        const U64 hits = metal.indexConversionHits();
+        drawShows("strip A", 0, { { 0, 0, 32, 32 } });
+        drawShows("strip A again", 0, { { 0, 0, 32, 32 } });
+        drawShows("strip B", 4, { { 32, 32, 64, 64 } });
+        const std::array<U16, 4> toB = { 6, 7, 11, 8 };
+        encoder.updateBuffer(indices.get(), 0, bytesOf(toB));
+        drawShows("strip A's range after an update that gives it B's corners", 0, { { 32, 32, 64, 64 } });
+        drawShows("and again", 0, { { 32, 32, 64, 64 } });
+        drawShows("strip B, unchanged by the update, in a list made after it", 4, { { 32, 32, 64, 64 } });
+        ensureEqual("lists made: A, B, A after the update, B after the update", metal.indexConversionsMade(), made + 4);
+        ensureEqual("lists given again", metal.indexConversionHits(), hits + 2);
+        ensureEqual("no kept list differs from one made now", metal.resolveMismatches(), U64(0));
+        endCleanly(device, log);
+    }
+
+    API_AVAILABLE(macos(26.0)) void keptIndexListsTest(MetalDevice& device)
+    {
+        tut::ensure("the tests run with the Metal debug setting (LL_METAL_DEBUG=1)", metalDebug() && device.debugChecks());
+        keptIndexLists(device, false);
+        keptIndexLists(device, true);
+        MetalDebugOff off;
+        Ref<Device> quiet = anotherDevice();
+        MetalDevice& unchecked = *static_cast<MetalDevice*>(quiet.get());
+        tut::ensure("a device made without the setting has no checks", !unchecked.debugChecks());
+        keptIndexLists(unchecked, false);
+        keptIndexLists(unchecked, true);
+    }
+
+    /// t229: MetalFX's spatial scaler through the interface: a flat colour stays flat at 2x, 4x and a scale between,
+    /// only the content is scaled, from texel (0, 0), an upscale in a stack pass breaks it and the pass goes on, and
+    /// upscalers and their outputs made, used and let go at changing sizes leave nothing pending and nothing resident.
+    API_AVAILABLE(macos(26.0)) void upscalerTest(MetalDevice& device)
+    {
+        CaptureLog log(LLError::LEVEL_WARN);
+        tut::ensure("MetalFX's spatial scaler on this Mac", device.capabilities().spatialUpscaler);
+        Encoder& encoder = device.encoder();
+        constexpr Rgba FLAT = { 200, 120, 40, 255 };
+        constexpr Rgba BLACK = { 0, 0, 0, 255 };
+        // A size x size input as the viewer's frames are made (sampled render targets), black in GL's bottom-left
+        // quadrant of `corner` texels each way and FLAT elsewhere.
+        const auto inputOf = [&](U32 size, U32 corner)
+        {
+            Ref<Texture> input =
+                device.createTexture(sizedDesc(Format::RGBA8Unorm, TEXTURE_SAMPLED | TEXTURE_RENDER_TARGET, size, size), "t227 input");
+            tut::ensure("the input is made", input.notNull());
+            std::vector<Rgba> texels(size_t(size) * size, FLAT);
+            for (U32 y = 0; y < corner; ++y)
+            {
+                std::fill_n(texels.begin() + size_t(y) * size, corner, BLACK);
+            }
+            encoder.uploadTexture(input.get(), 0, 0, { 0, 0, size, size }, PixelLayout(),
+                                  std::as_bytes(std::span<const Rgba>(texels)));
+            return input;
+        };
+        const auto upscalerFor = [&](U32 size)
+        {
+            UpscalerDesc desc;
+            desc.inputWidth = desc.inputHeight = size;
+            desc.outputWidth = desc.outputHeight = DRAW_SIZE;
+            Ref<Upscaler> upscaler = device.createUpscaler(desc);
+            tut::ensure("an upscaler from " + std::to_string(size) + " to " + std::to_string(DRAW_SIZE), upscaler.notNull());
+            tut::ensure("the input's usage is a render target's", (upscaler->inputUsage() & ~(TEXTURE_SAMPLED | TEXTURE_RENDER_TARGET)) == 0);
+            return upscaler;
+        };
+        const auto outputFor = [&](const Ref<Upscaler>& upscaler)
+        {
+            Ref<Texture> output = device.createTexture(
+                sizedDesc(Format::RGBA8Unorm, upscaler->outputUsage() | TEXTURE_SAMPLED | TEXTURE_READBACK, DRAW_SIZE, DRAW_SIZE),
+                "t227 output");
+            tut::ensure("the output is made", output.notNull());
+            return output;
+        };
+        // Within 3 of the colour in every channel: the filter's rounding.
+        const auto close = [](const Rgba& actual, const Rgba& colour)
+        {
+            for (size_t i = 0; i < 4; ++i)
+            {
+                if (std::abs(int(actual[i]) - int(colour[i])) > 3)
+                {
+                    return false;
+                }
+            }
+            return true;
+        };
+        const auto ensureScaled = [&](const std::string& what, const Ref<Readback>& readback, auto expect)
+        {
+            for (U32 y = 0; y < DRAW_SIZE; ++y)
+            {
+                for (U32 x = 0; x < DRAW_SIZE; ++x)
+                {
+                    const Rgba actual = pixelAt(readback, x, y);
+                    if (!expect(actual, x, y))
+                    {
+                        tut::fail(what + ": pixel (" + std::to_string(x) + ", " + std::to_string(y) + ") is " + describe(actual));
+                    }
+                }
+            }
+        };
+        const auto flat = [&](const Rgba& actual, U32, U32) { return close(actual, FLAT); };
+
+        for (U32 size : { 32u, 16u, 24u })
+        {
+            const std::string scale = std::to_string(size) + " to " + std::to_string(DRAW_SIZE);
+            Ref<Upscaler> upscaler = upscalerFor(size);
+            Ref<Texture> output = outputFor(upscaler);
+            tut::ensure(scale + ": the upscale is taken",
+                        encoder.upscale(upscaler.get(), inputOf(size, 0).get(), size, size, output.get()));
+            ensureScaled(scale + ": flat stays flat", readWhole(device, output.get()), flat);
+        }
+
+        // The content from texel (0, 0): the black quadrant alone fills the output; the whole input keeps the quadrant
+        // in GL's bottom left, at the scale.
+        {
+            Ref<Upscaler> upscaler = upscalerFor(32);
+            Ref<Texture> output = outputFor(upscaler);
+            Ref<Texture> input = inputOf(32, 16);
+            tut::ensure("the content is the corner", encoder.upscale(upscaler.get(), input.get(), 16, 16, output.get()));
+            // MetalFX samples past the content's far edges into the rest of the input (a run-time probe: 13 8 3 in
+            // column 62), so the last 4 output texels each way are not checked.
+            ensureScaled("the corner alone: black", readWhole(device, output.get()),
+                         [&](const Rgba& actual, U32 x, U32 y) { return x + 4 >= DRAW_SIZE || y + 4 >= DRAW_SIZE || close(actual, BLACK); });
+            tut::ensure("the content is all of it", encoder.upscale(upscaler.get(), input.get(), 32, 32, output.get()));
+            // Not checked within 4 output texels of the quadrant's two inner edges, where the filter blends.
+            ensureScaled("all of it: the corner black, the rest flat", readWhole(device, output.get()),
+                         [&](const Rgba& actual, U32 x, U32 y)
+                         {
+                             const bool edge = (x + 4 >= 32 && x < 36 && y < 36) || (y + 4 >= 32 && y < 36 && x < 36);
+                             return edge || close(actual, x < 32 && y < 32 ? BLACK : FLAT);
+                         });
+        }
+
+        // In a stack pass: it breaks the pass, which goes on with what it had drawn.
+        {
+            DrawTarget target = drawTarget(device);
+            DrawVertices left;
+            addRect(left, -1, -1, 0, 1, YELLOW);
+            DrawVertices right;
+            addRect(right, 0, -1, 1, 1, YELLOW);
+            VertexStreams leftStreams;
+            VertexStreams rightStreams;
+            Ref<Buffer> leftBuffer = vertexBuffer(device, left, leftStreams);
+            Ref<Buffer> rightBuffer = vertexBuffer(device, right, rightStreams);
+            setUiUniforms(encoder, target.program.get(), translation(0, 0));
+            RenderPassDesc stack = drawPass(target);
+            stack.stack = true;
+            // Made and uploaded before the pass: an upload in it would end the segment first, so the segment open at
+            // the upscale is the one holding the left draw, and only upscale's own split can end it.
+            Ref<Upscaler> upscaler = upscalerFor(32);
+            Ref<Texture> output = outputFor(upscaler);
+            Ref<Texture> input = inputOf(32, 0);
+            tut::ensure("the stack pass begins", encoder.beginRenderPass(stack));
+            bindDraw(encoder, target, leftBuffer, leftStreams);
+            encoder.draw(PrimitiveType::Triangles, 0, 6);
+            const U64 breaks = metalEncoderStats(device).passBreaks;
+            tut::ensure("the upscale is taken in the stack pass",
+                        encoder.upscale(upscaler.get(), input.get(), 32, 32, output.get()));
+            ensureEqual("the upscale ends the segment holding the left draw", metalEncoderStats(device).passBreaks - breaks,
+                        U64(1));
+            tut::ensure("the stack pass goes on", encoder.state().inPass() && encoder.state().pass().stack);
+            encoder.setVertexBuffer(rightBuffer.get(), rightStreams);
+            encoder.draw(PrimitiveType::Triangles, 0, 6);
+            device.endFrame(); // a stack pass ends with the frame
+            ensureImage("both halves drawn, the first kept across the upscale", readTarget(device, target),
+                        [](U32, U32) -> std::optional<Rgba> { return YELLOW; });
+            ensureScaled("the upscale in the stack pass", readWhole(device, output.get()), flat);
+        }
+
+        // The same for MetalFX's temporal scaler, where the Mac has it: upscaleTemporal in a stack pass ends the segment
+        // holding the left draw, and the pass goes on with it. Its output is not checked (one frame of a scaler with no
+        // history).
+        U64 temporalUpscales = 0;
+        if (device.capabilities().temporalUpscaler)
+        {
+            DrawTarget target = drawTarget(device);
+            DrawVertices left;
+            addRect(left, -1, -1, 0, 1, YELLOW);
+            DrawVertices right;
+            addRect(right, 0, -1, 1, 1, YELLOW);
+            VertexStreams leftStreams;
+            VertexStreams rightStreams;
+            Ref<Buffer> leftBuffer = vertexBuffer(device, left, leftStreams);
+            Ref<Buffer> rightBuffer = vertexBuffer(device, right, rightStreams);
+            TemporalUpscalerDesc desc;
+            desc.reactiveFormat = Format::R8Unorm;
+            desc.inputWidth = desc.inputHeight = 128;
+            desc.outputWidth = desc.outputHeight = 256;
+            Ref<TemporalUpscaler> temporal = device.createTemporalUpscaler(desc);
+            tut::ensure("a temporal upscaler from 128 to 256", temporal.notNull());
+            const auto made = [&](Format format, U8 usage, U32 size, const char* name)
+            {
+                Ref<Texture> texture = device.createTexture(sizedDesc(format, usage, size, size), name);
+                tut::ensure(std::string("the temporal ") + name + " is made", texture.notNull());
+                return texture;
+            };
+            Ref<Texture> color = made(Format::RGBA8Unorm, temporal->colorUsage() | TEXTURE_SAMPLED | TEXTURE_RENDER_TARGET,
+                                      128, "colour");
+            Ref<Texture> depth = made(Format::Depth32Float, temporal->depthUsage() | TEXTURE_RENDER_TARGET, 128, "depth");
+            Ref<Texture> motion = made(Format::RG16Float, temporal->motionUsage() | TEXTURE_RENDER_TARGET, 128, "motion");
+            Ref<Texture> mask = made(Format::R8Unorm, temporal->reactiveUsage() | TEXTURE_RENDER_TARGET, 128, "mask");
+            Ref<Texture> output = made(Format::RGBA8Unorm, temporal->outputUsage() | TEXTURE_SAMPLED, 256, "output");
+            device.endFrame(); // the new targets are cleared with the frame
+            TemporalUpscaleInputs inputs;
+            inputs.color = color.get();
+            inputs.depth = depth.get();
+            inputs.motion = motion.get();
+            inputs.reactive = mask.get();
+            inputs.output = output.get();
+            inputs.width = inputs.height = 128;
+            inputs.reset = true;
+            setUiUniforms(encoder, target.program.get(), translation(0, 0));
+            RenderPassDesc stack = drawPass(target);
+            stack.stack = true;
+            tut::ensure("the temporal stack pass begins", encoder.beginRenderPass(stack));
+            bindDraw(encoder, target, leftBuffer, leftStreams);
+            encoder.draw(PrimitiveType::Triangles, 0, 6);
+            const U64 breaks = metalEncoderStats(device).passBreaks;
+            const U64 upscales = device.metalEncoder().upscales();
+            tut::ensure("the temporal upscale is taken in the stack pass", encoder.upscaleTemporal(temporal.get(), inputs));
+            temporalUpscales = device.metalEncoder().upscales() - upscales;
+            ensureEqual("the temporal upscale ends the segment holding the left draw",
+                        metalEncoderStats(device).passBreaks - breaks, U64(1));
+            tut::ensure("the temporal stack pass goes on", encoder.state().inPass() && encoder.state().pass().stack);
+            encoder.setVertexBuffer(rightBuffer.get(), rightStreams);
+            encoder.draw(PrimitiveType::Triangles, 0, 6);
+            device.endFrame();
+            ensureImage("both halves drawn, the first kept across the temporal upscale", readTarget(device, target),
+                        [](U32, U32) -> std::optional<Rgba> { return YELLOW; });
+        }
+
+        // Made, used and let go over and over at changing sizes, as the live view's upscaler is when the window or
+        // the preview resolution changes and when it is switched off and on. Twice: the first time also fills the frame
+        // slots' rings, so the second must end with the first's residency, nothing pending after either.
+        constexpr U32 SIZES[] = { 32, 24, 16, 48, 40, 64 };
+        const auto rounds = [&](const std::string& run)
+        {
+            const U64 upscalesBefore = device.metalEncoder().upscales();
+            @autoreleasepool
+            {
+                Ref<Texture> input;
+                Ref<Upscaler> upscaler;
+                Ref<Texture> output;
+                for (U32 round = 0; round < 25; ++round)
+                {
+                    const U32 size = SIZES[round % std::size(SIZES)];
+                    if (round % 4 == 3)
+                    {
+                        upscaler = nullptr; // switched off: let go
+                        output = nullptr;
+                    }
+                    else
+                    {
+                        if (upscaler.isNull() || upscaler->desc().inputWidth != size)
+                        {
+                            upscaler = nullptr;
+                            output = nullptr;
+                            input = inputOf(size, 0);
+                            upscaler = upscalerFor(size);
+                            output = outputFor(upscaler);
+                        }
+                        tut::ensure(run + " round " + std::to_string(round) + ": the upscale is taken",
+                                    encoder.upscale(upscaler.get(), input.get(), size, size, output.get()));
+                    }
+                    device.endFrame();
+                }
+                ensureScaled(run + ": the last round's output", readWhole(device, output.get()), flat);
+                input = nullptr;
+                upscaler = nullptr;
+                output = nullptr;
+                device.submitAndWait();
+                for (int i = 0; i < 3; ++i)
+                {
+                    device.endFrame();
+                }
+            }
+            ensureEqual(run + ": 19 upscales in the rounds", device.metalEncoder().upscales() - upscalesBefore, U64(19));
+            ensureEqual(run + ": nothing pending at the end", device.lifecycle().pendingReleases(), size_t(0));
+            device.residency().commitIfChanged();
+            return device.residency().count();
+        };
+        const U64 resident = rounds("first");
+        ensureEqual("second: the residency set as after the first", rounds("second"), resident);
+        sSpatialUpscales = device.metalEncoder().upscales() - temporalUpscales;
+        endCleanly(device, log);
+    }
+
     bool runOnDevice(int test)
     {
         if (@available(macOS 26.0, *))
@@ -16718,7 +17391,7 @@ void main() { frag_color = vertex_color * texture(lut, vec3(0.5, 0.5, vary_texco
             case 210: speedKnobsTest(device); break;
             case 211: splitBarrierTest(device); break;
             case 212: discardStoresTest(device); break;
-            case 213: forgottenBasesTest(device); break;
+            case 213: forgottenStatesTest(device); break;
             case 214: failureLinesTest(); break;
             case 215: ownEncoderGroupsTest(device); break;
             case 216: presentBindFirstTest(device); break;
@@ -16732,6 +17405,11 @@ void main() { frag_color = vertex_color * texture(lut, vec3(0.5, 0.5, vary_texco
             case 224: nativeSourceTest(device); break;
             case 225: spdTest(device); break;
             case 226: sampler3DTest(device); break;
+            case 227: rememberedResolveTest(device); break;
+            case 228: keptIndexListsTest(device); break;
+            case 229: upscalerTest(device); break;
+            case 230: carriedDepthClearTest(device); break;
+            case 231: finishedPresentTest(); break;
             default: tut::fail("no Metal test " + std::to_string(test));
             }
             return true;
@@ -16849,10 +17527,20 @@ namespace
         bool mOn = false;
     };
 
+    /// Shader validation's reports in MetalFX's spatial scaler's own fragment function (MFX_SCALE_SHADER_V1_FRAG) in
+    /// the last captured text. It reads a four-byte buffer of MetalFX's own that is in no residency set, and MetalFX
+    /// gives the app no way to make it resident (a program of MetalFX alone on a Metal 4 queue gets the same report,
+    /// once per upscale), so up to one per spatial upscale of the test (sSpatialUpscales) is counted apart. A report in
+    /// any other MetalFX function, or one more, is a validation line as any other.
+    size_t sMetalFXReports = 0;
+
     /// The lines scripts/metal/test.sh counts as validation lines: the debug layer's, shader
-    /// validation's reports and NSLog lines besides the two banners. Notes the GPU banner.
+    /// validation's reports and NSLog lines besides the two banners. Notes the GPU banner and counts MetalFX's own
+    /// reports (sMetalFXReports) instead of giving them.
     std::vector<std::string> validationLines(const std::string& text)
     {
+        static const std::regex metalfx(R"( executing [a-z]+ function: "MFX_SCALE_SHADER_V1_FRAG)");
+        sMetalFXReports = 0;
         static const std::regex nslog(R"(^[0-9]{4}-[0-9]{2}-[0-9]{2} [0-9:.]+ [^ ]+\[[0-9]+:[0-9a-f]+\] )");
         static const std::regex banner(
             R"(^[0-9]{4}-[0-9]{2}-[0-9]{2} [0-9:.]+ [^ ]+\[[0-9]+:[0-9a-f]+\] Metal (API|GPU) Validation Enabled$)");
@@ -16865,6 +17553,10 @@ namespace
             if (std::regex_search(line, banner))
             {
                 sShaderValidationSeen = sShaderValidationSeen || line.find("GPU Validation") != std::string::npos;
+            }
+            else if (sMetalFXReports < sSpatialUpscales && std::regex_search(line, metalfx))
+            {
+                ++sMetalFXReports;
             }
             else if (std::regex_search(line, report) || std::regex_search(line, nslog))
             {
@@ -16883,6 +17575,7 @@ namespace
         std::string text;
         std::exception_ptr failure;
         bool madeDevice = false;
+        sSpatialUpscales = 0;
         {
             StderrCapture capture;
             if (!capture.on())
@@ -16900,6 +17593,11 @@ namespace
             text = capture.finish();
         }
         const std::vector<std::string> lines = validationLines(text);
+        if (sMetalFXReports > 0)
+        {
+            std::cout << sMetalFXReports << " shader validation reports in MetalFX's spatial scaler's own function, for "
+                      << sSpatialUpscales << " spatial upscales" << std::endl;
+        }
         if (!lines.empty())
         {
             std::string message = std::to_string(lines.size()) + " validation lines on stderr, the first: " + lines[0];

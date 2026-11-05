@@ -29,10 +29,11 @@ out vec4 frag_color;
 
 uniform sampler2D diffuseRect;
 uniform sampler2D emissiveRect;
+uniform vec2 luminous_jitter_uv; // <Luminous/> MetalFX temporal's jitter: the glow read where the jittered camera sees it
 
 in vec2 tc;
 
 void main()
 {
-    frag_color = texture(diffuseRect, tc) + texture(emissiveRect, tc);
+    frag_color = texture(diffuseRect, tc) + texture(emissiveRect, tc - luminous_jitter_uv); // <Luminous/>
 }

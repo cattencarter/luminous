@@ -507,6 +507,16 @@ struct Capabilities
     bool computePasses = false;  ///< Encoder's compute passes, dispatches and TEXTURE_STORAGE / BUFFER_STORAGE (Metal)
     bool nativePrograms = false; ///< Device::createNativeLibrary, native pipelines and native passes (Metal)
     bool textures3D = false;     ///< TextureType::Tex3D (Metal); GL keeps its raw 3D textures
+    /// Device::createUpscaler and Encoder::upscale: MetalFX's spatial scaler, where the device supports it with Metal 4;
+    /// false on GL
+    bool spatialUpscaler = false;
+    /// Device::createTemporalUpscaler and Encoder::upscaleTemporal: MetalFX's temporal scaler, where the device supports
+    /// it with Metal 4; false on GL
+    bool temporalUpscaler = false;
+    /// The input scales the temporal scaler takes (output size over input size, each way), Apple's range for the device;
+    /// 0 without a temporal scaler
+    F32 temporalMinScale = 0.f;
+    F32 temporalMaxScale = 0.f;
     bool depthClamp = false;
     bool debugLabels = false;
 
@@ -891,11 +901,8 @@ struct BlendState
     bool operator==(const BlendState&) const = default;
 };
 
-/// Metal: a description in which every used color attachment blends has one unspecialized pipeline
-/// per program, attribute mask, primitive class and sample count, specialized per attachment
-/// formats, blend factors and color mask (0.02-0.04 ms each); one with an attachment whose blending
-/// ends Disabled (blending off, or an integer format) has a full pipeline per attachment formats,
-/// blend and color mask. The device caches on the program's id
+/// Metal: a full pipeline per program, attribute mask, primitive class, sample count, attachment
+/// formats, blend factors and color mask. The device caches on the program's id
 /// together with this description (PipelineCache). The point variant of a program is part of the
 /// key through the primitive class. Fill mode and depth clamp are dynamic state; a backend for
 /// which they are pipeline state resolves them at draw time. Color formats past colorCount stay
@@ -1192,6 +1199,102 @@ public:
 /// backend's alignment. For TransientPool's numbers and memory plans.
 U64 textureBytes(const TextureDesc& desc);
 
+// Spatial upscaling ------------------------------------------------------------------------------
+//
+// A filter that scales a picture rendered smaller up to a larger size from that picture alone (Capabilities::
+// spatialUpscaler): MetalFX's spatial scaler on Metal. GL has none, and the defaults below refuse with one WARN line.
+
+/// The values an upscaler's input and output hold, which its filter works in.
+enum class UpscaleColor : U8
+{
+    Perceptual, ///< display values in 0-1, gamma encoded: a finished picture
+    Linear,     ///< linear light in 0-1
+    HDR,        ///< linear light beyond 1
+};
+
+/// What an upscaler is made for: its input's format and size, its output's, and their values. The textures
+/// Encoder::upscale is given have exactly these formats and sizes.
+struct UpscalerDesc
+{
+    Format inputFormat = Format::RGBA8Unorm;
+    U32 inputWidth = 0;
+    U32 inputHeight = 0;
+    Format outputFormat = Format::RGBA8Unorm;
+    U32 outputWidth = 0;
+    U32 outputHeight = 0;
+    UpscaleColor color = UpscaleColor::Perceptual;
+
+    bool operator==(const UpscalerDesc&) const = default;
+};
+
+/// An upscaler made for one description (Device::createUpscaler), run by Encoder::upscale. Other sizes or formats
+/// need another. Its native objects go when the GPU has finished every frame that used it, as a texture's.
+class Upscaler : public Object
+{
+public:
+    virtual const UpscalerDesc& desc() const = 0;
+    /// The TextureUsage bits the input texture must have, and the output texture's.
+    virtual U8 inputUsage() const = 0;
+    virtual U8 outputUsage() const = 0;
+};
+
+// Temporal upscaling -----------------------------------------------------------------------------
+//
+// A filter that scales a picture rendered smaller up to a larger size from that picture and the frames before it
+// (Capabilities::temporalUpscaler): MetalFX's temporal scaler on Metal. Each frame is drawn with the camera moved by a
+// fraction of an input texel (the jitter), and a motion texture says where each texel was in the frame before, so the
+// scaler can add up detail across frames. GL has none, and the defaults below refuse with one WARN line.
+
+/// What a temporal upscaler is made for: the formats of its inputs and output, the input and output sizes. Every
+/// texture Encoder::upscaleTemporal is given has its format, the inputs the input size, the output the output size.
+struct TemporalUpscalerDesc
+{
+    Format colorFormat = Format::RGBA8Unorm;
+    Format depthFormat = Format::Depth32Float;
+    Format motionFormat = Format::RG16Float;
+    Format reactiveFormat = Format::Unknown; ///< Unknown: no reactive mask
+    Format outputFormat = Format::RGBA8Unorm;
+    U32 inputWidth = 0;
+    U32 inputHeight = 0;
+    U32 outputWidth = 0;
+    U32 outputHeight = 0;
+
+    bool operator==(const TemporalUpscalerDesc&) const = default;
+};
+
+/// A temporal upscaler made for one description (Device::createTemporalUpscaler), with the history of the frames it
+/// has scaled; run by Encoder::upscaleTemporal. Its native objects go when the GPU has finished every frame that used
+/// it, as a texture's.
+class TemporalUpscaler : public Object
+{
+public:
+    virtual const TemporalUpscalerDesc& desc() const = 0;
+    /// The TextureUsage bits each texture must have.
+    virtual U8 colorUsage() const = 0;
+    virtual U8 depthUsage() const = 0;
+    virtual U8 motionUsage() const = 0;
+    virtual U8 reactiveUsage() const = 0;
+    virtual U8 outputUsage() const = 0;
+};
+
+/// One frame for Encoder::upscaleTemporal. Every texture is 2D of one sample, in the viewer's row order (row 0 is GL's
+/// bottom row), and the offsets and vectors are in those textures' texels: x to the right, y up the rows.
+struct TemporalUpscaleInputs
+{
+    Texture* color = nullptr;    ///< this frame's picture, drawn with the camera moved by the jitter
+    Texture* depth = nullptr;    ///< its depth, GL's convention (0 near, 1 far)
+    Texture* motion = nullptr;   ///< per texel, where its point was in the frame before minus where it is, without the jitter
+    Texture* reactive = nullptr; ///< 0 to 1: how far not to trust the history at a texel; null without a mask
+    Texture* output = nullptr;
+    U32 width = 0;               ///< the content of the inputs, from texel (0, 0): at most the input size
+    U32 height = 0;
+    F32 jitterX = 0.f;           ///< the offset given to the scaler for this frame's jitter, in input texels
+    F32 jitterY = 0.f;
+    F32 motionScaleX = 1.f;      ///< the motion texture's values times these are texels
+    F32 motionScaleY = 1.f;
+    bool reset = false;          ///< the history is dropped: this frame does not follow the last one
+};
+
 // The encoder ----------------------------------------------------------------------------------
 
 class EncoderTracker;
@@ -1346,6 +1449,20 @@ public:
                              Texture* dst, U32 dstLevel, U32 dstLayer, U32 dstX, U32 dstY) = 0;
     virtual void generateMipmaps(Texture* texture) = 0;
 
+    /// Scales the input's content -- width x height texels from texel (0, 0), GL's bottom left -- up into the whole
+    /// output with the upscaler's filter (Capabilities::spatialUpscaler). Outside passes, or in a stack pass, which it
+    /// breaks as a copy does; refused in any other pass and in a compute pass. The input and the output are two 2D
+    /// textures with the upscaler's formats, sizes and usages (Upscaler::inputUsage, outputUsage), and the content is
+    /// at most the input's size. As a copy, it reads what was recorded before it, and what is recorded after it reads
+    /// what it wrote. False after the WARN line when it was refused or could not be recorded; the output then keeps
+    /// what it had. The default refuses (GL).
+    virtual bool upscale(Upscaler* upscaler, Texture* input, U32 width, U32 height, Texture* output);
+    /// One frame of the temporal upscaler (Capabilities::temporalUpscaler): the inputs' content scaled up into the
+    /// whole output, with the history of the frames before. Where and how it is recorded, and what reads its output,
+    /// as upscale. The textures have the upscaler's formats, sizes and usages. False after the WARN line when it was
+    /// refused or could not be recorded; the output then keeps what it had. The default refuses (GL).
+    virtual bool upscaleTemporal(TemporalUpscaler* upscaler, const TemporalUpscaleInputs& inputs);
+
     /// A GPU-side wait: this encoder's later work runs after the work an upload
     /// context's fence guards, and the CPU does not wait. A null fence, or one that guards no work of
     /// the backend, is no wait. On GL it is keyed on the fence's type, not on LLImageGL's scope: the
@@ -1457,7 +1574,7 @@ public:
     virtual Texture* backBuffer() = 0;
     virtual Texture* backBufferDepth() = 0;
     virtual void resize(U32 width, U32 height) = 0; ///< backing pixels
-    virtual void setVSync(bool enabled) = 0;        ///< displaySyncEnabled on Metal, at runtime
+    virtual void setVSync(bool enabled) = 0;        ///< on Metal the presents' pacing, at runtime
     virtual void present() = 0;
 };
 
@@ -1536,6 +1653,14 @@ public:
     /// The pool's textures (TransientPool). The default makes each as a texture of its own through createTexture,
     /// on a device with computePasses; without it, it refuses with one WARN line.
     virtual Ref<TransientPool> createTransientPool(const TransientPoolDesc& desc);
+    /// Main thread. An upscaler for the description (Capabilities::spatialUpscaler), made once for its sizes and
+    /// formats: not a per-frame call. Null after one WARN line when the device has none or cannot make one for this
+    /// description (validate). The default refuses (GL).
+    virtual Ref<Upscaler> createUpscaler(const UpscalerDesc& desc);
+    /// Main thread. A temporal upscaler for the description (Capabilities::temporalUpscaler), made once for its sizes
+    /// and formats. Null after one WARN line when the device has none or cannot make one for this description
+    /// (validate). The default refuses (GL).
+    virtual Ref<TemporalUpscaler> createTemporalUpscaler(const TemporalUpscalerDesc& desc);
 
     virtual Surface* surface() = 0;
     virtual Encoder& encoder() = 0;             ///< the main thread's; one per thread when that comes
@@ -1559,6 +1684,15 @@ public:
     /// The GPU errors the backend's commit feedback has reported so far, read without waiting;
     /// 0 on GL.
     virtual U64 gpuErrorCount() const { return 0; }
+
+    /// Main thread. The pass timer, a developer's measurement: the GPU time of every render and compute pass of the
+    /// next frames whole frames, by the pass's name, then a table sorted by time per frame, with the frames' GPU busy
+    /// time beside the passes' sum, in the log (tag LuminousPassTimes) and in the file at path, overwritten; then
+    /// done runs, on the main thread. It never waits for the GPU. False, with nothing begun, on a backend without one
+    /// (GL), while one runs, or when the GPU gives no timestamps.
+    virtual bool startPassTimes(U32 frames, const std::string& path, std::function<void()> done) { return false; }
+    /// Main thread: a running pass timer stops without a table, and its done does not run.
+    virtual void stopPassTimes() {}
 };
 
 // ------------------------------------------------------------------------------------------------
@@ -1576,6 +1710,13 @@ std::string validate(const RenderPassDesc& desc);
 /// A sampler's maximum anisotropy: finite, at least 1, at most the device's, and above 1 only with
 /// anisotropic filtering.
 std::string validate(const SamplerDesc& desc, const Capabilities& caps);
+/// An upscaler: a device with spatialUpscaler, sizes from 1 to the largest texture, an output at least as large as
+/// the input each way, and uncompressed colour formats that are not integer and not BGRA8Unorm.
+std::string validate(const UpscalerDesc& desc, const Capabilities& caps);
+/// A temporal upscaler: a device with temporalUpscaler, sizes from 1 to the largest texture, an output at least as
+/// large as the input each way and within the device's scales, colour formats as for the spatial one, a depth format,
+/// a two-channel float motion format, and a reactive format that is Unknown or a one-channel colour format.
+std::string validate(const TemporalUpscalerDesc& desc, const Capabilities& caps);
 
 /// The sampler a draw uses for a binding: the binding's sampling, comparing
 /// (with its compareFunc, LessEqual unless set) when the program's sampler type is
@@ -1938,11 +2079,19 @@ private:
 /// sizes, ranges and attributes, but still refuses what would break the native encoder: a pass in
 /// a pass, a draw outside a pass or without a usable pipeline, dynamic state outside a pass, an
 /// unbalanced debug group (stack passes delimit none), and a query that overlaps one of its kind.
+///
+/// With draw checks off (Metal without its debug setting) it skips only the checks of the calls made for every draw:
+/// the pipeline's formats against the pass (setPipeline and the draw), the vertex buffer's usage and streams
+/// (setVertexBuffer), the index buffer's usage (setIndexBuffer), the channel's range and the texture's sampling
+/// usage (setTexture), and at a draw the primitive class, the vertex buffer and the attributes the pipeline reads. A
+/// draw that would write a read-only depth, and an indexed draw without an index buffer or past its end, are still
+/// refused, and every other check stays on.
 class EncoderTracker
 {
 public:
-    /// The limits come from the device's capabilities; a limit of 0 is not checked.
-    explicit EncoderTracker(const Capabilities& caps = Capabilities(), bool checks = true);
+    /// The limits come from the device's capabilities; a limit of 0 is not checked. drawChecks counts only with
+    /// checks on.
+    explicit EncoderTracker(const Capabilities& caps = Capabilities(), bool checks = true, bool drawChecks = true);
 
     /// What the backend must close on its native encoders when a pass or the frame ends, warning
     /// or not, in this order: the groups opened in the pass, the pass, then the groups opened
@@ -1982,6 +2131,10 @@ public:
     std::string copyTexture(Texture* src, U32 srcLevel, U32 srcLayer, const Region& srcRegion,
                             Texture* dst, U32 dstLevel, U32 dstLayer, U32 dstX, U32 dstY);
     std::string generateMipmaps(Texture* texture);
+    /// Encoder::upscale's rules. Refused also with checks off: in a compute pass, and in a pass other than a stack pass.
+    std::string upscale(Upscaler* upscaler, Texture* input, U32 width, U32 height, Texture* output);
+    /// Encoder::upscaleTemporal's rules, refused as upscale's are.
+    std::string upscaleTemporal(TemporalUpscaler* upscaler, const TemporalUpscaleInputs& inputs);
     std::string readback(Texture* texture, U32 level, U32 layer, const Region& region);
     std::string readback(Buffer* buffer, U64 offset, U64 size);
 
@@ -2194,6 +2347,7 @@ private:
     bool mPrimitivesQueries = false;
     bool mConcurrentSampleQueries = false;
     bool mChecks = true;
+    bool mDrawChecks = true; ///< the checks of the calls made for every draw: mChecks and the drawChecks given
     bool mInPass = false;
     RenderPassDesc mPass;
     U64 mPassSerial = 0;

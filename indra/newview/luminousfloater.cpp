@@ -181,6 +181,52 @@ namespace
 
     std::map<std::string, F32> sEffectKept; // the amount an effect had when it was unticked
 
+    // An effect put in a state: on or off by its switch or amount (and the
+    // Firestorm switch it builds on), kept for renders or not. The sidebar's
+    // button and Preferences > Graphics > Luminous both set it so.
+    void setEffectState(const EffectMode& effect, EffectState target)
+    {
+        const EffectState state = effectState(effect);
+        if (target == state)
+        {
+            return;
+        }
+        const bool turn_on = state == EffectState::Off;
+        const bool turn_off = target == EffectState::Off;
+        if (turn_on || turn_off)
+        {
+            if (effect.on)
+            {
+                gSavedSettings.setBOOL(effect.on, turn_on);
+            }
+            else if (turn_on)
+            {
+                auto kept = sEffectKept.find(effect.amount);
+                gSavedSettings.setF32(effect.amount, kept != sEffectKept.end() ? kept->second : effect.start);
+            }
+            else
+            {
+                sEffectKept[effect.amount] = gSavedSettings.getF32(effect.amount);
+                gSavedSettings.setF32(effect.amount, 0.f);
+            }
+            // the Firestorm switch it builds on follows it (kept out of the
+            // chain above: an effect with a switch has no amount)
+            if (effect.needs)
+            {
+                gSavedSettings.setBOOL(effect.needs, turn_on);
+            }
+            if (effect.turns_on && turn_on)
+            {
+                gSavedSettings.setBOOL(effect.turns_on, true);
+            }
+        }
+        if (effect.render_only)
+        {
+            // off keeps it live for the next time it goes on
+            gSavedSettings.setBOOL(effect.render_only, target == EffectState::Render);
+        }
+    }
+
     // An effect's hint with a picture of it, without and with, so it shows
     // what the effect does even where the light at hand would not (lens
     // flare at night, projector beams in sunshine): the effect's name, the
@@ -704,6 +750,17 @@ bool LuminousFloater::postBuild()
                 }
             }, current))->getFile();
         });
+    }
+    // MetalFX temporal runs on Metal only: its rows are not shown on OpenGL
+    if (!LuminousMetal::metal())
+    {
+        for (const char* name : { "metalfx_temporal_lp", "metalfx_temporal_rest_lp" })
+        {
+            if (LLView* row = findChild<LLView>(name))
+            {
+                row->setVisible(false);
+            }
+        }
     }
     for (const char* tab : TABS)
     {
@@ -1567,10 +1624,46 @@ void LuminousFloater::refreshSkies()
 // static
 void LuminousFloater::openAtLogin()
 {
-    if (LuminousFloater* sidebar = LLFloaterReg::showTypedInstance<LuminousFloater>("luminous"))
+    auto show_folded = []()
     {
-        sidebar->setFolded(true); // just its column of tabs
+        if (LuminousFloater* sidebar = LLFloaterReg::showTypedInstance<LuminousFloater>("luminous"))
+        {
+            sidebar->setFolded(true); // just its column of tabs
+        }
+    };
+    static bool listening = false;
+    if (!listening)
+    {
+        listening = true;
+        gSavedSettings.getControl("LuminousSidebar")->getSignal()->connect(
+            [show_folded](LLControlVariable*, const LLSD& value, const LLSD&)
+            {
+                if (value.asBoolean())
+                {
+                    if (LLStartUp::getStartupState() >= STATE_STARTED)
+                    {
+                        show_folded();
+                    }
+                }
+                else if (LuminousFloater* sidebar = LLFloaterReg::findTypedInstance<LuminousFloater>("luminous"))
+                {
+                    sidebar->closeFloater();
+                }
+            });
     }
+    if (gSavedSettings.getBOOL("LuminousSidebar"))
+    {
+        show_folded();
+    }
+}
+
+void LuminousFloater::onClose(bool app_quitting)
+{
+    if (!app_quitting)
+    {
+        reserveRight(0); // the notification icons and pop-ups back to the edge
+    }
+    LLFloater::onClose(app_quitting);
 }
 
 void LuminousFloater::onOpen(const LLSD& key)
@@ -1694,10 +1787,10 @@ void LuminousFloater::draw()
         refreshShapeButtons();
         if (LLTextBox* live = findChild<LLTextBox>("live_view_size"))
         {
-            // What the live view renders, before it is scaled up. FXAA keeps it at full size
-            // (chosenLiveScale), so the menu is greyed and says what it needs.
-            static LLCachedControl<U32> aa(gSavedSettings, "RenderFSAAType", 2);
-            const bool fxaa = aa() == 1;
+            // What the live view renders, before it is scaled up. FXAA keeps it at full size unless MetalFX
+            // temporal smooths the edges in its place (chosenLiveScale), so the menu is greyed then and says what
+            // it needs.
+            const bool fxaa = LuminousPhotoMode::fxaaKeepsFullSize();
             LLUICtrl* combo = findChild<LLUICtrl>("live_view_combo");
             if (combo && combo->getEnabled() == fxaa)
             {
@@ -1718,6 +1811,32 @@ void LuminousFloater::draw()
                 const F32 scale = LuminousPhotoMode::chosenLiveScale();
                 live->setText(llformat("%u x %u", (U32)(gViewerWindow->getWorldViewWidthRaw() * scale),
                                        (U32)(gViewerWindow->getWorldViewHeightRaw() * scale)));
+            }
+        }
+        // Under MetalFX temporal's check box, while it rests or is held at full size: why
+        if (LLTextBox* rest = findChild<LLTextBox>("metalfx_temporal_rest"))
+        {
+            const std::string text = LuminousPhotoMode::temporalRestText();
+            LLView* row = findChild<LLView>("metalfx_temporal_rest_lp");
+            if (rest->getText() != text)
+            {
+                rest->setText(text);
+                // The row as tall as its text, which wraps: one line or two.
+                const S32 text_height = llmax(rest->getTextPixelHeight(), 16);
+                const S32 row_height = text_height + 4;
+                if (row && !text.empty() && row->getRect().getHeight() != row_height)
+                {
+                    row->reshape(row->getRect().getWidth(), row_height);
+                    const LLRect at = rest->getRect();
+                    rest->setShape(LLRect(at.mLeft, at.mTop, at.mRight, at.mTop - text_height));
+                    mRowHeights[row] = row_height;
+                    fitTabs();
+                }
+            }
+            if (row && row->getVisible() == text.empty())
+            {
+                row->setVisible(!text.empty());
+                fitTabs();
             }
         }
     }
@@ -1781,41 +1900,22 @@ void LuminousFloater::onShowTab(const LLSD& tab)
 void LuminousFloater::onEffectMode(size_t index)
 {
     const EffectMode& effect = EFFECT_MODES[index];
-    const EffectState state = effectState(effect);
-    const bool turn_on = state == EffectState::Off;
-    const bool turn_off = state == EffectState::Render || (state == EffectState::Live && !effect.render_only);
-    if (turn_on || turn_off)
+    // off, live, render only, off; never live for an effect that is only
+    // rendered, never render only for one that cannot be kept for renders
+    EffectState next = EffectState::Off;
+    switch (effectState(effect))
     {
-        if (effect.on)
-        {
-            gSavedSettings.setBOOL(effect.on, turn_on);
-        }
-        else if (turn_on)
-        {
-            auto kept = sEffectKept.find(effect.amount);
-            gSavedSettings.setF32(effect.amount, kept != sEffectKept.end() ? kept->second : effect.start);
-        }
-        else
-        {
-            sEffectKept[effect.amount] = gSavedSettings.getF32(effect.amount);
-            gSavedSettings.setF32(effect.amount, 0.f);
-        }
-        // the Firestorm switch it builds on follows it (kept out of the
-        // chain above: an effect with a switch has no amount)
-        if (effect.needs)
-        {
-            gSavedSettings.setBOOL(effect.needs, turn_on);
-        }
-        if (effect.turns_on && turn_on)
-        {
-            gSavedSettings.setBOOL(effect.turns_on, true);
-        }
+        case EffectState::Off:
+            next = effect.always_render ? EffectState::Render : EffectState::Live;
+            break;
+        case EffectState::Live:
+            next = effect.render_only ? EffectState::Render : EffectState::Off;
+            break;
+        case EffectState::Render:
+            next = EffectState::Off;
+            break;
     }
-    if (effect.render_only)
-    {
-        // live after off; render only after live; and back to live the next time it goes on
-        gSavedSettings.setBOOL(effect.render_only, state == EffectState::Live);
-    }
+    setEffectState(effect, next);
     refreshEffectSwitches();
 }
 
@@ -3469,5 +3569,101 @@ bool LuminousPictureView::handleKeyHere(KEY key, MASK mask)
     }
     return LLFloater::handleKeyHere(key, mask);
 }
-// </Luminous>
 
+// Preferences > Graphics > Luminous: a menu for each of the costlier effects --
+// Off, On (live), Only in renders -- on the same settings as the sidebar's buttons,
+// so the two always agree. Each menu is named as the effect's button.
+class LuminousPrefsEffects : public LLPanel
+{
+public:
+    bool postBuild() override
+    {
+        for (const EffectMode& effect : EFFECT_MODES)
+        {
+            LLComboBox* menu = findChild<LLComboBox>(effect.button);
+            if (!menu)
+            {
+                continue;
+            }
+            mMenus.emplace_back(menu, &effect);
+            menu->setCommitCallback([&effect](LLUICtrl* ctrl, const LLSD&)
+            {
+                setEffectState(effect, (EffectState)llclamp(ctrl->getValue().asInteger(), 0, 2));
+                if (LuminousFloater* sidebar = LLFloaterReg::findTypedInstance<LuminousFloater>("luminous"))
+                {
+                    sidebar->refreshEffectSwitches();
+                }
+            });
+            // the words of the effect's hint in the sidebar
+            std::string name = effect.button;
+            name.replace(name.size() - 5, 5, "_name"); // "<effect>_mode" -> "<effect>_name"
+            for (const EffectPreview& preview : EFFECT_PREVIEWS)
+            {
+                if (name == preview.widget)
+                {
+                    menu->setToolTip(std::string(preview.summary));
+                    break;
+                }
+            }
+        }
+        return true;
+    }
+
+    void draw() override
+    {
+        // settings changed elsewhere (the sidebar, a style, a preset) show here
+        bool dof = true;
+        for (auto& [menu, effect] : mMenus)
+        {
+            const EffectState state = effectState(*effect);
+            if (!strcmp(effect->button, "dof_mode"))
+            {
+                dof = state != EffectState::Off;
+            }
+            // not while its list is open (the list, its child, then holds the focus)
+            const bool list_open = gFocusMgr.childHasKeyboardFocus(menu) && !menu->hasFocus();
+            if (!list_open && menu->getValue().asInteger() != (S32)state)
+            {
+                menu->setValue((S32)state);
+            }
+        }
+        // Enhance is depth of field's own blur: nothing to switch without it
+        for (auto& [menu, effect] : mMenus)
+        {
+            if (!strcmp(effect->button, "lens_blur_mode"))
+            {
+                menu->setEnabled(dof);
+            }
+        }
+        LLPanel::draw();
+    }
+
+private:
+    std::vector<std::pair<LLComboBox*, const EffectMode*>> mMenus;
+};
+
+static LLPanelInjector<LuminousPrefsEffects> t_luminous_prefs_effects("luminous_prefs_effects");
+
+// static
+void LuminousFloater::prefsEffectSettings(const LLView* prefs, std::vector<std::string>& names)
+{
+    if (!prefs)
+    {
+        return;
+    }
+    for (const EffectMode& effect : EFFECT_MODES)
+    {
+        if (!prefs->findChild<LLComboBox>(effect.button))
+        {
+            continue;
+        }
+        for (const char* name : { effect.on, effect.amount, effect.render_only, effect.needs, effect.turns_on })
+        {
+            if (name)
+            {
+                names.emplace_back(name);
+            }
+        }
+    }
+}
+// </Luminous>

@@ -341,8 +341,9 @@ IdMTLBuffer metalBuffer(Readback* readback)
 // The encoder ---------------------------------------------------------------------------------------
 
 MetalEncoder::MetalEncoder(MetalDevice& device, const Capabilities& caps)
-:   mDevice(device), mTracker(caps), mRecordingThread(std::this_thread::get_id())
+:   mDevice(device), mTracker(caps, true, metalDebug()), mRecordingThread(std::this_thread::get_id())
 {
+    mChannelVersions.fill(mNextVersion);
 }
 
 void MetalEncoder::onRecordingThread(const char* call) const
@@ -410,6 +411,11 @@ void MetalEncoder::endFrame()
     dropUnheldSlots();
     abandonQuery(); // the tracker drops an active query at the frame's end (llrhi.cpp, EncoderTracker::endFrame)
     closePass(mTracker.endFrame(), "endFrame");
+    // A depth clear no later segment of the frame took gets a pass of its own.
+    settleDepthClears(nullptr);
+    // The tracker and dropUnheldSlots may have let go of bindings.
+    syncBlocks();
+    forgetResolves();
     // The targets still waiting are cleared with the frame that ends, so the list holds none past it: one let go
     // meanwhile goes with this frame, as a deleted texture does.
     zeroNewTargets();
@@ -532,18 +538,30 @@ void MetalEncoder::reset()
 {
     abandonQuery();
     mTracker = EncoderTracker();
+    mDepthClears.clear();
     mSegment = RenderPassDesc();
     mSegmentWork = false;
     mNative = nil;
     mOpenPass = nil;
     mNativePipeline = nil;
+    mDrawState = nil;
+    mDrawPipelineId = 0;
     mLastPass = nil;
     mLastEncoderLabel = nil;
     mPendingCopies.clear();
     mNewTargets.clear();
     mPrograms.clear();
+    mLastProgramId = 0;
+    mLastProgram = nullptr;
     mTypeSlots.clear();
     mLastSamplers.clear();
+    mLastChannelSamplers = {};
+    mChannelVersions.fill(++mNextVersion);
+    forgetResolves();
+    mSamplerIDs.clear();
+    syncBlocks();
+    mIndexConversions.clear();
+    mIndexScratch.clear();
     mTables = {};
     mShadows = {};
     mCompute = nil;
@@ -860,8 +878,13 @@ bool MetalEncoder::open()
     // Metal 4's pass descriptor with Metal 3's attachments. The store actions wait for
     // close(), which knows whether the pass ends with the segment (MTL4RenderCommandEncoder.h:229-244).
     RenderPassDesc& pass = mSegment;
+    if (!mDepthClears.empty())
+    {
+        takeDepthClear(pass);
+    }
     MTL4RenderPassDescriptor* descriptor = [MTL4RenderPassDescriptor new];
     const U32 alphaLess = alphaLessAttachments(pass);
+    mNativeAlphaLess = alphaLess; // setNativePipeline's mask for the segment's draws
     for (U32 i = 0; i < pass.colorCount; ++i)
     {
         ColorAttachment& color = pass.color[i];
@@ -948,6 +971,10 @@ bool MetalEncoder::open()
     // The pass waits for the queue's earlier work and sees what it wrote; with split barriers its vertex
     // work does not, until a draw's vertex stage samples (setNativePipeline).
     mVertexWaitOpen = mDevice.passBarrier(encoder);
+    // The pass timer's begin, after the barrier.
+    mNativeStamp = mDevice.passTimes().recording()
+                       ? mDevice.passTimes().beginRender(encoder, pass, mDevice.lifecycle().currentFrame())
+                       : MetalPassStamp();
     // The dynamic state waits for the first draw or clear draw (applyDrawState, applyClearState), as
     // the scissor does, so validation never sees a state that no draw used. The copies start at Metal's
     // defaults: the viewport and the scissor are the whole attachment (Apple's documentation of
@@ -1006,8 +1033,8 @@ bool MetalEncoder::close(bool last)
             clears = clears || (pass.color[i].texture.notNull() && pass.color[i].load == LoadAction::Clear);
         }
         // A segment that only loads and records nothing changes nothing; one that clears needs its
-        // encoder for the load actions.
-        if (!clears || !open())
+        // encoder for the load actions, unless a later segment takes its depth clear.
+        if (!clears || carryDepthClear(last) || !open())
         {
             return false;
         }
@@ -1018,6 +1045,109 @@ bool MetalEncoder::close(bool last)
     mDiscardDepth = false;
     endNative();
     return true;
+}
+
+bool MetalEncoder::carryDepthClear(bool last)
+{
+    RenderPassDesc& pass = mSegment;
+    const DepthAttachment& depth = pass.depth;
+    if (depth.texture.isNull() || depth.load != LoadAction::Clear || (last && depth.store != StoreAction::Store)
+        || (depth.texture->desc().usage & (TEXTURE_SAMPLED | TEXTURE_STORAGE)) != 0
+        || memoryless(metalTexture(depth.texture.get())))
+    {
+        return false;
+    }
+    for (U32 i = 0; i < pass.colorCount; ++i)
+    {
+        if (pass.color[i].texture.notNull() && pass.color[i].load != LoadAction::Load)
+        {
+            return false;
+        }
+    }
+    // A later clear of the same depth level and layer takes the place of one still waiting.
+    const auto same = std::find_if(mDepthClears.begin(), mDepthClears.end(), [&depth](const DepthClear& waiting)
+    { return waiting.texture == depth.texture && waiting.level == depth.level && waiting.layer == depth.layer; });
+    DepthClear& clear = same != mDepthClears.end() ? *same : mDepthClears.emplace_back();
+    clear.texture = depth.texture;
+    clear.level = depth.level;
+    clear.layer = depth.layer;
+    clear.value = depth.clear;
+    clear.name = pass.name;
+    // A segment after this one in the same pass loads the depth, and takes the clear at its open().
+    pass.depth.load = LoadAction::Load;
+    return true;
+}
+
+void MetalEncoder::takeDepthClear(RenderPassDesc& pass)
+{
+    DepthAttachment& depth = pass.depth;
+    if (depth.texture.isNull())
+    {
+        return;
+    }
+    const auto waiting = std::find_if(mDepthClears.begin(), mDepthClears.end(), [&depth](const DepthClear& clear)
+    { return clear.texture == depth.texture && clear.level == depth.level && clear.layer == depth.layer; });
+    if (waiting == mDepthClears.end())
+    {
+        return;
+    }
+    if (depth.load == LoadAction::Load)
+    {
+        depth.load = LoadAction::Clear;
+        depth.clear = waiting->value;
+        ++mDepthClearsCarried;
+    }
+    mDepthClears.erase(waiting);
+}
+
+void MetalEncoder::settleDepthClears(const Texture* texture)
+{
+    // A depth clear that is still the load action of the open segment, which has no encoder yet, comes
+    // before the call too: the split carries it into mDepthClears (or encodes it, when carryDepthClear refuses it),
+    // so the copy, upload or readback that follows does not run ahead of a clear GL ordered before it.
+    const DepthAttachment& segmentDepth = mSegment.depth;
+    if (mTracker.inPass() && !mNative && segmentDepth.texture.notNull() && segmentDepth.load == LoadAction::Clear
+        && (!texture || segmentDepth.texture.get() == texture))
+    {
+        splitPass();
+    }
+    if (mDepthClears.empty())
+    {
+        return;
+    }
+    const auto due = [texture](const DepthClear& clear) { return !texture || clear.texture.get() == texture; };
+    if (std::none_of(mDepthClears.begin(), mDepthClears.end(), due))
+    {
+        return;
+    }
+    // No render or compute encoder may be open beside the clear's own.
+    splitPass();
+    std::vector<DepthClear> waiting;
+    waiting.swap(mDepthClears);
+    for (DepthClear& clear : waiting)
+    {
+        if (!due(clear))
+        {
+            mDepthClears.push_back(std::move(clear));
+            continue;
+        }
+        MTL4RenderPassDescriptor* pass = [MTL4RenderPassDescriptor new];
+        pass.depthAttachment.texture = metalTexture(clear.texture.get());
+        pass.depthAttachment.level = clear.level;
+        pass.depthAttachment.slice = clear.layer;
+        pass.depthAttachment.loadAction = MTLLoadActionClear;
+        pass.depthAttachment.storeAction = MTLStoreActionStore;
+        pass.depthAttachment.clearDepth = clear.value;
+        IdMTL4RenderCommandEncoder encoder = openOwnEncoder(pass, metalString(clear.name));
+        if (!encoder)
+        {
+            LL_WARNS("RHI") << "Metal gave no render encoder for the depth clear of pass '" << clear.name << "'"
+                            << LL_ENDL;
+            continue;
+        }
+        closeOwnEncoder(encoder);
+        ++mDepthClearsEncoded;
+    }
 }
 
 void MetalEncoder::closeForTeardown()
@@ -1065,6 +1195,11 @@ void MetalEncoder::setStoreActions(bool last, bool teardown)
 
 void MetalEncoder::endNative()
 {
+    if (mNativeStamp.frame)
+    {
+        mDevice.passTimes().endRender(mNative, mNativeStamp);
+        mNativeStamp = MetalPassStamp();
+    }
     // The encoder's debug groups are popped before its end and go on in the command buffer.
     mDevice.endGroups();
     [mNative endEncoding];
@@ -1097,11 +1232,19 @@ IdMTL4RenderCommandEncoder MetalEncoder::openOwnEncoder(MTL4RenderPassDescriptor
     ++mRenderEncoders;
     // The encoder sees what the queue's earlier work wrote (MTL4CommandEncoder.h:50-58).
     mDevice.queueBarrier(encoder);
+    mOwnStamp = mDevice.passTimes().recording()
+                    ? mDevice.passTimes().beginOwnRender(encoder, label, mDevice.lifecycle().currentFrame())
+                    : MetalPassStamp();
     return encoder;
 }
 
 void MetalEncoder::closeOwnEncoder(IdMTL4RenderCommandEncoder encoder)
 {
+    if (mOwnStamp.frame)
+    {
+        mDevice.passTimes().endRender(encoder, mOwnStamp);
+        mOwnStamp = MetalPassStamp();
+    }
     // The encoder's debug groups are popped before its end and go on in the command buffer.
     mDevice.endGroups();
     [encoder endEncoding];
@@ -1396,18 +1539,71 @@ void MetalEncoder::setTexture(U32 channel, Texture* texture, const SamplerDesc& 
     // The texture goes into the channel's slot of its type, and a null tell empties the slot of the type the
     // channel got last, as LLTexUnit::unbind(type) clears only the current target; a refused texture empties its type's.
     const bool bound = accept("setTexture", mTracker.setTexture(channel, texture));
+    if (bound && texture && !mDepthClears.empty())
+    {
+        settleDepthClears(texture);
+    }
     if (bound && texture)
     {
         ChannelSlots& slots = mTypeSlots[channel];
-        slots.last = texture->desc().type;
-        slots.types[size_t(slots.last)] = { texture, sampling };
-        return;
+        const TextureType type = texture->desc().type;
+        TypeSlot& slot = slots.types[size_t(type)];
+        // The texture and sampling the channel's last type's slot holds already: the channel's slots and its binding
+        // stay as they are, and so does its version.
+        if (slots.last == type && slot.texture.get() == texture && slot.sampling == sampling)
+        {
+            return;
+        }
+        slots.last = type;
+        slot = { texture, sampling };
     }
-    const auto found = mTypeSlots.find(channel);
-    if (found != mTypeSlots.end())
+    else if (const auto found = mTypeSlots.find(channel); found != mTypeSlots.end())
     {
         found->second.last = texture ? texture->desc().type : found->second.last;
         found->second.types[size_t(found->second.last)] = TypeSlot();
+    }
+    // The channel's places resolve again at their next draw.
+    if (channel < RESOLVE_CHANNELS)
+    {
+        mChannelVersions[channel] = ++mNextVersion;
+    }
+}
+
+bool MetalEncoder::samplerID(const SamplerDesc& desc, MTLResourceID& id)
+{
+    if (const auto found = mSamplerIDs.find(desc); found != mSamplerIDs.end())
+    {
+        id = found->second.id;
+        return true;
+    }
+    Ref<Sampler> sampler = mDevice.getSampler(desc);
+    if (sampler.isNull())
+    {
+        return false; // getSampler wrote the WARN line
+    }
+    id = metalSamplerID(sampler.get());
+    mSamplerIDs.emplace(desc, CachedSampler{ sampler, id });
+    return true;
+}
+
+void MetalEncoder::forgetResolves()
+{
+    for (auto& stage : mResolved)
+    {
+        for (ResolvedPlace& place : stage)
+        {
+            place.version = 0;
+        }
+    }
+}
+
+void MetalEncoder::syncBlocks()
+{
+    const auto& tracked = mTracker.uniformBuffers();
+    for (U32 slot = 0; slot < mBlocks.size(); ++slot)
+    {
+        const auto bound = tracked.find(slot);
+        mBlocks[slot].buffer = bound != tracked.end() ? bound->second.get() : nullptr;
     }
 }
 
@@ -1415,6 +1611,11 @@ void MetalEncoder::setTexture(U32 channel, Texture* texture, const SamplerDesc& 
 
 MetalProgramState& MetalEncoder::programState(U64 programId, const MetalProgramLayout& layout)
 {
+    // The map's elements keep their place when it grows; forgetProgram and reset() let go of the last answer.
+    if (mLastProgram && programId == mLastProgramId)
+    {
+        return *mLastProgram;
+    }
     const auto [found, made] = mPrograms.try_emplace(programId);
     if (made)
     {
@@ -1422,6 +1623,8 @@ MetalProgramState& MetalEncoder::programState(U64 programId, const MetalProgramL
         found->second.blocks[0].assign(layout.vertex.blockSize, std::byte(0));
         found->second.blocks[1].assign(layout.fragment.blockSize, std::byte(0));
     }
+    mLastProgramId = programId;
+    mLastProgram = &found->second;
     return found->second;
 }
 
@@ -1520,7 +1723,7 @@ void MetalEncoder::draw(PrimitiveType type, U32 firstVertex, U32 vertexCount)
     onRecordingThread("draw");
     // A draw with a pipeline still being made waits for it (llrhi.h:790-791), so the tracker's
     // refusal names one that failed meanwhile.
-    metalPipelineState(mTracker.pipeline());
+    waitForPipeline();
     if (!accept("draw", mTracker.draw(type)))
     {
         return;
@@ -1580,15 +1783,15 @@ void MetalEncoder::drawIndexed(PrimitiveType type, U32 firstIndex, U32 indexCoun
 {
     onRecordingThread("drawIndexed");
     // As draw: the tracker's refusal names a pipeline that failed while the draw waited.
-    metalPipelineState(mTracker.pipeline());
+    waitForPipeline();
     if (!accept("drawIndexed", mTracker.drawIndexed(type, firstIndex, indexCount)))
     {
         return;
     }
     const std::optional<MTLPrimitiveType> primitive = nativePrimitive(type);
     // A fan, strip or loop is its list of the indices first..first + count, in the ring.
-    std::vector<U32> order = primitive ? std::vector<U32>() : metalListOrder(type, indexCount);
-    if (indexCount == 0 || (!primitive && order.empty()))
+    const U32 listCount = primitive ? indexCount : metalListCount(type, indexCount);
+    if (indexCount == 0 || listCount == 0)
     {
         return;
     }
@@ -1600,8 +1803,7 @@ void MetalEncoder::drawIndexed(PrimitiveType type, U32 firstIndex, U32 indexCoun
     const IndexType indexType = mTracker.indexType();
     const U64 size = indexSize(indexType);
     const U64 skip = U64(firstIndex) * size;
-    const MetalAllocation memory = metalAllocation(indices);
-    MTLGPUAddress address = memory.buffer.gpuAddress + memory.offset + skip;
+    MTLGPUAddress address = metalAddress(indices) + skip;
     U64 length = ((indices->desc().size - skip) / size) * size;
     U32 count = indexCount;
     // Metal restarts a strip at a 16-bit 0xFFFF, GL 4.1 draws vertex 65535 (GL_PRIMITIVE_RESTART is
@@ -1618,11 +1820,6 @@ void MetalEncoder::drawIndexed(PrimitiveType type, U32 firstIndex, U32 indexCoun
     // The TriangleStrip arm does not hold today, as a TriangleStrip is always drawn as a generated list
     // (metalListPrimitive); it keeps a future native strip right.
     const U64 drawnSize = widen ? 4 : size;
-    if (widen && primitive)
-    {
-        order.resize(indexCount);
-        std::iota(order.begin(), order.end(), 0u);
-    }
     if (!primitive || widen)
     {
         // The indices as GL has them at the draw (metalIndexBytes: a static buffer's CPU copy, kept
@@ -1634,7 +1831,9 @@ void MetalEncoder::drawIndexed(PrimitiveType type, U32 firstIndex, U32 indexCoun
                             << "' has no CPU copy of its indices for a fan, strip or loop" << LL_ENDL;
             return;
         }
-        count = U32(order.size());
+        const std::vector<std::byte>& converted =
+            indexConversion(indices, indexType, type, firstIndex, indexCount, widen, bytes);
+        count = listCount;
         length = U64(count) * drawnSize;
         const MetalAllocation list = mDevice.frameAllocation(length);
         if (!list.buffer)
@@ -1648,20 +1847,7 @@ void MetalEncoder::drawIndexed(PrimitiveType type, U32 firstIndex, U32 indexCoun
                             << "' is not resident" << LL_ENDL;
             return;
         }
-        for (size_t i = 0; i < order.size(); ++i)
-        {
-            if (widen)
-            {
-                U16 small = 0;
-                std::memcpy(&small, bytes.data() + skip + order[i] * size, sizeof(small));
-                const U32 wide = small;
-                std::memcpy(list.cpu + i * drawnSize, &wide, sizeof(wide));
-            }
-            else
-            {
-                std::memcpy(list.cpu + i * size, bytes.data() + skip + order[i] * size, size);
-            }
-        }
+        std::memcpy(list.cpu, converted.data(), size_t(length));
         address = list.buffer.gpuAddress + list.offset;
     }
     breakForCopies();
@@ -1689,20 +1875,122 @@ void MetalEncoder::drawIndexed(PrimitiveType type, U32 firstIndex, U32 indexCoun
     }
 }
 
+const std::vector<std::byte>& MetalEncoder::indexConversion(Buffer* indices, IndexType indexType, PrimitiveType type,
+                                                            U32 first, U32 count, bool widen,
+                                                            std::span<const std::byte> source)
+{
+    const U64 size = indexSize(indexType);
+    const U64 drawnSize = widen ? 4 : size;
+    const U64 skip = U64(first) * size;
+    // The indices in the list's order, a native primitive's as they are, each widened to 32 bits with widen.
+    const auto convert = [&](std::vector<std::byte>& out)
+    {
+        std::vector<U32> order;
+        if (nativePrimitive(type))
+        {
+            order.resize(count);
+            std::iota(order.begin(), order.end(), 0u);
+        }
+        else
+        {
+            order = metalListOrder(type, count);
+        }
+        out.resize(order.size() * drawnSize);
+        for (size_t i = 0; i < order.size(); ++i)
+        {
+            if (widen)
+            {
+                U16 small = 0;
+                std::memcpy(&small, source.data() + skip + order[i] * size, sizeof(small));
+                const U32 wide = small;
+                std::memcpy(out.data() + i * drawnSize, &wide, sizeof(wide));
+            }
+            else
+            {
+                std::memcpy(out.data() + i * size, source.data() + skip + order[i] * size, size);
+            }
+        }
+    };
+    const U64 id = indices->id();
+    const U64 writes = metalBufferWrites(indices);
+    ++mIndexConversionUses;
+    for (IndexConversion& kept : mIndexConversions)
+    {
+        if (kept.buffer == id && kept.writes == writes && kept.first == first && kept.count == count &&
+            kept.type == type && kept.indexType == indexType && kept.widen == widen)
+        {
+            kept.used = mIndexConversionUses;
+            ++mIndexConversionHits;
+            if (mDevice.debugChecks())
+            {
+                convert(mIndexScratch);
+                if (mIndexScratch != kept.bytes)
+                {
+                    ++mResolveMismatches;
+                    LL_WARNS("RHI") << "drawIndexed: the kept list of index buffer '" << indices->debugName()
+                                    << "' differs from one made now" << LL_ENDL;
+                    return mIndexScratch;
+                }
+            }
+            return kept.bytes;
+        }
+    }
+    ++mIndexConversionsMade;
+    const U64 listed = nativePrimitive(type) ? count : metalListCount(type, count);
+    if (listed * drawnSize > MAX_INDEX_CONVERSION_BYTES)
+    {
+        convert(mIndexScratch);
+        return mIndexScratch;
+    }
+    if (mIndexConversions.size() >= MAX_INDEX_CONVERSIONS)
+    {
+        const auto oldest = std::min_element(mIndexConversions.begin(), mIndexConversions.end(),
+                                             [](const IndexConversion& a, const IndexConversion& b)
+                                             { return a.used < b.used; });
+        mIndexConversions.erase(oldest);
+    }
+    IndexConversion& made = mIndexConversions.emplace_back();
+    made.buffer = id;
+    made.writes = writes;
+    made.first = first;
+    made.count = count;
+    made.type = type;
+    made.indexType = indexType;
+    made.widen = widen;
+    made.used = mIndexConversionUses;
+    convert(made.bytes);
+    return made.bytes;
+}
+
 bool MetalEncoder::setNativePipeline()
 {
-    // The variant without alpha for the segment's attachments that have none in GL.
-    IdMTLRenderPipelineState state = metalPipelineState(mTracker.pipeline(), mDevice, alphaLessAttachments(mSegment));
-    if (!state)
+    // The variant without alpha for the segment's attachments that have none in GL, looked up again only when the
+    // pipeline or the segment's mask is another than at the last draw's lookup. A pipeline's state never changes once
+    // made, and its id is never reused.
+    Pipeline* pipeline = mTracker.pipeline();
+    if (!pipeline || !mDrawState || pipeline->id() != mDrawPipelineId || mNativeAlphaLess != mDrawAlphaLess)
     {
-        return false; // its handler wrote the WARN line
+        mDrawState = metalPipelineState(pipeline, mDevice, mNativeAlphaLess);
+        mDrawPipelineId = pipeline && mDrawState ? pipeline->id() : 0;
+        mDrawAlphaLess = mNativeAlphaLess;
+        if (!mDrawState)
+        {
+            return false; // its handler wrote the WARN line
+        }
+    }
+    else if (mDevice.debugChecks() && mDrawState != metalPipelineState(pipeline, mDevice, mNativeAlphaLess))
+    {
+        // With the Metal debug setting the kept state is compared with a lookup.
+        ++mResolveMismatches;
+        LL_WARNS("RHI") << "the kept pipeline state of '" << pipeline->debugName() << "' differs from a lookup"
+                        << LL_ENDL;
+        mDrawState = metalPipelineState(pipeline, mDevice, mNativeAlphaLess);
     }
     if (mVertexWaitOpen)
     {
         // A vertex stage that samples (the translation's reflection) or reads native bindings (a native vertex
         // function's textures or buffers, which can change between draws of one pipeline) may read what an
         // earlier pass wrote, so the split barrier's geometry part comes before its first such draw.
-        Pipeline* pipeline = mTracker.pipeline();
         const MetalProgramLayout* layout = metalPipelineLayout(pipeline);
         const bool reads = pipeline && pipeline->native()
                                ? !mTracker.nativeTextures(NativeStage::Vertex).empty()
@@ -1719,12 +2007,27 @@ bool MetalEncoder::setNativePipeline()
             }
         }
     }
-    if (state != mNativePipeline)
+    if (mNativeStamp.wantsProgram)
     {
-        [mNative setRenderPipelineState:state];
-        mNativePipeline = state;
+        mDevice.passTimes().noteProgram(mNativeStamp, mDrawState.label);
+    }
+    if (mDrawState != mNativePipeline)
+    {
+        [mNative setRenderPipelineState:mDrawState];
+        mNativePipeline = mDrawState;
     }
     return true;
+}
+
+void MetalEncoder::waitForPipeline()
+{
+    // A Ready pipeline needs no wait; a Pending one is waited for, and a Failed one asked as before (a native
+    // pipeline's failure writes its WARN line there).
+    Pipeline* pipeline = mTracker.pipeline();
+    if (pipeline && pipeline->status() != CompileStatus::Ready)
+    {
+        metalPipelineState(pipeline);
+    }
 }
 
 void MetalEncoder::setIndexBuffer(Buffer* buffer, IndexType type)
@@ -1741,6 +2044,12 @@ void MetalEncoder::setUniformBuffer(U32 blockIndex, Buffer* buffer, U64 offset, 
     // that reads the slot's block binds it on buffer 1 + slot (bindForDraw).
     accept("setUniformBuffer", mTracker.setUniformBuffer(blockIndex, buffer, offset, size));
     mBlockRanges[blockIndex] = { offset, size };
+    if (blockIndex < mBlocks.size())
+    {
+        const auto bound = mTracker.uniformBuffers().find(blockIndex);
+        mBlocks[blockIndex] = { bound != mTracker.uniformBuffers().end() ? bound->second.get() : nullptr, offset, size,
+                                true };
+    }
 }
 
 void MetalEncoder::updateBuffer(Buffer* buffer, U64 offset, std::span<const std::byte> data)
@@ -1775,6 +2084,7 @@ void MetalEncoder::uploadTexture(Texture* texture, U32 level, U32 layer, const R
         metalNotPorted("uploadTexture into a multisampled texture", "P3-08");
         return;
     }
+    settleDepthClears(texture);
     // Metal 4 has no copy on a render encoder, so an upload in a pass breaks it; the
     // copy runs between segments, and the next draw opens a segment that loads what this one stored.
     if (mTracker.inPass())
@@ -1799,6 +2109,45 @@ void MetalEncoder::forgetWritten(Texture* texture, U32 level, U32 layer)
 
 namespace
 {
+    /// How generateMipmaps makes the levels. "same" draws each level with the backend's own filter into a scratch it
+    /// samples the level above from; "pingpong" draws into a second scratch instead; "blit" uses Metal 4's
+    /// generateMipmapsForTexture on the texture itself (Metal's own filter). On an M2 Pro (Apple8) both drawn paths
+    /// gave black, then transparent levels (conifer needles, mesh hair, clouds) and blit gave right ones; the
+    /// M4s (Apple9) draw them right. So GPUs without MTLGPUFamilyApple9 (M1, M2) use blit, the others the drawn
+    /// path, until the drawn path's fault on Apple8 is found. LL_METAL_MIPS=same|pingpong|blit overrides it (a
+    /// diagnostic knob, not a setting). Chosen once, at the first mip generation, with a line in the log.
+    enum class MipPath
+    {
+        PingPong,
+        Same,
+        Blit,
+    };
+
+    API_AVAILABLE(macos(26.0)) MipPath metalMipPath(IdMTLDevice device)
+    {
+        static const MipPath path = [device]()
+        {
+            const bool apple9 = [device supportsFamily:MTLGPUFamilyApple9];
+            MipPath chosen = apple9 ? MipPath::Same : MipPath::Blit;
+            const char* knob = getenv("LL_METAL_MIPS");
+            if (knob)
+            {
+                chosen = std::strcmp(knob, "same") == 0       ? MipPath::Same
+                         : std::strcmp(knob, "pingpong") == 0 ? MipPath::PingPong
+                         : std::strcmp(knob, "blit") == 0     ? MipPath::Blit
+                                                              : chosen;
+            }
+            LL_INFOS("RHI") << "Metal mipmaps: "
+                            << (chosen == MipPath::Same ? "drawn" : chosen == MipPath::Blit ? "Metal's generateMipmaps"
+                                                                                            : "drawn, two scratches")
+                            << (knob ? std::string(" (LL_METAL_MIPS=") + knob + ")"
+                                     : std::string(apple9 ? " (Apple9 GPU)" : " (no Apple9 GPU: M1 or M2)"))
+                            << LL_ENDL;
+            return chosen;
+        }();
+        return path;
+    }
+
     // The copies Metal does not port, refused with metalNotPorted's WARN line and no Metal call; MetalEncoder::copyTexture
     // asks before its tracker, so a refused copy is never counted as a transfer. So is a copy between
     // formats whose draw cannot be made
@@ -1867,6 +2216,8 @@ void MetalEncoder::copyTexture(Texture* src, U32 srcLevel, U32 srcLayer, const R
     {
         return;
     }
+    settleDepthClears(src);
+    settleDepthClears(dst);
     const TextureDesc& from = src->desc();
     // Metal 4 has no copy on a render encoder, so a copy in a pass breaks it, in GL's order: the
     // segment's draws are stored and copied, and the next draw opens a segment that loads them and
@@ -2101,6 +2452,131 @@ bool MetalEncoder::resolveCopy(Texture* src, Texture* dst, U32 level, U32 layer)
     return true;
 }
 
+bool MetalEncoder::upscale(Upscaler* upscaler, Texture* input, U32 width, U32 height, Texture* output)
+{
+    onRecordingThread("upscale");
+    if (!accept("upscale", mTracker.upscale(upscaler, input, width, height, output)))
+    {
+        return false;
+    }
+    // What MetalFX is given must be what the scaler was made for, also with the tracker's checks off: other sizes or
+    // formats are not MetalFX's to refuse (MTLFXSpatialScaler.h, "Assigning input and output textures"), and its
+    // output must be Private (the backend's textures are, unless memoryless).
+    IdMTL4FXSpatialScaler scaler = metalScaler(upscaler);
+    IdMTLFence fence = metalScalerFence(upscaler);
+    IdMTLTexture from = metalTexture(input);
+    IdMTLTexture to = metalTexture(output);
+    if (!scaler || !fence || !from || !to || from.width != scaler.inputWidth || from.height != scaler.inputHeight
+        || from.pixelFormat != scaler.colorTextureFormat || to.width != scaler.outputWidth
+        || to.height != scaler.outputHeight || to.pixelFormat != scaler.outputTextureFormat
+        || to.storageMode != MTLStorageModePrivate || width == 0 || height == 0 || width > from.width
+        || height > from.height)
+    {
+        LL_WARNS("RHI") << "upscale: the textures are not the ones the upscaler was made for" << LL_ENDL;
+        return false;
+    }
+    // MetalFX records encoders of its own on the command buffer, so the open segment ends first, as for a copy (its
+    // draws are stored, and a stack pass goes on in a new segment that loads them).
+    splitPass();
+    // Resources are untracked on Metal 4, so the scaler's work is ordered by hand. An encoder of its own begins with
+    // the queue barrier (openCopies): it runs after the queue's earlier work, which wrote the input and read the last
+    // output. Its producer barrier keeps every later encoder's stages, MetalFX's included, from starting before that
+    // work is done (MTL4CommandEncoder.h:74-93), and it updates the scaler's fence after it
+    // (MTL4CommandEncoder.h:117-131), the fence MetalFX takes to synchronize untracked resources
+    // (MTLFXSpatialScaler.h); MetalFX's Metal 4 scaler stops at an assertion without one (a run-time probe). After
+    // the scaler, the next encoder's own queue barrier waits for all of its work (MetalDevice::queueBarrier and
+    // passBarrier wait after every stage of the queue), so what reads the output reads what it wrote.
+    IdMTL4ComputeCommandEncoder before = mDevice.beginUploadCopies(@"Upscale");
+    if (!before)
+    {
+        return false; // openCopies wrote the WARN line
+    }
+    [before barrierAfterStages:MTLStageAll beforeQueueStages:MTLStageAll visibilityOptions:MTL4VisibilityOptionDevice];
+    [before updateFence:fence afterEncoderStages:MTLStageDispatch | MTLStageBlit];
+    mDevice.endCopies();
+    scaler.colorTexture = from;
+    scaler.inputContentWidth = width;
+    scaler.inputContentHeight = height;
+    scaler.outputTexture = to;
+    scaler.fence = fence;
+    [scaler encodeToCommandBuffer:mDevice.commandBuffer()];
+    // The scaler keeps no texture past the work it recorded, so a texture let go is freed with its frames.
+    scaler.colorTexture = nil;
+    scaler.outputTexture = nil;
+    metalMarkWritten(output, 0, 0);
+    ++mUpscales;
+    return true;
+}
+
+bool MetalEncoder::upscaleTemporal(TemporalUpscaler* upscaler, const TemporalUpscaleInputs& inputs)
+{
+    onRecordingThread("upscaleTemporal");
+    if (!accept("upscaleTemporal", mTracker.upscaleTemporal(upscaler, inputs)))
+    {
+        return false;
+    }
+    // What MetalFX is given must be what the scaler was made for, also with the tracker's checks off
+    // (MTLFXTemporalScaler.h, "Assigning input and output textures"), and its output must be Private.
+    IdMTL4FXTemporalScaler scaler = metalTemporalScaler(upscaler);
+    IdMTLFence fence = metalTemporalScalerFence(upscaler);
+    IdMTLTexture exposure = metalTemporalScalerExposure(upscaler);
+    IdMTLTexture color = metalTexture(inputs.color);
+    IdMTLTexture depth = metalTexture(inputs.depth);
+    IdMTLTexture motion = metalTexture(inputs.motion);
+    IdMTLTexture reactive = inputs.reactive ? metalTexture(inputs.reactive) : nil;
+    IdMTLTexture to = metalTexture(inputs.output);
+    if (!scaler || !fence || !exposure || !color || !depth || !motion || !to || (inputs.reactive && !reactive)
+        || color.width != scaler.inputWidth || color.height != scaler.inputHeight
+        || color.pixelFormat != scaler.colorTextureFormat || depth.pixelFormat != scaler.depthTextureFormat
+        || motion.pixelFormat != scaler.motionTextureFormat || to.width != scaler.outputWidth
+        || to.height != scaler.outputHeight || to.pixelFormat != scaler.outputTextureFormat
+        || to.storageMode != MTLStorageModePrivate || inputs.width == 0 || inputs.height == 0
+        || inputs.width > color.width || inputs.height > color.height)
+    {
+        LL_WARNS("RHI") << "upscaleTemporal: the textures are not the ones the upscaler was made for" << LL_ENDL;
+        return false;
+    }
+    // Recorded as upscale's spatial scaler is: the open segment ends, an encoder of its own waits for the queue's
+    // earlier work (which wrote every input and read the last output) and updates the scaler's fence, and the next
+    // encoder's queue barrier orders what reads the output after it.
+    splitPass();
+    IdMTL4ComputeCommandEncoder before = mDevice.beginUploadCopies(@"Upscale temporal");
+    if (!before)
+    {
+        return false; // openCopies wrote the WARN line
+    }
+    [before barrierAfterStages:MTLStageAll beforeQueueStages:MTLStageAll visibilityOptions:MTL4VisibilityOptionDevice];
+    [before updateFence:fence afterEncoderStages:MTLStageDispatch | MTLStageBlit];
+    mDevice.endCopies();
+    scaler.colorTexture = color;
+    scaler.depthTexture = depth;
+    scaler.motionTexture = motion;
+    scaler.reactiveMaskTexture = reactive;
+    scaler.exposureTexture = exposure;
+    scaler.outputTexture = to;
+    scaler.inputContentWidth = inputs.width;
+    scaler.inputContentHeight = inputs.height;
+    scaler.jitterOffsetX = inputs.jitterX;
+    scaler.jitterOffsetY = inputs.jitterY;
+    scaler.motionVectorScaleX = inputs.motionScaleX;
+    scaler.motionVectorScaleY = inputs.motionScaleY;
+    scaler.preExposure = 1.f;
+    scaler.depthReversed = NO;
+    scaler.reset = inputs.reset ? YES : NO;
+    scaler.fence = fence;
+    [scaler encodeToCommandBuffer:mDevice.commandBuffer()];
+    // The scaler keeps no texture past the work it recorded (its history is its own), so a texture let go is freed
+    // with its frames.
+    scaler.colorTexture = nil;
+    scaler.depthTexture = nil;
+    scaler.motionTexture = nil;
+    scaler.reactiveMaskTexture = nil;
+    scaler.outputTexture = nil;
+    metalMarkWritten(inputs.output, 0, 0);
+    ++mUpscales;
+    return true;
+}
+
 void MetalEncoder::generateMipmaps(Texture* texture)
 {
     onRecordingThread("generateMipmaps");
@@ -2113,6 +2589,7 @@ void MetalEncoder::generateMipmaps(Texture* texture)
         // A cube with one level describes no mips, so there is nothing to make.
         return;
     }
+    settleDepthClears(texture);
     // In a pass the segment's draws go first and sample the old levels, as on GL; the next draw opens
     // a segment that loads its attachments.
     splitPass();
@@ -2140,20 +2617,51 @@ void MetalEncoder::generateMipmaps(Texture* texture)
     // LLImageGL's textures have no render target usage (llimagegl.cpp:2926), and a swizzled R8 or RG8 texture
     // cannot have it, so the levels are drawn in a 2D scratch of the texture's format, size and levels with no
     // swizzle; the copies move the bytes. Resident from creation, released through FrameLifecycle::release.
+    IdMTLTexture target = metalTexture(texture);
+    // A cube's slice is its face, a cube array's cube * 6 + face (createMetalTexture).
+    const U32 slices = desc.type == TextureType::Tex2D ? 1 : 6 * (desc.type == TextureType::CubeArray ? desc.layers : 1);
+    const MipPath path = metalMipPath(mDevice.mtlDevice());
+    if (path == MipPath::Blit)
+    {
+        // Metal's own filter on the texture itself, all slices and levels (the path on M1 and M2: metalMipPath).
+        IdMTL4ComputeCommandEncoder copies = mDevice.beginUploadCopies();
+        if (!copies)
+        {
+            return;
+        }
+        [copies generateMipmapsForTexture:target];
+        mDevice.endCopies();
+        for (U32 slice = 0; slice < slices; ++slice)
+        {
+            for (U32 level = 1; level < desc.mipLevels; ++level)
+            {
+                metalMarkWritten(texture, level, slice);
+            }
+        }
+        return;
+    }
     TextureDesc scratchDesc = desc;
     scratchDesc.type = TextureType::Tex2D;
     scratchDesc.layers = 1;
     scratchDesc.swizzle = SwizzleRGBA();
     scratchDesc.usage = TEXTURE_SAMPLED | TEXTURE_RENDER_TARGET;
+    // With LL_METAL_MIPS=pingpong, two scratches, a level drawn into the one it does not sample: level 0 and every
+    // even level in the first, the odd levels in the second (a test on the M2 Pro: it did not help there).
     Ref<Texture> scratch = mDevice.createTexture(scratchDesc, "mip scratch");
     if (scratch.isNull())
     {
         return; // createTexture wrote the WARN line
     }
-    IdMTLTexture target = metalTexture(texture);
-    IdMTLTexture levels = metalTexture(scratch.get());
-    // A cube's slice is its face, a cube array's cube * 6 + face (createMetalTexture).
-    const U32 slices = desc.type == TextureType::Tex2D ? 1 : 6 * (desc.type == TextureType::CubeArray ? desc.layers : 1);
+    Ref<Texture> scratchOdd = scratch;
+    if (path == MipPath::PingPong && desc.mipLevels > 1)
+    {
+        scratchOdd = mDevice.createTexture(scratchDesc, "mip scratch odd");
+        if (scratchOdd.isNull())
+        {
+            return; // createTexture wrote the WARN line
+        }
+    }
+    const auto holder = [&](U32 level) -> Texture* { return (level % 2) ? scratchOdd.get() : scratch.get(); };
     for (U32 slice = 0; slice < slices; ++slice)
     {
         // Each copy and each level on an encoder of its own after the queue barrier, so it reads what the
@@ -2163,17 +2671,20 @@ void MetalEncoder::generateMipmaps(Texture* texture)
         {
             return;
         }
-        [copies copyFromTexture:target sourceSlice:slice sourceLevel:0 toTexture:levels destinationSlice:0
-               destinationLevel:0 sliceCount:1 levelCount:1];
+        [copies copyFromTexture:target sourceSlice:slice sourceLevel:0 toTexture:metalTexture(scratch.get())
+               destinationSlice:0 destinationLevel:0 sliceCount:1 levelCount:1];
         mDevice.endCopies();
         for (U32 level = 1; level < desc.mipLevels; ++level)
         {
-            // The level above as a view of its own, sampled while the level is the attachment
-            // (MTLTexture.h:535; MTLRenderPass.h:82).
-            IdMTLTexture above = [levels newTextureViewWithPixelFormat:levels.pixelFormat
-                                                           textureType:MTLTextureType2D
-                                                                levels:NSMakeRange(level - 1, 1)
-                                                                slices:NSMakeRange(0, 1)];
+            // The level above as a view of its own (MTLTexture.h:535), in the scratch that holds it; the level is
+            // drawn in the other scratch (or, with LL_METAL_MIPS=same, in the same one: MTLRenderPass.h:82).
+            Texture* source = holder(level - 1);
+            IdMTLTexture sourceLevels = metalTexture(source);
+            IdMTLTexture levels = metalTexture(holder(level));
+            IdMTLTexture above = [sourceLevels newTextureViewWithPixelFormat:sourceLevels.pixelFormat
+                                                                 textureType:MTLTextureType2D
+                                                                      levels:NSMakeRange(level - 1, 1)
+                                                                      slices:NSMakeRange(0, 1)];
             MTL4RenderPassDescriptor* pass = [MTL4RenderPassDescriptor new];
             pass.colorAttachments[0].texture = levels;
             pass.colorAttachments[0].level = level;
@@ -2187,7 +2698,7 @@ void MetalEncoder::generateMipmaps(Texture* texture)
                 return;
             }
             // The encoder's defaults: the viewport and the scissor are the level, no culling and no depth.
-            const bool bound = bindForMip(*program, scratch.get(), above, encoder);
+            const bool bound = bindForMip(*program, source, above, encoder);
             if (bound)
             {
                 [encoder setRenderPipelineState:state];
@@ -2208,8 +2719,19 @@ void MetalEncoder::generateMipmaps(Texture* texture)
         {
             return;
         }
-        [copies copyFromTexture:levels sourceSlice:0 sourceLevel:1 toTexture:target destinationSlice:slice
-               destinationLevel:1 sliceCount:1 levelCount:desc.mipLevels - 1];
+        if (scratchOdd == scratch)
+        {
+            [copies copyFromTexture:metalTexture(scratch.get()) sourceSlice:0 sourceLevel:1 toTexture:target
+                   destinationSlice:slice destinationLevel:1 sliceCount:1 levelCount:desc.mipLevels - 1];
+        }
+        else
+        {
+            for (U32 level = 1; level < desc.mipLevels; ++level)
+            {
+                [copies copyFromTexture:metalTexture(holder(level)) sourceSlice:0 sourceLevel:level toTexture:target
+                       destinationSlice:slice destinationLevel:level sliceCount:1 levelCount:1];
+            }
+        }
         mDevice.endCopies();
         for (U32 level = 1; level < desc.mipLevels; ++level)
         {
@@ -2306,6 +2828,7 @@ Ref<Readback> MetalEncoder::readback(Texture* texture, U32 level, U32 layer, con
     {
         return nullptr;
     }
+    settleDepthClears(texture);
     const MetalCopy copy{ metalTexture(texture), level, layer, region, buffer, rowPitch,
                           hasStencil(texture->desc().format) ? MTLBlitOptionDepthFromDepthStencil : MTLBlitOptionNone,
                           std::make_shared<MetalReadbackStamp>() };
@@ -2549,6 +3072,11 @@ bool MetalEncoder::openCompute()
     const std::string& name = mTracker.computePass().name;
     mDevice.endCopies();
     IdMTL4CommandBuffer buffer = mDevice.commandBuffer();
+    // The pass timer's begin, on the command buffer before the encoder (MetalPassTimes).
+    mComputeStamp = mDevice.passTimes().recording()
+                        ? mDevice.passTimes().beginCompute(buffer, name, MetalPassTimes::Kind::Compute,
+                                                           mDevice.lifecycle().currentFrame())
+                        : MetalPassStamp();
     mDevice.endGroups();
     mCompute = [buffer computeCommandEncoder]; // MTL4CommandBuffer.h:130
     mDevice.beginGroups(mCompute);             // on the command buffer again when Metal gave no encoder
@@ -2600,6 +3128,12 @@ void MetalEncoder::closeCompute()
     mDevice.beginGroups(nil);
     mCompute = nil;
     mComputeState = nil;
+    if (mComputeStamp.frame)
+    {
+        // The pass timer's end, on the command buffer after the encoder (MetalPassTimes).
+        mDevice.passTimes().endCompute(mDevice.commandBuffer(), mComputeStamp);
+        mComputeStamp = MetalPassStamp();
+    }
 }
 
 void MetalEncoder::setComputePipeline(ComputePipeline* pipeline)
@@ -2663,6 +3197,10 @@ void MetalEncoder::encodeDispatch(const char* call, DispatchSize size, DispatchS
     {
         return;
     }
+    if (mComputeStamp.wantsProgram)
+    {
+        mDevice.passTimes().noteProgram(mComputeStamp, state.label);
+    }
     if (state != mComputeState)
     {
         [mCompute setComputePipelineState:state]; // MTL4ComputeCommandEncoder.h:51
@@ -2714,7 +3252,11 @@ void MetalEncoder::setNativeTexture(NativeStage stage, U32 slot, Texture* textur
 {
     onRecordingThread("setNativeTexture");
     // The tracker holds the binding; the next draw or dispatch writes it into the stage's table.
-    accept("setNativeTexture", mTracker.setNativeTexture(stage, slot, texture, access, range));
+    if (accept("setNativeTexture", mTracker.setNativeTexture(stage, slot, texture, access, range)) && texture
+        && !mDepthClears.empty())
+    {
+        settleDepthClears(texture);
+    }
 }
 
 void MetalEncoder::setNativeSampler(NativeStage stage, U32 slot, const SamplerDesc& sampling)

@@ -8434,7 +8434,7 @@
   <key>MetalFrameCapture</key>
   <map>
     <key>Comment</key>
-    <string>[Viewer Lab] Developer, Metal only (Metal UI dev mode): the path of a .gputrace (must not exist); the frame after the current one is captured (set with --set at startup: the second main-loop frame); needs MTL_CAPTURE_ENABLED=1 from the launcher and shader validation off</string>
+    <string>[Viewer Lab] Developer, Metal only: the path of a .gputrace (must not exist); the frame after the current one is captured (set with --set at startup: the second main-loop frame); needs MTL_CAPTURE_ENABLED=1 from the launcher and shader validation off</string>
     <key>Persist</key>
     <integer>0</integer>
     <key>HideFromEditor</key>
@@ -14928,6 +14928,17 @@ Change of this parameter will affect the layout of buttons in notification toast
       <key>Value</key>
       <integer>0</integer>
   </map>
+  <key>LuminousSidebar</key>
+    <map>
+      <key>Comment</key>
+      <string>Show the Luminous sidebar: at each login it opens folded to its column of tabs. Off, it stays closed until switched on again (World &gt; Photo and Video &gt; Luminous Sidebar).</string>
+      <key>Persist</key>
+      <integer>1</integer>
+      <key>Type</key>
+      <string>Boolean</string>
+      <key>Value</key>
+      <integer>1</integer>
+  </map>
   <key>LuminousSidebarFolded</key>
     <map>
       <key>Comment</key>
@@ -15335,6 +15346,149 @@ Change of this parameter will affect the layout of buttons in notification toast
       <key>Value</key>
       <integer>1</integer>
   </map>
+  <key>LuminousMetalFXTemporal</key>
+    <map>
+      <key>Comment</key>
+      <string>Metal only: a live view rendered smaller (Preview resolution) is scaled up with Apple's MetalFX temporal scaler, which builds detail from the frames before; the camera moves a fraction of a pixel each frame for it, and SMAA and FXAA are left out. Off (or where it cannot be used), the plain Catmull-Rom filter. Finished pictures are not affected. Off as Luminous ships. No effect on OpenGL.</string>
+      <key>Persist</key>
+      <integer>1</integer>
+      <key>Type</key>
+      <string>Boolean</string>
+      <key>Value</key>
+      <integer>0</integer>
+  </map>
+  <key>LuminousMetalFXTemporalHold</key>
+    <map>
+      <key>Comment</key>
+      <string>Developer tool for MetalFX temporal: with the scene paused and the camera still for a moment and a half, the last scaled picture is kept as it is instead of being built from new frames, so a still view does not shimmer; any change in the view, a camera move or the pause ending lets it go at once.</string>
+      <key>Persist</key>
+      <integer>0</integer>
+      <key>Type</key>
+      <string>Boolean</string>
+      <key>Value</key>
+      <integer>1</integer>
+  </map>
+  <key>LuminousMetalFXTemporalJitterScale</key>
+    <map>
+      <key>Comment</key>
+      <string>Developer tool for MetalFX temporal: how far the camera moves each frame, as a share of half a pixel of the live view, 0 to 1. Smaller shimmers less at thin edges and finds a little less detail.</string>
+      <key>Persist</key>
+      <integer>0</integer>
+      <key>Type</key>
+      <string>F32</string>
+      <key>Value</key>
+      <real>1.0</real>
+  </map>
+  <key>LuminousMetalFXTemporalJitterCycle</key>
+    <map>
+      <key>Comment</key>
+      <string>Developer tool for MetalFX temporal: the number of frames before the camera's sub-pixel moves repeat, 2 to 64.</string>
+      <key>Persist</key>
+      <integer>0</integer>
+      <key>Type</key>
+      <string>U32</string>
+      <key>Value</key>
+      <integer>8</integer>
+  </map>
+  <key>LuminousMetalFXTemporalMaskStrength</key>
+    <map>
+      <key>Comment</key>
+      <string>Developer tool for MetalFX temporal: how strongly the light that alpha, water and particles add marks a pixel as not to be taken from earlier frames, 0 to 1. Lower lets distant foliage keep its smoothing; higher keeps moving glass and particles from trailing.</string>
+      <key>Persist</key>
+      <integer>0</integer>
+      <key>Type</key>
+      <string>F32</string>
+      <key>Value</key>
+      <real>0.5</real>
+  </map>
+  <key>LuminousMetalFXTemporalMaskFade</key>
+    <map>
+      <key>Comment</key>
+      <string>Developer tool for MetalFX temporal: metres from the camera where the mark of alpha has faded out (from half that distance); 0 does not fade it.</string>
+      <key>Persist</key>
+      <integer>0</integer>
+      <key>Type</key>
+      <string>F32</string>
+      <key>Value</key>
+      <real>30.0</real>
+  </map>
+  <key>LuminousMetalFXTemporalMaskBlendedOnly</key>
+    <map>
+      <key>Comment</key>
+      <string>Developer tool for MetalFX temporal: only blended alpha (which writes no depth) is marked as not to be taken from earlier frames; cut-outs and fullbright that write depth keep their history.</string>
+      <key>Persist</key>
+      <integer>0</integer>
+      <key>Type</key>
+      <string>Boolean</string>
+      <key>Value</key>
+      <integer>1</integer>
+  </map>
+  <key>LuminousMetalFXTemporalSettleAir</key>
+    <map>
+      <key>Comment</key>
+      <string>Developer tool for MetalFX temporal: photo mode's sun shafts (and the volumetric light and beams when drawn at half size), made where the camera without the jitter saw the frame, are averaged over about this many frames, moved with the camera, so they do not pulse with the jitter through leaves. Fewer where the camera moves fast. 0 off.</string>
+      <key>Persist</key>
+      <integer>0</integer>
+      <key>Type</key>
+      <string>F32</string>
+      <key>Value</key>
+      <real>8.0</real>
+  </map>
+  <key>LuminousMetalFXTemporalSettleDoF</key>
+    <map>
+      <key>Comment</key>
+      <string>Developer tool for MetalFX temporal: Second Life's depth of field, gathered where the camera without the jitter saw the frame, is averaged over about this many frames, moved with the camera, so the blur does not flicker with the jitter. Fewer where the camera moves fast or the blur changes. 0 off.</string>
+      <key>Persist</key>
+      <integer>0</integer>
+      <key>Type</key>
+      <string>F32</string>
+      <key>Value</key>
+      <real>8.0</real>
+  </map>
+  <key>LuminousMetalFXTemporalSettleEnhance</key>
+    <map>
+      <key>Comment</key>
+      <string>Developer tool for MetalFX temporal: photo mode's own depth of field (Enhance), gathered into a layer of its own where the camera without the jitter saw the frame, is averaged over about this many frames, moved with the camera, and blended back where the frame shows each place, so the blur's shape at focus edges does not flicker with the jitter. Fewer where the camera moves fast or something in focus moves over the blur. 0 off.</string>
+      <key>Persist</key>
+      <integer>0</integer>
+      <key>Type</key>
+      <string>F32</string>
+      <key>Value</key>
+      <real>8.0</real>
+  </map>
+  <key>LuminousMetalFXTemporalSettleFlare</key>
+    <map>
+      <key>Comment</key>
+      <string>Developer tool for MetalFX temporal: the lens flare's light taken from the frame and how much of the sun is seen, made where the camera without the jitter saw the frame, are averaged over about this many frames, moved with the camera, so the ghosts, halo, starburst and lit dirt do not flicker with the jitter. Fewer where the camera moves fast. 0 off.</string>
+      <key>Persist</key>
+      <integer>0</integer>
+      <key>Type</key>
+      <string>F32</string>
+      <key>Value</key>
+      <real>8.0</real>
+  </map>
+  <key>LuminousMetalFXTemporalSettleGlow</key>
+    <map>
+      <key>Comment</key>
+      <string>Developer tool for MetalFX temporal: the object glow, made where the camera without the jitter saw the frame from four reads across each glow texel's part of it, is averaged over about this many frames, moved with the camera, so its halo does not flicker with the jitter. Fewer where the camera moves fast or the glow changes. 0 off.</string>
+      <key>Persist</key>
+      <integer>0</integer>
+      <key>Type</key>
+      <string>F32</string>
+      <key>Value</key>
+      <real>8.0</real>
+  </map>
+  <key>LuminousMetalFXTemporalProbe</key>
+    <map>
+      <key>Comment</key>
+      <string>Developer tool for MetalFX temporal: bits that change its inputs. 1 negates the jitter given to MetalFX, 2 negates the motion vectors, 4 leaves the reactive mask out, 8 draws without jitter, 16 resets the history every frame, 32 negates the jitter's x only, 64 its y only, 128 negates the motion's y only, 256 its x only. 0 as Luminous ships. Not kept across a restart.</string>
+      <key>Persist</key>
+      <integer>0</integer>
+      <key>Type</key>
+      <string>U32</string>
+      <key>Value</key>
+      <integer>0</integer>
+  </map>
   <key>LuminousMetalAlphaSort</key>
     <map>
       <key>Comment</key>
@@ -15365,6 +15519,50 @@ Change of this parameter will affect the layout of buttons in notification toast
       <integer>1</integer>
       <key>Type</key>
       <string>U32</string>
+      <key>Value</key>
+      <integer>1</integer>
+  </map>
+  <key>LuminousMetalPassTimes</key>
+    <map>
+      <key>Comment</key>
+      <string>Developer tool, Metal only: switched on, times every render and compute pass on the GPU over the next 120 frames, writes the table (sorted by time per frame, beside the GPU's busy time) to the log and to luminous-pass-times.txt in the logs folder, and switches itself off. Costs nothing while off. Does nothing on OpenGL. Not kept across a restart.</string>
+      <key>Persist</key>
+      <integer>0</integer>
+      <key>Type</key>
+      <string>Boolean</string>
+      <key>Value</key>
+      <integer>0</integer>
+  </map>
+  <key>LuminousMetalPresentDirect</key>
+    <map>
+      <key>Comment</key>
+      <string>Developer tool, Metal only, VSync off: on, each frame presents its own drawable from the end of its own GPU work, behind the frames in flight, as earlier builds did. Off as Luminous ships: the window server gets the newest frame the GPU has finished, copied into a drawable on a second queue, so about the display's refresh reaches the screen. For a comparison run. Does nothing on OpenGL or with VSync on. Not kept across a restart.</string>
+      <key>Persist</key>
+      <integer>0</integer>
+      <key>Type</key>
+      <string>Boolean</string>
+      <key>Value</key>
+      <integer>0</integer>
+  </map>
+  <key>LuminousSunReadsEmptyProjectorSlots</key>
+    <map>
+      <key>Comment</key>
+      <string>Developer tool: the sun's shadow pass reads both projector shadow maps at every pixel, also a map whose slot no projector holds. Off as Luminous ships: such a slot is written as unshadowed without reading its map, since nothing reads it then. The picture is the same either way. Not kept across a restart.</string>
+      <key>Persist</key>
+      <integer>0</integer>
+      <key>Type</key>
+      <string>Boolean</string>
+      <key>Value</key>
+      <integer>0</integer>
+  </map>
+  <key>LuminousSoftenSkipUnusedProbeSearch</key>
+    <map>
+      <key>Comment</key>
+      <string>Developer switch, on: a legacy surface that reads no reflection probe (under a classic sky, with no glossiness and no environment intensity) skips the search for the probes round it, in the deferred light pass and in the forward legacy and alpha shaders. The picture is the same either way; off only to compare. Rebuilds the shaders when switched. Not kept across a restart.</string>
+      <key>Persist</key>
+      <integer>0</integer>
+      <key>Type</key>
+      <string>Boolean</string>
       <key>Value</key>
       <integer>1</integer>
   </map>

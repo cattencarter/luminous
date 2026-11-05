@@ -176,6 +176,105 @@ void releaseAirLightTargets();       // luminousmetalair.cpp
 /// After a render: every group's frame-sized textures let go (the functions above). Nothing on OpenGL.
 void releaseRenderSizedTargets();
 
+/// Main thread, at a present that does not scale the live view up (it is drawn at the window's size): MetalFX's
+/// scaler and its frame, if made, are let go; the next frame that scales makes them again.
+void liveViewNotScaled();          // luminousmetaltone.cpp
+
+// MetalFX temporal (luminousmetaltone.cpp), on Metal only; nothing on OpenGL.
+/// Metal runs and its device has MetalFX's temporal scaler; false on OpenGL.
+bool temporalSupported();
+/// The largest scale each way the temporal scaler takes on this device (Apple's range: 3 on Apple silicon); 0 without
+/// the scaler.
+F32 temporalMaxScale();
+/// Main thread, from beginFrame: whether this frame is drawn for the temporal scaler (its scaler for the live view's
+/// sizes was ready at the last present), and this frame's jitter.
+void beginTemporalFrame(U64 frame);
+/// This frame is drawn for the temporal scaler: the main camera jittered, SMAA and FXAA left out, and what is fixed to
+/// the screen (grain, live lens distortion, the light leak, Worn photo), which its present draws on the scaled frame.
+bool temporalFrame();
+/// The temporal scaler can scale the live view as it is now: nothing fixed to the screen is drawn into it live
+/// (LuminousPhotoMode::screenLockedLive) and it was not refused for the world view's size. Found once a frame, in
+/// beginTemporalFrame; true before the first. LuminousPhotoMode::chosenLiveScale and fxaaLeftOut ask it, so that
+/// the live view keeps the full size, FXAA running, wherever the scaler would scale but cannot.
+bool temporalUsable();
+/// The temporal scaler was refused for the world view's size as it is now (it could not be made, or would not scale
+/// a frame): the live view is at full size until the window's size or the settings change.
+bool temporalRefused();
+/// The main view's jitter this frame in clip units, for LLViewerCamera::setPerspective; false without, and false
+/// once the present was drawn (temporalAfterPresent), until the next frame begins.
+bool liveJitter(F32& ndc_x, F32& ndc_y);
+/// While the main view's projection carries this frame's jitter (set by setPerspective, not yet taken off after the
+/// present, and the main targets drawn): true, with the jitter in clip units, so that what is fitted to the camera
+/// (the sun's shadow cascades) can take it off; false, and 0, otherwise.
+bool liveJitterApplied(F32& ndc_x, F32& ndc_y);
+/// The reactive mask's stages round the alpha drawn into the main view's HDR frame: Before copies the frame, After
+/// marks how much the alpha drawn since changed it. Nothing unless this frame is drawn for the temporal scaler.
+void temporalAlphaBefore(LLRenderTarget* screen);
+void temporalAlphaAfter(LLRenderTarget* screen);
+/// After the present: the projection set back without the jitter for what is drawn after the world, and no jitter
+/// for a perspective set up after it this frame.
+void temporalAfterPresent();
+/// What is fixed to the screen, in a frame drawn for the temporal scaler: left out of the frame, which the scaler would
+/// smear as the camera's jitter moves under it, and drawn over the window's world view after the present, at the
+/// window's size (drawOverlays). Main thread, from the post-processing pass that would draw it: true when this frame
+/// draws it after the present (the pass then draws nothing); false in any other frame, on OpenGL, and until the
+/// overlay's pipeline has compiled, when the pass draws it into the frame as before.
+/// The picture frame of a shape chosen on the Render tab, the picture's shape (width over height) given.
+bool overlayPictureFrame(F32 picture_aspect);
+/// Firestorm's capture frame for a snapshot floater: its rect as 0 to 1 of the world view (x0, y0, x1, y1, GL's rows),
+/// its border's colour (three floats) and its width in the window's pixels.
+bool overlayCaptureFrame(F32 x0, F32 y0, F32 x1, F32 y1, const F32* colour, F32 border);
+/// Main thread, right after the present into the window's back buffer, whichever present drew it: what this frame
+/// left out for the overlays (above), drawn in the world view's viewport -- Firestorm's capture frame, then the
+/// picture frame. No depth is written. Nothing in any other frame and on OpenGL.
+void drawOverlays();
+/// Second Life's depth of field and the glow map in a frame drawn for the temporal scaler are settled: made where the
+/// camera without the jitter saw the frame (the glow from four reads across each of its texels' part of the frame) and
+/// averaged with the frames before, moved by the camera (LuminousMetalFXTemporalSettleDoF / ...SettleGlow: about how
+/// many frames; 0 off). Settles: true with this frame's jitter in the live view's texture coordinates (GL's rows, up),
+/// added where the pass reads the frame and taken off where its result is read back; false, and 0, otherwise.
+bool temporalSettlesGlow(F32& u, F32& v);
+bool temporalSettlesDoF(F32& u, F32& v);
+/// The average, before the layer is read back: the target holding it, or the one given when the layer is not settled.
+/// blur is Second Life's depth of field's gather, its width x height texels in the lower left.
+LLRenderTarget* temporalSettleDoF(LLRenderTarget* blur, U32 width, U32 height);
+LLRenderTarget* temporalSettleGlow(LLRenderTarget* glow);
+/// Photo mode's layers settled the same way in a frame drawn for the temporal scaler, each made where the camera without
+/// the jitter saw the frame: Air, the air's sum (the sun shafts, their mask from the frame read there, and the volumetric
+/// light and beams when drawn at half size) before it is added to the frame (LuminousMetalFXTemporalSettleAir); FlareLight and
+/// FlareSun, the lens flare's light taken from the frame and how much of the sun is seen (...SettleFlare); Enhance, photo
+/// mode's depth of field, the samples' part of each gather and their weight in alpha, before it is blended into the frame
+/// (...SettleEnhance). What the jitter changes in them, a gap in the leaves opening and closing, is as large as a real
+/// change, so they are taken whole only where the camera moved; a change reaches them over the frames averaged.
+/// Enhance is also taken whole where its weight leaves what the frame holds round a place, as where something in focus
+/// moves over the blur.
+enum class SettledLayer : U8
+{
+    Air,
+    FlareLight,
+    FlareSun,
+    Enhance,
+    Count
+};
+/// The layer is settled this frame: true with the jitter in the live view's texture coordinates (GL's rows, up), added
+/// where the layer reads the frame and taken off where it is added back; false, and 0, otherwise.
+bool temporalSettles(SettledLayer layer, F32& u, F32& v);
+/// The average, before the layer is read: the texture holding it (RGBA16F, texture's size), or texture when it is not
+/// settled. Its texels width x height in the lower left are the layer's. Outside a render or compute pass.
+LL::RHI::Texture* temporalSettle(SettledLayer layer, LL::RHI::Texture* texture, U32 width, U32 height);
+/// Main thread, as the pipeline lets its screen-sized targets go: the settle's averages go too, made again when next
+/// needed.
+void releaseSettledTargets();
+/// The next temporal frame drops the scaler's history (a style's or Frame me's camera, a saved shot).
+void resetTemporalHistory();
+/// Main thread, as the main view's frame is copied into the scene map that screen-space reflections read in the
+/// next frame: the jitter it was drawn with is kept.
+void temporalSceneMapCopied();
+/// For screen-space reflections, which project a point into the scene map through this frame's projection: the
+/// scene map's jitter minus this frame's, in clip units (luminous_ssr_jitter). 0 on OpenGL, outside the main view,
+/// and while neither frame was drawn with the jitter.
+void ssrJitterOffset(F32& ndc_x, F32& ndc_y);
+
 /// Main thread, Metal, after the scene map that screen-space reflections read was drawn: with wanted (photo mode's
 /// reflections are drawn), its mip chain is made from it, level 0 a copy and the levels below by compute; without,
 /// or when it cannot be made yet, the chain is out of date. luminousmetalscreen.cpp.

@@ -2085,9 +2085,7 @@ namespace
     /// the one it is recording, and the setting goes back to "" unsaved, so nothing keeps the path and the same path can
     /// be asked for again; the empty value of that reset is ignored. Not the device's next frame: the device's first
     /// frame runs from its creation through the first main-loop frame, so the whole start-up, and a capture of it left
-    /// no document; a value from --set therefore captures the second main-loop frame. A value
-    /// from --set is asked for before the device is made, so the device makes only full render pipeline states, which
-    /// Metal needs to capture it; a later value captures only when the device has specialized none.
+    /// no document; a value from --set therefore captures the second main-loop frame.
     void apply_metal_frame_capture(LLControlVariable* control, const LLSD& value)
     {
         const std::string path = value.asString();
@@ -2164,8 +2162,7 @@ namespace
                 });
             LL_INFOS("RHI") << "Metal translator registered" << LL_ENDL;
             // [Viewer Lab] MetalFrameCapture, read on the Metal path only: a value from --set is asked for
-            // before the device, which then makes only full render pipeline states (Metal refuses to capture a device
-            // that has specialized one); later values come through the setting's signal once the device exists.
+            // before the device; later values come through the setting's signal once the device exists.
             LLControlVariable* capture = gSavedSettings.getControl("MetalFrameCapture");
             capture_asked              = !capture->getValue().asString().empty();
             apply_metal_frame_capture(capture, capture->getValue());
@@ -2195,12 +2192,15 @@ namespace
         const bool metal_device = metal && device;
         if (metal_device)
         {
-            // [Viewer Lab] The render context exists with the query's values, and the layer follows RenderVSyncEnable.
+            // [Viewer Lab] The render context exists with the query's values, and the surface follows RenderVSyncEnable
+            // (<Luminous> its presents' pacing; the layer stays display synced).
             gGLManager.initForDevice(device->capabilities());
             if (LL::RHI::Surface* surface = device->surface())
             {
                 surface->setVSync(gSavedSettings.getBOOL("RenderVSyncEnable"));
             }
+            // <Luminous> VSync off's present path, so a --set of the comparison switch reaches the new surface too
+            LL::RHI::setMetalPresentDirect(*device, gSavedSettings.getBOOL("LuminousMetalPresentDirect"));
             // [Viewer Lab] MetalFrameCapture's later values, on a Metal device only; the value from --set
             // was asked for before the device.
             gSavedSettings.getControl("MetalFrameCapture")
@@ -3080,11 +3080,9 @@ void log_metal_compile_stats()
         return;
     }
     const LL::RHI::MetalCompileStats stats = LL::RHI::metalCompileStats(*device);
-    LL_INFOS("RHI") << "metal compiles 30 s after STATE_STARTED: pipeline states " << stats.unspecialized
-                    << " unspecialized, " << stats.specialized << " specialized, " << stats.full << " full, "
+    LL_INFOS("RHI") << "metal compiles 30 s after STATE_STARTED: pipeline states " << stats.full << " full, "
                     << stats.alphaVariants << " alpha variants, " << stats.refused << " refused, " << stats.cached
-                    << " cached; E14 alone " << stats.e14Unspecialized << " unspecialized; "
-                    << stats.callerTranslations << " translations on the caller; waits ms: translation "
+                    << " cached; " << stats.callerTranslations << " translations on the caller; waits ms: translation "
                     << stats.callerTranslationUs / 1000.0 << ", program " << stats.programWaitUs / 1000.0
                     << ", pipeline " << stats.pipelineWaitUs / 1000.0 << ", point " << stats.pointWaitUs / 1000.0
                     << "; disk cache " << sMetalShaderCacheHits.load() << " hits, " << sMetalShaderCacheMisses.load()

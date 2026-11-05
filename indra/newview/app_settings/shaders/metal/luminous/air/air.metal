@@ -291,7 +291,9 @@ namespace luminous_air
         return sum * (p.shaftStrength / float(samples));
     }
 
-    /// What one dispatch or draw adds at tc: frag is the pixel's centre in the target written (for the noise).
+    /// What one dispatch or draw adds at tc: frag is the pixel's centre in the target written (for the noise). In a
+    /// settled frame tc is where the camera without the jitter saw it: the shafts (mask and sun there too) at tc, the
+    /// rest from the frame's depth and projection at tc + the jitter, where the jittered frame shows that place.
     float3 airAt(constant LuminousAirParams& p, constant LuminousAirDraw& draw, constant LuminousAirBeam* beams,
                  depth2d<float, access::read> depth, depth2d<float> sun0, depth2d<float> sun1, depth2d<float> sun2,
                  depth2d<float> sun3, depth2d<float> spot0, depth2d<float> spot1,
@@ -308,6 +310,7 @@ namespace luminous_air
         {
             return sum;
         }
+        tc += draw.jitter;
         const float3 pos = eyePosition(p, tc, depth.read(nearestTexel(tc, draw.depthSize)));
         const float dist = length(pos);
         const float3 view_dir = pos / max(dist, 1e-4);
@@ -349,12 +352,14 @@ namespace luminous_air
         {
             return half4(0.0);
         }
+        // a settled frame's mask: where the camera without the jitter saw the sky, as the sun's place is
+        const float2 at = tc + draw.jitter;
         float3 darkest = float3(1e20);
         for (int y = -1; y <= 1; ++y)
         {
             for (int x = -1; x <= 1; ++x)
             {
-                darkest = min(darkest, sky(frame, depth, tc + float2(x, y) * 2.0 * p.srcTexel, draw.depthSize));
+                darkest = min(darkest, sky(frame, depth, at + float2(x, y) * 2.0 * p.srcTexel, draw.depthSize));
             }
         }
         return half4(half3(darkest * near_sun), 1.0h);
@@ -483,15 +488,18 @@ fragment float4 luminous_air_fs(
     texture2d<float> air [[texture(LUMINOUS_AIR_TEXTURE_AIR)]],
     array<texture2d<float>, LUMINOUS_AIR_PROJECTOR_TEXTURES> textures [[texture(LUMINOUS_AIR_TEXTURE_PROJECTOR0)]])
 {
-    float3 sum = airAt(p, draw, beams, depth, sun0, sun1, sun2, sun3, spot0, spot1, mask, textures, in.uv, in.position.xy);
+    // A settled frame: the place the camera without the jitter saw here, as the sum holds it; airAt draws the volumetric
+    // light and the beams back at in.uv.
+    const float2 uv = in.uv - draw.jitter;
+    float3 sum = airAt(p, draw, beams, depth, sun0, sun1, sun2, sun3, spot0, spot1, mask, textures, uv, in.position.xy);
     if (draw.addAir != 0)
     {
         const float2 d = draw.airTexel * 0.5;
-        float3 s = air.sample(linearClamp, in.uv).rgb * 4.0;
-        s += (air.sample(linearClamp, in.uv + float2(-d.x, 0.0)).rgb + air.sample(linearClamp, in.uv + float2(d.x, 0.0)).rgb +
-              air.sample(linearClamp, in.uv + float2(0.0, -d.y)).rgb + air.sample(linearClamp, in.uv + float2(0.0, d.y)).rgb) * 2.0;
-        s += air.sample(linearClamp, in.uv + float2(-d.x, -d.y)).rgb + air.sample(linearClamp, in.uv + float2(d.x, -d.y)).rgb +
-             air.sample(linearClamp, in.uv + float2(-d.x, d.y)).rgb + air.sample(linearClamp, in.uv + float2(d.x, d.y)).rgb;
+        float3 s = air.sample(linearClamp, uv).rgb * 4.0;
+        s += (air.sample(linearClamp, uv + float2(-d.x, 0.0)).rgb + air.sample(linearClamp, uv + float2(d.x, 0.0)).rgb +
+              air.sample(linearClamp, uv + float2(0.0, -d.y)).rgb + air.sample(linearClamp, uv + float2(0.0, d.y)).rgb) * 2.0;
+        s += air.sample(linearClamp, uv + float2(-d.x, -d.y)).rgb + air.sample(linearClamp, uv + float2(d.x, -d.y)).rgb +
+             air.sample(linearClamp, uv + float2(-d.x, d.y)).rgb + air.sample(linearClamp, uv + float2(d.x, d.y)).rgb;
         sum += s * (1.0 / 16.0);
     }
     return float4(sum, 0.0);

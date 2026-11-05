@@ -257,11 +257,53 @@ namespace LuminousPhotoMode
     /// sharp over it. 0 in the setting is automatic: one over the display's
     /// backing scale, so a Retina display renders as many pixels as a standard
     /// one of its size. 1 -- full -- as Luminous ships, when photo mode is
-    /// off, with FXAA, and while a FullResolution is held. LLPipeline sizes the main
+    /// off, with FXAA, while MetalFX temporal is held at full size
+    /// (temporalHeldAtFull), and while a FullResolution is held. LLPipeline sizes the main
     /// targets by it (never the reflection probes' or mirrors').
     F32 liveRenderScale();
-    /// The scale the setting comes to, photo mode on or off (for the window).
+    /// The scale the setting comes to, photo mode on or off (for the window): full with FXAA unless MetalFX temporal
+    /// scales, and while MetalFX temporal is held at full size.
     F32 chosenLiveScale();
+    /// MetalFX temporal (LuminousMetalFXTemporal) at the chosen preview resolution: Off -- switched off, or Metal
+    /// cannot run it here (OpenGL, no temporal scaler) -- Scales, or rests: at full size there is nothing to scale,
+    /// and below a third each way (Quarter) is beyond the scaler's range, where the plain filter scales.
+    enum class Temporal { Off, Scales, RestsAtFull, RestsBeyondRange };
+    Temporal temporal();
+    /// MetalFX temporal would scale the live view (Scales) but cannot (LuminousMetal::temporalUsable false: something
+    /// fixed to the screen drawn live, or refused at the window's size): the live view is at full size then
+    /// (chosenLiveScale), never smaller and scaled up the plain way.
+    bool temporalHeldAtFull();
+    /// The grey line under the MetalFX temporal check boxes while it rests, or while it is held at full size for
+    /// Glitch shown live or for the window's size; empty otherwise.
+    std::string temporalRestText();
+    /// Glitch is held off the live view while MetalFX temporal scales: the user turned Glitch on live there, or
+    /// MetalFX on with Glitch live, and has not yet answered the question that asks what to do. Renders keep it.
+    bool glitchHeldLive();
+    /// FXAA keeps the live view at full size (chosenLiveScale; FXAA sets the window's viewport on its target): FXAA
+    /// is chosen and MetalFX temporal, which smooths the edges in its place, is Off.
+    bool fxaaKeepsFullSize();
+    /// FXAA is left out of this frame: the live view is smaller than the window for MetalFX temporal, and FXAA draws
+    /// at the window's size (a frame not drawn for the scaler, as it settles). Where MetalFX cannot scale
+    /// (LuminousMetal::temporalUsable false), the live view is at full size and FXAA runs.
+    bool fxaaLeftOut();
+    /// Called from settings_setup_listeners: switching MetalFX temporal on where the live view is at full size or at
+    /// Quarter sets Preview resolution to Half, with a tip; choosing full size while it is on says that it rests.
+    /// Only for the user's own changes in the world, never while settings are set together (settingTipsHeld).
+    void initTemporalTips();
+    /// Held while Luminous sets settings for the user rather than the user setting them -- the Optimise window's
+    /// measures, Apply and Put back, the settings for the Mac at the first start -- so that the tips that answer the
+    /// user's own change of a setting stay quiet, as they do while a HoldShaderRebuilds is held (a style, a preset,
+    /// a tab's reset, Preferences' Cancel).
+    class HoldSettingTips
+    {
+    public:
+        HoldSettingTips();
+        ~HoldSettingTips();
+        HoldSettingTips(const HoldSettingTips&) = delete;
+        HoldSettingTips& operator=(const HoldSettingTips&) = delete;
+    };
+    /// A HoldSettingTips or a HoldShaderRebuilds is held.
+    bool settingTipsHeld();
     /// The present pass scales a smaller frame up to the window.
     bool upscaling();
     /// The main targets are smaller than the world view: the live view is
@@ -346,6 +388,15 @@ namespace LuminousPhotoMode
     void setFrameMargin(F32 scale);
     F32 frameMarginScale();
     bool snapshotJitter(F32& x, F32& y);  ///< in pixels, -0.5 to 0.5
+    /// The live view's jitter for MetalFX temporal, in clip units, for a perspective set up for this rect: the main
+    /// world view's only, never a preview's, a probe's, a snapshot's or a render frame's. False without.
+    bool liveJitter(S32 x, S32 y_from_bottom, S32 width, S32 height, F32& ndc_x, F32& ndc_y);
+    /// Something fixed to the screen is drawn into the live picture that is not drawn after the upscale (Glitch shown
+    /// live), which MetalFX temporal would smear: the live view is at full size without it then (chosenLiveScale).
+    bool screenLockedLive();
+    /// Film grain for MetalFX temporal's present, drawn on the scaled frame (0 without); size in pixels of a
+    /// 1080-line frame.
+    F32 grainAfterUpscale(F32& size);
 
     /// Depth of field and soft shadows sampled across the frames of an
     /// accumulated render (LuminousSnapshotSampledDoF, ...SampledShadows):

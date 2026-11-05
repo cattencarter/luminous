@@ -254,6 +254,34 @@ void MetalResidency::detachLayer(IdMTL4CommandQueue queue)
     }
 }
 
+bool MetalResidency::attachSecond(IdMTL4CommandQueue queue, CAMetalLayer* layer)
+{
+    IdMTLResidencySet layerSet = layer.residencySet;
+    std::lock_guard<std::mutex> lock(mMutex);
+    if (!mSet || !layerSet)
+    {
+        warnCreateFailed("present queue", "Metal", "no residency set to put on it");
+        return false;
+    }
+    [queue addResidencySet:mSet];
+    [queue addResidencySet:layerSet];
+    return true;
+}
+
+void MetalResidency::detachSecond(IdMTL4CommandQueue queue, CAMetalLayer* layer)
+{
+    IdMTLResidencySet layerSet = layer.residencySet;
+    std::lock_guard<std::mutex> lock(mMutex);
+    if (layerSet)
+    {
+        [queue removeResidencySet:layerSet];
+    }
+    if (mSet)
+    {
+        [queue removeResidencySet:mSet];
+    }
+}
+
 IdMTLResidencySet MetalResidency::layerSet() const
 {
     std::lock_guard<std::mutex> lock(mMutex);
@@ -588,6 +616,16 @@ bool MetalEncoder::bindForFormatCopy(Program& program, Texture* source, IdMTL4Re
     return true;
 }
 
+void MetalEncoder::checkAddress(const char* call, const std::string& what, MTLGPUAddress kept,
+                                const MetalAllocation& memory)
+{
+    if (kept != memory.buffer.gpuAddress + memory.offset)
+    {
+        ++mResolveMismatches;
+        LL_WARNS("RHI") << call << ": the kept GPU address of " << what << " differs from its allocation's" << LL_ENDL;
+    }
+}
+
 bool MetalEncoder::bindForDraw(const char* call, U32 first, U32 count, bool indexed)
 {
     const auto refuse = [call](const std::string& why)
@@ -606,7 +644,8 @@ bool MetalEncoder::bindForDraw(const char* call, U32 first, U32 count, bool inde
     {
         return refuse("no pipeline is set");
     }
-    const std::string program = "program '" + pipeline->debugName() + "'";
+    // The texts of a refusal are made only when a draw is refused.
+    const auto program = [pipeline]() { return "program '" + pipeline->debugName() + "'"; };
     // With the Metal debug setting, before the first table write, every allocation the draw
     // binds is resident and every stream it reads holds its vertices; the bindings the program
     // needs are checked always, since Metal would read what is not there.
@@ -614,25 +653,30 @@ bool MetalEncoder::bindForDraw(const char* call, U32 first, U32 count, bool inde
     MetalResidency& residency = mDevice.residency();
     const auto missing = [&](IdMTLAllocation allocation) { return checks && !residency.contains(allocation); };
 
-    // The streams the pipeline reads; the tracker skips this with checks off.
+    // The streams the pipeline reads; the tracker checks them only with its draw checks (the Metal debug setting).
     const U32 attributes = metalPipelineAttributes(pipeline);
     Buffer* vertices = mTracker.vertexBuffer();
     const VertexStreams& streams = mTracker.streams();
     if (attributes != 0 && !vertices)
     {
-        return refuse(program + " reads vertex streams, and no vertex buffer is bound");
+        return refuse(program() + " reads vertex streams, and no vertex buffer is bound");
     }
     if ((attributes & ~streams.attributeMask) != 0)
     {
-        return refuse(program + " reads attributes the streams of vertex buffer '" + vertices->debugName() +
+        return refuse(program() + " reads attributes the streams of vertex buffer '" + vertices->debugName() +
                       "' lack (mask " + std::to_string(attributes & ~streams.attributeMask) + ")");
     }
     if (attributes != 0)
     {
-        const std::string buffer = "vertex buffer '" + vertices->debugName() + "'";
-        if (missing(metalAllocation(vertices).buffer))
+        const auto buffer = [vertices]() { return "vertex buffer '" + vertices->debugName() + "'"; };
+        if (checks)
         {
-            return refuse(buffer + " is not resident (" + program + ")");
+            const MetalAllocation memory = metalAllocation(vertices);
+            if (missing(memory.buffer))
+            {
+                return refuse(buffer() + " is not resident (" + program() + ")");
+            }
+            checkAddress(call, buffer(), metalAddress(vertices), memory);
         }
         // Each stream holds count * stride bytes, as LLVertexBuffer lays it out; the texture index
         // is in the position's stream. An indexed draw's indices are checked below instead.
@@ -643,9 +687,9 @@ bool MetalEncoder::bindForDraw(const char* call, U32 first, U32 count, bool inde
             const U32 offset = streams.offset[type == TYPE_TEXTURE_INDEX ? TYPE_VERTEX : type];
             if ((attributes & (1u << type)) && offset + end * metalVertexStride(type) > length)
             {
-                return refuse(buffer + ": vertices " + std::to_string(first) + "-" + std::to_string(end - 1) +
+                return refuse(buffer() + ": vertices " + std::to_string(first) + "-" + std::to_string(end - 1) +
                               " of stream " + std::to_string(type) + " are past its end (" + std::to_string(length) +
-                              " bytes, " + program + ")");
+                              " bytes, " + program() + ")");
             }
         }
     }
@@ -655,21 +699,24 @@ bool MetalEncoder::bindForDraw(const char* call, U32 first, U32 count, bool inde
         // vertices of the fewest a read stream holds. The tracker has refused a draw without an
         // index buffer or past its end (llrhi.cpp, drawIndexed).
         Buffer* indices = mTracker.indexBuffer();
-        if (missing(metalAllocation(indices).buffer))
+        const MetalAllocation memory = metalAllocation(indices);
+        if (missing(memory.buffer))
         {
-            return refuse("index buffer '" + indices->debugName() + "' is not resident (" + program + ")");
+            return refuse("index buffer '" + indices->debugName() + "' is not resident (" + program() + ")");
         }
+        checkAddress(call, "index buffer '" + indices->debugName() + "'", metalAddress(indices), memory);
         const U64 whole = metalWholeVertices(vertices, streams, attributes);
         ++mIndexChecks;
         const std::string why = metalCheckIndexRange(*indices, mTracker.indexType(), first, count, U32(whole),
                                                      metalIndexBytes(indices));
         if (!why.empty())
         {
-            return refuse(why + " (" + program + ")");
+            return refuse(why + " (" + program() + ")");
         }
     }
 
-    // Each stage's textures and samplers, from the program's channels, before anything is bound.
+    // Each stage's textures and samplers, from the program's channels, before anything is bound: at most
+    // one per sampler place and one per uniform block slot.
     struct Sampled
     {
         U32 index;
@@ -683,8 +730,10 @@ bool MetalEncoder::bindForDraw(const char* call, U32 first, U32 count, bool inde
     };
     MetalProgramState& state = programState(pipeline->programId(), *layout);
     const MetalStageLayout* stages[2] = { &layout->vertex, &layout->fragment };
-    std::vector<Sampled> sampled[2];
-    std::vector<BoundBlock> blocks[2];
+    std::array<std::array<Sampled, TABLE_SAMPLERS>, 2> sampled;
+    std::array<std::array<BoundBlock, 32>, 2> blocks;
+    std::array<U32, 2> sampledCount{};
+    std::array<U32, 2> blockCount{};
     for (size_t s = 0; s < 2; ++s)
     {
         // Each block the stage reads, from the buffer and the range setUniformBuffer gave its slot,
@@ -696,33 +745,79 @@ bool MetalEncoder::bindForDraw(const char* call, U32 first, U32 count, bool inde
             {
                 continue;
             }
-            const std::string where = program + " reads the uniform block in slot " + std::to_string(slot);
-            const auto bound = mTracker.uniformBuffers().find(slot);
-            const auto range = mBlockRanges.find(slot);
-            if (bound == mTracker.uniformBuffers().end() || bound->second.isNull() || range == mBlockRanges.end())
+            const auto where = [&program, slot]()
+            { return program() + " reads the uniform block in slot " + std::to_string(slot); };
+            // The tracker's buffer and setUniformBuffer's range as mBlocks keeps them; with the Metal debug setting
+            // they are compared with the tracker's and mBlockRanges' entries, which are then used.
+            BlockBinding block = mBlocks[slot];
+            if (checks)
             {
-                return refuse(where + ", which has no uniform buffer");
+                const auto bound = mTracker.uniformBuffers().find(slot);
+                const auto range = mBlockRanges.find(slot);
+                BlockBinding full;
+                if (bound != mTracker.uniformBuffers().end() && bound->second.notNull())
+                {
+                    full.buffer = bound->second.get();
+                }
+                if (range != mBlockRanges.end())
+                {
+                    full.offset = range->second.first;
+                    full.size = range->second.second;
+                    full.ranged = true;
+                }
+                const bool same = full.buffer == block.buffer && full.ranged == block.ranged &&
+                                  (!full.ranged || (full.offset == block.offset && full.size == block.size));
+                if (!same)
+                {
+                    ++mResolveMismatches;
+                    LL_WARNS("RHI") << call << ": the kept binding of uniform block slot " << slot
+                                    << " differs from the tracker's" << LL_ENDL;
+                }
+                block = full;
+            }
+            if (!block.buffer || !block.ranged)
+            {
+                return refuse(where() + ", which has no uniform buffer");
             }
             const U32 size = slot < stages[s]->blockSizes.size() ? stages[s]->blockSizes[slot] : 0;
-            if (checks && range->second.second < size)
+            if (checks && block.size < size)
             {
-                return refuse(where + ": uniform buffer '" + bound->second->debugName() + "' is bound with " +
-                              std::to_string(range->second.second) + " bytes, and the block has " + std::to_string(size));
+                return refuse(where() + ": uniform buffer '" + block.buffer->debugName() + "' is bound with " +
+                              std::to_string(block.size) + " bytes, and the block has " + std::to_string(size));
             }
-            const MetalAllocation memory = metalAllocation(bound->second.get());
-            blocks[s].push_back({ 1 + slot, memory.buffer.gpuAddress + memory.offset + range->second.first });
+            if (checks)
+            {
+                checkAddress(call, "uniform buffer '" + block.buffer->debugName() + "'", metalAddress(block.buffer),
+                             metalAllocation(block.buffer));
+            }
+            blocks[s][blockCount[s]++] = { 1 + slot, metalAddress(block.buffer) + block.offset };
         }
         for (U32 index = 0; index < stages[s]->textureUniforms.size(); ++index)
         {
             if (index >= TABLE_SAMPLERS)
             {
-                return refuse(program + ": texture " + std::to_string(index) + " is past the argument table's samplers");
+                return refuse(program() + ": texture " + std::to_string(index) + " is past the argument table's samplers");
             }
             const U32 uniform = stages[s]->textureUniforms[index];
             const U32 channel = uniform < state.channels.size() ? state.channels[uniform] : 0;
             const UniformType type =
                 index < stages[s]->textureTypes.size() ? stages[s]->textureTypes[index] : UniformType::Sampler2D;
-            const std::string where = program + " samples channel " + std::to_string(channel);
+            const auto where = [&program, channel]() { return program() + " samples channel " + std::to_string(channel); };
+            // A place whose channel and sampler type are those of its last resolve, on a channel that setTexture has
+            // not changed since, takes that resolve's texture and sampler; with the Metal debug setting it is resolved
+            // again and the two are compared.
+            ResolvedPlace& place = mResolved[s][index];
+            const U64 version = channel < RESOLVE_CHANNELS ? mChannelVersions[channel] : 0;
+            const bool remembered =
+                version != 0 && place.version == version && place.channel == channel && place.type == type;
+            if (remembered && !checks)
+            {
+                ++mResolveHits;
+                mStats.typeSlotReads += place.slotRead ? 1 : 0;
+                mLastChannelSamplers[channel] = place.desc;
+                sampled[s][sampledCount[s]++] = { index, place.texture, place.sampler };
+                continue;
+            }
             // The sampler reads the channel's slot of its own type, as a GL sampler reads its own target, so a 2D
             // sampler never gets the cube array the channel got last, nor the reverse; the read is counted when the
             // slot's texture is not the channel's current one.
@@ -734,12 +829,14 @@ bool MetalEncoder::bindForDraw(const char* call, U32 first, U32 count, bool inde
             const TypeSlot* slot = slots != mTypeSlots.end() ? &slots->second.types[size_t(wanted)] : nullptr;
             Texture* texture = slot ? slot->texture.get() : nullptr;
             SamplerDesc desc = texture ? slot->sampling : SamplerDesc();
+            bool slotRead = false;
             if (texture)
             {
                 const auto bound = mTracker.textures().find(channel);
                 if (bound == mTracker.textures().end() || bound->second.get() != texture)
                 {
                     ++mStats.typeSlotReads;
+                    slotRead = true;
                 }
             }
             const bool unbound = !texture;
@@ -750,20 +847,20 @@ bool MetalEncoder::bindForDraw(const char* call, U32 first, U32 count, bool inde
                 texture = mDevice.defaultTexture(type);
                 if (!texture)
                 {
-                    return refuse(where +
+                    return refuse(where() +
                                   ", which has no texture, and Metal has no default texture for its sampler type");
                 }
             }
             if (checks && !residency.containsTexture(metalTexture(texture)))
             {
-                return refuse("texture '" + texture->debugName() + "' is not resident (" + where + ")");
+                return refuse("texture '" + texture->debugName() + "' is not resident (" + where() + ")");
             }
             if (type == UniformType::Sampler2DShadow && !isDepth(texture->desc().format))
             {
                 // The translated MSL declares a shadow sampler's texture as depth2d, and Metal needs a
                 // depth pixel format there (GL's result is undefined), so the draw is refused always, as a
                 // binding the program needs.
-                return refuse(where + " as a sampler2DShadow, and texture '" + texture->debugName() +
+                return refuse(where() + " as a sampler2DShadow, and texture '" + texture->debugName() +
                               "' has no depth format");
             }
             // The sampler is chosen at the draw as the GL backend chooses it
@@ -778,14 +875,44 @@ bool MetalEncoder::bindForDraw(const char* call, U32 first, U32 count, bool inde
                 // default texture and on a bound Depth32Float where LessEqual passes.
                 desc.compareFunc = CompareFunc::Never;
             }
-            Ref<Sampler> sampler = mDevice.getSampler(desc);
-            if (sampler.isNull())
+            MTLResourceID samplerId{};
+            if (!samplerID(desc, samplerId))
             {
                 return false; // getSampler wrote the WARN line
             }
-            mLastSamplers[channel] = desc;
-            sampled[s].push_back(
-                { index, metalTexture(texture).gpuResourceID, metalSampler(sampler.get()).gpuResourceID });
+            const MTLResourceID textureId = metalTextureID(texture);
+            if (checks && textureId._impl != metalTexture(texture).gpuResourceID._impl)
+            {
+                ++mResolveMismatches;
+                LL_WARNS("RHI") << call << ": the kept resource ID of texture '" << texture->debugName()
+                                << "' differs from its Metal texture's" << LL_ENDL;
+            }
+            if (checks && samplerId._impl != metalSampler(mDevice.getSampler(desc).get()).gpuResourceID._impl)
+            {
+                ++mResolveMismatches;
+                LL_WARNS("RHI") << call << ": the encoder's sampler for " << where() << " differs from the device's"
+                                << LL_ENDL;
+            }
+            if (remembered && (place.texture._impl != textureId._impl || place.sampler._impl != samplerId._impl ||
+                               place.slotRead != slotRead || !(place.desc == desc)))
+            {
+                ++mResolveMismatches;
+                LL_WARNS("RHI") << call << ": the remembered resolve of " << where() << " for texture "
+                                << index << " differs from a full one" << LL_ENDL;
+            }
+            if (version != 0)
+            {
+                place = { version, channel, type, textureId, samplerId, desc, slotRead };
+            }
+            if (channel < RESOLVE_CHANNELS)
+            {
+                mLastChannelSamplers[channel] = desc;
+            }
+            else
+            {
+                mLastSamplers[channel] = desc;
+            }
+            sampled[s][sampledCount[s]++] = { index, textureId, samplerId };
         }
     }
 
@@ -795,11 +922,14 @@ bool MetalEncoder::bindForDraw(const char* call, U32 first, U32 count, bool inde
     }
 
     // The uniform buffers setUniformBuffer recorded.
-    for (const auto& [block, bound] : mTracker.uniformBuffers())
+    if (checks)
     {
-        if (bound.notNull() && missing(metalAllocation(bound.get()).buffer))
+        for (const auto& [block, bound] : mTracker.uniformBuffers())
         {
-            return refuse("uniform buffer '" + bound->debugName() + "' is not resident (" + program + ")");
+            if (bound.notNull() && missing(metalAllocation(bound.get()).buffer))
+            {
+                return refuse("uniform buffer '" + bound->debugName() + "' is not resident (" + program() + ")");
+            }
         }
     }
 
@@ -830,7 +960,7 @@ bool MetalEncoder::bindForDraw(const char* call, U32 first, U32 count, bool inde
         }
         if (missing(uniforms.buffer))
         {
-            return refuse("uniform ring is not resident (" + program + ")");
+            return refuse("uniform ring is not resident (" + program() + ")");
         }
         std::copy(block.begin(), block.end(), uniforms.cpu);
         state.address[s] = uniforms.buffer.gpuAddress + uniforms.offset;
@@ -851,7 +981,7 @@ bool MetalEncoder::bindForDraw(const char* call, U32 first, U32 count, bool inde
         }
         if (missing(uniforms.buffer))
         {
-            return refuse("uniform ring is not resident (" + program + ")");
+            return refuse("uniform ring is not resident (" + program() + ")");
         }
         std::copy(state.pointBlock.begin(), state.pointBlock.end(), uniforms.cpu);
         pointAddress = uniforms.buffer.gpuAddress + uniforms.offset;
@@ -867,9 +997,9 @@ bool MetalEncoder::bindForDraw(const char* call, U32 first, U32 count, bool inde
         {
             writeAddress(s, 0, state.address[s]);
         }
-        for (const BoundBlock& one : blocks[s])
+        for (U32 i = 0; i < blockCount[s]; ++i)
         {
-            writeAddress(s, one.index, one.address);
+            writeAddress(s, blocks[s][i].index, blocks[s][i].address);
         }
     }
 
@@ -877,8 +1007,7 @@ bool MetalEncoder::bindForDraw(const char* call, U32 first, U32 count, bool inde
     // is at the draw.
     if (attributes != 0)
     {
-        const MetalAllocation memory = metalAllocation(vertices);
-        const MTLGPUAddress base = memory.buffer.gpuAddress + memory.offset;
+        const MTLGPUAddress base = metalAddress(vertices);
         for (U32 type = 0; type < VertexStreams::MAX_ATTRIBUTES; ++type)
         {
             if (attributes & (1u << type))
@@ -891,10 +1020,10 @@ bool MetalEncoder::bindForDraw(const char* call, U32 first, U32 count, bool inde
 
     for (size_t s = 0; s < 2; ++s)
     {
-        for (const Sampled& one : sampled[s])
+        for (U32 i = 0; i < sampledCount[s]; ++i)
         {
-            writeTexture(s, one.index, one.texture);
-            writeSampler(s, one.index, one.sampler);
+            writeTexture(s, sampled[s][i].index, sampled[s][i].texture);
+            writeSampler(s, sampled[s][i].index, sampled[s][i].sampler);
         }
     }
     return true;

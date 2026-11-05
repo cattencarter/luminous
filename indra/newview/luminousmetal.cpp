@@ -299,6 +299,7 @@ namespace LuminousMetal
             sContext.depth = &gPipeline.mRT->deferredScreen;
         }
         sContext.exposure = &gPipeline.mExposureMap;
+        beginTemporalFrame(frame);
     }
 
     void releaseRenderSizedTargets()

@@ -37,6 +37,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <fstream>
 #include <sstream>
 
 // Nothing here is initialized dynamically at load time: no namespace-scope objects with
@@ -166,24 +167,27 @@ namespace
     /// Capabilities on Metal: the values the system's GL reports on the same Mac, which Metal handles all of. Apple's
     /// "Metal feature set tables", Apple7: 2D textures up to 16384 pixels on a side, 2048 array layers and 8 color render targets.
     /// The facade LLGLManager gets GL's values from the CGL query, not from here.
-    /// The device's one Timestamp heap of METAL_TIMER_PAIRS pairs (4,096 entries,
-    /// Metal's most; 32 KiB), made with the device, so the capabilities the encoder's tracker copies at its construction already say
-    /// timerQueries. Nil, with a WARN line, when Metal gives none.
-    API_AVAILABLE(macos(26.0)) IdMTL4CounterHeap metalTimestampHeap(IdMTLDevice device)
+    /// A Timestamp heap of pairs pairs, labelled; nil, with a WARN line that ends with off, when Metal gives none.
+    /// The device's one for the timer queries has METAL_TIMER_PAIRS pairs (4,096 entries, Metal's most; 32 KiB) and is
+    /// made with the device, so the capabilities the encoder's tracker copies at its construction already say
+    /// timerQueries; the pass timer makes one per frame slot while it runs.
+    API_AVAILABLE(macos(26.0)) IdMTL4CounterHeap metalTimestampHeap(IdMTLDevice device, U32 pairs = METAL_TIMER_PAIRS,
+                                                                    NSString* label = @"timer queries",
+                                                                    const char* off = "timer queries are off")
     {
         MTL4CounterHeapDescriptor* descriptor = [MTL4CounterHeapDescriptor new];
         descriptor.type = MTL4CounterHeapTypeTimestamp;
-        descriptor.count = NSUInteger(METAL_TIMER_PAIRS) * 2;
+        descriptor.count = NSUInteger(pairs) * 2;
         NSError* error = nil;
         IdMTL4CounterHeap heap = [device newCounterHeapWithDescriptor:descriptor error:&error];
         if (!heap)
         {
             LL_WARNS("RHI") << "Metal gave no timestamp heap of " << descriptor.count << " entries"
                             << (error ? std::string(": ") + error.localizedDescription.UTF8String : std::string())
-                            << "; timer queries are off" << LL_ENDL;
+                            << "; " << off << LL_ENDL;
             return nil;
         }
-        heap.label = @"timer queries";
+        heap.label = label;
         return heap;
     }
 
@@ -238,6 +242,8 @@ namespace
         caps.computePasses = true;  // MTL4ComputeCommandEncoder; the encoder's compute passes
         caps.nativePrograms = true; // MTL4Compiler from source (llrhimetalnative-objc.mm)
         caps.textures3D = true;     // MTLTextureType3D
+        caps.spatialUpscaler = metalSpatialUpscaler(device); // MetalFX's MTL4FXSpatialScaler
+        caps.temporalUpscaler = metalTemporalUpscaler(device, caps.temporalMinScale, caps.temporalMaxScale);
         caps.depthClamp = true;              // setDepthClipMode (MTL4RenderCommandEncoder.h:124-127)
         caps.debugLabels = true;
 
@@ -303,11 +309,6 @@ MTLDepthStencilDescriptor* metalDepthStencilDescriptor(const DepthStencilDesc& d
 
 // The device ------------------------------------------------------------------------------------
 
-namespace
-{
-    bool frameCaptureAsked(); // a frame capture is asked for (below)
-}
-
 MetalDevice::MetalDevice(IdMTLDevice device, IdMTL4CommandQueue queue, dispatch_queue_t feedbackQueue,
                          const MetalSupport& support)
 :   mDevice(device),
@@ -337,17 +338,6 @@ MetalDevice::MetalDevice(IdMTLDevice device, IdMTL4CommandQueue queue, dispatch_
     {
         LL_WARNS("RHI") << "Metal speed knob values not understood: " << mSpeed.unknown
                         << " (LL_METAL_BARRIER split or full, LL_METAL_DISCARD 1 or 0); their defaults are used"
-                        << LL_ENDL;
-    }
-    // Metal refuses to capture a device that has ever specialized a render pipeline state ("Capturing Render
-    // pipeline specialization is not supported", MTLCaptureErrorNotSupported, MTLCaptureManager.h:22-30), even one
-    // released since, and drops the document when one is specialized during the capture (run-time probe). So a
-    // device made while a frame capture is asked for makes every state full, from its first one on.
-    mFullPipelineStates = frameCaptureAsked();
-    if (mFullPipelineStates)
-    {
-        LL_INFOS("RHI") << "Metal frame capture asked for before the device was made: every render pipeline state is "
-                           "full, as Metal captures no device that has specialized one"
                         << LL_ENDL;
     }
     // The timer ring, on the heap made above.
@@ -504,6 +494,22 @@ Ref<Texture> MetalDevice::createTexture(const TextureDesc& desc, std::string_vie
         Ref<Texture> texture = createMetalTexture(*this, desc, debugName);
         mEncoder.zeroLater(texture.get()); // a cube is cleared before the frame's next encoder
         return texture;
+    }
+}
+
+Ref<Upscaler> MetalDevice::createUpscaler(const UpscalerDesc& desc)
+{
+    @autoreleasepool // as createTexture
+    {
+        return createMetalUpscaler(*this, desc);
+    }
+}
+
+Ref<TemporalUpscaler> MetalDevice::createTemporalUpscaler(const TemporalUpscalerDesc& desc)
+{
+    @autoreleasepool // as createTexture
+    {
+        return createMetalTemporalUpscaler(*this, desc);
     }
 }
 
@@ -958,6 +964,30 @@ bool MetalDevice::writeTimestamp(U32 index)
     return true;
 }
 
+namespace
+{
+    /// ticks.size() entries of the heap from first, resolved on the CPU (MTL4Counters.h:81-92); the GPU has finished
+    /// writing them (the caller waited for a signal after them, MTL4Counters.h's note). False, with ticks unchanged,
+    /// when Metal gave no data or too little.
+    API_AVAILABLE(macos(26.0)) bool metalResolveTicks(IdMTL4CounterHeap heap, NSUInteger first, std::span<U64> ticks)
+    {
+        @autoreleasepool // resolveCounterRange: returns an autoreleased NSData
+        {
+            NSData* data = [heap resolveCounterRange:NSMakeRange(first, ticks.size())];
+            if (!data || data.length < ticks.size() * sizeof(MTL4TimestampHeapEntry))
+            {
+                return false;
+            }
+            const MTL4TimestampHeapEntry* entries = static_cast<const MTL4TimestampHeapEntry*>(data.bytes);
+            for (size_t i = 0; i < ticks.size(); ++i)
+            {
+                ticks[i] = entries[i].timestamp;
+            }
+            return true;
+        }
+    }
+}
+
 bool MetalDevice::resolveTimestamps(S64 pair, std::array<U64, 2>& ticks) const
 {
     ticks = { 0, 0 };
@@ -965,14 +995,575 @@ bool MetalDevice::resolveTimestamps(S64 pair, std::array<U64, 2>& ticks) const
     {
         return false;
     }
-    NSData* data = [mTimestamps resolveCounterRange:NSMakeRange(NSUInteger(pair) * 2, 2)];
-    if (!data || data.length < 2 * sizeof(MTL4TimestampHeapEntry))
+    std::array<U64, 2> resolved{};
+    if (!metalResolveTicks(mTimestamps, NSUInteger(pair) * 2, resolved))
     {
         return false;
     }
-    const MTL4TimestampHeapEntry* entries = static_cast<const MTL4TimestampHeapEntry*>(data.bytes);
-    ticks = { entries[0].timestamp, entries[1].timestamp };
+    ticks = resolved;
     return true;
+}
+
+// The pass timer ------------------------------------------------------------------------------------
+
+namespace
+{
+    /// An attachment's format, short, for the pass timer's table.
+    const char* passFormatName(Format format)
+    {
+        switch (format)
+        {
+        case Format::R8Unorm:               return "R8";
+        case Format::RG8Unorm:              return "RG8";
+        case Format::RGBA8Unorm:            return "RGBA8";
+        case Format::RGBA8Unorm_sRGB:       return "RGBA8 sRGB";
+        case Format::BGRA8Unorm:            return "BGRA8";
+        case Format::R16Float:              return "R16F";
+        case Format::RG16Float:             return "RG16F";
+        case Format::RGBA16Float:           return "RGBA16F";
+        case Format::RGBA16Unorm:           return "RGBA16";
+        case Format::R32Float:              return "R32F";
+        case Format::RG32Float:             return "RG32F";
+        case Format::RGBA32Float:           return "RGBA32F";
+        case Format::RGB10A2Unorm:          return "RGB10A2";
+        case Format::RG11B10Float:          return "RG11B10F";
+        case Format::R8Uint:                return "R8U";
+        case Format::R16Uint:               return "R16U";
+        case Format::R32Uint:               return "R32U";
+        case Format::Depth32Float:          return "D32F";
+        case Format::Depth32Float_Stencil8: return "D32F S8";
+        default:                            return "other";
+        }
+    }
+
+    /// A render pass's attachments for the table: the first one's size at its level, then each format, depth last,
+    /// as "[1920x1080 RGBA16F+D32F S8]".
+    std::string passAttachments(const RenderPassDesc& pass)
+    {
+        std::string formats;
+        U32 width = 0;
+        U32 height = 0;
+        auto add = [&formats, &width, &height](const Ref<Texture>& texture, U32 level)
+        {
+            if (texture.isNull())
+            {
+                return;
+            }
+            const TextureDesc& desc = texture->desc();
+            if (width == 0)
+            {
+                width = std::max(1u, desc.width >> level);
+                height = std::max(1u, desc.height >> level);
+            }
+            formats += formats.empty() ? "" : "+";
+            formats += passFormatName(desc.format);
+        };
+        for (U32 i = 0; i < pass.colorCount; ++i)
+        {
+            add(pass.color[i].texture, pass.color[i].level);
+        }
+        add(pass.depth.texture, pass.depth.level);
+        if (formats.empty())
+        {
+            return "[no attachments]";
+        }
+        return "[" + std::to_string(width) + "x" + std::to_string(height) + " " + formats + "]";
+    }
+
+    API_AVAILABLE(macos(26.0)) const char* passKindName(MetalPassTimes::Kind kind)
+    {
+        switch (kind)
+        {
+        case MetalPassTimes::Kind::Render:  return "render";
+        case MetalPassTimes::Kind::Compute: return "compute";
+        case MetalPassTimes::Kind::Copies:  return "copies";
+        }
+        return "";
+    }
+
+    /// The program ids of a render and a compute pass named by their first program that have none yet.
+    constexpr U32 PASS_NO_DRAW = 1;
+    constexpr U32 PASS_NO_DISPATCH = 2;
+}
+
+bool MetalPassTimes::start(IdMTLDevice device, U64 ticksPerSecond, U32 frames, std::string path,
+                           std::function<void()> done)
+{
+    if (mPhase != Phase::Off)
+    {
+        LL_WARNS("LuminousPassTimes") << "The pass timer is running already" << LL_ENDL;
+        return false;
+    }
+    if (ticksPerSecond == 0 || frames == 0)
+    {
+        LL_WARNS("LuminousPassTimes") << "The GPU gives no timestamps (no timestamp heap or tick rate); the pass timer "
+                                      << "is off" << LL_ENDL;
+        return false;
+    }
+    for (Record& record : mRecords)
+    {
+        record = Record();
+        record.heap = metalTimestampHeap(device, METAL_PASS_TIME_PAIRS, @"pass times", "the pass timer is off");
+        if (!record.heap)
+        {
+            // Nothing was stamped into the heaps made so far, so they go at once.
+            for (Record& made : mRecords)
+            {
+                made = Record();
+            }
+            return false;
+        }
+    }
+    mTicksPerSecond = ticksPerSecond;
+    mFrames = frames;
+    mFirst = 0;
+    mLast = 0;
+    mPath = std::move(path);
+    mDone = std::move(done);
+    mOpen = nullptr;
+    mNames.clear();
+    mNameIds.clear();
+    mPrograms = { std::string(), std::string("(no draw)"), std::string("(no dispatch)") };
+    mProgramIds.clear();
+    mRows.clear();
+    mResolvedFrames = 0;
+    mSubmitted = 0;
+    mSinceResolved = 0;
+    mEncoders = 0;
+    mKindTicks = {};
+    mOwnTicks = 0;
+    mSpanTicks = 0;
+    mLeftOut = 0;
+    mUnended = 0;
+    mUnreadable = 0;
+    mLostFrames = 0;
+    mPhase = Phase::Armed;
+    LL_INFOS("LuminousPassTimes") << "Timing every render and compute pass on the GPU over the next " << frames
+                                  << " frames (" << METAL_PASS_TIME_PAIRS << " encoders a frame at most)" << LL_ENDL;
+    return true;
+}
+
+void MetalPassTimes::stop(FrameLifecycle& lifecycle)
+{
+    if (mPhase == Phase::Off)
+    {
+        return;
+    }
+    release(lifecycle);
+    mDone = nullptr;
+    LL_INFOS("LuminousPassTimes") << "The pass timer stopped before its table" << LL_ENDL;
+}
+
+void MetalPassTimes::release(FrameLifecycle& lifecycle)
+{
+    // Metal 4's command buffers do not keep what they use, so each heap lives until the frames in flight have finished.
+    for (Record& record : mRecords)
+    {
+        if (IdMTL4CounterHeap heap = record.heap)
+        {
+            lifecycle.release([heap]() mutable { heap = nil; });
+        }
+        record = Record();
+    }
+    mOpen = nullptr;
+    mPhase = Phase::Off;
+    mFirst = 0;
+    mLast = 0;
+}
+
+U32 MetalPassTimes::nameId(Kind kind, std::string_view name)
+{
+    std::string key(1, char('0' + U8(kind)));
+    key += name;
+    const auto [found, added] = mNameIds.try_emplace(std::move(key), U32(mNames.size()));
+    if (added)
+    {
+        mNames.emplace_back(kind, std::string(name));
+    }
+    return found->second;
+}
+
+MetalPassStamp MetalPassTimes::begin(U32 name, U64 frame)
+{
+    if (!mOpen || frame == 0 || mOpen->frame != frame)
+    {
+        return MetalPassStamp();
+    }
+    if (mOpen->pairs.size() >= METAL_PASS_TIME_PAIRS)
+    {
+        ++mOpen->leftOut;
+        return MetalPassStamp();
+    }
+    MetalPassStamp stamp;
+    stamp.frame = frame;
+    stamp.pair = U32(mOpen->pairs.size());
+    mOpen->pairs.push_back({ name, 0, false });
+    return stamp;
+}
+
+MetalPassStamp MetalPassTimes::beginRender(IdMTL4RenderCommandEncoder encoder, const RenderPassDesc& pass, U64 frame)
+{
+    if (!mOpen)
+    {
+        return MetalPassStamp();
+    }
+    // The target stack's passes all carry the stack's name, and some passes none: those are told apart by their
+    // attachments and their first program.
+    const bool byProgram = pass.stack || pass.name.empty();
+    std::string name = pass.name.empty() ? std::string("unnamed (render)") : pass.name;
+    if (byProgram)
+    {
+        name += " " + passAttachments(pass);
+    }
+    MetalPassStamp stamp = begin(nameId(Kind::Render, name), frame);
+    if (stamp.frame)
+    {
+        [encoder writeTimestampWithGranularity:MTL4TimestampGranularityRelaxed
+                                    afterStage:MTLRenderStageVertex
+                                      intoHeap:mOpen->heap
+                                       atIndex:NSUInteger(stamp.pair) * 2];
+        if (byProgram)
+        {
+            mOpen->pairs.back().program = PASS_NO_DRAW;
+            stamp.wantsProgram = true;
+        }
+    }
+    return stamp;
+}
+
+MetalPassStamp MetalPassTimes::beginOwnRender(IdMTL4RenderCommandEncoder encoder, NSString* label, U64 frame)
+{
+    if (!mOpen)
+    {
+        return MetalPassStamp();
+    }
+    const std::string name = label.length ? std::string(label.UTF8String) : std::string("unnamed (render)");
+    MetalPassStamp stamp = begin(nameId(Kind::Render, name), frame);
+    if (stamp.frame)
+    {
+        [encoder writeTimestampWithGranularity:MTL4TimestampGranularityRelaxed
+                                    afterStage:MTLRenderStageVertex
+                                      intoHeap:mOpen->heap
+                                       atIndex:NSUInteger(stamp.pair) * 2];
+    }
+    return stamp;
+}
+
+MetalPassStamp MetalPassTimes::beginCompute(IdMTL4CommandBuffer buffer, std::string_view name, Kind kind, U64 frame)
+{
+    if (!mOpen)
+    {
+        return MetalPassStamp();
+    }
+    const bool unnamed = name.empty();
+    const std::string text = !unnamed               ? std::string(name)
+                             : kind == Kind::Copies ? std::string("unnamed (copies)")
+                                                    : std::string("unnamed (compute)");
+    MetalPassStamp stamp = begin(nameId(kind, text), frame);
+    if (stamp.frame)
+    {
+        [buffer writeTimestampIntoHeap:mOpen->heap atIndex:NSUInteger(stamp.pair) * 2];
+        if (unnamed && kind == Kind::Compute)
+        {
+            mOpen->pairs.back().program = PASS_NO_DISPATCH;
+            stamp.wantsProgram = true;
+        }
+    }
+    return stamp;
+}
+
+void MetalPassTimes::endRender(IdMTL4RenderCommandEncoder encoder, const MetalPassStamp& stamp)
+{
+    if (!mOpen || stamp.frame == 0 || stamp.frame != mOpen->frame || stamp.pair >= mOpen->pairs.size())
+    {
+        return;
+    }
+    [encoder writeTimestampWithGranularity:MTL4TimestampGranularityRelaxed
+                                afterStage:MTLRenderStageFragment
+                                  intoHeap:mOpen->heap
+                                   atIndex:NSUInteger(stamp.pair) * 2 + 1];
+    mOpen->pairs[stamp.pair].ended = true;
+}
+
+void MetalPassTimes::endCompute(IdMTL4CommandBuffer buffer, const MetalPassStamp& stamp)
+{
+    if (!mOpen || stamp.frame == 0 || stamp.frame != mOpen->frame || stamp.pair >= mOpen->pairs.size())
+    {
+        return;
+    }
+    [buffer writeTimestampIntoHeap:mOpen->heap atIndex:NSUInteger(stamp.pair) * 2 + 1];
+    mOpen->pairs[stamp.pair].ended = true;
+}
+
+void MetalPassTimes::noteProgram(MetalPassStamp& stamp, NSString* label)
+{
+    if (!stamp.wantsProgram)
+    {
+        return;
+    }
+    stamp.wantsProgram = false;
+    if (!mOpen || stamp.frame != mOpen->frame || stamp.pair >= mOpen->pairs.size())
+    {
+        return;
+    }
+    const std::string program = label.length ? std::string(label.UTF8String) : std::string("(unlabelled program)");
+    const auto [found, added] = mProgramIds.try_emplace(program, U32(mPrograms.size()));
+    if (added)
+    {
+        mPrograms.push_back(program);
+    }
+    mOpen->pairs[stamp.pair].program = found->second;
+}
+
+void MetalPassTimes::resolve(Record& record)
+{
+    const size_t entries = record.pairs.size() * 2;
+    std::vector<U64> ticks(entries, 0);
+    if (entries > 0 && !metalResolveTicks(record.heap, 0, ticks))
+    {
+        ticks.assign(entries, 0); // every pair reads as unreadable
+    }
+    // In the order the encoders were begun, which is the queue's: a pass's own time is what no earlier
+    // encoder of the frame covered, as MetalGpuBusy counts overlapping command buffers once.
+    U64 latestEnd = 0;
+    U64 firstBegin = 0;
+    U64 lastEnd = 0;
+    for (size_t i = 0; i < record.pairs.size(); ++i)
+    {
+        const Pair& pair = record.pairs[i];
+        if (!pair.ended)
+        {
+            ++mUnended;
+            continue;
+        }
+        const U64 begin = ticks[i * 2];
+        const U64 end = ticks[i * 2 + 1];
+        if (begin == 0 || end < begin)
+        {
+            ++mUnreadable;
+            continue;
+        }
+        const U64 from = std::max(begin, latestEnd);
+        const U64 own = end > from ? end - from : 0;
+        Row& row = mRows[{ pair.name, pair.program }];
+        ++row.encoders;
+        row.ticks += end - begin;
+        row.ownTicks += own;
+        mKindTicks[size_t(mNames[pair.name].first)] += end - begin;
+        mOwnTicks += own;
+        ++mEncoders;
+        latestEnd = std::max(latestEnd, end);
+        firstBegin = firstBegin == 0 ? begin : std::min(firstBegin, begin);
+        lastEnd = std::max(lastEnd, end);
+    }
+    mSpanTicks += lastEnd > firstBegin ? lastEnd - firstBegin : 0;
+    mLeftOut += record.leftOut;
+    ++mResolvedFrames;
+    if (entries > 0)
+    {
+        // The slot's next frame reads 0 where it writes nothing; the GPU is done with the heap (MTL4Counters.h:94-102).
+        [record.heap invalidateCounterRange:NSMakeRange(0, entries)];
+    }
+    record.frame = 0;
+    record.pairs.clear();
+    record.leftOut = 0;
+}
+
+MetalPassTimes::FrameEnd MetalPassTimes::frameEnd(U64 current, U64 completed)
+{
+    if (mPhase == Phase::Off)
+    {
+        return FrameEnd::Nothing;
+    }
+    // The timed frames the GPU has finished, from any slot.
+    for (Record& record : mRecords)
+    {
+        if (record.frame != 0 && record.frame <= completed)
+        {
+            resolve(record);
+        }
+    }
+    FrameEnd result = FrameEnd::Nothing;
+    if (mPhase == Phase::Armed)
+    {
+        mFirst = current;
+        mLast = current + mFrames - 1;
+        mPhase = Phase::Recording;
+        result = FrameEnd::Began;
+    }
+    mOpen = nullptr;
+    if (mPhase == Phase::Recording && current > mLast)
+    {
+        mPhase = Phase::Resolving;
+    }
+    if (mPhase == Phase::Recording)
+    {
+        Record& record = mRecords[current % mRecords.size()];
+        if (record.frame != 0)
+        {
+            // FrameLifecycle gave up waiting for the slot's earlier frame: its stamps are dropped.
+            ++mLostFrames;
+        }
+        record.frame = current;
+        record.pairs.clear();
+        record.leftOut = 0;
+        mOpen = &record;
+        return result;
+    }
+    if (mPhase == Phase::Resolving)
+    {
+        const bool pending = std::any_of(mRecords.begin(), mRecords.end(),
+                                         [](const Record& record) { return record.frame != 0; });
+        if (!pending)
+        {
+            ++mSinceResolved;
+            return FrameEnd::Finished;
+        }
+    }
+    return result;
+}
+
+std::string MetalPassTimes::table(const MetalGpuBusy& busy, U64 received) const
+{
+    const U64 timedFrames = mLast >= mFirst && mFirst != 0 ? mLast - mFirst + 1 : 0;
+    const double frames = double(std::max<U64>(mResolvedFrames, 1));
+    auto ms = [this, frames](U64 ticks) { return double(ticks) * 1000.0 / double(mTicksPerSecond) / frames; };
+    const double busyMs = busy.busy * 1000.0 / double(std::max<U64>(timedFrames, 1));
+    U64 sumTicks = 0;
+    for (U64 ticks : mKindTicks)
+    {
+        sumTicks += ticks;
+    }
+
+    std::vector<std::pair<std::pair<U32, U32>, Row>> rows(mRows.begin(), mRows.end());
+    std::sort(rows.begin(), rows.end(), [](const auto& a, const auto& b) { return a.second.ticks > b.second.ticks; });
+    auto rowName = [this](const std::pair<U32, U32>& key)
+    {
+        std::string name = mNames[key.first].second;
+        if (key.second != 0)
+        {
+            name += " " + mPrograms[key.second];
+        }
+        return name;
+    };
+
+    std::ostringstream out;
+    char line[160];
+    out << "Metal pass times over " << mResolvedFrames << " frames (" << mFirst << " to " << mLast
+        << "), GPU milliseconds per frame\n";
+    std::snprintf(line, sizeof(line), "GPU busy (commit feedback): %.3f ms, %llu command buffers reported of %llu\n",
+                  busyMs, (unsigned long long)received, (unsigned long long)mSubmitted);
+    out << line;
+    std::snprintf(line, sizeof(line),
+                  "Passes: sum %.3f ms (render %.3f, compute %.3f, copies %.3f), without overlap %.3f ms, first begin "
+                  "to last end %.3f ms\n",
+                  ms(sumTicks), ms(mKindTicks[size_t(Kind::Render)]), ms(mKindTicks[size_t(Kind::Compute)]),
+                  ms(mKindTicks[size_t(Kind::Copies)]), ms(mOwnTicks), ms(mSpanTicks));
+    out << line;
+    std::snprintf(line, sizeof(line),
+                  "Encoders: %.1f per frame timed; left out %llu (%u a frame at most), without an end %llu, unreadable "
+                  "%llu; frames lost %llu\n",
+                  double(mEncoders) / frames, (unsigned long long)mLeftOut, METAL_PASS_TIME_PAIRS,
+                  (unsigned long long)mUnended, (unsigned long long)mUnreadable, (unsigned long long)mLostFrames);
+    out << line;
+    out << "      ms   own ms  % busy  per frame  kind     pass\n";
+    for (const auto& [key, row] : rows)
+    {
+        const double rowMs = ms(row.ticks);
+        std::snprintf(line, sizeof(line), "%8.3f %8.3f %7.1f %10.2f  %-8s ", rowMs, ms(row.ownTicks),
+                      busyMs > 0.0 ? rowMs * 100.0 / busyMs : 0.0, double(row.encoders) / frames,
+                      passKindName(mNames[key.first].first));
+        out << line << rowName(key) << "\n";
+    }
+    // The passes without a name of their own, so they can be given one.
+    std::vector<std::string> unnamed;
+    for (const auto& [key, row] : rows)
+    {
+        if (mNames[key.first].second.rfind("unnamed (", 0) == 0)
+        {
+            std::snprintf(line, sizeof(line), "%8.3f ms, %.2f per frame: ", ms(row.ticks),
+                          double(row.encoders) / frames);
+            unnamed.push_back(line + rowName(key));
+        }
+    }
+    out << "Passes without a name: " << (unnamed.empty() ? "none" : std::to_string(unnamed.size()));
+    for (const std::string& entry : unnamed)
+    {
+        out << "\n  " << entry;
+    }
+    return out.str();
+}
+
+std::function<void()> MetalPassTimes::finish(const MetalGpuBusy& busy, U64 received, FrameLifecycle& lifecycle)
+{
+    const std::string text = table(busy, received);
+    LL_INFOS("LuminousPassTimes") << text << LL_ENDL;
+    if (!mPath.empty())
+    {
+        std::ofstream file(mPath, std::ios::out | std::ios::trunc);
+        file << text << '\n';
+        if (!file)
+        {
+            LL_WARNS("LuminousPassTimes") << "Could not write the pass times to " << mPath << LL_ENDL;
+        }
+    }
+    std::function<void()> done = std::move(mDone);
+    mDone = nullptr;
+    release(lifecycle);
+    return done;
+}
+
+bool MetalDevice::startPassTimes(U32 frames, const std::string& path, std::function<void()> done)
+{
+    return mPassTimes.start(mDevice, mTimestampFrequency, frames, path, std::move(done));
+}
+
+void MetalDevice::stopPassTimes()
+{
+    mPassTimes.stop(mLifecycle);
+    std::lock_guard<std::mutex> lock(mFeedback->mutex);
+    mFeedback->timedFirst = 0;
+    mFeedback->timedLast = 0;
+}
+
+void MetalDevice::passTimesAtFrameEnd()
+{
+    const MetalPassTimes::FrameEnd end = mPassTimes.frameEnd(mLifecycle.currentFrame(), mLifecycle.completedFrame());
+    if (end == MetalPassTimes::FrameEnd::Began)
+    {
+        std::lock_guard<std::mutex> lock(mFeedback->mutex);
+        mFeedback->timedFirst = mPassTimes.firstFrame();
+        mFeedback->timedLast = mPassTimes.lastFrame();
+        mFeedback->timedGpu = MetalGpuBusy();
+        mFeedback->timedReceived = 0;
+        return;
+    }
+    if (end != MetalPassTimes::FrameEnd::Finished)
+    {
+        return;
+    }
+    MetalGpuBusy busy;
+    U64 received = 0;
+    {
+        std::lock_guard<std::mutex> lock(mFeedback->mutex);
+        busy = mFeedback->timedGpu;
+        received = mFeedback->timedReceived;
+    }
+    // The handlers report soon after the GPU has finished; they are not waited for, and after 60 frame ends the
+    // table is written with what has reported.
+    if (received < mPassTimes.submitted() && mPassTimes.framesSinceResolved() < 60)
+    {
+        return;
+    }
+    {
+        std::lock_guard<std::mutex> lock(mFeedback->mutex);
+        mFeedback->timedFirst = 0;
+        mFeedback->timedLast = 0;
+    }
+    if (std::function<void()> done = mPassTimes.finish(busy, received, mLifecycle))
+    {
+        done();
+    }
 }
 
 Ref<Pipeline> MetalDevice::getPipeline(Program& program, const PipelineDesc& desc)
@@ -1325,6 +1916,16 @@ void MetalDevice::submit()
             if (!error)
             {
                 feedback->gpu.add(commitFeedback.GPUStartTime, commitFeedback.GPUEndTime);
+                submission->gpuEnd.store(commitFeedback.GPUEndTime, std::memory_order_relaxed);
+            }
+            if (feedback->timedFirst != 0 && frame >= feedback->timedFirst && frame <= feedback->timedLast)
+            {
+                // A command buffer of the pass timer's frames
+                ++feedback->timedReceived;
+                if (!error)
+                {
+                    feedback->timedGpu.add(commitFeedback.GPUStartTime, commitFeedback.GPUEndTime);
+                }
             }
             feedback->lost = feedback->lost || lost;
             --feedback->outstanding;
@@ -1354,6 +1955,10 @@ void MetalDevice::submit()
         mSurface->countDrawableWait();
     }
     [mQueue commit:&buffer count:1 options:options];
+    if (mPassTimes.timed(frame))
+    {
+        mPassTimes.countSubmit();
+    }
     // ... and signals it once after committing it, before its present (MTL4CommandQueue.h:277-294; MTLDrawable.h:29).
     for (const IdCAMetalDrawable& drawable : mPendingDrawables)
     {
@@ -1396,6 +2001,10 @@ IdMTL4ComputeCommandEncoder MetalDevice::openCopies(NSString* label)
     if (!mCopies)
     {
         mEncoder.zeroNewTargets(); // before copies that may write into or read one
+        mCopiesStamp = mPassTimes.recording() ? mPassTimes.beginCompute(commandBuffer(), label ? label.UTF8String : "",
+                                                                       MetalPassTimes::Kind::Copies,
+                                                                       mLifecycle.currentFrame())
+                                              : MetalPassStamp();
         // Metal 4 has no blit encoder; the compute encoder copies (MTL4CommandBuffer.h:130).
         mCopies = [commandBuffer() computeCommandEncoder];
         if (!mCopies)
@@ -1512,13 +2121,13 @@ void MetalDevice::logGpuTime(bool total)
     mGpuWindowBegan = clock;
 }
 
-IdMTL4ComputeCommandEncoder MetalDevice::beginUploadCopies()
+IdMTL4ComputeCommandEncoder MetalDevice::beginUploadCopies(NSString* label)
 {
     // The queue barrier orders only the work of earlier encoders, not copies inside one
     // (MTL4CommandEncoder.h:55-58), so an upload never shares an encoder with the copies before it,
     // and a readback recorded before it reads the bytes from before it, as on GL.
     endCopies();
-    return openCopies(@"Upload");
+    return openCopies(label);
 }
 
 IdMTLBuffer MetalDevice::newResidentBuffer(U64 length, std::string_view debugName)
@@ -1577,6 +2186,20 @@ std::vector<U32> metalListOrder(PrimitiveType type, U32 count)
         break;
     }
     return order;
+}
+
+U32 metalListCount(PrimitiveType type, U32 count)
+{
+    switch (type)
+    {
+    case PrimitiveType::TriangleFan:
+    case PrimitiveType::TriangleStrip:
+        return count < 3 ? 0 : (count - 2) * 3;
+    case PrimitiveType::LineLoop:
+        return count < 2 ? 0 : count + 1;
+    default:
+        return 0;
+    }
 }
 
 MTLPrimitiveType metalListPrimitive(PrimitiveType type)
@@ -1895,6 +2518,11 @@ void MetalDevice::endCopies()
         }
         [mCopies endEncoding];
         mCopies = nil;
+        if (mCopiesStamp.frame)
+        {
+            mPassTimes.endCompute(mCommandBuffer, mCopiesStamp);
+            mCopiesStamp = MetalPassStamp();
+        }
     }
 }
 
@@ -1992,6 +2620,12 @@ void MetalDevice::endFrame()
         // No frame began, so the ring of the frame just sent stays as it is; the GPU may still read it.
         return;
     }
+    if (mSurface)
+    {
+        // <Luminous> Right after the wait, when a GPU-bound frame has just finished: VSync off's newest finished frame
+        // to the window server (MetalSurface::frameEnded).
+        mSurface->frameEnded();
+    }
     // FrameLifecycle::endFrame has waited for the frame that used this slot before
     // (llrhi.cpp:1214-1232), so the new frame's ring starts again. Never in commandBuffer(): a draw's
     // uniform blocks and an upload's staging are allocated before the frame's first command buffer.
@@ -1999,11 +2633,16 @@ void MetalDevice::endFrame()
     // The frame's end closes the open group, so its programs become Ready without a wait().
     mProgramGroups.closeOpen();
     writeClassLines();
+    if (mPassTimes.running())
+    {
+        passTimesAtFrameEnd();
+    }
 }
 
 void MetalFailureLog::add(Kind kind, std::string line)
 {
     std::lock_guard<std::mutex> lock(mMutex);
+    mPending.store(true, std::memory_order_release);
     Counts& counts = mKinds[size_t(kind)];
     if (++counts.lines <= FIRST_LINES)
     {
@@ -2022,11 +2661,17 @@ void MetalFailureLog::write(bool final)
 {
     static constexpr const char* KINDS[size_t(Kind::Count)] = { "GPU error", "lost device", "upload error",
                                                                 "failed program", "drawable timeout" };
+    // Nothing held and nothing counted since the last write: no lock, no clock.
+    if (!mPending.load(std::memory_order_acquire))
+    {
+        return;
+    }
     std::vector<std::string> lines;
     {
         std::lock_guard<std::mutex> lock(mMutex);
         lines.swap(mHeld);
         const auto now = std::chrono::steady_clock::now();
+        bool counted = false;
         for (size_t kind = 0; kind < mKinds.size(); ++kind)
         {
             Counts& counts = mKinds[kind];
@@ -2040,7 +2685,9 @@ void MetalFailureLog::write(bool final)
                 counts.last.clear();
                 counts.summarized = now;
             }
+            counted = counted || counts.counted > 0;
         }
+        mPending.store(counted, std::memory_order_release);
     }
     for (const std::string& line : lines)
     {
@@ -2222,12 +2869,6 @@ namespace
         return path;
     }
 
-    /// A capture is asked for and not yet taken, for the next frame or the one after the current one.
-    bool frameCaptureAsked()
-    {
-        return sCaptureAsked.load(std::memory_order_acquire) != CAPTURE_NONE;
-    }
-
     /// At a frame's end: a capture asked for after the current frame is now one for the next frame.
     void frameCaptureFrameEnded()
     {
@@ -2326,12 +2967,8 @@ void MetalDevice::beginCapture()
     NSError* error = nil;
     if (![manager startCaptureWithDescriptor:descriptor error:&error])
     {
-        // A device made before the request may have specialized pipeline states, which Metal refuses.
         LL_WARNS("RHI") << "Metal frame capture to " << path
                         << " did not begin: " << (error ? error.localizedDescription.UTF8String : "no reason given")
-                        << (mFullPipelineStates ? ""
-                                                : " (the device was made before the capture was asked for, so it may "
-                                                  "have specialized pipeline states; ask for it before the device)")
                         << LL_ENDL;
         return;
     }

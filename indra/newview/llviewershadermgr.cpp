@@ -1374,6 +1374,11 @@ std::string LLViewerShaderMgr::loadBasicShaders()
     {
         attribs["REFMAP_LEVEL"] = std::to_string(probe_level);
         attribs["REF_SAMPLE_COUNT"] = "32";
+        // <Luminous> legacy surfaces that read no probe skip the probe search (reflectionProbeF.glsl)
+        if (gSavedSettings.getBOOL("LuminousSoftenSkipUnusedProbeSearch"))
+        {
+            attribs["LUMINOUS_SKIP_UNUSED_PROBE_SEARCH"] = "1";
+        }
     }
 
     if (mirrors)

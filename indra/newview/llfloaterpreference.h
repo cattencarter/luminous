@@ -438,6 +438,7 @@ protected:
 private:
 
     void onPresetsListChange();
+    LLTextBox* mTemporalRest = nullptr; // <Luminous/> the grey line under MetalFX temporal while it rests
     LOG_CLASS(LLPanelPreferenceGraphics);
 };
 

@@ -1282,6 +1282,33 @@ If you do not understand the distinction then leave this control alone."
          width="250">
             (takes effect at the next start)
         </text>
+        <!-- <Luminous> MetalFX upscaling (MetalFX temporal) under the backend switch, shown with it, greyed unless Metal runs
+             (LLPanelPreferenceGraphics::refreshBackendSwitch) -->
+        <check_box
+         control_name="LuminousMetalFXTemporal"
+         follows="left|top"
+         height="16"
+         label="MetalFX upscaling"
+         layout="topleft"
+         left="130"
+         name="luminous_metalfx_temporal"
+         tool_tip="Draws the live view smaller and builds a sharp picture from several frames with Apple's MetalFX, for a faster view. Anti-aliasing is left out while it runs. Finished pictures are not affected."
+         top_pad="8"
+         visible="false"
+         width="250" />
+        <!-- grey under it while it rests or is held at full size: why, one line or two (LLPanelPreferenceGraphics::draw) -->
+        <text
+         follows="left|top"
+         height="30"
+         layout="topleft"
+         left_delta="20"
+         name="luminous_metalfx_temporal_rest"
+         text_color="LabelDisabledColor"
+         top_pad="2"
+         visible="false"
+         width="360"
+         wrap="true" />
+        <!-- </Luminous> -->
     </panel>
 
 <!--Rendering-->
@@ -1802,6 +1829,361 @@ If you do not understand the distinction then leave this control alone."
          width="330"/>
         <!-- End of Tone Mapping Settings-->
     </panel>
+
+<!--Luminous-->
+    <!-- <Luminous> the costlier effects of the Luminous sidebar, each Off, On or Only in renders
+         (LuminousPrefsEffects in luminousfloater.cpp; each menu named as the effect's button there) -->
+    <panel
+     class="luminous_prefs_effects"
+     top_pad="5"
+     bottom="-1"
+     left="1"
+     right="-1"
+     follows="all"
+     label="Luminous"
+     name="Luminous" >
+      <text
+       type="string"
+       length="1"
+       follows="left|top|right"
+       height="28"
+       layout="topleft"
+       left="10"
+       name="luminous_effects_intro"
+       top="10"
+       width="510"
+       word_wrap="true">
+On shows an effect while you look round; Only in renders draws it in the rendered picture alone, which keeps the view quick.
+      </text>
+      <text
+       type="string"
+       length="1"
+       follows="left|top"
+       font.style="BOLD"
+       height="12"
+       layout="topleft"
+       left="10"
+       name="luminous_effects_scene"
+       top="50"
+       width="240">
+Scene
+      </text>
+      <text
+       type="string"
+       length="1"
+       follows="left|top"
+       height="16"
+       layout="topleft"
+       left="15"
+       name="volumetric_mode_label"
+       top="74"
+       width="110">
+Volumetric light
+      </text>
+      <combo_box
+       follows="left|top"
+       height="23"
+       layout="topleft"
+       left="130"
+       name="volumetric_mode"
+       top="70"
+       width="125">
+        <combo_box.item label="Off" name="off" value="0"/>
+        <combo_box.item label="On" name="on" value="1"/>
+        <combo_box.item label="Only in renders" name="render" value="2"/>
+      </combo_box>
+      <text
+       type="string"
+       length="1"
+       follows="left|top"
+       height="16"
+       layout="topleft"
+       left="15"
+       name="beams_mode_label"
+       top="102"
+       width="110">
+Projector beams
+      </text>
+      <combo_box
+       follows="left|top"
+       height="23"
+       layout="topleft"
+       left="130"
+       name="beams_mode"
+       top="98"
+       width="125">
+        <combo_box.item label="Off" name="off" value="0"/>
+        <combo_box.item label="On" name="on" value="1"/>
+        <combo_box.item label="Only in renders" name="render" value="2"/>
+      </combo_box>
+      <text
+       type="string"
+       length="1"
+       follows="left|top"
+       height="16"
+       layout="topleft"
+       left="15"
+       name="shafts_mode_label"
+       top="130"
+       width="110">
+Sun shafts
+      </text>
+      <combo_box
+       follows="left|top"
+       height="23"
+       layout="topleft"
+       left="130"
+       name="shafts_mode"
+       top="126"
+       width="125">
+        <combo_box.item label="Off" name="off" value="0"/>
+        <combo_box.item label="On" name="on" value="1"/>
+        <combo_box.item label="Only in renders" name="render" value="2"/>
+      </combo_box>
+      <text
+       type="string"
+       length="1"
+       follows="left|top"
+       height="16"
+       layout="topleft"
+       left="15"
+       name="soft_shadows_mode_label"
+       top="158"
+       width="110">
+Soft shadows
+      </text>
+      <combo_box
+       follows="left|top"
+       height="23"
+       layout="topleft"
+       left="130"
+       name="soft_shadows_mode"
+       top="154"
+       width="125">
+        <combo_box.item label="Off" name="off" value="0"/>
+        <combo_box.item label="On" name="on" value="1"/>
+        <combo_box.item label="Only in renders" name="render" value="2"/>
+      </combo_box>
+      <text
+       type="string"
+       length="1"
+       follows="left|top"
+       height="16"
+       layout="topleft"
+       left="15"
+       name="contact_mode_label"
+       top="186"
+       width="110">
+Contact shadows
+      </text>
+      <combo_box
+       follows="left|top"
+       height="23"
+       layout="topleft"
+       left="130"
+       name="contact_mode"
+       top="182"
+       width="125">
+        <combo_box.item label="Off" name="off" value="0"/>
+        <combo_box.item label="On" name="on" value="1"/>
+        <combo_box.item label="Only in renders" name="render" value="2"/>
+      </combo_box>
+      <text
+       type="string"
+       length="1"
+       follows="left|top"
+       height="16"
+       layout="topleft"
+       left="15"
+       name="gtao_mode_label"
+       top="214"
+       width="110">
+GTAO
+      </text>
+      <combo_box
+       follows="left|top"
+       height="23"
+       layout="topleft"
+       left="130"
+       name="gtao_mode"
+       top="210"
+       width="125">
+        <combo_box.item label="Off" name="off" value="0"/>
+        <combo_box.item label="On" name="on" value="1"/>
+        <combo_box.item label="Only in renders" name="render" value="2"/>
+      </combo_box>
+      <text
+       type="string"
+       length="1"
+       follows="left|top"
+       font.style="BOLD"
+       height="12"
+       layout="topleft"
+       left="270"
+       name="luminous_effects_effects"
+       top="50"
+       width="240">
+Effects
+      </text>
+      <text
+       type="string"
+       length="1"
+       follows="left|top"
+       height="16"
+       layout="topleft"
+       left="275"
+       name="dof_mode_label"
+       top="74"
+       width="110">
+Depth of field
+      </text>
+      <combo_box
+       follows="left|top"
+       height="23"
+       layout="topleft"
+       left="390"
+       name="dof_mode"
+       top="70"
+       width="125">
+        <combo_box.item label="Off" name="off" value="0"/>
+        <combo_box.item label="On" name="on" value="1"/>
+        <combo_box.item label="Only in renders" name="render" value="2"/>
+      </combo_box>
+      <text
+       type="string"
+       length="1"
+       follows="left|top"
+       height="16"
+       layout="topleft"
+       left="290"
+       name="lens_blur_mode_label"
+       top="102"
+       width="95">
+Enhance
+      </text>
+      <combo_box
+       follows="left|top"
+       height="23"
+       layout="topleft"
+       left="390"
+       name="lens_blur_mode"
+       top="98"
+       width="125">
+        <combo_box.item label="Off" name="off" value="0"/>
+        <combo_box.item label="On" name="on" value="1"/>
+        <combo_box.item label="Only in renders" name="render" value="2"/>
+      </combo_box>
+      <text
+       type="string"
+       length="1"
+       follows="left|top"
+       height="16"
+       layout="topleft"
+       left="275"
+       name="vignette_mode_label"
+       top="130"
+       width="110">
+Vignette
+      </text>
+      <combo_box
+       follows="left|top"
+       height="23"
+       layout="topleft"
+       left="390"
+       name="vignette_mode"
+       top="126"
+       width="125">
+        <combo_box.item label="Off" name="off" value="0"/>
+        <combo_box.item label="On" name="on" value="1"/>
+        <combo_box.item label="Only in renders" name="render" value="2"/>
+      </combo_box>
+      <text
+       type="string"
+       length="1"
+       follows="left|top"
+       height="16"
+       layout="topleft"
+       left="275"
+       name="bloom_mode_label"
+       top="158"
+       width="110">
+Bloom
+      </text>
+      <combo_box
+       follows="left|top"
+       height="23"
+       layout="topleft"
+       left="390"
+       name="bloom_mode"
+       top="154"
+       width="125">
+        <combo_box.item label="Off" name="off" value="0"/>
+        <combo_box.item label="On" name="on" value="1"/>
+        <combo_box.item label="Only in renders" name="render" value="2"/>
+      </combo_box>
+      <text
+       type="string"
+       length="1"
+       follows="left|top"
+       height="16"
+       layout="topleft"
+       left="275"
+       name="halation_mode_label"
+       top="186"
+       width="110">
+Halation
+      </text>
+      <combo_box
+       follows="left|top"
+       height="23"
+       layout="topleft"
+       left="390"
+       name="halation_mode"
+       top="182"
+       width="125">
+        <combo_box.item label="Off" name="off" value="0"/>
+        <combo_box.item label="On" name="on" value="1"/>
+        <combo_box.item label="Only in renders" name="render" value="2"/>
+      </combo_box>
+      <text
+       type="string"
+       length="1"
+       follows="left|top"
+       height="16"
+       layout="topleft"
+       left="275"
+       name="lens_flare_mode_label"
+       top="214"
+       width="110">
+Lens flare
+      </text>
+      <combo_box
+       follows="left|top"
+       height="23"
+       layout="topleft"
+       left="390"
+       name="lens_flare_mode"
+       top="210"
+       width="125">
+        <combo_box.item label="Off" name="off" value="0"/>
+        <combo_box.item label="On" name="on" value="1"/>
+        <combo_box.item label="Only in renders" name="render" value="2"/>
+      </combo_box>
+      <text
+       type="string"
+       length="1"
+       follows="left|top|right"
+       height="28"
+       layout="topleft"
+       left="10"
+       name="luminous_effects_more"
+       top="250"
+       width="510"
+       word_wrap="true">
+More effects, and each effect's own settings, are in the Luminous sidebar (World &gt; Photo and Video &gt; Luminous Sidebar).
+      </text>
+    </panel>
+    <!-- </Luminous> -->
 
 <!--Depth of Field-->
 	   <panel

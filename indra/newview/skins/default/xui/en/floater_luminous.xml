@@ -5867,6 +5867,46 @@
 						<layout_panel
 						 auto_resize="false"
 						 follows="left|top|right"
+						 height="24"
+						 layout="topleft"
+						 name="metalfx_temporal_lp"
+						 user_resize="false"
+						 width="316">
+							<check_box
+							 control_name="LuminousMetalFXTemporal"
+							 follows="left|top"
+							 height="16"
+							 label="MetalFX upscaling"
+							 layout="topleft"
+							 left="22"
+							 name="metalfx_temporal"
+							 tool_tip="Draws the live view smaller and builds a sharp picture from several frames with Apple's MetalFX, for a faster view. Anti-aliasing is left out while it runs. Finished pictures are not affected."
+							 top="4"
+							 width="284" />
+						</layout_panel>
+						<layout_panel
+						 auto_resize="false"
+						 follows="left|top|right"
+						 height="20"
+						 layout="topleft"
+						 name="metalfx_temporal_rest_lp"
+						 user_resize="false"
+						 visible="false"
+						 width="316">
+							<text
+							 follows="left|top"
+							 height="16"
+							 layout="topleft"
+							 left="42"
+							 name="metalfx_temporal_rest"
+							 text_color="LabelDisabledColor"
+							 top="0"
+							 width="264"
+							 wrap="true">-</text>
+						</layout_panel>
+						<layout_panel
+						 auto_resize="false"
+						 follows="left|top|right"
 						 height="88"
 						 layout="topleft"
 						 name="low_quality_lp"
@@ -6100,7 +6140,7 @@
 			 width="118">
 				<button.commit_callback
 				 function="Luminous.ResetSettings"
-				 parameter="LuminousPhotoLiveScale,LuminousPhotoLowQualityLiveShadows,LuminousPhotoLowQualityLiveVolumetric,LuminousPhotoLowQualityLiveBeams,LuminousPhotoLowQualityLiveAO,LuminousPhotoVolumetricSamples,LuminousPhotoShadowMapSize,RenderShadowSplitExponent,RenderShadowBias" />
+				 parameter="LuminousMetalFXTemporal,LuminousPhotoLiveScale,LuminousPhotoLowQualityLiveShadows,LuminousPhotoLowQualityLiveVolumetric,LuminousPhotoLowQualityLiveBeams,LuminousPhotoLowQualityLiveAO,LuminousPhotoVolumetricSamples,LuminousPhotoShadowMapSize,RenderShadowSplitExponent,RenderShadowBias" />
 			</button>
 			<button
 			 control_name="LuminousScenePaused"

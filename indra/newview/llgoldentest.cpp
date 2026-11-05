@@ -3272,13 +3272,10 @@ namespace
         LLSD compile;
 #if LL_RHI_METAL
         const LL::RHI::MetalCompileStats stats = LL::RHI::metalCompileStats(device);
-        compile["unspecialized"] = (S32)stats.unspecialized;
-        compile["specialized"] = (S32)stats.specialized;
         compile["full"] = (S32)stats.full;
         compile["alpha_variants"] = (S32)stats.alphaVariants;
         compile["refused"] = (S32)stats.refused;
         compile["cached"] = (S32)stats.cached;
-        compile["e14_unspecialized"] = (S32)stats.e14Unspecialized;
         compile["caller_translations"] = (S32)stats.callerTranslations;
         // The failed program jobs, which level 2 holds to 0, and the Safe math programs it
         // holds to ultra's GL render profile, read here rather than from single log lines
@@ -5944,13 +5941,21 @@ namespace
                 // Only with displaySync off, so the vsync-on scenes' lines do not change
                 text << ", presents left in the back buffer for the window server " << stats.presentsPaced;
             }
+            if (stats.finishedFlips + stats.finishedSkipped > 0)
+            {
+                // <Luminous> VSync off's finished path likewise
+                text << ", finished frames flipped " << stats.finishedFlips << ", skipped " << stats.finishedSkipped
+                     << ", presented " << stats.finishedPresented << ", held " << stats.finishedHeld;
+            }
         }
         return text.str();
     }
 
     /// What breaks the counters, or empty: since the start the device's frames, the surface's presents (on
     /// Metal) and the window's swaps are equal; and on Metal no drawable timed out, each present presented a drawable,
-    /// found a 0, left the frame in the back buffer for the window server (displaySync off) or timed out,
+    /// found a 0, left the frame in the back buffer for the window server (displaySync off), timed out, or (VSync
+    /// off's finished path) flipped its frame into a finished frame or found none free, the present queue's drawables
+    /// (finishedPresented, finishedTimeouts) aside,
     /// each presented drawable had one wait and one signal on the queue, and only the zero scene found a 0.
     std::string metalCountersWhy(LL::RHI::Device& device)
     {
@@ -5961,8 +5966,10 @@ namespace
         const bool ok = frames == swaps
                         && (!sMetal.metal
                             || (presents == swaps && stats.drawableTimeouts == 0
-                                && stats.presents == stats.drawablesPresented + stats.presentsSkippedZero + stats.presentsPaced
-                                                         + stats.drawableTimeouts
+                                && stats.presents == (stats.drawablesPresented - stats.finishedPresented)
+                                                         + stats.presentsSkippedZero + stats.presentsPaced
+                                                         + (stats.drawableTimeouts - stats.finishedTimeouts)
+                                                         + stats.finishedFlips + stats.finishedSkipped
                                 && stats.drawableWaits == stats.drawablesPresented
                                 && stats.drawableSignals == stats.drawablesPresented
                                 && (sMetal.scene == "zero" || stats.presentsSkippedZero == sMetal.skippedZero)));

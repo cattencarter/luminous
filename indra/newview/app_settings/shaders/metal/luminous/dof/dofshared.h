@@ -22,6 +22,7 @@ enum LuminousDoFSlots : unsigned int
     LUMINOUS_DOF_TEXTURE_CHAIN = 1,   ///< the source's mip levels from level 1 on, as this texture's levels from 0
     LUMINOUS_DOF_TEXTURE_HALF = 2,    ///< the blur gathered at half size, where the tiles allow it
     LUMINOUS_DOF_TEXTURE_QUARTER = 3, ///< and at quarter size
+    LUMINOUS_DOF_TEXTURE_LAYER = 4,   ///< the settled layer luminous_dof_settled_fs adds back (MetalFX temporal)
 
     LUMINOUS_DOF_TILE = 16,           ///< pixels on a tile's side
     LUMINOUS_DOF_CHAIN_LEVELS = 6,    ///< the source's levels the chain holds beyond level 0
@@ -63,9 +64,9 @@ struct LuminousDoFParams
     float halfLod;          ///< their mip level
     int quarterSamples;     ///< and at quarter size, at least four pixels apart
     float quarterLod;
-    float pad1;
-    float pad2;
-    float pad3;
+    float jitterX;          ///< in the layer: the jitter in the source's pixels (GL's rows, up), else 0. Each texel
+    float jitterY;          ///< is the place the camera without it saw, read from the source that far on
+    int layer;              ///< 1: a frame drawn for MetalFX temporal, the blur gathered into a layer to settle
 };
 
 static_assert(sizeof(LuminousDoFParams) == 96, "LuminousDoFParams must be 96 bytes in C++ and MSL");

@@ -1630,6 +1630,19 @@
 			 name="photo_and_video"
 			 label="Photo and Video"
 			 tear_off="true">
+            <!-- <Luminous> the sidebar's switch -->
+            <menu_item_check
+               label="Luminous Sidebar"
+               layout="topleft"
+               name="luminous_sidebar">
+            <menu_item_check.on_check
+               function="CheckControl"
+               parameter="LuminousSidebar" />
+            <menu_item_check.on_click
+               function="ToggleControl"
+               parameter="LuminousSidebar" />
+            </menu_item_check>
+            <!-- </Luminous> -->
 				<menu_item_call
 				label="Phototools"
 				name="phototools_item_call"
@@ -4365,6 +4378,14 @@
               <menu_item_call.on_click
                function="Advanced.ClickRenderBenchmark" />
           </menu_item_call>
+          <!-- <Luminous> the same view on every Mac, at Blake Sea - Windlass (luminousbenchmark.cpp) -->
+          <menu_item_call
+           label="Luminous Benchmark"
+           name="Luminous Benchmark">
+            <menu_item_call.on_click
+             function="Luminous.Benchmark" />
+          </menu_item_call>
+          <!-- </Luminous> -->
           <menu_item_call
            label="HDRI Preview"
            name="HDRI Preview">

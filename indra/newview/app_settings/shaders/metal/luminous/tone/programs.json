@@ -4,7 +4,9 @@
       "name": "tone",
       "files": [
         "luminous/tone/frame.metal",
-        "luminous/tone/present.metal"
+        "luminous/tone/present.metal",
+        "luminous/tone/temporal.metal",
+        "luminous/tone/overlay.metal"
       ],
       "defines": {},
       "compute": [],
@@ -35,6 +37,132 @@
           ],
           "depthFormat": "",
           "blend": "none"
+        },
+        {
+          "vertex": "luminous_fullscreen_vs",
+          "fragment": "luminous_present_copy_fs",
+          "colorFormats": [
+            "RGBA8Unorm"
+          ],
+          "depthFormat": "Depth32Float",
+          "blend": "none"
+        },
+        {
+          "vertex": "luminous_fullscreen_vs",
+          "fragment": "luminous_present_copy_nodepth_fs",
+          "colorFormats": [
+            "RGBA8Unorm"
+          ],
+          "depthFormat": "",
+          "blend": "none"
+        },
+        {
+          "vertex": "luminous_fullscreen_vs",
+          "fragment": "luminous_present_screen_fs",
+          "colorFormats": [
+            "RGBA8Unorm"
+          ],
+          "depthFormat": "Depth32Float",
+          "blend": "none"
+        },
+        {
+          "vertex": "luminous_fullscreen_vs",
+          "fragment": "luminous_present_screen_nodepth_fs",
+          "colorFormats": [
+            "RGBA8Unorm"
+          ],
+          "depthFormat": "",
+          "blend": "none"
+        },
+        {
+          "vertex": "luminous_fullscreen_vs",
+          "fragment": "luminous_temporal_motion_fs",
+          "colorFormats": [
+            "RG16Float"
+          ],
+          "depthFormat": "",
+          "blend": "none"
+        },
+        {
+          "vertex": "luminous_fullscreen_vs",
+          "fragment": "luminous_temporal_reactive_first_fs",
+          "colorFormats": [
+            "R8Unorm"
+          ],
+          "depthFormat": "",
+          "blend": "none"
+        },
+        {
+          "vertex": "luminous_fullscreen_vs",
+          "fragment": "luminous_temporal_reactive_more_fs",
+          "colorFormats": [
+            "R8Unorm"
+          ],
+          "depthFormat": "",
+          "blend": "none"
+        },
+        {
+          "vertex": "luminous_fullscreen_vs",
+          "fragment": "luminous_temporal_settle_fs",
+          "colorFormats": [
+            "RGBA16Float"
+          ],
+          "depthFormat": "",
+          "blend": "none"
+        },
+        {
+          "vertex": "luminous_fullscreen_vs",
+          "fragment": "luminous_temporal_reactive_none_fs",
+          "colorFormats": [
+            "R8Unorm"
+          ],
+          "depthFormat": "",
+          "blend": "none"
+        },
+        {
+          "vertex": "luminous_fullscreen_vs",
+          "fragment": "luminous_temporal_hold_diff_fs",
+          "colorFormats": [
+            "R32Float"
+          ],
+          "depthFormat": "",
+          "blend": "none"
+        },
+        {
+          "vertex": "luminous_fullscreen_vs",
+          "fragment": "luminous_present_temporal_fs",
+          "colorFormats": [
+            "RGBA8Unorm"
+          ],
+          "depthFormat": "Depth32Float",
+          "blend": "none"
+        },
+        {
+          "vertex": "luminous_fullscreen_vs",
+          "fragment": "luminous_present_temporal_nodepth_fs",
+          "colorFormats": [
+            "RGBA8Unorm"
+          ],
+          "depthFormat": "",
+          "blend": "none"
+        },
+        {
+          "vertex": "luminous_fullscreen_vs",
+          "fragment": "luminous_overlay_capture_frame_fs",
+          "colorFormats": [
+            "RGBA8Unorm"
+          ],
+          "depthFormat": "",
+          "blend": "alpha"
+        },
+        {
+          "vertex": "luminous_fullscreen_vs",
+          "fragment": "luminous_overlay_picture_frame_fs",
+          "colorFormats": [
+            "RGBA8Unorm"
+          ],
+          "depthFormat": "",
+          "blend": "alpha"
         }
       ]
     }

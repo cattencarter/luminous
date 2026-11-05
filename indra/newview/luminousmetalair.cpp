@@ -60,6 +60,9 @@
 // The reference's order -- the mask taken from the frame before anything is added, then everything added -- is
 // kept, since the mask is the first thing drawn and the rest only adds. On Metal no pass break is needed to have
 // the depth stored: the passes that wrote it end with their store actions before these passes read it.
+// In a frame drawn for MetalFX temporal the shafts go into the sum (of the frame's size where they would be gathered at
+// full size), the sum is made where the camera without the jitter saw the frame and settled (temporalSettle,
+// LuminousMetalFXTemporalSettleAir) between the two passes, and read back where this frame shows each place.
 namespace LuminousMetal
 {
     namespace
@@ -406,6 +409,19 @@ namespace LuminousMetal
             {
                 return skipped("a snapshot without post-processing"); // gets none of photo mode
             }
+            // A frame settled for MetalFX temporal: the shafts go into the sum, made where the camera without the jitter
+            // saw the frame (the sun's place too), averaged with the frames before, and read back where this frame shows
+            // it. What the jitter changes from frame to frame, the sky seen through leaves in the shafts' mask, then does
+            // not reach the scaler, which cannot calm a change across a smooth area. The volumetric light and the beams
+            // stay where their quality puts them (measured: they do not pulse with the jitter, and in the sum at full
+            // size their march costs more); drawn at half size they are in the sum and settled with it.
+            F32 jitter_u = 0.f;
+            F32 jitter_v = 0.f;
+            const bool settled = temporalSettles(SettledLayer::Air, jitter_u, jitter_v);
+            if (settled)
+            {
+                params.sunUV = simd_make_float2(params.sunUV.x - jitter_u, params.sunUV.y - jitter_v);
+            }
 
             AirTextures textures;
             textures.depth = depth;
@@ -472,18 +488,27 @@ namespace LuminousMetal
                 return false;
             }
 
-            const bool shafts_half = shafts && params.shaftsHalf != 0;
+            const bool shafts_half = shafts && (params.shaftsHalf != 0 || settled);
             const bool vol_half = vol && params.volHalf != 0;
             const bool beams_half = beams_drawn && params.beamsHalf != 0;
             const bool any_half = shafts_half || vol_half || beams_half;
+            // Settled, shafts otherwise gathered at full size go into a sum of the frame's size.
+            const bool full_in_sum = settled && shafts && params.shaftsHalf == 0;
 
-            // The mask's size, and the half-size sum's: half of the full window, which a smaller live view
-            // renders fewer pixels of.
+            // The shafts' mask: half of the frame, as the reference's (sShaftMask, from the live view's own size).
+            const U32 mask_width = std::max(width / 2, 1U);
+            const U32 mask_height = std::max(height / 2, 1U);
+            // The half-size sum: half of the full window while the volumetric light or the beams are drawn there,
+            // which they are only above half the window's size (fillAirParams), as the reference's sVolumetric and
+            // sBeams; else the shafts' gather alone, at the mask's size.
             const F32 live_scale = std::max(params.liveScale, 0.01f);
-            const U32 half_width = std::max((U32)((F32)width * 0.5f / live_scale), 1U);
-            const U32 half_height = std::max((U32)((F32)height * 0.5f / live_scale), 1U);
-            Texture* mask = shafts ? poolTexture(*device, sMaskPool, half_width, half_height, "luminous shaft mask") : nullptr;
-            Texture* sum = any_half ? poolTexture(*device, sAirPool, half_width, half_height, "luminous air half") : nullptr;
+            const bool window_half = (vol && params.volHalf != 0) || (beams_drawn && params.beamsHalf != 0);
+            const U32 sum_width = full_in_sum ? width
+                                : window_half ? std::max((U32)((F32)width * 0.5f / live_scale), 1U) : mask_width;
+            const U32 sum_height = full_in_sum ? height
+                                 : window_half ? std::max((U32)((F32)height * 0.5f / live_scale), 1U) : mask_height;
+            Texture* mask = shafts ? poolTexture(*device, sMaskPool, mask_width, mask_height, "luminous shaft mask") : nullptr;
+            Texture* sum = any_half ? poolTexture(*device, sAirPool, sum_width, sum_height, "luminous air half") : nullptr;
             if ((shafts && !mask) || (any_half && !sum))
             {
                 return false;
@@ -492,12 +517,13 @@ namespace LuminousMetal
 
             LuminousAirDraw base{};
             base.depthSize = simd_make_float2((F32)depth->desc().width, (F32)depth->desc().height);
-            base.maskSize = simd_make_float2((F32)half_width, (F32)half_height);
-            base.airTexel = simd_make_float2(1.f / (F32)half_width, 1.f / (F32)half_height);
+            base.maskSize = simd_make_float2((F32)mask_width, (F32)mask_height);
+            base.airTexel = simd_make_float2(1.f / (F32)sum_width, 1.f / (F32)sum_height);
+            base.jitter = simd_make_float2(jitter_u, jitter_v);
             // How far from the sun the mask can be above zero, in the frame's heights: its radius, the softening's
             // two taps of reach and a texel for each bilinear read on the way.
             const F32 spread = params.shaftSoftness;
-            base.shaftReach = params.shaftRadius + (2.f * spread + 4.f) / (F32)half_height;
+            base.shaftReach = params.shaftRadius + (2.f * spread + 4.f) / (F32)mask_height;
             base.maskHalo = spread > 0.f ? std::min((S32)std::ceil(2.f * spread) + 1, (S32)LUMINOUS_AIR_MASK_HALO_MAX) : 0;
 
             const auto beams_bytes = std::as_bytes(std::span<const LuminousAirBeam>(beams.data(), std::max(beam_count, 1U)));
@@ -522,7 +548,7 @@ namespace LuminousMetal
                     encoder.setNativeTexture(NativeStage::Compute, LUMINOUS_AIR_TEXTURE_FRAME, frame_texture);
                     encoder.setNativeTexture(NativeStage::Compute, LUMINOUS_AIR_TEXTURE_MASK, mask, Access::Write, { 0, 1 });
                     const U32 side = LUMINOUS_AIR_MASK_THREADS;
-                    encoder.dispatchThreadgroups({ (half_width + side - 1) / side, (half_height + side - 1) / side, 1 },
+                    encoder.dispatchThreadgroups({ (mask_width + side - 1) / side, (mask_height + side - 1) / side, 1 },
                                                  { side, side, 1 });
                 }
                 if (any_half)
@@ -535,7 +561,7 @@ namespace LuminousMetal
                     {
                         const BeamBatch& batch = beams_half ? batches[run] : none;
                         LuminousAirDraw draw = base;
-                        draw.targetSize = base.maskSize;
+                        draw.targetSize = simd_make_float2((F32)sum_width, (F32)sum_height);
                         draw.shafts = run == 0 && shafts_half ? 1 : 0;
                         draw.vol = run == 0 && vol_half ? 1 : 0;
                         draw.beamFirst = (S32)batch.first;
@@ -545,10 +571,14 @@ namespace LuminousMetal
                         bindAirTextures(encoder, NativeStage::Compute, textures, &batch);
                         encoder.setNativeTexture(NativeStage::Compute, LUMINOUS_AIR_TEXTURE_AIR, sum, Access::ReadWrite, { 0, 1 });
                         const U32 side = LUMINOUS_AIR_THREADS;
-                        encoder.dispatchThreads({ half_width, half_height, 1 }, { side, side, 1 });
+                        encoder.dispatchThreads({ sum_width, sum_height, 1 }, { side, side, 1 });
                     }
                 }
                 encoder.endComputePass();
+            }
+            if (settled && sum)
+            {
+                sum = temporalSettle(SettledLayer::Air, sum, sum_width, sum_height);
             }
 
             // Onto the frame: what is drawn at full size, and the half-size sum through the tent.

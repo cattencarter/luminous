@@ -42,6 +42,8 @@
 #if LL_RHI_METAL
 
 #import <Metal/Metal.h>
+#import <MetalFX/MTL4FXSpatialScaler.h>
+#import <MetalFX/MTL4FXTemporalScaler.h>
 #import <QuartzCore/CAMetalLayer.h>
 
 #include <algorithm>
@@ -50,6 +52,8 @@
 #include <chrono>
 #include <condition_variable>
 #include <deque>
+#include <functional>
+#include <map>
 #include <memory>
 #include <mutex>
 #include <optional>
@@ -92,6 +96,9 @@ typedef id<MTL4Compiler> IdMTL4Compiler API_AVAILABLE(macos(26.0));
 typedef id<MTL4ArgumentTable> IdMTL4ArgumentTable API_AVAILABLE(macos(26.0));
 typedef id<CAMetalDrawable> IdCAMetalDrawable API_AVAILABLE(macos(26.0));
 typedef id<MTLDrawable> IdMTLDrawable API_AVAILABLE(macos(26.0)); ///< a presented handler's argument
+typedef id<MTLFence> IdMTLFence API_AVAILABLE(macos(26.0));
+typedef id<MTL4FXSpatialScaler> IdMTL4FXSpatialScaler API_AVAILABLE(macos(26.0)); // MetalFX, weak-linked
+typedef id<MTL4FXTemporalScaler> IdMTL4FXTemporalScaler API_AVAILABLE(macos(26.0)); // MetalFX, weak-linked
 // The upload thread's Metal 3 queue
 typedef id<MTLCommandQueue> IdMTLCommandQueue API_AVAILABLE(macos(26.0));
 typedef id<MTLCommandBuffer> IdMTLCommandBuffer API_AVAILABLE(macos(26.0));
@@ -191,19 +198,7 @@ struct MetalProgramLayout
 {
     MetalStageLayout vertex;
     MetalStageLayout fragment;
-    /// A stage's MSL has program-scope constant data (metalProgramConstants), so the program's pipelines are full
-    /// states, never specializations.
-    bool constantData = false;
 };
-
-/// [Viewer Lab] Whether the MSL declares data in the constant address space at program scope, as SPIRV-Cross
-/// writes the GLSL's array constants (one read with an index not known at compile time, as screenSpaceReflUtil.glsl's
-/// POISSON3D_SAMPLES: `constant spvUnsafeArray<float3, 128> _2520 = ...`, and others): a line that
-/// begins with "constant ". Shader validation reports
-/// every read of such data in a state made by newRenderPipelineStateBySpecializationWithDescriptor (MTL4Compiler.h:213)
-/// as "Invalid device load at offset 0 ... Out of bounds of user address space, length:1", and none in a full state,
-/// while both read the right values without it (run-time probes).
-bool metalProgramConstants(const std::string& msl);
 
 /// A program's entry points, as a render pipeline descriptor takes them.
 struct API_AVAILABLE(macos(26.0)) MetalProgramFunctions
@@ -240,6 +235,8 @@ MTLDepthStencilDescriptor* metalDepthStencilDescriptor(const DepthStencilDesc& d
 
 /// The texture's Metal texture; nil for null. Every texture of a Metal device is a MetalTexture.
 IdMTLTexture metalTexture(Texture* texture) API_AVAILABLE(macos(26.0));
+/// The Metal texture's gpuResourceID, read once when the texture was made; zero for null. No Objective-C call.
+MTLResourceID metalTextureID(Texture* texture) API_AVAILABLE(macos(26.0));
 /// A view of the texture's levels [first, end) and every slice, made at the first ask and kept, and forgotten in the
 /// encoder's shadows, with the texture; the texture itself for all its levels. Native bindings; main thread.
 IdMTLTexture metalLevelView(Texture* texture, U32 first, U32 end) API_AVAILABLE(macos(26.0));
@@ -252,6 +249,8 @@ IdMTLBuffer metalBuffer(Buffer* buffer) API_AVAILABLE(macos(26.0));
 
 /// The sampler's Metal state; nil for null. Every sampler of a Metal device is a MetalSampler.
 IdMTLSamplerState metalSampler(Sampler* sampler) API_AVAILABLE(macos(26.0));
+/// The sampler state's gpuResourceID, read once when the sampler was made; zero for null. No Objective-C call.
+MTLResourceID metalSamplerID(Sampler* sampler) API_AVAILABLE(macos(26.0));
 
 /// The most samples an anisotropic Metal sampler takes: MTLSampler.h:130-135 has maxAnisotropy as a
 /// whole number, Apple's documentation of it the range 1-16.
@@ -335,6 +334,8 @@ const MetalPointBlock* metalPipelinePointBlock(Pipeline* pipeline) API_AVAILABLE
 /// GL's alternating winding. A loop is the line strip 0 to count - 1, then 0; lines are not rotated.
 /// Empty for the other types and for too few vertices to draw anything.
 std::vector<U32> metalListOrder(PrimitiveType type, U32 count);
+/// The length of metalListOrder's list, without making it: 0 when it is empty.
+U32 metalListCount(PrimitiveType type, U32 count);
 
 /// The Metal primitive of metalListOrder's list: triangles, and a line strip for a loop.
 MTLPrimitiveType metalListPrimitive(PrimitiveType type);
@@ -511,6 +512,9 @@ inline bool metalPooled(const BufferDesc& desc)
 
 /// The buffer's current memory; empty for null. Every buffer of a Metal device is a MetalBuffer.
 MetalAllocation metalAllocation(Buffer* buffer) API_AVAILABLE(macos(26.0));
+/// The GPU address of the buffer's current memory (its MTLBuffer's gpuAddress plus the allocation's offset), kept with
+/// the buffer from its creation and from each update that gives it new memory; 0 for null. No Objective-C call.
+MTLGPUAddress metalAddress(Buffer* buffer) API_AVAILABLE(macos(26.0));
 
 /// The indices drawIndexed's check and its fans, strips and loops read: a dynamic
 /// buffer's current memory, which an update replaces at the call; a static index buffer's CPU copy,
@@ -522,6 +526,8 @@ std::span<const std::byte> metalIndexBytes(Buffer* buffer) API_AVAILABLE(macos(2
 /// Whether an index buffer was ever given a 16-bit 0xFFFF (at an even offset), at creation or at an
 /// update, where its indices are written; no scan at a draw. False for null.
 bool metalIndexHoldsRestart(Buffer* buffer) API_AVAILABLE(macos(26.0));
+/// How many times the buffer has been written since it was made (metalUpdateBuffer counts each update); 0 for null.
+U64 metalBufferWrites(Buffer* buffer) API_AVAILABLE(macos(26.0));
 
 /// GL's semantics. A dynamic buffer gets new memory with the old bytes outside the
 /// range and the new ones in it, also inside a pass, and a draw binds the memory current at the
@@ -537,6 +543,28 @@ Ref<Texture> createMetalTexture(MetalDevice& device, const TextureDesc& desc, st
     API_AVAILABLE(macos(26.0));
 /// Every sampler, comparing ones too; MetalDevice::getSampler caches what it makes.
 Ref<Sampler> createMetalSampler(MetalDevice& device, const SamplerDesc& desc) API_AVAILABLE(macos(26.0));
+/// Whether the device has MetalFX's spatial scaler for Metal 4 (Capabilities::spatialUpscaler). MetalFX is weak-linked:
+/// false when it is not there.
+bool metalSpatialUpscaler(IdMTLDevice device) API_AVAILABLE(macos(26.0));
+/// MetalFX's spatial scaler for the description, made with the device's compiler, and the fence it waits on. Null
+/// after a WARN line: validate's refusal, no scaler from MetalFX, or a texture usage it asks for that the backend's
+/// textures cannot have.
+Ref<Upscaler> createMetalUpscaler(MetalDevice& device, const UpscalerDesc& desc) API_AVAILABLE(macos(26.0));
+/// The upscaler's MetalFX scaler and its fence; nil for null. Every upscaler of a Metal device is a MetalUpscaler.
+IdMTL4FXSpatialScaler metalScaler(Upscaler* upscaler) API_AVAILABLE(macos(26.0));
+IdMTLFence metalScalerFence(Upscaler* upscaler) API_AVAILABLE(macos(26.0));
+/// Whether the device has MetalFX's temporal scaler for Metal 4 (Capabilities::temporalUpscaler), and Apple's range of
+/// input scales for it (supportedInputContentMin/MaxScaleForDevice), logged once. False and 0 when MetalFX is not there.
+bool metalTemporalUpscaler(IdMTLDevice device, F32& minScale, F32& maxScale) API_AVAILABLE(macos(26.0));
+/// MetalFX's temporal scaler for the description, made with the device's compiler, the fence it waits on and the 1x1
+/// exposure of 1 it is given. Null after a WARN line: validate's refusal, no scaler from MetalFX, or a texture usage it
+/// asks for that the backend's textures cannot have (the reactive mask's only for a scaler made with one).
+Ref<TemporalUpscaler> createMetalTemporalUpscaler(MetalDevice& device, const TemporalUpscalerDesc& desc)
+    API_AVAILABLE(macos(26.0));
+/// The temporal upscaler's MetalFX scaler, fence and exposure texture; nil for null.
+IdMTL4FXTemporalScaler metalTemporalScaler(TemporalUpscaler* upscaler) API_AVAILABLE(macos(26.0));
+IdMTLFence metalTemporalScalerFence(TemporalUpscaler* upscaler) API_AVAILABLE(macos(26.0));
+IdMTLTexture metalTemporalScalerExposure(TemporalUpscaler* upscaler) API_AVAILABLE(macos(26.0));
 /// llrhi.h's default texture of a type (2D, cube, cube array or a 1x1x1 3D), 1x1 RGBA8Unorm (0, 0, 0, 255) in every slice, Shared and
 /// filled at creation, resident from creation. Null after a WARN line.
 Ref<Texture> createMetalDefaultTexture(MetalDevice& device, TextureType type) API_AVAILABLE(macos(26.0));
@@ -695,6 +723,9 @@ struct MetalSubmission
 {
     bool received = false;
     bool failed = false;
+    /// The commit feedback's GPUEndTime (host seconds, CACurrentMediaTime's clock); 0 until it has come or with an
+    /// error. Atomic: the present trace's presented handler reads it without the mutex (LL_METAL_PRESENT_TRACE).
+    std::atomic<double> gpuEnd{ 0.0 };
 };
 
 /// What a readback learns when its copy's command buffer is sent: the slot event and
@@ -737,6 +768,159 @@ struct API_AVAILABLE(macos(26.0)) MetalTimerRun
     bool endWritten = false;   ///< the end's stamp was encoded
     bool ended = false;        ///< endQuery recorded it, or its begin was refused
     bool abandoned = false;    ///< the frame ended, or the encoder was reset, while it was active
+};
+
+/// The pass timer's pairs per frame slot: a heap of 4,096 entries (32 KiB), Metal's most, per slot, so a frame has
+/// 2,048 encoders' stamps; an encoder past them is counted as left out.
+inline constexpr U32 METAL_PASS_TIME_PAIRS = 1u << 11;
+
+/// One encoder's pair in the pass timer: the frame it was begun in (0: not stamped) and the pair in that frame's heap.
+struct MetalPassStamp
+{
+    U64 frame = 0;
+    U32 pair = 0;
+    bool wantsProgram = false; ///< the pass is named by its first program, which noteProgram has not had yet
+};
+
+/// The pass timer (Device::startPassTimes). For a number of whole frames, every native render and compute encoder,
+/// and the device's encoders of copies, get a GPU timestamp at their begin and their end. A render encoder's are
+/// written inside it with MTL4TimestampGranularityRelaxed (MTL4Counters.h:34-50): the begin's before any draw, so it
+/// is taken before the vertex stage begins, the end's after the last draw's fragment stage
+/// (MTL4RenderCommandEncoder.h:630-648). A compute encoder's are written on the command buffer right before the
+/// encoder begins and right after it ends, each after the work before it is complete (MTL4CommandBuffer.h:162-174):
+/// stamps inside a compute encoder do not enclose its work (a run-time probe: a 256 MB copy read 0 ms
+/// between them at either granularity, and a dispatch's begin stamp came 4 to 11 ms after the stamp before the
+/// encoder, while a render encoder's agreed with the command buffer's around it within 2 %). Each frame slot has a
+/// Timestamp heap of its own, made at start() and let go through the lifecycle at the end. A frame's heap is resolved
+/// on the CPU (resolveCounterRange:, MTL4Counters.h:81-92) at a later frame's end, once FrameLifecycle says the GPU has
+/// finished it, so the main thread never waits for the GPU; then its entries are invalidated for the slot's next
+/// frame. Per pass, by its name (with the attachments and the first program for the target stack's passes and for
+/// passes without a name): the encoders, the GPU time from begin to end, and the time no earlier encoder of the frame
+/// had covered. The table, sorted by time per frame, goes to the log (tag LuminousPassTimes) and to the file. Main
+/// thread.
+class API_AVAILABLE(macos(26.0)) MetalPassTimes
+{
+public:
+    enum class Kind : U8
+    {
+        Render,  ///< a pass's render encoder, or one of the backend's own (mips, present, resolve, ...)
+        Compute, ///< a compute pass's encoder
+        Copies,  ///< the device's compute encoder of copies (uploads, readbacks)
+    };
+
+    /// Encoders are stamped now: the frames being timed are being recorded. The encoders ask this first, so the
+    /// timer costs one test per encoder when it is off.
+    bool recording() const { return mOpen != nullptr; }
+    /// From start() until the table is written or stop().
+    bool running() const { return mPhase != Phase::Off; }
+    /// Arms the timer for frames whole frames, from the next frame on; the table goes to path. done runs on the main
+    /// thread once the table is written. False after a WARN line when one is running or Metal gave no heap.
+    bool start(IdMTLDevice device, U64 ticksPerSecond, U32 frames, std::string path, std::function<void()> done);
+    /// Stops a running timer without a table; done does not run. The heaps go through lifecycle, as frames in flight
+    /// may still write into them.
+    void stop(FrameLifecycle& lifecycle);
+
+    /// The stamp at a render encoder's begin, right after its barrier: a pair of the frame's heap, or none (frame 0)
+    /// when not recording or the heap's pairs are used up (counted as left out). name is the pass's; render passes of
+    /// the target stack and passes without a name also get their attachments, and their first program by noteProgram.
+    MetalPassStamp beginRender(IdMTL4RenderCommandEncoder encoder, const RenderPassDesc& pass, U64 frame);
+    /// The backend's own render encoders, by their label.
+    MetalPassStamp beginOwnRender(IdMTL4RenderCommandEncoder encoder, NSString* label, U64 frame);
+    /// The stamp before a compute encoder, on the command buffer it will be begun on, with no encoder open.
+    MetalPassStamp beginCompute(IdMTL4CommandBuffer buffer, std::string_view name, Kind kind, U64 frame);
+    /// The stamp at a render encoder's end, right before endEncoding; after a compute encoder's endEncoding, on its
+    /// command buffer. Nothing for a stamp without a pair or of another frame than the one being recorded.
+    void endRender(IdMTL4RenderCommandEncoder encoder, const MetalPassStamp& stamp);
+    void endCompute(IdMTL4CommandBuffer buffer, const MetalPassStamp& stamp);
+    /// The first pipeline state set on an encoder whose pass is named by its program (a stack or unnamed pass);
+    /// once per encoder.
+    void noteProgram(MetalPassStamp& stamp, NSString* label);
+
+    /// What frameEnd did.
+    enum class FrameEnd : U8
+    {
+        Nothing,
+        Began,    ///< the timed frames begin with the frame now being recorded (firstFrame to lastFrame)
+        Finished, ///< every timed frame has been resolved, and the frames' command buffers were counted (submitted)
+    };
+    /// At the device's frame end, once the next frame has begun: resolves the timed frames up to completed, begins
+    /// recording an armed timer with current, stops recording after the last timed frame, and opens current's record.
+    FrameEnd frameEnd(U64 current, U64 completed);
+    U64 firstFrame() const { return mFirst; }
+    U64 lastFrame() const { return mLast; }
+    /// Whether frame is one of the timed frames (the commit feedback counts their GPU busy time).
+    bool timed(U64 frame) const { return mPhase != Phase::Off && mFirst != 0 && frame >= mFirst && frame <= mLast; }
+    /// A command buffer of a timed frame was committed.
+    void countSubmit() { ++mSubmitted; }
+    U64 submitted() const { return mSubmitted; }
+    /// The frame ends since every timed frame was resolved.
+    U32 framesSinceResolved() const { return mSinceResolved; }
+    /// Writes the table with the timed frames' GPU busy time from the commit feedback (received: their command
+    /// buffers reported), lets the heaps go through lifecycle, and returns done; the timer is off after it.
+    std::function<void()> finish(const MetalGpuBusy& busy, U64 received, FrameLifecycle& lifecycle);
+
+private:
+    enum class Phase : U8
+    {
+        Off,
+        Armed,     ///< begins with the next frame
+        Recording, ///< the timed frames are being recorded
+        Resolving, ///< every timed frame is recorded; waiting for the GPU and the commit feedback
+    };
+    struct Pair
+    {
+        U32 name = 0;
+        U32 program = 0; ///< 0: none noted
+        bool ended = false;
+    };
+    /// One frame slot's heap and the frame recorded in it.
+    struct Record
+    {
+        IdMTL4CounterHeap heap = nil;
+        U64 frame = 0; ///< 0: none, or resolved
+        std::vector<Pair> pairs;
+        U32 leftOut = 0;
+    };
+    /// A row of the table: one name (and program) over the timed frames, in ticks.
+    struct Row
+    {
+        U64 encoders = 0;
+        U64 ticks = 0;
+        U64 ownTicks = 0;
+    };
+
+    MetalPassStamp begin(U32 name, U64 frame);
+    U32 nameId(Kind kind, std::string_view name);
+    void resolve(Record& record);
+    void release(FrameLifecycle& lifecycle);
+    std::string table(const MetalGpuBusy& busy, U64 received) const;
+
+    Phase mPhase = Phase::Off;
+    U64 mTicksPerSecond = 0;
+    U32 mFrames = 0;
+    U64 mFirst = 0;
+    U64 mLast = 0;
+    std::string mPath;
+    std::function<void()> mDone;
+    std::array<Record, FrameLifecycle::MAX_FRAMES_IN_FLIGHT> mRecords; ///< by frame slot
+    Record* mOpen = nullptr; ///< the record of the frame being recorded while recording
+    /// Names by id: the kind and the text; programs by id, 0 the empty one
+    std::vector<std::pair<Kind, std::string>> mNames;
+    std::unordered_map<std::string, U32> mNameIds;
+    std::vector<std::string> mPrograms{ std::string() };
+    std::unordered_map<std::string, U32> mProgramIds;
+    std::map<std::pair<U32, U32>, Row> mRows; ///< by name and program
+    U64 mResolvedFrames = 0;
+    U64 mSubmitted = 0;
+    U32 mSinceResolved = 0;
+    U64 mEncoders = 0;
+    std::array<U64, 3> mKindTicks{}; ///< by Kind
+    U64 mOwnTicks = 0;
+    U64 mSpanTicks = 0; ///< per frame, the first begin to the last end, summed
+    U64 mLeftOut = 0;
+    U64 mUnended = 0;    ///< pairs whose end was not written (Metal gave no encoder, or it was dropped at teardown)
+    U64 mUnreadable = 0; ///< pairs with a 0 tick or an end before the begin
+    U64 mLostFrames = 0; ///< timed frames the GPU had not finished when their slot came round again
 };
 
 /// A readback's copy from the texture to its Shared buffer: tight rows of the format's
@@ -793,6 +977,7 @@ struct API_AVAILABLE(macos(26.0)) MetalTableShadow
 class API_AVAILABLE(macos(26.0)) MetalEncoder final : public Encoder
 {
 public:
+    /// The tracker's draw checks follow the Metal debug setting (metalDebug()) as it is when the encoder is made.
     MetalEncoder(MetalDevice& device, const Capabilities& caps);
 
     bool beginRenderPass(const RenderPassDesc& pass) override;
@@ -827,6 +1012,11 @@ public:
     void copyTexture(Texture* src, U32 srcLevel, U32 srcLayer, const Region& srcRegion, Texture* dst, U32 dstLevel,
                      U32 dstLayer, U32 dstX, U32 dstY) override;
     void generateMipmaps(Texture* texture) override;
+    /// MetalFX's spatial scaler on the frame's command buffer, after a pass break as for a copy and an encoder of its
+    /// own that orders it after the queue's earlier work (its comment says how).
+    bool upscale(Upscaler* upscaler, Texture* input, U32 width, U32 height, Texture* output) override;
+    /// MetalFX's temporal scaler on the frame's command buffer, ordered as upscale's spatial one.
+    bool upscaleTemporal(TemporalUpscaler* upscaler, const TemporalUpscaleInputs& inputs) override;
     void waitForFence(Fence* fence) override;
 
     Ref<Readback> readback(Texture* texture, U32 level, U32 layer, const Region& region,
@@ -923,6 +1113,8 @@ public:
     U64 presentDraws() const { return mPresentDraws; }
     /// Tests: the copies between formats formatCopy has drawn.
     U64 formatCopyDraws() const { return mFormatCopyDraws; }
+    /// Tests: the upscales encoded on the command buffer.
+    U64 upscales() const { return mUpscales; }
     /// Tests and the golden hook: the pass breaks splitPass and uploadTexture have counted.
     const MetalEncoderStats& stats() const { return mStats; }
     /// Tests: the scissor rectangles sent to a segment's native encoder (setNativeScissor).
@@ -935,12 +1127,34 @@ public:
     /// mipmapped flag in effect); none before such a draw.
     std::optional<SamplerDesc> lastSamplerDesc(U32 channel) const
     {
+        if (channel < RESOLVE_CHANNELS)
+        {
+            return mLastChannelSamplers[channel];
+        }
         const auto found = mLastSamplers.find(channel);
         return found != mLastSamplers.end() ? std::optional<SamplerDesc>(found->second) : std::nullopt;
     }
+    /// Tests: the remembered resolves (a sampler place's texture and sampler, a kept ID or GPU address, a uniform block's
+    /// binding, a kept index list) that differed from a full one; the Metal debug setting compares them at every draw,
+    /// and each difference wrote a WARN line.
+    U64 resolveMismatches() const { return mResolveMismatches; }
+    /// Tests: the places bindForDraw took from its remembered resolve instead of resolving them again.
+    U64 resolveHits() const { return mResolveHits; }
+    /// Tests: the indexed draws of a fan, strip or loop, or widened to 32 bits, that took their list from
+    /// indexConversion's kept ones, and the lists it has made.
+    U64 indexConversionHits() const { return mIndexConversionHits; }
+    U64 indexConversionsMade() const { return mIndexConversionsMade; }
 
     /// ~MetalProgram: the program's state goes.
-    void forgetProgram(U64 programId) { mPrograms.erase(programId); }
+    void forgetProgram(U64 programId)
+    {
+        mPrograms.erase(programId);
+        if (programId == mLastProgramId)
+        {
+            mLastProgramId = 0;
+            mLastProgram = nullptr;
+        }
+    }
     /// A new texture from MetalDevice::createTexture, kept for zeroNewTargets when it is an uncompressed color cube or
     /// cube array, which is filled face by face and level by level after it is made and sampled before all of it is
     /// written (the reflection probes after a change of their count): every level and layer then reads 0 (alpha 1 where
@@ -957,6 +1171,10 @@ public:
     void zeroNewTargets();
     /// Tests: the levels zeroNewTargets has cleared.
     U64 newTargetClears() const { return mNewTargetClears; }
+    /// Tests: the depth clears of segments that only cleared (close()) that went into a later segment's load action,
+    /// and those encoded in a pass of their own (settleDepthClears).
+    U64 depthClearsCarried() const { return mDepthClearsCarried; }
+    U64 depthClearsEncoded() const { return mDepthClearsEncoded; }
 
 private:
     /// One recording thread: first in every Encoder call. Under the Metal debug
@@ -970,10 +1188,22 @@ private:
     /// WARN line. The dynamic state waits for the first draw or clear draw (applyDrawState, applyClearState):
     /// the mNative* copies start at Metal's defaults.
     bool open();
-    /// Ends the segment's native encoder, first making one for a segment that only clears. last:
-    /// the pass ends with it, so its store actions apply; otherwise color and depth are stored.
-    /// True when a native encoder was ended (splitPass counts it as a pass break).
+    /// Ends the segment's native encoder, first making one for a segment that only clears, except one whose clear
+    /// carryDepthClear takes. last: the pass ends with it, so its store actions apply; otherwise color and depth are
+    /// stored. True when a native encoder was ended (splitPass counts it as a pass break).
     bool close(bool last);
+    /// A segment that records nothing and clears only its depth, which is stored, has loaded colours, and is a
+    /// texture that nothing samples or writes as storage (the window's depth): its clear waits in mDepthClears for
+    /// the next segment with that depth, and the segment needs no encoder. True when it was taken.
+    bool carryDepthClear(bool last);
+    /// open(): a waiting clear of the segment's depth becomes the segment's load action, Clear for Load, and is
+    /// dropped for a segment that clears its depth or does not care what it holds.
+    void takeDepthClear(RenderPassDesc& pass);
+    /// Before a call that reads or writes a texture otherwise than as a pass's depth (a binding, a copy, a
+    /// readback, an upload, mipmaps): its waiting clear, if any, is encoded first in a pass of its own, after the
+    /// open segment's encoder has ended (splitPass). A clear that is still the load action of an open segment with no
+    /// encoder yet is split off first, so it is among them. Null: every waiting clear, at the frame's end.
+    void settleDepthClears(const Texture* texture);
     /// The open native encoder's store action for every attachment of the segment, which endEncoding needs
     /// (open() leaves them Unknown, MTL4RenderCommandEncoder.h:229-244): the pass's own when last, else Store;
     /// DontCare when the device goes (closeForTeardown).
@@ -1050,6 +1280,9 @@ private:
     /// The draw's pipeline state on the open native encoder when it changed: the variant without alpha for the
     /// segment's attachments that have none in GL. False when the state failed.
     bool setNativePipeline();
+    /// The tracker's pipeline waited for while it is being made (metalPipelineState), before the tracker judges a
+    /// draw; nothing for a Ready one.
+    void waitForPipeline();
     /// Leaves a native buffer slot without ring bytes (slots out of range are ignored).
     void clearNativeBytes(NativeStage stage, U32 slot);
     /// After a copy into a render target without alpha in GL, alpha 1 over the region on that level and
@@ -1107,6 +1340,24 @@ private:
     /// it is: the clear's depth lies in [0, 1], where Clip and Clamp give the same. The next draw sets the
     /// tracker's state again.
     void applyClearState(IdMTLDepthStencilState depth);
+    /// The sampler of a description and its gpuResourceID, from mSamplerIDs or else the device's getSampler; false
+    /// when the device gave none (getSampler wrote the WARN line).
+    bool samplerID(const SamplerDesc& desc, MTLResourceID& id);
+    /// Every remembered resolve of a sampler place is forgotten: at the frame's end, where the tracker and
+    /// dropUnheldSlots may let go of bindings, and at reset().
+    void forgetResolves();
+    /// mBlocks' buffers set again from the tracker's uniform buffers.
+    void syncBlocks();
+    /// drawIndexed's indices first..first + count of the index buffer as the draw reads them from the ring: a fan's,
+    /// strip's or loop's list (metalListOrder), or a native primitive's indices as they are, each widened to 32 bits
+    /// with `widen`. A list made before is kept (mIndexConversions) and given again while the buffer has had no update
+    /// since; `source` is metalIndexBytes(indices), at least first + count indices. With the Metal debug setting a kept
+    /// list is made again and compared, a difference counted in resolveMismatches with a WARN line.
+    const std::vector<std::byte>& indexConversion(Buffer* indices, IndexType indexType, PrimitiveType type, U32 first,
+                                                  U32 count, bool widen, std::span<const std::byte> source);
+    /// With the Metal debug setting: a buffer's kept GPU address (metalAddress) against its allocation's; a difference
+    /// is counted in resolveMismatches with a WARN line naming `what`.
+    void checkAddress(const char* call, const std::string& what, MTLGPUAddress kept, const MetalAllocation& memory);
     /// The argument table writes, each only when the stage's shadow holds another value.
     void writeAddress(size_t stage, U32 index, MTLGPUAddress address);
     void writeTexture(size_t stage, U32 index, MTLResourceID texture);
@@ -1121,6 +1372,12 @@ private:
     IdMTL4RenderCommandEncoder mNative = nil;    ///< the segment's native encoder while it is open
     MTL4RenderPassDescriptor* mOpenPass = nil;   ///< mNative's descriptor
     IdMTLRenderPipelineState mNativePipeline = nil; ///< the state mNative draws with
+    U32 mNativeAlphaLess = 0;                       ///< mNative's attachments without alpha in GL (open())
+    /// setNativePipeline's last lookup: the pipeline's id, the mask and the state, which serve the next draw of
+    /// that pipeline with that mask.
+    IdMTLRenderPipelineState mDrawState = nil;
+    U64 mDrawPipelineId = 0;
+    U32 mDrawAlphaLess = 0;
     MTLViewport mNativeViewport{};                  ///< mNative's viewport
     MTLCullMode mNativeCull = MTLCullModeNone;      ///< mNative's cull mode
     IdMTLDepthStencilState mNativeDepth = nil;      ///< mNative's depth state; nil without a depth attachment
@@ -1157,12 +1414,84 @@ private:
         TextureType last = TextureType::Tex2D;
     };
     std::unordered_map<U32, ChannelSlots> mTypeSlots;
-    std::unordered_map<U32, SamplerDesc> mLastSamplers;  ///< by channel: what bindForDraw chose last (tests)
+    std::unordered_map<U32, SamplerDesc> mLastSamplers;  ///< by channel past RESOLVE_CHANNELS: what bindForDraw chose last (tests)
+    /// bindForDraw's remembered resolve of each stage's sampler places. A place's texture and sampler follow from its
+    /// channel, its sampler type and what setTexture gave the channel, so a place whose channel and type are the same
+    /// as at its last resolve, and whose channel has had no setTexture that changed its slots or its binding since,
+    /// takes the IDs found then. Channels from RESOLVE_CHANNELS on are resolved at every draw.
+    static constexpr U32 RESOLVE_CHANNELS = 32;
+    struct ResolvedPlace
+    {
+        U64 version = 0; ///< the channel's version at the resolve; 0: nothing remembered
+        U32 channel = 0;
+        UniformType type = UniformType::Sampler2D;
+        MTLResourceID texture{};
+        MTLResourceID sampler{};
+        SamplerDesc desc;      ///< the sampler's description (lastSamplerDesc)
+        bool slotRead = false; ///< the resolve counted a type slot read
+    };
+    std::array<std::array<ResolvedPlace, METAL_TABLE_SAMPLERS>, 2> mResolved{};
+    /// By channel below RESOLVE_CHANNELS: a version that setTexture renews when it changes the channel's slots or
+    /// binding; never 0. mNextVersion gives the new ones.
+    std::array<U64, RESOLVE_CHANNELS> mChannelVersions{};
+    U64 mNextVersion = 1;
+    /// By channel below RESOLVE_CHANNELS: what bindForDraw chose last (tests).
+    std::array<std::optional<SamplerDesc>, RESOLVE_CHANNELS> mLastChannelSamplers{};
+    U64 mResolveMismatches = 0;
+    U64 mResolveHits = 0;
+    /// The samplers bindForDraw has asked the device for, with their gpuResourceIDs, so a resolve finds one without
+    /// the device's lock and autorelease pool; the encoder holds them until the device goes.
+    struct CachedSampler
+    {
+        Ref<Sampler> sampler;
+        MTLResourceID id{};
+    };
+    std::unordered_map<SamplerDesc, CachedSampler, SamplerDescHash> mSamplerIDs;
+    /// By uniform block slot: the buffer the tracker holds there and the range setUniformBuffer gave last (the
+    /// tracker's and mBlockRanges' entries), kept in step at setUniformBuffer, the frame's end and reset(). The buffer
+    /// is the tracker's, alive while it is here.
+    struct BlockBinding
+    {
+        Buffer* buffer = nullptr;
+        U64 offset = 0;
+        U64 size = 0;
+        bool ranged = false; ///< setUniformBuffer has given the slot a range
+    };
+    std::array<BlockBinding, 32> mBlocks{};
+    /// programState's last answer, so a run of calls for one program finds its state without a lookup.
+    U64 mLastProgramId = 0;
+    MetalProgramState* mLastProgram = nullptr;
+    /// indexConversion's lists, by the index buffer's id and writes, the range, the primitive, the index type and the
+    /// widening; the least recently used goes past MAX_INDEX_CONVERSIONS, and a list of more than
+    /// MAX_INDEX_CONVERSION_BYTES is made in mIndexScratch at each draw instead. reset() lets go of them.
+    struct IndexConversion
+    {
+        U64 buffer = 0;
+        U64 writes = 0;
+        U32 first = 0;
+        U32 count = 0;
+        PrimitiveType type = PrimitiveType::Triangles;
+        IndexType indexType = IndexType::U16;
+        bool widen = false;
+        U64 used = 0;
+        std::vector<std::byte> bytes;
+    };
+    static constexpr size_t MAX_INDEX_CONVERSIONS = 64;
+    static constexpr size_t MAX_INDEX_CONVERSION_BYTES = 1024 * 1024;
+    std::vector<IndexConversion> mIndexConversions;
+    std::vector<std::byte> mIndexScratch;
+    U64 mIndexConversionUses = 0;
+    U64 mIndexConversionHits = 0;
+    U64 mIndexConversionsMade = 0;
     std::array<IdMTL4ArgumentTable, 3> mTables{};        ///< vertex, fragment, compute; made at the first draw
     std::array<MetalTableShadow, 3> mShadows{};          ///< what mTables hold; cleared with them
     /// The compute pass's native encoder and the state set on it.
     IdMTL4ComputeCommandEncoder mCompute = nil;
     IdMTLComputePipelineState mComputeState = nil;
+    /// The pass timer's stamps of the open segment's encoder, the compute pass's and the backend's own render encoder.
+    MetalPassStamp mNativeStamp;
+    MetalPassStamp mComputeStamp;
+    MetalPassStamp mOwnStamp;
     /// Native bindings the tracker does not hold, by NativeStage: samplers and the ring's bytes, per slot.
     struct NativeSlots
     {
@@ -1196,9 +1525,22 @@ private:
     U64 mFirstLoadClears = 0;
     std::vector<Ref<Texture>> mNewTargets; ///< zeroLater's targets not yet cleared
     U64 mNewTargetClears = 0;
+    /// A depth clear carryDepthClear took, waiting for the next segment with that depth level and layer.
+    struct DepthClear
+    {
+        Ref<Texture> texture;
+        U32 level = 0;
+        U32 layer = 0;
+        F32 value = 1.f;
+        std::string name; ///< the pass's, for the label of a pass of its own
+    };
+    std::vector<DepthClear> mDepthClears;
+    U64 mDepthClearsCarried = 0;
+    U64 mDepthClearsEncoded = 0;
     U64 mAlphaCopyDraws = 0;
     U64 mPresentDraws = 0;
     U64 mFormatCopyDraws = 0;
+    U64 mUpscales = 0;
     U64 mScissorSends = 0;
     MetalEncoderStats mStats; ///< the pass breaks (llrhimetal.h)
     const std::thread::id mRecordingThread; ///< the thread that made the device
@@ -1243,6 +1585,8 @@ private:
     std::mutex mMutex;
     std::vector<std::string> mHeld;
     std::array<Counts, size_t(Kind::Count)> mKinds{};
+    /// add() has held or counted a line that write() has not written or summarized yet.
+    std::atomic<bool> mPending{ false };
 };
 
 /// The upload queue's counters (MetalUploadCounts), which the upload thread, the main thread and the upload
@@ -1480,6 +1824,10 @@ public:
     bool attachLayer(IdMTL4CommandQueue queue, CAMetalLayer* layer);
     /// The layer's set leaves the queue when the device ends (MTL4CommandQueue.h:333-339).
     void detachLayer(IdMTL4CommandQueue queue);
+    /// The device's set and the layer's on a second queue too (the surface's present queue, which copies finished
+    /// frames into drawables); false after a WARN line. detachSecond takes both off it again.
+    bool attachSecond(IdMTL4CommandQueue queue, CAMetalLayer* layer);
+    void detachSecond(IdMTL4CommandQueue queue, CAMetalLayer* layer);
     /// The allocations in the set, admitted and not yet retired (so released ones the lifecycle has not
     /// freed yet are counted), grouped by what they are -- a texture's size, format, levels and samples, a
     /// buffer's name -- largest first: each group's count and bytes (MTLAllocation's allocatedSize), the
@@ -1662,24 +2010,19 @@ private:
     bool mStopping = false;
 };
 
-/// One render pipeline state, unspecialized, specialized or full, made by its compiler handler; in
+/// One full render pipeline state, made by its compiler handler; in
 /// llrhimetalpipeline-objc.mm. The handlers hold it and MetalCompileState only, never the device.
 struct API_AVAILABLE(macos(26.0)) MetalPipelineHolder;
 
-/// The device's pipeline states, which the
-/// MetalPipelines in PipelineCache share. A description with an attachment whose blending ends
-/// Disabled (blending off, or an integer attachment) has a full state per attachment formats, blend
-/// and color mask, as Metal API Validation refuses to specialize one. The others have one
-/// unspecialized state per program, attribute mask (the program's attributes only), primitive class
-/// and sample count, and one specialization of it per attachment formats, blend and color mask. The
-/// depth format is not pipeline state in Metal 4 (MTL4RenderPipeline.h:156-229), so no key has it.
-/// A refused key is remembered, so it gives one WARN line. Main thread, as getPipeline.
+/// The device's pipeline states, which the MetalPipelines in PipelineCache share: one full state per
+/// program, attribute mask (the program's attributes only), primitive class, sample count, attachment
+/// formats, blend and color mask. The depth format is not pipeline state in Metal 4
+/// (MTL4RenderPipeline.h:156-229), so no key has it. A refused key is remembered, so it gives one WARN
+/// line. Main thread, as getPipeline.
 class API_AVAILABLE(macos(26.0)) MetalPipelineStates
 {
 public:
-    /// The full or specialized state of the description, made when new: a full state is sent now;
-    /// the unspecialized state is sent when it is new, and the specialization from its handler, or
-    /// now when it is Ready.
+    /// The full state of the description, sent to Metal's compiler when it is new.
     std::shared_ptr<MetalPipelineHolder> state(MetalDevice& device, Program& program, const PipelineDesc& desc,
                                                 U32 attributes);
     /// True the first time the key is refused, so the caller writes its one WARN line.
@@ -1688,52 +2031,67 @@ public:
     void forgetProgram(U64 programId);
     /// ~MetalDevice, after the handlers have reported.
     void clear();
-    size_t unspecialized() const;
-    size_t specialized() const;
     size_t full() const;
     size_t refused() const;
-    /// (f), for tests: the color attachments below colorCount that the last full descriptor sent had
+    /// Tests: the color attachments below colorCount that the last full descriptor sent had
     /// with blending Disabled, one bit each (bit i for attachment i).
     U32 lastFullDisabled() const;
     /// MetalPipeline counts a variant without alpha it sends.
     void countVariant();
-    /// The states sent since the device was made, the refusals and the unspecialized states not sent; the rest
-    /// of MetalCompileStats is the device's (metalCompileStats).
+    /// The states sent since the device was made and the refusals; the rest of MetalCompileStats is the
+    /// device's (metalCompileStats).
     MetalCompileStats stats() const;
-    /// Tests: the unspecialized base keys of the programs that still exist; a program's go with it.
-    size_t heldBases() const;
 
 private:
     mutable std::mutex mMutex;
-    std::unordered_map<PipelineKey, std::shared_ptr<MetalPipelineHolder>, PipelineKeyHash> mUnspecialized;
-    std::unordered_map<PipelineKey, std::shared_ptr<MetalPipelineHolder>, PipelineKeyHash> mSpecialized;
     std::unordered_map<PipelineKey, std::shared_ptr<MetalPipelineHolder>, PipelineKeyHash> mFull;
     std::unordered_set<PipelineKey, PipelineKeyHash> mRefused;
     U32 mLastFullDisabled = 0;
-    /// What was sent and refused since the device was made, kept when a program goes; mBases has the
-    /// unspecialized keys alone would have, (program, attributes, primitive class, samples), of the programs that
-    /// still exist; mForgottenBases counts those of the programs gone (shader reloads make new programs).
+    /// What was sent and refused since the device was made, kept when a program goes.
     MetalCompileStats mSent;
-    std::unordered_set<PipelineKey, PipelineKeyHash> mBases;
-    U64 mForgottenBases = 0;
 };
 
 /// A window server that has taken none of the layer's drawables for this long no longer holds a
 /// present back (metalPresentPaced): about six refreshes at 60 Hz, where it takes one every refresh.
 inline constexpr U64 METAL_WINDOW_SERVER_STALE_NS = 100'000'000;
 
+/// With VSync off, after nextDrawable gave nil (its 1 s timeout), present() asks again no sooner than this after it
+/// gave up, unless a presented handler has run since the ask (MetalSurface::present).
+inline constexpr U64 METAL_DRAWABLE_RETRY_NS = 3'000'000'000;
+
+/// With VSync off, while the window server has stalled (drawables queued, no presented handler within the stale limit)
+/// and the window counts as hidden (its occlusion state), present() asks for a drawable no more often than this, so an
+/// occlusion state that stays wrong cannot hold the picture for good (MetalSurface::presentWithheld).
+inline constexpr U64 METAL_HIDDEN_RETRY_NS = 10'000'000'000;
+
+/// With VSync off, the finished frames a surface keeps for its present queue (MetalSurface::flipFinished): the frames
+/// whose flip the main queue may still be running (FrameLifecycle::MAX_FRAMES_IN_FLIGHT - 1 besides the one being
+/// recorded) and the newest one the GPU has finished. Each is a BGRA8Unorm texture of the drawable's size.
+inline constexpr size_t METAL_FINISHED_FRAMES = 3;
+
 /// Whether present() leaves the frame in the back buffer instead of asking for a drawable. Only with
-/// displaySync off (RenderVSyncEnable off, GL's swap interval 0) and no drawable readback asked for: when the window
-/// server has every drawable of the layer but the one on screen (presented, their presented handler not run yet),
-/// nextDrawable waits for its next composite (a probe: slow frames spent 12.4-13.6 ms of 13.1-14.2 ms
-/// there), so the frame is left out and the next present gives the window server the newest back buffer. Unlike GL's
-/// swap interval 0, where the compositor drops older frames and shows the newest, the frames left out here are the
-/// newest, so at high fps the frame shown can be up to about one refresh old; the old blocking path was no fresher.
-/// Not once neither the window server nor present() has given progress for staleNs
-/// (sinceProgressNs; METAL_WINDOW_SERVER_STALE_NS, which only a test changes): then present() asks as before, so a
-/// window server that stops taking drawables never leaves the window without presents.
-bool metalPresentPaced(bool displaySync, bool drawableReadback, U32 withWindowServer, U32 drawableCount,
+/// VSync off (RenderVSyncEnable off, GL's swap interval 0), no drawable readback asked for and a layer with drawables
+/// (drawableCount above 0): when the window server has every drawable of the layer but the one on screen (presented,
+/// their presented handler not run yet), nextDrawable waits for its next composite (a probe: slow frames spent
+/// 12.4-13.6 ms of 13.1-14.2 ms there), so the frame is left out and the next present gives the window server the
+/// newest back buffer. Unlike GL's swap interval 0, where the compositor drops older frames and shows the newest, the
+/// frames left out here are the newest. A drawable is shown only once the GPU has finished its frame, so how many
+/// frames reach the screen is bounded by the drawables over that delay, not by the refresh. Not once neither the window server nor present() has given
+/// progress for staleNs (sinceProgressNs; METAL_WINDOW_SERVER_STALE_NS, which only a test changes): then present()
+/// asks as before, so a window server that stops taking drawables never leaves the window without presents.
+bool metalPresentPaced(bool vsync, bool drawableReadback, U32 withWindowServer, U32 drawableCount,
                        U64 sinceProgressNs, U64 staleNs = METAL_WINDOW_SERVER_STALE_NS);
+
+/// A development knob for a control run, from the environment, read once: LL_METAL_PRESENT_UNSYNCED=1 has
+/// setVSync(false) turn the layer's displaySyncEnabled off too, so a drawable goes to the display without waiting for
+/// its refresh, with the tearing that brings. Off by default: the layer stays display synced, and VSync off only paces
+/// the presents.
+bool metalPresentUnsyncedKnob();
+
+/// A development knob for a timing run, from the environment, read once: LL_METAL_PRESENT_TRACE=1 has the surface
+/// write a line a second (tag RHI, "Metal present trace") of its presents, the drawables it presented and when their
+/// presented handlers saw them on screen. Off by default.
+bool metalPresentTraceKnob();
 
 /// The window's surface on Metal, in llrhimetalsurface-objc.mm. It owns the back buffer, an ordinary
 /// RGBA8Unorm texture in GL's row order, with its Depth32Float depth, both made through the device and resident from
@@ -1742,7 +2100,8 @@ class API_AVAILABLE(macos(26.0)) MetalSurface final : public Surface
 {
 public:
     /// The layer is set up for the device (CAMetalLayer.h:60-171): device, BGRA8Unorm, framebufferOnly, opaque, no
-    /// colorspace, three drawables with the 1 s timeout, and drawableSize width x height when both are above 0 (the
+    /// colorspace, display synced, three drawables with the 1 s timeout, and drawableSize width x height when both are
+    /// above 0 (the
     /// window's backing size; the view keeps it after). width x height is the surface's size, 0 allowed; the back
     /// buffer is max(width, 1) x max(height, 1). ok() is false after a WARN line when a buffer could not be made.
     MetalSurface(MetalDevice& device, CAMetalLayer* layer, U32 width, U32 height);
@@ -1754,23 +2113,43 @@ public:
     Texture* backBufferDepth() override { return mDepth.get(); }
     /// Records the size only; present() applies it after the flip pass, the frame boundary.
     void resize(U32 width, U32 height) override;
+    /// Only kept for present(): the layer stays display synced (displaySyncEnabled), so the window server shows
+    /// whole frames at the display's refresh; off, present() paces by the window server's drawables
+    /// (metalPresentPaced) instead of waiting in nextDrawable. With metalPresentUnsyncedKnob the layer follows too.
     void setVSync(bool enabled) override;
     /// With a 0 in the size the frame is to have (the pending one, else the current one) no drawable is asked
     /// for; else the layer's next drawable, in its own autorelease pool, gets the flip pass, and the submit that sends
     /// it runs at once (MetalDevice::setPendingDrawable, then submitPending: the startup states
     /// present several times in one frame, and the layer has three drawables); then a pending resize is applied.
-    /// With displaySync off, no drawable is asked for while metalPresentPaced says the window server has the
-    /// others; a drawable presented with displaySync off gets a presented handler, which counts it back.
+    /// With VSync off, no drawable is asked for while metalPresentPaced says the window server has the others,
+    /// while none of the window shows (its occlusion state), or after nextDrawable gave nil, until a presented handler
+    /// has run since that ask or METAL_DRAWABLE_RETRY_NS has passed (presentWithheld); each counts as a paced present.
+    /// A drawable presented with VSync off gets a presented handler, which counts it back.
     void present() override;
+    /// With VSync off, by default, the window server gets the newest frame the GPU has finished, as GL's compositor
+    /// shows the newest swap: present() flips the back buffer into a finished frame (flipFinished), sent at once, and
+    /// a second command queue copies the newest finished one into a drawable (presentFinished), at present() and
+    /// after the frame lifecycle's wait (frameEnded), with the same pacing as above. A frame's drawable then waits
+    /// for no frame in flight. direct true presents each frame's own drawable from its command buffer, behind the
+    /// frames in flight, as before (LuminousMetalPresentDirect, for a comparison run). A drawable readback always
+    /// presents the frame's own drawable.
+    void setPresentDirect(bool direct);
+    /// MetalDevice::endFrame, after FrameLifecycle::endFrame's wait (when a GPU-bound frame has just finished): on the
+    /// finished path, the newest finished frame to the window server if it may take one.
+    void frameEnded();
 
     CAMetalLayer* layer() const { return mLayer; }
     MetalSurfaceStats stats() const;
-    /// Tests only: adds count drawables to those with the window server, as if presented with displaySync
+    /// Tests only: adds count drawables to those with the window server, as if presented with VSync
     /// off just now; no handler takes them back.
     void holdDrawablesForTest(U32 count);
     /// Tests only: the stale limit present() gives metalPresentPaced instead of
     /// METAL_WINDOW_SERVER_STALE_NS, so test 185 does not depend on 100 ms windows on a loaded machine.
     void setStaleLimitForTest(U64 staleNs);
+    /// Tests only: as if nextDrawable had given nil agoNs ago, its ask begun then too.
+    void refuseDrawableForTest(U64 agoNs);
+    /// Tests only: the window counts as hidden (presentWithheld) while hidden is true.
+    void setWindowHiddenForTest(bool hidden);
     /// MetalDevice::submit's counts for a drawable it sends.
     void countDrawableWait() { ++mStats.drawableWaits; }
     void countDrawableSignal() { ++mStats.drawableSignals; }
@@ -1787,6 +2166,63 @@ private:
     void copyDrawable(IdMTLTexture drawable);
     /// The copy's buffer leaves the residency set once the GPU has finished the frame.
     void dropCopy();
+    /// Whether any of the layer's view's window shows (its occlusion state); true for a layer without a view.
+    bool windowVisible() const;
+    /// For a VSync off present that metalPresentPaced lets ask: true, counted, while the window server has stalled
+    /// (stalled: drawables with it and no presented handler within the stale limit) and the window is hidden, except
+    /// one ask every METAL_HIDDEN_RETRY_NS; or after a refused drawable (mRefusedNs) until a presented handler has run
+    /// since that ask (progress, the window server's progressNs) or METAL_DRAWABLE_RETRY_NS has passed since it gave
+    /// up. While the handlers run the occlusion state is not read, so a wrong one costs nothing then.
+    /// now: steady_clock nanoseconds.
+    bool presentWithheld(U64 now, U64 progress, bool stalled);
+    /// LL_METAL_PRESENT_TRACE=1 only: writes the second's line once a second has passed since the last.
+    void writePresentTrace(U64 now);
+    /// The finished path is in use: VSync off and not setPresentDirect.
+    bool finishedPath() const { return !mVSync && !mPresentDirect; }
+    /// The layer's framebufferOnly: NO for a drawable readback and on the finished path (a copy's destination).
+    void applyFramebufferOnly();
+    /// The present queue, its event, allocators and residency sets, once; false after a WARN line, and then the
+    /// direct path serves VSync off for the surface's life.
+    bool makePresentQueue();
+    /// One finished frame: the back buffer flipped into the drawable's layout at the end of a frame's command buffer.
+    struct FinishedFrame
+    {
+        IdMTLTexture texture = nil; ///< BGRA8Unorm, width x height; resident from creation
+        U32 width = 0;
+        U32 height = 0;
+        U64 flip = 0; ///< the flip's order (mFlips); 0: it holds no frame to show
+        std::shared_ptr<MetalReadbackStamp> stamp; ///< the submit that sent the flip
+        U64 copySerial = 0; ///< the present queue's event value once the copy reading it has run; 0: none pending
+        double flipT = 0.0; ///< CACurrentMediaTime at its frame's present(), for the trace
+    };
+    /// Whether the GPU has finished the slot's flip (its submit's slot event).
+    bool finishedOnGpu(const FinishedFrame& slot) const;
+    /// Copies that have run leave their slots; finished frames that will never be shown (older than the newest
+    /// finished one, or no newer than the last shown) let theirs go.
+    void pollFinished();
+    /// This frame's flip into a free finished frame, (re)made at the drawable's size, and its submit at once; false
+    /// when none is free (the frame is not shown) or after a WARN line.
+    bool flipFinished();
+    /// The newest finished frame newer than the last shown, copied into the layer's next drawable on the present
+    /// queue, with the direct path's pacing (metalPresentPaced, presentWithheld) and counts; true when a drawable was
+    /// presented. justFlipped: instead the frame just flipped, before the GPU has finished it, and only while no older
+    /// flip is still on the GPU (the copy then waits on the GPU for that frame's own work alone).
+    bool presentFinished(U64 now, U64 progress, bool justFlipped = false);
+    /// Its texture leaves the residency set through the frame lifecycle, and the slot is empty.
+    void retireFinished(FinishedFrame& slot);
+    /// Waits for the present queue's copies (METAL_WAIT_MS at most), then retires every finished frame; none of them
+    /// is shown after.
+    void dropFinished();
+    /// The trace's record of one presented drawable.
+    struct PresentTraceRecord
+    {
+        double presentT = 0.0; ///< CACurrentMediaTime at its present
+        std::mutex mutex;
+        std::shared_ptr<MetalSubmission> submission; ///< whose feedback gives the GPU's end of its frame
+    };
+    /// The presented handlers of a drawable about to be presented: VSync off's window server count (not vsync), and
+    /// the trace's, whose record it gives (null without the trace).
+    std::shared_ptr<PresentTraceRecord> watchDrawable(IdCAMetalDrawable drawable, bool vsync);
 
     MetalDevice& mDevice;
     CAMetalLayer* mLayer = nil;
@@ -1798,7 +2234,8 @@ private:
     U32 mPendingWidth = 0;
     U32 mPendingHeight = 0;
     MetalSurfaceStats mStats;
-    /// The drawables presented with displaySync off whose presented handler has not run yet, and when
+    bool mVSync = true; ///< setVSync's value; on until it is called, as the layer's displaySyncEnabled
+    /// The drawables presented with VSync off whose presented handler has not run yet, and when
     /// the window server last took (showed or dropped) one or present() last gave it one, in steady_clock nanoseconds.
     /// The handlers hold this, never the surface (as the device's feedback state).
     struct WindowServerState
@@ -1807,7 +2244,71 @@ private:
         std::atomic<U64> progressNs{ 0 };
     };
     std::shared_ptr<WindowServerState> mWindowServer = std::make_shared<WindowServerState>();
+    /// LL_METAL_PRESENT_TRACE=1 only (metalPresentTraceKnob): what the presented handlers saw since the last line,
+    /// in milliseconds. The handlers hold this, never the surface.
+    struct PresentTraceCounts
+    {
+        U32 handlers = 0;          ///< presented handlers run
+        U32 shown = 0;             ///< of them, with a presentedTime (not dropped)
+        U32 gpuKnown = 0;          ///< of the shown, whose commit feedback had come
+        double toHandlerSum = 0.0; ///< present -> its handler
+        double toHandlerMax = 0.0;
+        double toGlassSum = 0.0;   ///< present -> presentedTime
+        double toGlassMax = 0.0;
+        double toGpuSum = 0.0;     ///< present -> its command buffer's GPU end
+        double toGpuMax = 0.0;
+        double gpuToGlassSum = 0.0; ///< GPU end -> presentedTime
+        double gpuToGlassMax = 0.0;
+        U32 gaps[4] = {};          ///< between shown ones: about 1, 2, 3, 4+ refreshes
+    };
+    struct PresentTraceState
+    {
+        std::mutex mutex;
+        PresentTraceCounts counts;
+        double lastGlass = 0.0;      ///< the last shown one's presentedTime, seconds
+        double refresh = 1.0 / 60.0; ///< the screen's refresh interval, seconds (the main thread sets it)
+    };
+    std::shared_ptr<PresentTraceState> mTrace;
+    /// The main thread's side of the trace's second.
+    struct PresentTraceWindow
+    {
+        U64 beganNs = 0;
+        U32 presents = 0;
+        U32 drawables = 0;
+        U32 held = 0;      ///< metalPresentPaced
+        U32 staleAsks = 0; ///< the window server had all but one, and the stale limit let present() ask
+        U32 withheld = 0;  ///< presentWithheld
+        U32 queued[4] = {}; ///< drawables with the window server at each present(): 0, 1, 2, 3+
+        U64 nextDrawableSumNs = 0;
+        U64 nextDrawableMaxNs = 0;
+    };
+    PresentTraceWindow mTraceWindow;
+    std::array<FinishedFrame, METAL_FINISHED_FRAMES> mFinished;
+    U64 mFlips = 0;     ///< flips into finished frames so far
+    U64 mShownFlip = 0; ///< the newest flip given to the window server, or made obsolete by a direct present
+    IdMTL4CommandQueue mPresentQueue = nil;
+    IdMTLSharedEvent mPresentEvent = nil; ///< signalled after each copy, with mPresentSerial
+    U64 mPresentSerial = 0;
+    std::array<IdMTL4CommandAllocator, METAL_FINISHED_FRAMES> mPresentAllocators{};
+    std::array<U64, METAL_FINISHED_FRAMES> mAllocatorSerial{}; ///< the copy each allocator last recorded
+    size_t mNextAllocator = 0;
+    bool mPresentQueueFailed = false;
+    bool mPresentDirect = false; ///< setPresentDirect's
+    /// The finished frames' size: the drawable textures' for the layer's drawableSize layerWidth x layerHeight, which
+    /// is the same unless a drawable showed otherwise (presentFinished).
+    struct FinishedSize
+    {
+        U32 width = 0;
+        U32 height = 0;
+        U32 layerWidth = 0;
+        U32 layerHeight = 0;
+    };
+    FinishedSize mFinishedSize;
     U64 mStaleNs = METAL_WINDOW_SERVER_STALE_NS; ///< setStaleLimitForTest's, else the constant
+    U64 mRefusedAskNs = 0; ///< when the ask that gave nil began, steady_clock nanoseconds; 0 when none waits
+    U64 mRefusedNs = 0;    ///< when it gave up; 0 when the last ask gave a drawable
+    U64 mHiddenAskNs = 0;  ///< while stalled and hidden: when the retry clock began or the last ask went; 0 otherwise
+    bool mHiddenForTest = false; ///< setWindowHiddenForTest's
     bool mCopyNext = false; ///< setDrawableReadback(true) asked for the next presented drawable
     IdMTLBuffer mCopyBuffer = nil;
     std::shared_ptr<MetalReadbackStamp> mCopyStamp;
@@ -1832,6 +2333,12 @@ public:
         U64 consecutiveTimeouts = 0; ///< command buffers in a row whose feedback was the watchdog's Timeout
         MetalGpuBusy gpu; ///< the command buffers without an error
         bool lost = false; ///< an error that loses the device arrived (metalErrorLosesDevice)
+        /// The pass timer's frames (MetalPassTimes::timed), first to last, 0 for none: their command buffers' busy
+        /// time without an error, and the command buffers reported, with an error too.
+        U64 timedFirst = 0;
+        U64 timedLast = 0;
+        MetalGpuBusy timedGpu;
+        U64 timedReceived = 0;
     };
 
     using Submission = MetalSubmission;
@@ -1867,6 +2374,10 @@ public:
     void forgetNativeLibrary(U64 libraryId);
     /// Tests: the native pipelines cached, compute and render.
     size_t nativePipelineCount() const;
+    /// MetalFX's spatial scaler (createMetalUpscaler), made with the device's compiler.
+    Ref<Upscaler> createUpscaler(const UpscalerDesc& desc) override;
+    /// MetalFX's temporal scaler (createMetalTemporalUpscaler), made with the device's compiler.
+    Ref<TemporalUpscaler> createTemporalUpscaler(const TemporalUpscalerDesc& desc) override;
 
     Surface* surface() override;
     Encoder& encoder() override { return mEncoder; }
@@ -1877,6 +2388,11 @@ public:
     U64 frameNumber() const override { return mLifecycle.currentFrame(); }
     U64 completedFrame() const override { return mLifecycle.completedFrame(); }
     void submitAndWait() override;
+
+    /// The pass timer (MetalPassTimes), on the timestamp heap's tick rate; false after a WARN line without one.
+    bool startPassTimes(U32 frames, const std::string& path, std::function<void()> done) override;
+    void stopPassTimes() override;
+    MetalPassTimes& passTimes() { return mPassTimes; }
 
     // Sample queries on the visibility result buffer -------------------------------------------------------
 
@@ -1976,7 +2492,8 @@ public:
     void noteIndexCopy(S64 bytes);
     /// Ends the open compute encoder of copies and begins another, with the queue barrier,
     /// for an upload's copy; the caller ends it with endCopies() right after. Nil after a WARN line.
-    IdMTL4ComputeCommandEncoder beginUploadCopies();
+    /// The label names the encoder (the upscale's own encoder before MetalFX's work is one).
+    IdMTL4ComputeCommandEncoder beginUploadCopies(NSString* label = @"Upload");
     /// Size bytes for this frame's commands in the frame slot's ring. Main thread. Nil buffer
     /// after a WARN line.
     MetalAllocation frameAllocation(U64 size);
@@ -2216,22 +2733,16 @@ public:
     /// The pool's threads take no job while paused; wait() still takes its own.
     void pausePrograms(bool paused) { mProgramPool.pause(paused); }
     /// The next program's vertex library gets MSL that does not compile, so Metal's handler fails it;
-    /// with no program before it, the next new unspecialized or full pipeline state's handler fails it.
+    /// with no program before it, the next new pipeline state's handler fails it.
     void failNextCompile() { mFailNextCompile = true; }
-    /// The next program's first library handler, or the next new unspecialized or full pipeline
+    /// The next program's first library handler, or the next new pipeline
     /// state's handler, sleeps this long before it reports.
     void sleepNextHandlerMs(U32 ms) { mSleepNextHandlerMs = ms; }
-    /// The unspecialized, the specialized and (f) the full pipeline states, and the refused keys.
-    size_t unspecializedPipelines() const { return mPipelineStates.unspecialized(); }
-    size_t specializedPipelines() const { return mPipelineStates.specialized(); }
+    /// The full pipeline states, and the refused keys.
     size_t fullPipelines() const { return mPipelineStates.full(); }
     size_t refusedPipelines() const { return mPipelineStates.refused(); }
-    /// (f): the attachments the last full pipeline state was sent with blending Disabled, one bit each.
+    /// The attachments the last full pipeline state was sent with blending Disabled, one bit each.
     U32 lastFullDisabledAttachments() const { return mPipelineStates.lastFullDisabled(); }
-    /// A frame capture was asked for when the device was made, so every render pipeline state is full (the
-    /// full path), none unspecialized or specialized: Metal refuses to capture a device that has ever specialized
-    /// one, and drops the capture's document when one is specialized during it (run-time probe).
-    bool fullPipelineStates() const { return mFullPipelineStates; }
     /// The translations on the calling thread so far.
     U64 translatedOnCaller() const { return mTranslatedOnCaller.load(); }
     /// The point variants translated so far.
@@ -2338,6 +2849,11 @@ private:
     MetalGpuBusy mGpuWindowStart;
     std::chrono::steady_clock::time_point mGpuWindowBegan = std::chrono::steady_clock::now();
     std::chrono::steady_clock::duration mGpuWindow = std::chrono::seconds(10);
+    /// At the frame's end, while the pass timer runs: its frame end, the commit feedback's window of its frames, and
+    /// its table once their command buffers have reported (or 60 frame ends after the last was resolved).
+    void passTimesAtFrameEnd();
+    MetalPassTimes mPassTimes;
+    MetalPassStamp mCopiesStamp; ///< the pass timer's stamp of the open encoder of copies
     IdMTL4CommandBuffer mCommandBuffer = nil;
     IdMTL4ComputeCommandEncoder mCopies = nil; ///< the open compute encoder of readback copies
     std::vector<std::shared_ptr<MetalReadbackStamp>> mStamps; ///< the readbacks of the command buffer
@@ -2349,7 +2865,6 @@ private:
     bool mCapturing = false;            ///< this device began a frame capture, stopped after the frame's submit
     std::string mCapturePath;           ///< the document of the capture this device began
     U64 mCaptureFrame = 0;              ///< the frame of that capture
-    bool mFullPipelineStates = false;   ///< a frame capture was asked for when the device was made
     IdMTLSharedEvent mGate = nil;
     U64 mGateValue = 0;
     bool mFailNextFeedback = false;

@@ -12,6 +12,9 @@
 // Bindings (commonshared.h): buffer 0 the constants, buffer 1 the counter (zero before the first
 // dispatch, left zero by each dispatch), buffer 2 one float4 per threadgroup; texture 0 level 0,
 // textures 1-12 single-level write views of levels 1-12. A slot past `mips` is never touched.
+//
+// The tile is the kernel's only threadgroup memory, 16 KB: shader validation adds a byte for each one
+// declared, and 32 KB is the most a threadgroup may use.
 
 #include <metal_stdlib>
 #include "commonshared.h"
@@ -86,7 +89,6 @@ kernel void luminous_spd_downsample(
 {
     using namespace luminous_spd;
     threadgroup float4 tile[TILE_SIDE * TILE_SIDE];
-    threadgroup bool last_group;
 
     const uint2 size0 = constants.sourceSize;
     const uint mips = min(constants.mips, uint(LUMINOUS_SPD_MAX_MIPS));
@@ -114,19 +116,22 @@ kernel void luminous_spd_downsample(
         return;
     }
 
-    // The tile's level 6 texel for the last threadgroup, then the count of threadgroups done.
+    // The tile's level 6 texel for the last threadgroup, then the count of threadgroups done. Whether this
+    // threadgroup is the last reaches all its threads through tile[0].x (1 or 0), free once the texel is in
+    // the tail.
     if (thread_index == 0)
     {
         tail[group.y * constants.groups.x + group.x] = tile[0];
         atomic_thread_fence(mem_flags::mem_device, memory_order_seq_cst, thread_scope_device);
         const uint done = atomic_fetch_add_explicit(counter, 1u, memory_order_relaxed);
-        last_group = done + 1 == constants.groups.x * constants.groups.y;
+        tile[0].x = done + 1 == constants.groups.x * constants.groups.y ? 1.0 : 0.0;
     }
     threadgroup_barrier(mem_flags::mem_threadgroup);
-    if (!last_group)
+    if (tile[0].x == 0.0)
     {
         return;
     }
+    threadgroup_barrier(mem_flags::mem_threadgroup); // every thread has read tile[0] before level 7 writes it
     atomic_thread_fence(mem_flags::mem_device, memory_order_seq_cst, thread_scope_device);
     if (thread_index == 0)
     {

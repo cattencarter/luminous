@@ -852,7 +852,18 @@ void sampleReflectionProbesLegacy(inout vec3 ambenv, inout vec3 glossenv, inout 
         vec2 tc, vec3 pos, vec3 norm, float glossiness, float envIntensity, bool transparent, vec3 amblit)
 {
     float reflection_lods = max_probe_lod;
+    // <Luminous> the probe list is read only by the ambient, gloss and environment loops below, under these
+    // same three conditions; a pixel that runs none of them (a classic sky, no gloss, no environment intensity)
+    // skips the search
+#if defined(LUMINOUS_SKIP_UNUSED_PROBE_SEARCH)
+    if (classic_mode == 0 || glossiness > 0.0 || envIntensity > 0.0)
+    {
+        preProbeSample(pos);
+    }
+#else
     preProbeSample(pos);
+#endif
+    // </Luminous>
 
     vec3 refnormpersp = reflect(pos.xyz, norm.xyz);
 

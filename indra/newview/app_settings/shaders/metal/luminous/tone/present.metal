@@ -3,6 +3,8 @@
 // blurs, then the faint present noise and the HDR range clamp of Second Life's present, and the frame's
 // nearest depth for the 3D interface drawn over it. Drawn into the window's back buffer within the world
 // view's viewport, as OpenGL's present (postDeferredNoDoFF.glsl with LUMINOUS_UPSCALE) draws it.
+// The copy functions take a frame MetalFX has already scaled to the world view's size, texel for texel,
+// with the same noise, clamp and depth.
 
 #include "luminous/common/fullscreen.h"
 #include "luminous/tone/toneshared.h"
@@ -79,16 +81,37 @@ inline float4 catmullRom(texture2d<float> source, float2 uv)
     return clamp(c, min(min(a, b), min(d, e)), max(max(a, b), max(d, e)));
 }
 
-// The scaled frame with the present's noise and clamp; window is the fragment's position in the window.
-inline float4 colour(texture2d<float> source, float2 uv, float2 window)
+// The present's noise and clamp on a colour; window is the fragment's position in the window.
+inline float4 finish(float4 diff, float2 window)
 {
-    float4 diff = catmullRom(source, uv);
     const float2 tc = window * 4.0; // the window's pixels, not the smaller frame's
     const float3 seed = (diff.rgb + 1.0) * float3(tc.xy, tc.x + tc.y);
     const float3 nz = float3(noise(seed.rg), noise(seed.gb), noise(seed.rb));
     diff.rgb += nz * 0.003;
     diff.rgb = clampHDRRange(diff.rgb);
     return diff;
+}
+
+// The scaled frame, finished.
+inline float4 colour(texture2d<float> source, float2 uv, float2 window)
+{
+    return finish(catmullRom(source, uv), window);
+}
+
+// A frame of the world view's size, read texel for texel and finished.
+inline float4 copied(texture2d<float> source, float2 uv, float2 window)
+{
+    const int2 size = int2(source.get_width(), source.get_height());
+    const int2 texel = clamp(int2(uv * float2(size)), int2(0), size - 1);
+    return finish(source.read(uint2(texel)), window);
+}
+
+// The nearest depth of the smaller frame, not a blend across a silhouette.
+inline float nearestDepth(depth2d<float> depthMap, float2 uv)
+{
+    const int2 size = int2(depthMap.get_width(), depthMap.get_height());
+    const int2 texel = clamp(int2(uv * float2(size)), int2(0), size - 1);
+    return depthMap.read(uint2(texel));
 }
 }
 
@@ -104,10 +127,7 @@ fragment LuminousPresentOut luminous_present_upscale_fs(LuminousFullscreenOut in
 {
     LuminousPresentOut out;
     out.colour = luminous_present::colour(frame, in.uv, in.position.xy);
-    // The nearest depth, not a blend across a silhouette.
-    const int2 size = int2(depthMap.get_width(), depthMap.get_height());
-    const int2 texel = clamp(int2(in.uv * float2(size)), int2(0), size - 1);
-    out.depth = depthMap.read(uint2(texel));
+    out.depth = luminous_present::nearestDepth(depthMap, in.uv);
     return out;
 }
 
@@ -116,4 +136,22 @@ fragment float4 luminous_present_upscale_nodepth_fs(LuminousFullscreenOut in [[s
                                                     texture2d<float> frame [[texture(LUMINOUS_TONE_TEXTURE_FRAME)]])
 {
     return luminous_present::colour(frame, in.uv, in.position.xy);
+}
+
+// MetalFX's frame, already at the world view's size, with the smaller frame's depth.
+fragment LuminousPresentOut luminous_present_copy_fs(LuminousFullscreenOut in [[stage_in]],
+                                                     texture2d<float> frame [[texture(LUMINOUS_TONE_TEXTURE_FRAME)]],
+                                                     depth2d<float> depthMap [[texture(LUMINOUS_TONE_TEXTURE_DEPTH)]])
+{
+    LuminousPresentOut out;
+    out.colour = luminous_present::copied(frame, in.uv, in.position.xy);
+    out.depth = luminous_present::nearestDepth(depthMap, in.uv);
+    return out;
+}
+
+// The same into a back buffer pass that has no depth to write.
+fragment float4 luminous_present_copy_nodepth_fs(LuminousFullscreenOut in [[stage_in]],
+                                                 texture2d<float> frame [[texture(LUMINOUS_TONE_TEXTURE_FRAME)]])
+{
+    return luminous_present::copied(frame, in.uv, in.position.xy);
 }

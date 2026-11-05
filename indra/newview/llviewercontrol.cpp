@@ -73,6 +73,7 @@
 #include "llvowlsky.h"
 #include "llrender.h"
 #include "llrhi.h" // [Viewer Lab] the surface follows RenderVSyncEnable
+#include "llrhimetal.h" // <Luminous> setMetalPresentDirect
 #include "llnavigationbar.h"
 #include "llnotificationsutil.h"
 #include "llfloaterpreference.h"
@@ -127,6 +128,7 @@
 #include "luminousbenchmark.h" // <Luminous/>
 #include "luminousoptimise.h" // <Luminous/>
 #include "luminousmetal.h" // <Luminous/>
+#include "llcallbacklist.h" // <Luminous/> doOnIdleOneTime
 
 // Third party library includes
 #include <boost/algorithm/string.hpp>
@@ -407,8 +409,8 @@ static bool handleVSyncChanged(const LLSD& newvalue)
     if (gViewerWindow && gViewerWindow->getWindow())
     {
         gViewerWindow->getWindow()->toggleVSync(newvalue.asBoolean());
-        // [Viewer Lab] The render interface's surface follows the setting: the layer's displaySyncEnabled on Metal,
-        // nothing on GL, where the window sets the swap interval
+        // [Viewer Lab] The render interface's surface follows the setting; nothing on GL, where the window sets the
+        // swap interval. <Luminous> On Metal it paces the presents, and the layer stays display synced
         if (LL::RHI::Device* device = LL::RHI::viewerDevice(); device && device->surface())
         {
             device->surface()->setVSync(newvalue.asBoolean());
@@ -671,6 +673,49 @@ static bool handleLuminousMetalChanged(const LLSD& newvalue)
     }
     gResizeScreenTexture = true; // the live view's scale follows the native present
     return handleReleaseGLBufferChanged(newvalue) && handleSetShaderChanged(newvalue);
+}
+
+// The Metal pass timer: switched on, the GPU time of every render and compute pass over the next frames goes to
+// the log and to luminous-pass-times.txt in the logs folder, and the setting switches itself off. Switched off
+// before that, the timer stops without a table. OpenGL has none: one line, and the setting goes off again.
+static bool handleLuminousMetalPassTimesChanged(const LLSD& newvalue)
+{
+    constexpr U32 PASS_TIMES_FRAMES = 120;
+    LL::RHI::Device* device = LL::RHI::viewerDevice();
+    if (!newvalue.asBoolean())
+    {
+        if (device)
+        {
+            device->stopPassTimes();
+        }
+        return true;
+    }
+    const std::string path = gDirUtilp->getExpandedFilename(LL_PATH_LOGS, "luminous-pass-times.txt");
+    auto switch_off = []() { gSavedSettings.setBOOL("LuminousMetalPassTimes", false); };
+    if (device && device->startPassTimes(PASS_TIMES_FRAMES, path, switch_off))
+    {
+        return true;
+    }
+    if (!device || device->backend() != LL::RHI::BackendType::Metal)
+    {
+        LL_INFOS("LuminousPassTimes") << "LuminousMetalPassTimes does nothing on OpenGL" << LL_ENDL;
+    }
+    doOnIdleOneTime(switch_off); // not from inside this setting's own signal
+    return true;
+}
+// </Luminous>
+
+// <Luminous> VSync off's present path on Metal, for a comparison run: on, each frame presents its own drawable as
+// earlier builds did; off, the newest finished frame goes to the window server. Nothing on OpenGL.
+static bool handleLuminousMetalPresentDirectChanged(const LLSD& newvalue)
+{
+#if LL_RHI_METAL
+    if (LL::RHI::Device* device = LL::RHI::viewerDevice())
+    {
+        LL::RHI::setMetalPresentDirect(*device, newvalue.asBoolean());
+    }
+#endif
+    return true;
 }
 // </Luminous>
 
@@ -1414,6 +1459,7 @@ void settings_setup_listeners()
     setting_setup_signal_listener(gSavedSettings, "LuminousPhotoSoftShadows", handleSetShaderChanged);
     LuminousPhotoMode::initCommands();
     LuminousPhotoMode::initSceneTools();
+    LuminousPhotoMode::initTemporalTips(); // MetalFX temporal and Preview resolution
     LuminousHDRSnapshot::init();
     LuminousBenchmark::init();
     LuminousOptimise::init(); // <Luminous/> the Mac's settings and the Optimise window
@@ -1429,6 +1475,9 @@ void settings_setup_listeners()
     {
         setting_setup_signal_listener(gSavedSettings, std::string("LuminousMetal") + effect, handleLuminousMetalChanged);
     }
+    setting_setup_signal_listener(gSavedSettings, "LuminousMetalPassTimes", handleLuminousMetalPassTimesChanged);
+    setting_setup_signal_listener(gSavedSettings, "LuminousMetalPresentDirect", handleLuminousMetalPresentDirectChanged);
+    setting_setup_signal_listener(gSavedSettings, "LuminousSoftenSkipUnusedProbeSearch", handleSetShaderChanged);
     // </Luminous>
     setting_setup_signal_listener(gSavedSettings, "RenderGlowResolutionPow", handleReleaseGLBufferChanged);
     setting_setup_signal_listener(gSavedSettings, "RenderGlowHDR", handleReleaseGLBufferChanged);

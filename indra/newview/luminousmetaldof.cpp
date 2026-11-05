@@ -56,6 +56,13 @@ extern bool gSnapshot;
 // blur) or quarter size (at least 32), its samples spaced as far apart as its texels; every other blurred
 // tile, and every tile of a picture's frame, is gathered at each pixel exactly as the translated gather
 // does.
+//
+// In a frame drawn for MetalFX temporal (LuminousMetal::temporalSettles, LuminousMetalFXTemporalSettleEnhance) the
+// camera is jittered, and a blur gathered from the jittered frame and its circle of confusion changes its shape at
+// focus edges from frame to frame, which the scaler passes on. The gather then goes into a layer of the frame's size,
+// each texel the place the camera without the jitter saw: the samples' part of the blur and its weight. The layer is
+// settled (averaged with the frames before, moved by the camera) and blended back where this frame shows each place,
+// the frame keeping the rest of its own pixel, so what is in focus stays jittered as the scene is.
 namespace
 {
     namespace RHI = LL::RHI;
@@ -65,6 +72,8 @@ namespace
     const char* const LIBRARY = "dof";
     const char* const COMPOSITE_VS = "luminous_fullscreen_vs";
     const char* const COMPOSITE_FS = "luminous_dof_composite_fs";
+    const char* const LAYER_FS = "luminous_dof_layer_fs";
+    const char* const SETTLED_FS = "luminous_dof_settled_fs";
     const std::array<const char*, 5> KERNELS = { "luminous_spd_downsample", "luminous_dof_tiles", "luminous_dof_rows",
                                                  "luminous_dof_classify", "luminous_dof_coarse" };
     enum Kernel
@@ -106,10 +115,15 @@ namespace
         RHI::Ref<RHI::Buffer> lists;
         RHI::Ref<RHI::Buffer> spdCounter;
         RHI::Ref<RHI::Buffer> spdTail;
+        // The layer the gather draws into in a frame drawn for MetalFX temporal, the source's size; let go in the
+        // first frame gathered without it, or two frames after its last when the gather is no longer drawn.
+        RHI::Ref<RHI::TransientPool> layer;
+        U64 layerFrame = 0;
 
         // This frame's compute pass, for the gather.
         U64 preparedFrame = ~0ull;
         bool nothingToDraw = false;
+        bool settled = false; // the gather goes into the layer, which is settled and added back
         LuminousDoFParams params{};
         RHI::Texture* source = nullptr;
 
@@ -117,6 +131,8 @@ namespace
         {
             chain = nullptr;
             coarse = nullptr;
+            layer = nullptr;
+            settled = false;
             tiles = rows = tileState = counts = lists = spdCounter = spdTail = nullptr;
             width = height = tileCount = 0;
             preparedFrame = ~0ull;
@@ -140,6 +156,11 @@ namespace
         return state().coarse.notNull() ? state().coarse->texture(index) : nullptr;
     }
 
+    RHI::Texture* layerTexture()
+    {
+        return state().layer.notNull() ? state().layer->texture(0) : nullptr;
+    }
+
     RHI::PipelineDesc compositeDesc(RHI::Format format)
     {
         RHI::PipelineDesc desc;
@@ -147,6 +168,38 @@ namespace
         desc.colorFormats[0] = format;
         desc.colorMask = RHI::COLOR_MASK_R | RHI::COLOR_MASK_G | RHI::COLOR_MASK_B; // the frame's alpha stays
         return desc;
+    }
+
+    // The layer: colour and weight, all four channels written.
+    RHI::PipelineDesc layerDesc()
+    {
+        RHI::PipelineDesc desc;
+        desc.colorCount = 1;
+        desc.colorFormats[0] = RHI::Format::RGBA16Float;
+        return desc;
+    }
+
+    // The settled layer onto the frame: its colour added, the frame kept by 1 - its weight; the frame's alpha stays.
+    RHI::PipelineDesc settledDesc(RHI::Format format)
+    {
+        RHI::PipelineDesc desc = compositeDesc(format);
+        desc.blend.enabled = true;
+        desc.blend.srcColor = RHI::BlendFactor::One;
+        desc.blend.dstColor = RHI::BlendFactor::OneMinusSourceAlpha;
+        desc.blend.srcAlpha = RHI::BlendFactor::Zero;
+        desc.blend.dstAlpha = RHI::BlendFactor::One;
+        return desc;
+    }
+
+    // The layer's two pipelines, asked for when the library is ready so that they compile in the background; the
+    // gather settles only once both are ready, and draws into the frame as before until then or if they fail.
+    bool settlePipelinesReady(RHI::Format frame)
+    {
+        State& s = state();
+        RHI::Pipeline* layer = s.program.render(COMPOSITE_VS, LAYER_FS, layerDesc());
+        RHI::Pipeline* settled = s.program.render(COMPOSITE_VS, SETTLED_FS, settledDesc(frame));
+        return layer && settled && layer->status() == RHI::CompileStatus::Ready
+               && settled->status() == RHI::CompileStatus::Ready;
     }
 
     void forgetDevice()
@@ -167,6 +220,10 @@ namespace
         if (!LuminousMetal::metal())
         {
             return true; // never on OpenGL
+        }
+        if (s.layer.notNull() && s.layerFrame + 2 < LuminousMetal::context().frame)
+        {
+            s.layer = nullptr;
         }
         if (s.failed || s.ready || LLStartUp::getStartupState() < STATE_STARTED || !LuminousMetal::photoModeOnMetal())
         {
@@ -220,6 +277,7 @@ namespace
         all = all && composite->status() == RHI::CompileStatus::Ready;
         if (all)
         {
+            settlePipelinesReady(RHI::Format::RGBA16Float);
             s.ready = true;
             LuminousMetal::setReady(Pass::DoFTiles, true);
             LuminousMetal::setReady(Pass::DoFGather, true);
@@ -286,6 +344,26 @@ namespace
                && s.lists.notNull() && s.spdCounter.notNull() && s.spdTail.notNull();
     }
 
+    bool ensureLayer(RHI::Device& device)
+    {
+        State& s = state();
+        RHI::Texture* layer = layerTexture();
+        if (!layer || layer->desc().width != s.width || layer->desc().height != s.height)
+        {
+            RHI::TransientPoolDesc pool;
+            pool.name = "luminous dof layer";
+            RHI::TransientTextureDesc texture;
+            texture.desc.format = RHI::Format::RGBA16Float;
+            texture.desc.width = std::max(s.width, 1u);
+            texture.desc.height = std::max(s.height, 1u);
+            texture.desc.usage = RHI::TEXTURE_SAMPLED | RHI::TEXTURE_RENDER_TARGET;
+            texture.name = "luminous dof layer";
+            pool.textures.push_back(texture);
+            s.layer = device.createTransientPool(pool);
+        }
+        return layerTexture() != nullptr;
+    }
+
     bool ensureCoarse(RHI::Device& device)
     {
         State& s = state();
@@ -310,6 +388,13 @@ namespace
     // read at a coarser level to match, as the translated gather thins its spiral for its budget.
     void fillNativeParams(LuminousDoFParams& p, bool coarse, U32 chain_levels)
     {
+        // The layer's texels read the source up to half a pixel off their own: a pixel more of reach.
+        const F32 shift = p.layer ? 1.f : 0.f;
+        if (p.layer)
+        {
+            const F32 margin = std::max(p.maxCoF, 0.f) + std::pow(2.f, std::ceil(p.lod) + 1.f) + 1.f + shift;
+            p.reach = std::max(p.reach, (S32)std::ceil(margin / (F32)TILE));
+        }
         const F32 max_cof = std::max(p.maxCoF, 1.f);
         auto thinned = [&](F32 spacing, S32& samples, F32& lod)
         {
@@ -340,8 +425,9 @@ namespace
             coarsest = std::max(coarsest, lodOf(max_cof, (F32)p.budget));
         }
         // A sample lies up to max_cof pixels away and reads texels spanning up to 2^(lod + 1) pixels round
-        // it; a coarse texel's centre lies up to 2 pixels outside its tile, and it is read from 2 more.
-        const F32 margin = std::max(p.maxCoF, 0.f) + std::pow(2.f, std::ceil(coarsest) + 1.f) + 1.f + 4.f;
+        // it; a coarse texel's centre lies up to 2 pixels outside its tile, and it is read from 2 more (the
+        // layer's a pixel more again).
+        const F32 margin = std::max(p.maxCoF, 0.f) + std::pow(2.f, std::ceil(coarsest) + 1.f) + 1.f + 4.f + shift;
         p.reachCoarse = coarse ? (S32)std::ceil(margin / (F32)TILE) : 0;
         p.levels = (S32)std::clamp((U32)std::ceil(coarsest), 1u, chain_levels);
     }
@@ -375,6 +461,7 @@ namespace
         LuminousPhotoMode::fillDoFParams(p, width, height, targets.maxCoF);
         s.source = source;
         s.preparedFrame = context.frame;
+        s.settled = false;
         // No blur anywhere: the gather would give every pixel its own colour back.
         s.nothingToDraw = p.maxCoF <= 0.f;
         if (s.nothingToDraw)
@@ -390,6 +477,24 @@ namespace
         {
             s.preparedFrame = ~0ull;
             return false;
+        }
+        // A live frame drawn for MetalFX temporal: the gather goes into the layer, each texel the place the camera
+        // without the jitter saw, read from the source that far on. Never in a picture's frame.
+        F32 jitter_u = 0.f;
+        F32 jitter_v = 0.f;
+        s.settled = !p.picture && settlePipelinesReady(frame->desc().format)
+                    && LuminousMetal::temporalSettles(LuminousMetal::SettledLayer::Enhance, jitter_u, jitter_v)
+                    && ensureLayer(*device);
+        if (s.settled)
+        {
+            p.layer = 1;
+            p.jitterX = jitter_u * (F32)width;
+            p.jitterY = jitter_v * (F32)height;
+            s.layerFrame = context.frame;
+        }
+        else
+        {
+            s.layer = nullptr;
         }
         const bool coarse = !p.picture && ensureCoarse(*device);
         RHI::Texture* chain = chainTexture();
@@ -477,7 +582,35 @@ namespace
         return true;
     }
 
-    // The gather into the HDR frame, after prepare() in the same frame.
+    // One fullscreen draw of pipeline into target in a native pass of its own: cleared first, or loaded.
+    template <typename Bind>
+    bool drawPass(RHI::Device& device, RHI::Texture* target, RHI::Pipeline* pipeline, bool clear, const char* name,
+                  Bind bind)
+    {
+        RHI::RenderPassDesc pass;
+        pass.name = name;
+        pass.native = true;
+        pass.colorCount = 1;
+        pass.color[0].texture = target;
+        pass.color[0].load = clear ? RHI::LoadAction::Clear : RHI::LoadAction::Load;
+        pass.color[0].store = RHI::StoreAction::Store;
+        RHI::Encoder& encoder = device.encoder();
+        if (!encoder.beginRenderPass(pass))
+        {
+            return false;
+        }
+        encoder.setPipeline(pipeline);
+        encoder.setViewport(0, 0, (S32)target->desc().width, (S32)target->desc().height);
+        encoder.setScissor(false, 0, 0, 0, 0);
+        encoder.setCullMode(RHI::CullMode::Off);
+        bind(encoder);
+        encoder.draw(RHI::PrimitiveType::Triangles, 0, 3);
+        encoder.endRenderPass();
+        return true;
+    }
+
+    // The gather into the HDR frame, after prepare() in the same frame; settled, into the layer, and the layer's
+    // average blended into the frame where this frame shows each place.
     bool composite(LuminousMetal::PassTargets& targets)
     {
         State& s = state();
@@ -488,12 +621,14 @@ namespace
         RHI::Device* device = RHI::viewerDevice();
         RHI::Texture* frame = targets.frame ? targets.frame->getRHITexture(0) : nullptr;
         RHI::Texture* chain = chainTexture();
-        if (!device || !frame || !chain || !s.source)
+        RHI::Texture* layer = s.settled ? layerTexture() : nullptr;
+        if (!device || !frame || !chain || !s.source || (s.settled && !layer))
         {
             return false;
         }
         const LuminousDoFParams& p = s.params;
-        RHI::Pipeline* pipeline = s.program.render(COMPOSITE_VS, COMPOSITE_FS, compositeDesc(frame->desc().format));
+        RHI::Pipeline* pipeline = s.settled ? s.program.render(COMPOSITE_VS, LAYER_FS, layerDesc())
+                                            : s.program.render(COMPOSITE_VS, COMPOSITE_FS, compositeDesc(frame->desc().format));
         if (!pipeline || pipeline->status() == RHI::CompileStatus::Failed)
         {
             return false;
@@ -502,32 +637,41 @@ namespace
         RHI::Texture* half = p.coarseHalf > 0.f ? coarseTexture(0) : chain;
         RHI::Texture* quarter = p.coarseQuarter > 0.f ? coarseTexture(1) : chain;
 
-        RHI::RenderPassDesc pass;
-        pass.name = "luminous depth of field";
-        pass.native = true;
-        pass.colorCount = 1;
-        pass.color[0].texture = frame;
-        pass.color[0].load = RHI::LoadAction::Load;
-        pass.color[0].store = RHI::StoreAction::Store;
-        RHI::Encoder& encoder = device->encoder();
-        if (!encoder.beginRenderPass(pass))
+        const RHI::NativeStage fs = RHI::NativeStage::Fragment;
+        // The layer is cleared: its sharp tiles add nothing.
+        if (!drawPass(*device, s.settled ? layer : frame, pipeline, s.settled, "luminous depth of field",
+                      [&](RHI::Encoder& encoder)
+                      {
+                          RHI::setNativeConstants(encoder, fs, LUMINOUS_DOF_BUFFER_PARAMS, p);
+                          encoder.setNativeBuffer(fs, LUMINOUS_DOF_BUFFER_STATE, s.tileState.get(), 0, RHI::Access::Read);
+                          encoder.setNativeTexture(fs, LUMINOUS_DOF_TEXTURE_SOURCE, s.source, RHI::Access::Read, { 0, 1 });
+                          encoder.setNativeTexture(fs, LUMINOUS_DOF_TEXTURE_CHAIN, chain, RHI::Access::Read);
+                          encoder.setNativeTexture(fs, LUMINOUS_DOF_TEXTURE_HALF, half, RHI::Access::Read);
+                          encoder.setNativeTexture(fs, LUMINOUS_DOF_TEXTURE_QUARTER, quarter, RHI::Access::Read);
+                      }))
         {
             return false;
         }
-        const RHI::NativeStage fs = RHI::NativeStage::Fragment;
-        encoder.setPipeline(pipeline);
-        encoder.setViewport(0, 0, (S32)frame->desc().width, (S32)frame->desc().height);
-        encoder.setScissor(false, 0, 0, 0, 0);
-        encoder.setCullMode(RHI::CullMode::Off);
-        RHI::setNativeConstants(encoder, fs, LUMINOUS_DOF_BUFFER_PARAMS, p);
-        encoder.setNativeBuffer(fs, LUMINOUS_DOF_BUFFER_STATE, s.tileState.get(), 0, RHI::Access::Read);
-        encoder.setNativeTexture(fs, LUMINOUS_DOF_TEXTURE_SOURCE, s.source, RHI::Access::Read, { 0, 1 });
-        encoder.setNativeTexture(fs, LUMINOUS_DOF_TEXTURE_CHAIN, chain, RHI::Access::Read);
-        encoder.setNativeTexture(fs, LUMINOUS_DOF_TEXTURE_HALF, half, RHI::Access::Read);
-        encoder.setNativeTexture(fs, LUMINOUS_DOF_TEXTURE_QUARTER, quarter, RHI::Access::Read);
-        encoder.draw(RHI::PrimitiveType::Triangles, 0, 3);
-        encoder.endRenderPass();
-        return true;
+        if (!s.settled)
+        {
+            return true;
+        }
+
+        // The layer averaged with the frames before (or as it is, when the settle cannot draw this frame), then
+        // blended into the frame at uv minus the jitter, so the scaler sees it jittered as the scene is.
+        RHI::Texture* average = LuminousMetal::temporalSettle(LuminousMetal::SettledLayer::Enhance, layer,
+                                                              layer->desc().width, layer->desc().height);
+        RHI::Pipeline* add = s.program.render(COMPOSITE_VS, SETTLED_FS, settledDesc(frame->desc().format));
+        if (!average || !add || add->status() == RHI::CompileStatus::Failed)
+        {
+            return false;
+        }
+        return drawPass(*device, frame, add, false, "luminous depth of field settled",
+                        [&](RHI::Encoder& encoder)
+                        {
+                            RHI::setNativeConstants(encoder, fs, LUMINOUS_DOF_BUFFER_PARAMS, p);
+                            encoder.setNativeTexture(fs, LUMINOUS_DOF_TEXTURE_LAYER, average, RHI::Access::Read);
+                        });
     }
 
     bool drawTiles(LuminousMetal::PassContext& context, LuminousMetal::PassTargets& targets)

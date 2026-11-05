@@ -78,7 +78,7 @@ namespace LuminousMetal
 
         const char* const COMPUTE_FUNCTIONS[] = { "luminous_lens_bloom_down", "luminous_lens_bloom_up", "luminous_lens_bloom_up_in_place",
                                                   "luminous_lens_streak",
-                                                  "luminous_lens_flare_bright", "luminous_lens_flare" };
+                                                  "luminous_lens_flare_bright", "luminous_lens_flare", "luminous_lens_flare_core" };
 
         enum class Blend : U8
         {
@@ -365,6 +365,7 @@ namespace LuminousMetal
             OwnTexture core;       ///< the starburst's light, half size, with mip levels for Star blur
             OwnTexture soft;       ///< the flare's light, a quarter size and softer
             OwnTexture flare;      ///< ghosts, halo and starburst, half size
+            OwnTexture sun;        ///< 1 x 1: how much of the sun is seen, in a frame settled for MetalFX temporal
             RHI::Ref<RHI::Buffer> spdCounter;
             RHI::Ref<RHI::Buffer> spdTail;
         };
@@ -383,6 +384,7 @@ namespace LuminousMetal
             t.core.release();
             t.soft.release();
             t.flare.release();
+            t.sun.release();
             t.spdCounter = nullptr;
             t.spdTail = nullptr;
             Chain& c = chain();
@@ -949,7 +951,8 @@ namespace LuminousMetal
             RHI::ComputePipeline* bright_kernel = computePipeline(lens, "luminous_lens_flare_bright");
             RHI::ComputePipeline* down_kernel = computePipeline(lens, "luminous_lens_bloom_down");
             RHI::ComputePipeline* flare_kernel = computePipeline(lens, "luminous_lens_flare");
-            if (!encoder || !exposure || !depth || !bright_kernel || !down_kernel || !flare_kernel)
+            RHI::ComputePipeline* core_kernel = computePipeline(lens, "luminous_lens_flare_core");
+            if (!encoder || !exposure || !depth || !bright_kernel || !down_kernel || !flare_kernel || !core_kernel)
             {
                 return false;
             }
@@ -958,6 +961,18 @@ namespace LuminousMetal
             if (params.flare <= 0.f)
             {
                 return false;
+            }
+            // A frame settled for MetalFX temporal: the light and the sun's seen share taken where the camera without
+            // the jitter saw the frame (the sun's place too) and averaged with the frames before, and the flare added
+            // where this frame shows each place. What the jitter changes in the light, the sun through leaves most,
+            // then neither pulses the ghosts nor reaches the scaler, and the dirt fixed on the glass is jittered as
+            // the scene is, so the scaler keeps it in place.
+            F32 jitter_u = 0.f;
+            F32 jitter_v = 0.f;
+            const bool settled = temporalSettles(SettledLayer::FlareLight, jitter_u, jitter_v);
+            if (settled)
+            {
+                params.sunUV = simd_make_float2(params.sunUV.x - jitter_u, params.sunUV.y - jitter_v);
             }
             RHI::Pipeline* pipeline = renderPipeline("luminous_lens_flare_fs", frame->desc().format, Blend::Add);
             if (!pipeline)
@@ -977,13 +992,16 @@ namespace LuminousMetal
                                             "luminous lens flare starburst light");
             RHI::Texture* soft = t.soft.get(storageDesc(quarter_w, quarter_h, 1), "luminous lens flare soft");
             RHI::Texture* flare = t.flare.get(storageDesc(half_w, half_h, 1), "luminous lens flare");
-            if (!bright || !core || !soft || !flare)
+            RHI::Texture* sun = t.sun.get(storageDesc(1, 1, 1), "luminous lens flare sun");
+            if (!bright || !core || !soft || !flare || !sun)
             {
                 return false;
             }
             LuminousLensFlareConstants k{};
             k.halfSize = simd_make_uint2(half_w, half_h);
             k.quarterSize = simd_make_uint2(quarter_w, quarter_h);
+            k.jitter = simd_make_float2(jitter_u, jitter_v);
+            k.settled = settled ? 1 : 0;
             const RHI::DispatchSize half_groups = groupsFor(half_w, half_h, GROUP);
 
             if (!encoder->beginComputePass({ "luminous lens flare" }))
@@ -1000,10 +1018,32 @@ namespace LuminousMetal
             encoder->setNativeTexture(stage, LUMINOUS_LENS_TEXTURE_DEPTH, depth);
             encoder->setNativeTexture(stage, 3, bright, RHI::Access::Write, { 0, 1 });
             encoder->setNativeTexture(stage, 4, core, RHI::Access::Write, { 0, 1 });
+            encoder->setNativeTexture(stage, 5, sun, RHI::Access::Write, { 0, 1 });
             encoder->dispatchThreadgroups(half_groups, { GROUP, GROUP, 1 });
-            for (U32 slot = 0; slot <= 4; ++slot)
+            for (U32 slot = 0; slot <= 5; ++slot)
             {
                 encoder->setNativeTexture(stage, slot, nullptr);
+            }
+
+            // settled: the light and the sun's share averaged (render passes, between two compute passes), and the
+            // starburst's light made again from the average
+            RHI::Texture* sun_seen = sun;
+            if (settled)
+            {
+                encoder->endComputePass();
+                bright = temporalSettle(SettledLayer::FlareLight, bright, half_w, half_h);
+                sun_seen = temporalSettle(SettledLayer::FlareSun, sun, 1, 1);
+                if (!encoder->beginComputePass({ "luminous lens flare" }))
+                {
+                    return false;
+                }
+                encoder->setComputePipeline(core_kernel);
+                RHI::setNativeConstants(*encoder, stage, LUMINOUS_LENS_BUFFER_PASS, k);
+                encoder->setNativeTexture(stage, 3, bright);
+                encoder->setNativeTexture(stage, 4, core, RHI::Access::Write, { 0, 1 });
+                encoder->dispatchThreadgroups(half_groups, { GROUP, GROUP, 1 });
+                encoder->setNativeTexture(stage, 3, nullptr);
+                encoder->setNativeTexture(stage, 4, nullptr);
             }
 
             // a softer quarter-size copy: the down chain's first step
@@ -1036,12 +1076,14 @@ namespace LuminousMetal
             encoder->setNativeTexture(stage, 4, soft);
             encoder->setNativeTexture(stage, 5, core);
             encoder->setNativeTexture(stage, 6, flare, RHI::Access::Write, { 0, 1 });
+            encoder->setNativeTexture(stage, 7, sun_seen);
             encoder->dispatchThreadgroups(half_groups, { GROUP, GROUP, 1 });
             encoder->endComputePass();
 
             // added to the frame, with the dirt on the lens
             return drawFullscreen(*encoder, frame, pipeline, true, "luminous lens flare", params, [&]
             {
+                RHI::setNativeConstants(*encoder, RHI::NativeStage::Fragment, LUMINOUS_LENS_BUFFER_PASS, k);
                 encoder->setNativeTexture(RHI::NativeStage::Fragment, 4, soft);
                 encoder->setNativeTexture(RHI::NativeStage::Fragment, 6, flare);
             });

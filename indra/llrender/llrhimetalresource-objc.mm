@@ -32,6 +32,8 @@
 #include <chrono>
 #include <cmath>
 #include <cstring>
+#include <optional>
+#include <sstream>
 
 #if LL_RHI_METAL
 
@@ -178,7 +180,8 @@ class API_AVAILABLE(macos(26.0)) MetalTexture final : public Texture
 {
 public:
     MetalTexture(MetalDevice& device, const TextureDesc& desc, IdMTLTexture texture)
-    :   mDevice(device), mDesc(desc), mTexture(texture), mWritten(size_t(desc.mipLevels) * metalSlices(desc))
+    :   mDevice(device), mDesc(desc), mTexture(texture), mResourceID(texture.gpuResourceID),
+        mWritten(size_t(desc.mipLevels) * metalSlices(desc))
     {
     }
 
@@ -236,6 +239,7 @@ public:
 
     const TextureDesc& desc() const override { return mDesc; }
     IdMTLTexture texture() const { return mTexture; }
+    MTLResourceID resourceID() const { return mResourceID; }
 
     /// One mark per level and slice (the level's slices one after another).
     bool written(U32 level, U32 layer) const
@@ -271,6 +275,7 @@ private:
     MetalDevice& mDevice;
     const TextureDesc mDesc;
     IdMTLTexture mTexture;
+    const MTLResourceID mResourceID; ///< mTexture's gpuResourceID
     std::vector<bool> mWritten;
     std::unordered_map<U64, IdMTLTexture> mViews; ///< levelView's, by (first << 32 | end)
 };
@@ -278,6 +283,11 @@ private:
 IdMTLTexture metalTexture(Texture* texture)
 {
     return texture ? static_cast<MetalTexture*>(texture)->texture() : nil;
+}
+
+MTLResourceID metalTextureID(Texture* texture)
+{
+    return texture ? static_cast<MetalTexture*>(texture)->resourceID() : MTLResourceID{};
 }
 
 IdMTLTexture metalLevelView(Texture* texture, U32 first, U32 end)
@@ -324,7 +334,7 @@ class API_AVAILABLE(macos(26.0)) MetalBuffer final : public Buffer
 {
 public:
     MetalBuffer(MetalDevice& device, const BufferDesc& desc, const MetalAllocation& memory)
-    :   mDevice(device), mDesc(desc), mCurrent(memory)
+    :   mDevice(device), mDesc(desc), mCurrent(memory), mAddress(memory.buffer.gpuAddress + memory.offset)
     {
     }
 
@@ -339,12 +349,17 @@ public:
 
     const BufferDesc& desc() const override { return mDesc; }
     const MetalAllocation& current() const { return mCurrent; }
+    /// The GPU address of the current memory.
+    MTLGPUAddress address() const { return mAddress; }
     /// A static index buffer's bytes as GL has them, for drawIndexed's check and its
     /// fans, strips and loops; empty for the other buffers (metalIndexBytes).
     std::span<const std::byte> indexCopy() const { return mIndexCopy; }
     std::vector<std::byte>& indexCopy() { return mIndexCopy; }
     /// An index buffer was given a 16-bit 0xFFFF at an even offset (sticky; metalIndexHoldsRestart).
     bool holdsRestart() const { return mHoldsRestart; }
+    /// The updates since creation (metalBufferWrites).
+    U64 writes() const { return mWrites; }
+    void noteWrite() { ++mWrites; }
     void noteRestart(U64 offset, std::span<const std::byte> bytes)
     {
         for (size_t i = offset % 2; !mHoldsRestart && i + 1 < bytes.size(); i += 2)
@@ -357,14 +372,17 @@ public:
     {
         mDevice.releaseBufferMemory(mDesc, mCurrent);
         mCurrent = memory;
+        mAddress = memory.buffer.gpuAddress + memory.offset;
     }
 
 private:
     MetalDevice& mDevice;
     const BufferDesc mDesc;
     MetalAllocation mCurrent;
+    MTLGPUAddress mAddress = 0; ///< mCurrent's buffer's gpuAddress plus its offset
     std::vector<std::byte> mIndexCopy;
     bool mHoldsRestart = false;
+    U64 mWrites = 0;
 };
 
 IdMTLBuffer metalBuffer(Buffer* buffer)
@@ -375,6 +393,11 @@ IdMTLBuffer metalBuffer(Buffer* buffer)
 MetalAllocation metalAllocation(Buffer* buffer)
 {
     return buffer ? static_cast<MetalBuffer*>(buffer)->current() : MetalAllocation();
+}
+
+MTLGPUAddress metalAddress(Buffer* buffer)
+{
+    return buffer ? static_cast<const MetalBuffer*>(buffer)->address() : 0;
 }
 
 std::span<const std::byte> metalIndexBytes(Buffer* buffer)
@@ -395,6 +418,11 @@ std::span<const std::byte> metalIndexBytes(Buffer* buffer)
 bool metalIndexHoldsRestart(Buffer* buffer)
 {
     return buffer && static_cast<const MetalBuffer*>(buffer)->holdsRestart();
+}
+
+U64 metalBufferWrites(Buffer* buffer)
+{
+    return buffer ? static_cast<const MetalBuffer*>(buffer)->writes() : 0;
 }
 
 MTLResourceOptions metalBufferStorage(const BufferDesc& desc)
@@ -456,6 +484,7 @@ void metalUpdateBuffer(MetalDevice& device, Buffer* buffer, U64 offset, std::spa
         return;
     }
     MetalBuffer& metal = *static_cast<MetalBuffer*>(buffer);
+    metal.noteWrite();
     const BufferDesc& desc = metal.desc();
     const MetalAllocation current = metal.current();
     if (desc.usage & BUFFER_INDEX)
@@ -517,7 +546,7 @@ class API_AVAILABLE(macos(26.0)) MetalSampler final : public Sampler
 {
 public:
     MetalSampler(FrameLifecycle& lifecycle, const SamplerDesc& desc, IdMTLSamplerState state)
-    :   mLifecycle(lifecycle), mDesc(desc), mState(state)
+    :   mLifecycle(lifecycle), mDesc(desc), mState(state), mResourceID(state.gpuResourceID)
     {
     }
 
@@ -530,16 +559,23 @@ public:
 
     const SamplerDesc& desc() const override { return mDesc; }
     IdMTLSamplerState state() const { return mState; }
+    MTLResourceID resourceID() const { return mResourceID; }
 
 private:
     FrameLifecycle& mLifecycle;
     const SamplerDesc mDesc;
     IdMTLSamplerState mState;
+    const MTLResourceID mResourceID; ///< mState's gpuResourceID
 };
 
 IdMTLSamplerState metalSampler(Sampler* sampler)
 {
     return sampler ? static_cast<MetalSampler*>(sampler)->state() : nil;
+}
+
+MTLResourceID metalSamplerID(Sampler* sampler)
+{
+    return sampler ? static_cast<MetalSampler*>(sampler)->resourceID() : MTLResourceID{};
 }
 
 MTLSamplerDescriptor* metalSamplerDescriptor(const SamplerDesc& desc, bool anisotropic)
@@ -592,6 +628,384 @@ Ref<Sampler> createMetalSampler(MetalDevice& device, const SamplerDesc& desc)
         return nullptr;
     }
     return new MetalSampler(device.lifecycle(), desc, state);
+}
+
+/// MetalFX's spatial scaler for one description and the fence it waits on before its work (MetalEncoder::upscale).
+class API_AVAILABLE(macos(26.0)) MetalUpscaler final : public Upscaler
+{
+public:
+    MetalUpscaler(FrameLifecycle& lifecycle, const UpscalerDesc& desc, IdMTL4FXSpatialScaler scaler, IdMTLFence fence,
+                  U8 inputUsage, U8 outputUsage)
+    :   mLifecycle(lifecycle), mDesc(desc), mScaler(scaler), mFence(fence), mInputUsage(inputUsage),
+        mOutputUsage(outputUsage)
+    {
+    }
+
+    ~MetalUpscaler() override
+    {
+        // The scaler, with the pipelines and memory MetalFX made for it, and the fence live until the frames that
+        // used them have finished.
+        IdMTL4FXSpatialScaler scaler = mScaler;
+        IdMTLFence fence = mFence;
+        mLifecycle.release([scaler, fence]() mutable
+        {
+            scaler = nil;
+            fence = nil;
+        });
+    }
+
+    const UpscalerDesc& desc() const override { return mDesc; }
+    U8 inputUsage() const override { return mInputUsage; }
+    U8 outputUsage() const override { return mOutputUsage; }
+    IdMTL4FXSpatialScaler scaler() const { return mScaler; }
+    IdMTLFence fence() const { return mFence; }
+
+private:
+    FrameLifecycle& mLifecycle;
+    const UpscalerDesc mDesc;
+    IdMTL4FXSpatialScaler mScaler;
+    IdMTLFence mFence;
+    const U8 mInputUsage;
+    const U8 mOutputUsage;
+};
+
+namespace
+{
+    /// The TextureUsage bits of a usage MetalFX asks for (metalTextureStorage the other way); none when it asks for one
+    /// the backend's textures never have.
+    std::optional<U8> textureUsageOf(MTLTextureUsage usage)
+    {
+        U8 bits = 0;
+        if (usage & MTLTextureUsageShaderRead)
+        {
+            bits |= TEXTURE_SAMPLED;
+        }
+        if (usage & MTLTextureUsageShaderWrite)
+        {
+            bits |= TEXTURE_STORAGE;
+        }
+        if (usage & MTLTextureUsageRenderTarget)
+        {
+            bits |= TEXTURE_RENDER_TARGET;
+        }
+        const MTLTextureUsage known = MTLTextureUsageShaderRead | MTLTextureUsageShaderWrite | MTLTextureUsageRenderTarget;
+        return (usage & ~known) == 0 ? std::optional<U8>(bits) : std::nullopt;
+    }
+
+    API_AVAILABLE(macos(26.0)) MTLFXSpatialScalerColorProcessingMode colorProcessingMode(UpscaleColor color)
+    {
+        switch (color)
+        {
+        case UpscaleColor::Perceptual: return MTLFXSpatialScalerColorProcessingModePerceptual;
+        case UpscaleColor::Linear:     return MTLFXSpatialScalerColorProcessingModeLinear;
+        case UpscaleColor::HDR:        return MTLFXSpatialScalerColorProcessingModeHDR;
+        }
+        return MTLFXSpatialScalerColorProcessingModePerceptual;
+    }
+}
+
+bool metalSpatialUpscaler(IdMTLDevice device)
+{
+    // MTLFXSpatialScaler.h's supportsMetal4FX:, for the MTL4FXSpatialScaler that Metal 4's command buffers take.
+    return device && [MTLFXSpatialScalerDescriptor class] && [MTLFXSpatialScalerDescriptor supportsMetal4FX:device];
+}
+
+Ref<Upscaler> createMetalUpscaler(MetalDevice& device, const UpscalerDesc& desc)
+{
+    std::ostringstream name;
+    name << "MetalFX " << desc.inputWidth << "x" << desc.inputHeight << " to " << desc.outputWidth << "x"
+         << desc.outputHeight;
+    const std::string why = validate(desc, device.capabilities());
+    if (!why.empty())
+    {
+        warnCreateFailed("upscaler", name.str(), why);
+        return nullptr;
+    }
+    IdMTL4Compiler compiler = device.compiler();
+    if (!compiler)
+    {
+        return nullptr; // compiler() wrote the WARN line
+    }
+    // The textures' formats and sizes, which every input and output must have (MTLFXSpatialScaler.h's
+    // MTLFXSpatialScalerBase); the scaler builds its pipelines with the device's compiler.
+    MTLFXSpatialScalerDescriptor* descriptor = [MTLFXSpatialScalerDescriptor new];
+    descriptor.colorTextureFormat = metalPixelFormat(desc.inputFormat);
+    descriptor.outputTextureFormat = metalPixelFormat(desc.outputFormat);
+    descriptor.inputWidth = desc.inputWidth;
+    descriptor.inputHeight = desc.inputHeight;
+    descriptor.outputWidth = desc.outputWidth;
+    descriptor.outputHeight = desc.outputHeight;
+    descriptor.colorProcessingMode = colorProcessingMode(desc.color);
+    IdMTL4FXSpatialScaler scaler = [descriptor newSpatialScalerWithDevice:device.mtlDevice() compiler:compiler];
+    if (!scaler)
+    {
+        warnCreateFailed("upscaler", name.str(), "MetalFX gave no spatial scaler for these sizes and formats");
+        return nullptr;
+    }
+    const std::optional<U8> input = textureUsageOf(scaler.colorTextureUsage);
+    const std::optional<U8> output = textureUsageOf(scaler.outputTextureUsage);
+    if (!input || !output)
+    {
+        warnCreateFailed("upscaler", name.str(),
+                         "MetalFX asks for a texture usage the backend's textures do not have (input " +
+                             std::to_string(U64(scaler.colorTextureUsage)) + ", output " +
+                             std::to_string(U64(scaler.outputTextureUsage)) + ")");
+        return nullptr;
+    }
+    IdMTLFence fence = [device.mtlDevice() newFence];
+    if (!fence)
+    {
+        warnCreateFailed("upscaler", name.str(), "Metal gave no fence");
+        return nullptr;
+    }
+    if (device.debugLabels())
+    {
+        fence.label = metalString(name.str());
+    }
+    Ref<Upscaler> result = new MetalUpscaler(device.lifecycle(), desc, scaler, fence, *input, *output);
+    result->setDebugName(name.str());
+    return result;
+}
+
+IdMTL4FXSpatialScaler metalScaler(Upscaler* upscaler)
+{
+    return upscaler ? static_cast<MetalUpscaler*>(upscaler)->scaler() : nil;
+}
+
+IdMTLFence metalScalerFence(Upscaler* upscaler)
+{
+    return upscaler ? static_cast<MetalUpscaler*>(upscaler)->fence() : nil;
+}
+
+/// MetalFX's temporal scaler for one description, the fence it waits on before its work and the 1x1 exposure of 1 it
+/// reads (MetalEncoder::upscaleTemporal).
+class API_AVAILABLE(macos(26.0)) MetalTemporalUpscaler final : public TemporalUpscaler
+{
+public:
+    struct Usages
+    {
+        U8 color = 0;
+        U8 depth = 0;
+        U8 motion = 0;
+        U8 reactive = 0;
+        U8 output = 0;
+    };
+
+    MetalTemporalUpscaler(FrameLifecycle& lifecycle, const TemporalUpscalerDesc& desc, IdMTL4FXTemporalScaler scaler,
+                          IdMTLFence fence, Ref<Texture> exposure, const Usages& usages)
+    :   mLifecycle(lifecycle), mDesc(desc), mScaler(scaler), mFence(fence), mExposure(exposure), mUsages(usages)
+    {
+    }
+
+    ~MetalTemporalUpscaler() override
+    {
+        // The scaler, with its history and the pipelines MetalFX made for it, and the fence live until the frames
+        // that used them have finished; the exposure texture goes as any texture does.
+        IdMTL4FXTemporalScaler scaler = mScaler;
+        IdMTLFence fence = mFence;
+        mLifecycle.release([scaler, fence]() mutable
+        {
+            scaler = nil;
+            fence = nil;
+        });
+    }
+
+    const TemporalUpscalerDesc& desc() const override { return mDesc; }
+    U8 colorUsage() const override { return mUsages.color; }
+    U8 depthUsage() const override { return mUsages.depth; }
+    U8 motionUsage() const override { return mUsages.motion; }
+    U8 reactiveUsage() const override { return mUsages.reactive; }
+    U8 outputUsage() const override { return mUsages.output; }
+    IdMTL4FXTemporalScaler scaler() const { return mScaler; }
+    IdMTLFence fence() const { return mFence; }
+    IdMTLTexture exposure() const { return metalTexture(mExposure.get()); }
+
+private:
+    FrameLifecycle& mLifecycle;
+    const TemporalUpscalerDesc mDesc;
+    IdMTL4FXTemporalScaler mScaler;
+    IdMTLFence mFence;
+    Ref<Texture> mExposure;
+    const Usages mUsages;
+};
+
+bool metalTemporalUpscaler(IdMTLDevice device, F32& minScale, F32& maxScale)
+{
+    minScale = 0.f;
+    maxScale = 0.f;
+    // MTLFXTemporalScaler.h's supportsMetal4FX:, for the MTL4FXTemporalScaler that Metal 4's command buffers take.
+    if (!device || ![MTLFXTemporalScalerDescriptor class] || ![MTLFXTemporalScalerDescriptor supportsMetal4FX:device])
+    {
+        static bool logged_none = false;
+        if (!logged_none)
+        {
+            logged_none = true;
+            LL_INFOS("RHI") << "MetalFX temporal scaler: not on this device" << LL_ENDL;
+        }
+        return false;
+    }
+    minScale = [MTLFXTemporalScalerDescriptor supportedInputContentMinScaleForDevice:device];
+    maxScale = [MTLFXTemporalScalerDescriptor supportedInputContentMaxScaleForDevice:device];
+    static bool logged = false;
+    if (!logged)
+    {
+        logged = true;
+        LL_INFOS("RHI") << "MetalFX temporal scaler: supported input content scale " << minScale << " to " << maxScale
+                        << " on " << [device.name UTF8String] << LL_ENDL;
+    }
+    return true;
+}
+
+namespace
+{
+    // The 1x1 R16Float exposure of 1 a temporal scaler reads (MTLFXTemporalScaler.h's exposureTexture): Shared and
+    // filled at creation, as the default textures are.
+    API_AVAILABLE(macos(26.0)) Ref<Texture> metalUnitExposure(MetalDevice& device, const std::string& name)
+    {
+        MTLTextureDescriptor* descriptor = [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:MTLPixelFormatR16Float
+                                                                                              width:1
+                                                                                             height:1
+                                                                                          mipmapped:NO];
+        descriptor.storageMode = MTLStorageModeShared;
+        descriptor.usage = MTLTextureUsageShaderRead;
+        IdMTLTexture texture = [device.mtlDevice() newTextureWithDescriptor:descriptor];
+        if (!texture)
+        {
+            return nullptr;
+        }
+        const U16 one = 0x3C00; // 1.0 as a half
+        [texture replaceRegion:MTLRegionMake2D(0, 0, 1, 1) mipmapLevel:0 withBytes:&one bytesPerRow:2];
+        if (device.debugLabels())
+        {
+            texture.label = metalString(name);
+        }
+        device.residency().admit(texture, name);
+        TextureDesc desc;
+        desc.format = Format::R16Float;
+        desc.usage = TEXTURE_SAMPLED;
+        Ref<MetalTexture> result = new MetalTexture(device, desc, texture);
+        result->setDebugName(name);
+        return result;
+    }
+
+    API_AVAILABLE(macos(26.0)) MTLTextureUsage reactiveUsageOf(IdMTL4FXTemporalScaler scaler)
+    {
+        if (@available(macOS 27.0, *))
+        {
+            return scaler.reactiveMaskTextureUsage;
+        }
+#pragma clang diagnostic push
+#pragma clang diagnostic ignored "-Wdeprecated-declarations"
+        return scaler.reactiveTextureUsage; // macOS 14.4 to 26's name
+#pragma clang diagnostic pop
+    }
+}
+
+Ref<TemporalUpscaler> createMetalTemporalUpscaler(MetalDevice& device, const TemporalUpscalerDesc& desc)
+{
+    std::ostringstream name;
+    name << "MetalFX temporal " << desc.inputWidth << "x" << desc.inputHeight << " to " << desc.outputWidth << "x"
+         << desc.outputHeight;
+    const std::string why = validate(desc, device.capabilities());
+    if (!why.empty())
+    {
+        warnCreateFailed("temporal upscaler", name.str(), why);
+        return nullptr;
+    }
+    IdMTL4Compiler compiler = device.compiler();
+    if (!compiler)
+    {
+        return nullptr; // compiler() wrote the WARN line
+    }
+    // The textures' formats and sizes (MTLFXTemporalScaler.h's MTLFXTemporalScalerDescriptor). The exposure is given,
+    // not measured by MetalFX: the input is a finished picture whose exposure was applied before it.
+    MTLFXTemporalScalerDescriptor* descriptor = [MTLFXTemporalScalerDescriptor new];
+    descriptor.colorTextureFormat = metalPixelFormat(desc.colorFormat);
+    descriptor.depthTextureFormat = metalPixelFormat(desc.depthFormat);
+    descriptor.motionTextureFormat = metalPixelFormat(desc.motionFormat);
+    descriptor.outputTextureFormat = metalPixelFormat(desc.outputFormat);
+    descriptor.inputWidth = desc.inputWidth;
+    descriptor.inputHeight = desc.inputHeight;
+    descriptor.outputWidth = desc.outputWidth;
+    descriptor.outputHeight = desc.outputHeight;
+    descriptor.autoExposureEnabled = NO;
+    descriptor.inputContentPropertiesEnabled = NO;
+    descriptor.requiresSynchronousInitialization = NO;
+    if (desc.reactiveFormat != Format::Unknown)
+    {
+        descriptor.reactiveMaskTextureEnabled = YES;
+        descriptor.reactiveMaskTextureFormat = metalPixelFormat(desc.reactiveFormat);
+    }
+    const U64 before = device.mtlDevice().currentAllocatedSize;
+    IdMTL4FXTemporalScaler scaler = [descriptor newTemporalScalerWithDevice:device.mtlDevice() compiler:compiler];
+    if (!scaler)
+    {
+        warnCreateFailed("temporal upscaler", name.str(), "MetalFX gave no temporal scaler for these sizes and formats");
+        return nullptr;
+    }
+    const U64 after = device.mtlDevice().currentAllocatedSize;
+    MetalTemporalUpscaler::Usages usages;
+    const std::optional<U8> color = textureUsageOf(scaler.colorTextureUsage);
+    const std::optional<U8> depth = textureUsageOf(scaler.depthTextureUsage);
+    const std::optional<U8> motion = textureUsageOf(scaler.motionTextureUsage);
+    // The reactive mask's usage counts only for a scaler made with a mask.
+    const bool masked = desc.reactiveFormat != Format::Unknown;
+    const std::optional<U8> reactive = masked ? textureUsageOf(reactiveUsageOf(scaler)) : std::optional<U8>(U8(0));
+    const std::optional<U8> output = textureUsageOf(scaler.outputTextureUsage);
+    if (!color || !depth || !motion || !reactive || !output)
+    {
+        warnCreateFailed("temporal upscaler", name.str(),
+                         "MetalFX asks for a texture usage the backend's textures do not have (colour " +
+                             std::to_string(U64(scaler.colorTextureUsage)) + ", depth " +
+                             std::to_string(U64(scaler.depthTextureUsage)) + ", motion " +
+                             std::to_string(U64(scaler.motionTextureUsage)) + ", reactive " +
+                             (masked ? std::to_string(U64(reactiveUsageOf(scaler))) : std::string("none asked")) +
+                             ", output " + std::to_string(U64(scaler.outputTextureUsage)) + ")");
+        return nullptr;
+    }
+    usages.color = *color;
+    usages.depth = *depth;
+    usages.motion = *motion;
+    usages.reactive = *reactive;
+    usages.output = *output;
+    IdMTLFence fence = [device.mtlDevice() newFence];
+    if (!fence)
+    {
+        warnCreateFailed("temporal upscaler", name.str(), "Metal gave no fence");
+        return nullptr;
+    }
+    if (device.debugLabels())
+    {
+        fence.label = metalString(name.str());
+    }
+    Ref<Texture> exposure = metalUnitExposure(device, name.str() + " exposure");
+    if (exposure.isNull())
+    {
+        warnCreateFailed("temporal upscaler", name.str(), "Metal gave no exposure texture");
+        return nullptr;
+    }
+    LL_INFOS("RHI") << name.str() << ": made, the device's allocation " << ((S64)after - (S64)before) / (1024 * 1024)
+                    << " MB larger; usages colour " << U32(usages.color) << ", depth " << U32(usages.depth)
+                    << ", motion " << U32(usages.motion) << ", reactive " << U32(usages.reactive) << ", output "
+                    << U32(usages.output) << LL_ENDL;
+    Ref<TemporalUpscaler> result = new MetalTemporalUpscaler(device.lifecycle(), desc, scaler, fence, exposure, usages);
+    result->setDebugName(name.str());
+    return result;
+}
+
+IdMTL4FXTemporalScaler metalTemporalScaler(TemporalUpscaler* upscaler)
+{
+    return upscaler ? static_cast<MetalTemporalUpscaler*>(upscaler)->scaler() : nil;
+}
+
+IdMTLFence metalTemporalScalerFence(TemporalUpscaler* upscaler)
+{
+    return upscaler ? static_cast<MetalTemporalUpscaler*>(upscaler)->fence() : nil;
+}
+
+IdMTLTexture metalTemporalScalerExposure(TemporalUpscaler* upscaler)
+{
+    return upscaler ? static_cast<MetalTemporalUpscaler*>(upscaler)->exposure() : nil;
 }
 
 MetalTextureStorage metalTextureStorage(const TextureDesc& desc)

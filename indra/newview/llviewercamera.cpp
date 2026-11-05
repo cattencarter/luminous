@@ -377,11 +377,19 @@ void LLViewerCamera::setPerspective(bool for_selection,
     // fraction of a pixel, so that the frames' average smooths every edge
     F32 jitter_x = 0.f;
     F32 jitter_y = 0.f;
+    const glm::mat4 proj_before_jitter = proj_mat;
+    bool live_jitter = false;
     if (!for_selection && LuminousPhotoMode::snapshotJitter(jitter_x, jitter_y))
     {
         const LLRect& view = gViewerWindow->getWorldViewRectRaw();
         proj_mat = glm::translate(glm::vec3(2.f * jitter_x / (F32)llmax(view.getWidth(), 1),
                                             2.f * jitter_y / (F32)llmax(view.getHeight(), 1), 0.f)) * proj_mat;
+    }
+    // ... and the live view's for MetalFX temporal, already in clip units
+    else if (!for_selection && LuminousPhotoMode::liveJitter(x, y_from_bot, width, height, jitter_x, jitter_y))
+    {
+        proj_mat = glm::translate(glm::vec3(jitter_x, jitter_y, 0.f)) * proj_mat;
+        live_jitter = true;
     }
     // ... and seen through another point of the lens's aperture: the eye
     // moved across it (below), the picture moved back so that the plane in
@@ -404,6 +412,11 @@ void LLViewerCamera::setPerspective(bool for_selection,
     proj_mat *= glm::perspective(fov_y,aspect,z_near,z_far);
     const glm::mat4 proj_centre = proj_mat; // <Luminous/> before the lens's shift, for culling
     proj_mat = lens_shift * proj_mat;       // <Luminous/>
+    // <Luminous> and without MetalFX's live jitter, for culling: the frustum planes, and the sun's shadow cascades
+    // fitted to the frustum, hold still while the picture moves by a fraction of a texel from frame to frame
+    const glm::mat4 proj_still = live_jitter ? proj_before_jitter * glm::perspective(fov_y, aspect, z_near, z_far)
+                                             : proj_centre;
+    // </Luminous>
 
     gGL.loadMatrix(glm::value_ptr(proj_mat));
 
@@ -453,14 +466,21 @@ void LLViewerCamera::setPerspective(bool for_selection,
     // from the camera's own origin, so an eye a few centimetres off it (with
     // the near plane a few centimetres away) would tilt the frustum by tens
     // of degrees, and whole objects would go missing from some of a render's
-    // frames.
+    // frames. Both, and a live view moved by MetalFX's jitter, cull from the
+    // projection without the jitter (proj_still).
     if (lens)
     {
-        set_current_projection(proj_centre);
+        set_current_projection(proj_still);
         set_current_modelview(modelview_centre);
         updateFrustumPlanes(*this);
         set_current_projection(proj_mat);
         set_current_modelview(modelview);
+    }
+    else if (live_jitter)
+    {
+        set_current_projection(proj_still);
+        updateFrustumPlanes(*this);
+        set_current_projection(proj_mat);
     }
     else
     // </Luminous>

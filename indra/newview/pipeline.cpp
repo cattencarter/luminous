@@ -1495,6 +1495,7 @@ void LLPipeline::releaseGLBuffers()
     mPostPingMap.release();
     mPostPongMap.release();
     LuminousPhotoMode::releaseBuffers(); // <Luminous/> Photo mode
+    LuminousMetal::releaseSettledTargets(); // <Luminous/> MetalFX temporal's averaged blur and glow
 
     mFXAAMap.release();
 
@@ -4575,13 +4576,17 @@ void LLPipeline::renderGeomPostDeferred(LLCamera& camera)
 
         if (cur_type >= atmospherics_pass && !done_atmospherics)
         { // do atmospherics against depth buffer before rendering alpha
+            LuminousMetal::temporalAlphaAfter(&mRT->screen);  // <Luminous/> the alpha drawn since the last copy
             doAtmospherics();
+            LuminousMetal::temporalAlphaBefore(&mRT->screen); // <Luminous/> the frame before the alpha after the haze
             done_atmospherics = true;
         }
 
         if (cur_type >= water_haze_pass && !done_water_haze)
         { // do water haze against depth buffer before rendering alpha
+            LuminousMetal::temporalAlphaAfter(&mRT->screen);  // <Luminous/>
             doWaterHaze();
+            LuminousMetal::temporalAlphaBefore(&mRT->screen); // <Luminous/>
             done_water_haze = true;
         }
 
@@ -8140,6 +8145,7 @@ void LLPipeline::copyScreenSpaceReflections(LLRenderTarget* src, LLRenderTarget*
 
         dst->flush();
         ++mScreenSpaceReflectionCopies; // [Viewer Lab]
+        LuminousMetal::temporalSceneMapCopied(); // <Luminous/> MetalFX temporal's jitter, for next frame's reflections
         // <Luminous> on Metal, the mip chain photo mode's reflections read in the scene map's place
         if (dst == &mSceneMap)
         {
@@ -8170,6 +8176,20 @@ void LLPipeline::generateGlow(LLRenderTarget* src)
         gGlowExtractProgram.uniform3f(LLShaderMgr::GLOW_WARMTH_WEIGHTS, warmthWeights.mV[0], warmthWeights.mV[1],
             warmthWeights.mV[2]);
         gGlowExtractProgram.uniform1f(LLShaderMgr::GLOW_WARMTH_AMOUNT, warmthAmount);
+        // <Luminous> a glow MetalFX temporal's frames settle: the jittered frame
+        // read where the camera without the jitter saw it, at four points
+        // across each glow texel's part of it
+        {
+            static LLStaticHashedString s_jitter("luminous_jitter_uv");
+            static LLStaticHashedString s_spread("luminous_glow_spread");
+            F32 jitter_u = 0.f;
+            F32 jitter_v = 0.f;
+            const bool settles = LuminousMetal::temporalSettlesGlow(jitter_u, jitter_v);
+            gGlowExtractProgram.uniform2f(s_jitter, jitter_u, jitter_v);
+            gGlowExtractProgram.uniform2f(s_spread, settles ? 0.25f / (F32)mGlow[2].getWidth() : 0.f,
+                                          settles ? 0.25f / (F32)mGlow[2].getHeight() : 0.f);
+        }
+        // </Luminous>
 
         if (RenderGlowNoise)
         {
@@ -8604,6 +8624,11 @@ void LLPipeline::combineGlow(LLRenderTarget* src, LLRenderTarget* dst)
 {
     LL_PROFILE_GPU_ZONE("glow combine");
 
+    // <Luminous> in a frame drawn for MetalFX temporal, the glow averaged
+    // with the frames before
+    LLRenderTarget* luminous_glow = LuminousMetal::temporalSettleGlow(&mGlow[1]);
+    // </Luminous>
+
     // Go ahead and do our glow combine here in our destination.  We blit this later into the front buffer.
     dst->bindTarget();
 
@@ -8612,7 +8637,17 @@ void LLPipeline::combineGlow(LLRenderTarget* src, LLRenderTarget* dst)
         gGlowCombineProgram.bind();
 
         gGlowCombineProgram.bindTexture(LLShaderMgr::DEFERRED_DIFFUSE, src);
-        gGlowCombineProgram.bindTexture(LLShaderMgr::DEFERRED_EMISSIVE, &mGlow[1]);
+        gGlowCombineProgram.bindTexture(LLShaderMgr::DEFERRED_EMISSIVE, luminous_glow); // <Luminous/>
+        // <Luminous> the glow, made where the camera without MetalFX temporal's
+        // jitter saw the frame, put back where the jittered camera sees it
+        {
+            static LLStaticHashedString s_jitter("luminous_jitter_uv");
+            F32 jitter_u = 0.f;
+            F32 jitter_v = 0.f;
+            LuminousMetal::temporalSettlesGlow(jitter_u, jitter_v);
+            gGlowCombineProgram.uniform2f(s_jitter, jitter_u, jitter_v);
+        }
+        // </Luminous>
 
         mScreenTriangleVB->setBuffer();
         mScreenTriangleVB->drawArrays(LLRender::TRIANGLES, 0, 3);
@@ -8798,6 +8833,28 @@ bool LLPipeline::renderSnapshotFrame(LLRenderTarget* src, LLRenderTarget* dst)
         bottom = 1.f;        
 
     }
+    // <Luminous> the guides are noted before the frame is drawn, as they are drawn over the interface either way
+    if (show_frame && show_guides && gPipeline.hasRenderDebugFeatureMask(LLPipeline::RENDER_DEBUG_FEATURE_UI))
+    {
+        mSnapshotGuideState.active = true;
+        mSnapshotGuideState.show_guides = true;
+        mSnapshotGuideState.left = left;
+        mSnapshotGuideState.right = right;
+        mSnapshotGuideState.bottom = bottom;
+        mSnapshotGuideState.top = top;
+        mSnapshotGuideState.color = guide_color();
+        mSnapshotGuideState.thickness = guide_thickness();
+        mSnapshotGuideState.visibility = llclamp(guide_visibility_value, 0.f, 1.f);
+        mSnapshotGuideState.style = guide_style;
+        mSnapshotGuideState.golden_orientation = golden_orientation;
+    }
+    // A frame drawn for MetalFX's temporal scaler leaves the capture frame out: it is drawn over the scaled frame after
+    // the present, at the window's size (LuminousMetal::drawOverlays).
+    if (LuminousMetal::overlayCaptureFrame(left, top, right, bottom, border_color().mV, border_thickness))
+    {
+        return false;
+    }
+    // </Luminous>
     LL_PROFILE_GPU_ZONE("Snapshot Frame");
     dst->bindTarget();
     LLGLSLShader *shader = &gPostSnapshotFrameProgram;
@@ -8846,21 +8903,6 @@ bool LLPipeline::renderSnapshotFrame(LLRenderTarget* src, LLRenderTarget* dst)
     shader->disableTexture(LLShaderMgr::DEFERRED_DIFFUSE, src->getUsage());
     shader->unbind();
     dst->flush();
-
-    if (show_frame && show_guides && gPipeline.hasRenderDebugFeatureMask(LLPipeline::RENDER_DEBUG_FEATURE_UI))
-    {
-        mSnapshotGuideState.active = true;
-        mSnapshotGuideState.show_guides = true;
-        mSnapshotGuideState.left = left;
-        mSnapshotGuideState.right = right;
-        mSnapshotGuideState.bottom = bottom;
-        mSnapshotGuideState.top = top;
-        mSnapshotGuideState.color = guide_color();
-        mSnapshotGuideState.thickness = guide_thickness();
-        mSnapshotGuideState.visibility = llclamp(guide_visibility_value, 0.f, 1.f);
-        mSnapshotGuideState.style = guide_style;
-        mSnapshotGuideState.golden_orientation = golden_orientation;
-    }
 
     return true;
 }
@@ -9092,6 +9134,15 @@ void LLPipeline::renderDoF(LLRenderTarget* src, LLRenderTarget* dst, bool lumino
             U32 dof_width = (U32)(mRT->screen.getWidth() * CameraDoFResScale);
             U32 dof_height = (U32)(mRT->screen.getHeight() * CameraDoFResScale);
 
+            // <Luminous> a blur MetalFX temporal's frames settle: gathered where
+            // the camera without the jitter saw the frame, and read back where
+            // the jittered camera sees it
+            static LLStaticHashedString s_jitter("luminous_jitter_uv");
+            F32 jitter_u = 0.f;
+            F32 jitter_v = 0.f;
+            LuminousMetal::temporalSettlesDoF(jitter_u, jitter_v);
+            // </Luminous>
+
             { // perform DoF sampling at half-res (preserve alpha channel)
                 src->bindTarget();
                 gGL.setViewport(0, 0, dof_width, dof_height);
@@ -9100,6 +9151,7 @@ void LLPipeline::renderDoF(LLRenderTarget* src, LLRenderTarget* dst, bool lumino
 
                 gDeferredPostProgram.bind();
                 gDeferredPostProgram.bindTexture(LLShaderMgr::DEFERRED_DIFFUSE, &mRT->deferredLight, LLTexUnit::TFO_POINT);
+                gDeferredPostProgram.uniform2f(s_jitter, jitter_u, jitter_v); // <Luminous/>
 
                 gDeferredPostProgram.uniform2f(LLShaderMgr::DEFERRED_SCREEN_RES, (GLfloat)dst->getWidth(), (GLfloat)dst->getHeight());
                 // <FS:Beq> FIRE-13989 DOF should be equivalent in all resolutions of the same rendered image
@@ -9117,13 +9169,19 @@ void LLPipeline::renderDoF(LLRenderTarget* src, LLRenderTarget* dst, bool lumino
                 gGL.setColorMask(true, true);
             }
 
+            // <Luminous> in a frame drawn for MetalFX temporal, the blur averaged
+            // with the frames before
+            LLRenderTarget* luminous_blur = LuminousMetal::temporalSettleDoF(src, dof_width, dof_height);
+            // </Luminous>
+
             { // combine result based on alpha
 
                 dst->bindTarget();
                 gGL.setViewport(0, 0, dst->getWidth(), dst->getHeight());
 
                 gDeferredDoFCombineProgram.bind();
-                gDeferredDoFCombineProgram.bindTexture(LLShaderMgr::DEFERRED_DIFFUSE, src, LLTexUnit::TFO_POINT);
+                gDeferredDoFCombineProgram.bindTexture(LLShaderMgr::DEFERRED_DIFFUSE, luminous_blur, LLTexUnit::TFO_POINT); // <Luminous/>
+                gDeferredDoFCombineProgram.uniform2f(s_jitter, jitter_u, jitter_v); // <Luminous/>
                 gDeferredDoFCombineProgram.bindTexture(LLShaderMgr::DEFERRED_LIGHT, &mRT->deferredLight, LLTexUnit::TFO_POINT);
 
                 gDeferredDoFCombineProgram.uniform2f(LLShaderMgr::DEFERRED_SCREEN_RES, (GLfloat)dst->getWidth(), (GLfloat)dst->getHeight());
@@ -9283,12 +9341,17 @@ void LLPipeline::renderFinalize()
         std::swap(sourceBuffer, targetBuffer);
     }
 
-     if (RenderFSAAType == 1)
+    // <Luminous> MetalFX temporal smooths the edges itself, from the jittered frames; FXAA, which draws at the
+    // window's size, is also left out of a frame not drawn for it while the live view is smaller for it
+    const bool luminous_temporal = LuminousMetal::temporalFrame();
+    const bool luminous_fxaa = !luminous_temporal && !LuminousPhotoMode::fxaaLeftOut();
+    // </Luminous>
+     if (RenderFSAAType == 1 && luminous_fxaa) // <Luminous/>
     {
         applyFXAA(sourceBuffer, targetBuffer);
         std::swap(sourceBuffer, targetBuffer);
     }
-    else if (RenderFSAAType == 2)
+    else if (RenderFSAAType == 2 && !luminous_temporal) // <Luminous/>
     {
         generateSMAABuffers(sourceBuffer);
         applySMAA(sourceBuffer, targetBuffer);
@@ -9386,6 +9449,13 @@ void LLPipeline::renderFinalize()
     luminous_present.frame = sourceBuffer;
     const bool luminous_presented = LuminousMetal::metal() && LuminousPhotoMode::liveViewSmaller()
         && LuminousMetal::drawNative(LuminousMetal::Pass::Upscale, luminous_present);
+    if (LuminousMetal::metal() && !LuminousPhotoMode::liveViewSmaller() && !gSnapshot && !gCubeSnapshot)
+    {
+        // MetalFX's scaler and frame not kept while nothing is scaled; a snapshot's frame at full size passing
+        // through leaves them for the live view after it
+        LuminousMetal::liveViewNotScaled();
+    }
+    LuminousMetal::temporalAfterPresent(); // the projection without MetalFX temporal's jitter from here on
     LLGLSLShader& present = LuminousPhotoMode::upscaling() ? gLuminousPresentProgram : gDeferredPostNoDoFNoiseProgram;
     if (!luminous_presented)
     {
@@ -9405,6 +9475,9 @@ void LLPipeline::renderFinalize()
 
         present.unbind();
     }
+    // What a frame drawn for MetalFX's temporal scaler left out, fixed to the screen (the capture frame, the picture
+    // frame), over the scaled frame at the window's size
+    LuminousMetal::drawOverlays();
     // </Luminous>
 
     gGL.setSceneBlendType(LLRender::BT_ALPHA);
@@ -9823,6 +9896,18 @@ void LLPipeline::renderDeferredLighting()
                 sun_shader.uniform2f(LLShaderMgr::DEFERRED_SCREEN_RES,
                                               (GLfloat)deferred_light_target->getWidth(),
                                               (GLfloat)deferred_light_target->getHeight());
+
+                // <Luminous> The projector slots no projector holds: the pass writes their channels as 1 without
+                // reading their maps, as a spot light reads its slot's channel only while it holds the slot
+                // (setupSpotLight's PROJECTOR_SHADOW_INDEX). LuminousSunReadsEmptyProjectorSlots reads them all.
+                {
+                    static LLCachedControl<bool> read_empty_slots(gSavedSettings, "LuminousSunReadsEmptyProjectorSlots", false);
+                    static LLStaticHashedString s_slots_empty("luminous_spot_slots_empty");
+                    const S32 slots_empty = read_empty_slots ? 0
+                        : (mShadowSpotLight[0].isNull() ? 1 : 0) | (mShadowSpotLight[1].isNull() ? 2 : 0);
+                    sun_shader.uniform1i(s_slots_empty, slots_empty);
+                }
+                // </Luminous>
 
                 {
                     LLGLDisable   blend(GL_BLEND);
@@ -10275,6 +10360,7 @@ void LLPipeline::renderDeferredLighting()
         // pools on the probe faces that skip those rebinds
         screen_target->setDepthAccess(LLRenderTarget::DEPTH_READ_WRITE);
         renderGeomPostDeferred(*LLViewerCamera::getInstance());
+        LuminousMetal::temporalAlphaAfter(screen_target); // <Luminous/> MetalFX temporal's mask: the last alpha
         popRenderTypeMask();
     }
 
@@ -10304,6 +10390,17 @@ void LLPipeline::doAtmospherics()
 
     if (RenderDeferredAtmospheric)
     {
+        // <Luminous> on Metal the haze samples the frame's own depth, which screen's pass holds read-only meanwhile,
+        // in place of a copy
+        const bool own_depth = LuminousMetal::metal();
+        if (own_depth)
+        {
+            gGL.flush();
+            mRT->screen.setDepthAccess(LLRenderTarget::DEPTH_READ_ONLY);
+            gGL.setViewport(0, 0, S32(mRT->screen.getWidth()), S32(mRT->screen.getHeight()));
+        }
+        else
+        // </Luminous>
         {
             // copy depth buffer for use in haze shader (use water displacement map as temp storage)
             LLGLDepthTest depth(GL_TRUE, GL_TRUE, GL_ALWAYS);
@@ -10338,7 +10435,7 @@ void LLPipeline::doAtmospherics()
         LLGLSLShader& haze_shader = gHazeProgram;
 
         LL_PROFILE_GPU_ZONE("haze");
-        bindDeferredShader(haze_shader, nullptr, &mWaterDis);
+        bindDeferredShader(haze_shader, nullptr, own_depth ? nullptr : &mWaterDis); // <Luminous/> the frame's depth on Metal
 
         LLEnvironment& environment = LLEnvironment::instance();
         haze_shader.uniform1i(LLShaderMgr::SUN_UP_FACTOR, environment.getIsSunUp() ? 1 : 0);
@@ -10355,6 +10452,14 @@ void LLPipeline::doAtmospherics()
         unbindDeferredShader(haze_shader);
 
         gGL.setSceneBlendType(LLRender::BT_ALPHA);
+
+        // <Luminous>
+        if (own_depth)
+        {
+            gGL.flush();
+            mRT->screen.setDepthAccess(LLRenderTarget::DEPTH_READ_WRITE);
+        }
+        // </Luminous>
     }
 }
 
@@ -10368,6 +10473,17 @@ void LLPipeline::doWaterHaze()
 
     if (RenderDeferredAtmospheric)
     {
+        // <Luminous> on Metal the haze samples the frame's own depth, which screen's pass holds read-only meanwhile,
+        // in place of a copy
+        const bool own_depth = LuminousMetal::metal();
+        if (own_depth)
+        {
+            gGL.flush();
+            mRT->screen.setDepthAccess(LLRenderTarget::DEPTH_READ_ONLY);
+            gGL.setViewport(0, 0, S32(mRT->screen.getWidth()), S32(mRT->screen.getHeight()));
+        }
+        else
+        // </Luminous>
         // copy depth buffer for use in haze shader (use water displacement map as temp storage)
         {
             LLGLDepthTest depth(GL_TRUE, GL_TRUE, GL_ALWAYS);
@@ -10403,7 +10519,7 @@ void LLPipeline::doWaterHaze()
         LLGLSLShader& haze_shader = gHazeWaterProgram;
 
         LL_PROFILE_GPU_ZONE("haze");
-        bindDeferredShader(haze_shader, nullptr, &mWaterDis);
+        bindDeferredShader(haze_shader, nullptr, own_depth ? nullptr : &mWaterDis); // <Luminous/> the frame's depth on Metal
 
         haze_shader.uniform4fv(LLShaderMgr::WATER_WATERPLANE, 1, LLDrawPoolAlpha::sWaterPlane.mV);
 
@@ -10439,6 +10555,14 @@ void LLPipeline::doWaterHaze()
 
 
         gGL.setSceneBlendType(LLRender::BT_ALPHA);
+
+        // <Luminous>
+        if (own_depth)
+        {
+            gGL.flush();
+            mRT->screen.setDepthAccess(LLRenderTarget::DEPTH_READ_WRITE);
+        }
+        // </Luminous>
     }
 }
 
@@ -10783,6 +10907,17 @@ void LLPipeline::bindReflectionProbes(LLGLSLShader& shader)
     {
         LuminousPhotoMode::bindSSRUniforms(shader);
     }
+    // <Luminous> MetalFX temporal: the scene map holds last frame's picture, drawn with last frame's jitter, while the
+    // reflections project into it with this frame's; the difference is added where they project (0 without)
+    if (LuminousMetal::metal())
+    {
+        static LLStaticHashedString s_ssr_jitter("luminous_ssr_jitter");
+        F32 ssr_jitter_x = 0.f;
+        F32 ssr_jitter_y = 0.f;
+        LuminousMetal::ssrJitterOffset(ssr_jitter_x, ssr_jitter_y);
+        shader.uniform2f(s_ssr_jitter, ssr_jitter_x, ssr_jitter_y);
+    }
+    // </Luminous>
 
     channel = shader.enableTexture(LLShaderMgr::SCENE_DEPTH);
     if (channel > -1)
@@ -11403,6 +11538,16 @@ void LLPipeline::generateSunShadow(LLCamera& camera)
     glm::mat4 saved_proj = get_current_projection();
     glm::mat4 saved_view = get_current_modelview();
     glm::mat4 inv_view = glm::inverse(saved_view);
+    // <Luminous> the sun's cascades fitted to the main camera without MetalFX's live jitter, so the shadow maps
+    // hold still while the picture moves by a fraction of a texel from frame to frame
+    glm::mat4 luminous_fit_proj = saved_proj;
+    F32 luminous_jitter_x = 0.f;
+    F32 luminous_jitter_y = 0.f;
+    if (LuminousMetal::liveJitterApplied(luminous_jitter_x, luminous_jitter_y))
+    {
+        luminous_fit_proj = glm::translate(glm::mat4(1.f), glm::vec3(-luminous_jitter_x, -luminous_jitter_y, 0.f)) * saved_proj;
+    }
+    // </Luminous>
 
     glm::mat4 view[6];
     glm::mat4 proj[6];
@@ -11541,7 +11686,7 @@ void LLPipeline::generateSunShadow(LLCamera& camera)
 
             //restore render matrices
             set_current_modelview(saved_view);
-            set_current_projection(saved_proj);
+            set_current_projection(luminous_fit_proj); // <Luminous/> saved_proj without the live jitter
 
             LLVector3 eye = camera.getOrigin();
             llassert(eye.isFinite());

@@ -7,22 +7,15 @@
 // other two when aberration is on. The alpha, Second Life's glow mask, is the pixel's own throughout.
 
 #include "lenscommon.h"
+#include "luminous/common/distortion.h"
 #include "luminous/common/fullscreen.h"
 
 namespace luminous_lens
 {
-    /// Where distortion reads the frame for uv: positive bows straight lines outward (barrel), negative pulls them in;
-    /// the frame scaled so that the picture's corners never read past its edges.
+    /// Where distortion reads the frame for uv (luminousDistorted, which MetalFX temporal's present shares).
     inline float2 distorted(constant LuminousLensParams& p, float2 uv)
     {
-        const float aspect = p.frameSize.x / p.frameSize.y;
-        const float2 q = (uv - 0.5) * float2(aspect, 1.0) * p.frameScale; // in the picture's units
-        const float k = p.distortion * 0.25;
-        const float picture_aspect = p.pictureAspect > 0.0 ? p.pictureAspect : aspect;
-        const float corner2 = dot(float2(picture_aspect, 1.0) * 0.5, float2(picture_aspect, 1.0) * 0.5);
-        const float fit = k > 0.0 ? 1.0 / (1.0 + k * corner2) : 1.0;
-        const float2 r = q * (1.0 + k * dot(q, q)) * fit;
-        return r / (float2(aspect, 1.0) * p.frameScale) + 0.5;
+        return luminousDistorted(uv, p.frameSize.x / p.frameSize.y, p.frameScale, p.distortion, p.pictureAspect);
     }
 
     /// Red and blue parted toward the picture's edges: eight points along the line to the centre, each weighted by

@@ -68,8 +68,10 @@ public:
     void draw() override;
 
     // Called from LLStartUp as the viewer reaches the world: the sidebar,
-    // folded to its column of tabs.
+    // folded to its column of tabs, while LuminousSidebar is on. Switching
+    // the setting opens or closes it from then on.
     static void openAtLogin();
+    void onClose(bool app_quitting) override;
 
     // How much of the right edge of the world the sidebar covers, column and
     // open box, with a small gap: Firestorm's notification icons
@@ -83,6 +85,14 @@ public:
     // A tab in the column was clicked: the open one folds the sidebar, any
     // other opens it there.
     void onSideTab(S32 index);
+    // The effects' buttons as their settings are now (also after a change
+    // made in Preferences > Graphics > Luminous).
+    void refreshEffectSwitches();
+    // The settings a menu of Preferences > Graphics > Luminous writes, for
+    // each effect whose menu is under prefs: its switch or amount, its
+    // render-only setting, the Firestorm switch it needs or turns on. The
+    // menus are bound to no setting, so Preferences' Cancel puts these back.
+    static void prefsEffectSettings(const LLView* prefs, std::vector<std::string>& names);
 
 private:
     void refreshShapeButtons(); ///< the Render tab's lying / standing buttons, by the chosen shape
@@ -109,7 +119,6 @@ private:
     void onDeletePreset();
     void onShowTab(const LLSD& tab);
     void onEffectMode(size_t index);
-    void refreshEffectSwitches();
     void refreshCapture();
     void fitTabs();
     void setFolded(bool folded);

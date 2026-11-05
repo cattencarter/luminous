@@ -4139,6 +4139,338 @@ namespace tut
             ensure_equals(at + "uploads and mipmaps: +0", tracker.transfers(), accepted + (checks ? 0 : 5));
         }
     }
+
+    /// An upscaler of a description that needs sampled input and a render target output, for the tracker's rules.
+    class TestUpscaler : public Upscaler
+    {
+    public:
+        explicit TestUpscaler(const UpscalerDesc& desc) : mDesc(desc) {}
+        const UpscalerDesc& desc() const override { return mDesc; }
+        U8 inputUsage() const override { return TEXTURE_SAMPLED; }
+        U8 outputUsage() const override { return TEXTURE_RENDER_TARGET; }
+
+    private:
+        const UpscalerDesc mDesc;
+    };
+
+    template<> template<>
+    void encoder_object::test<30>()
+    {
+        set_test_name("Upscalers: validate(UpscalerDesc), the default device and encoder refuse, and EncoderTracker::upscale "
+                      "takes the upscaler's textures outside passes and in a stack pass, refusing a compute pass and other "
+                      "passes with checks on and off");
+        Capabilities caps = testCapabilities();
+        UpscalerDesc desc;
+        desc.inputWidth = 640;
+        desc.inputHeight = 360;
+        desc.outputWidth = 1280;
+        desc.outputHeight = 720;
+        ensure("no spatial upscaler: refused", !validate(desc, caps).empty());
+        caps.spatialUpscaler = true;
+        ensure_equals("2x", validate(desc, caps), std::string());
+        UpscalerDesc same = desc;
+        same.outputWidth = 640;
+        same.outputHeight = 360;
+        ensure_equals("1x", validate(same, caps), std::string());
+        UpscalerDesc smaller = desc;
+        smaller.outputWidth = 320;
+        ensure("an output narrower than the input", !validate(smaller, caps).empty());
+        UpscalerDesc empty = desc;
+        empty.inputHeight = 0;
+        ensure("a size of 0", !validate(empty, caps).empty());
+        UpscalerDesc large = desc;
+        large.outputWidth = 20000;
+        ensure("larger than the largest texture", !validate(large, caps).empty());
+        for (Format format : { Format::Unknown, Format::BGRA8Unorm, Format::BC7_RGBA, Format::Depth32Float, Format::R32Uint })
+        {
+            UpscalerDesc wrong = desc;
+            wrong.outputFormat = format;
+            ensure("format " + std::to_string(U32(format)) + " refused", !validate(wrong, caps).empty());
+        }
+        UpscalerDesc half = desc;
+        half.inputFormat = half.outputFormat = Format::RGBA16Float;
+        half.color = UpscaleColor::HDR;
+        ensure_equals("RGBA16Float, HDR", validate(half, caps), std::string());
+
+        TestGpu gpu;
+        NativeCounter native;
+        Ref<TestDevice> device = new TestDevice(gpu, native);
+        {
+            CaptureLog log(LLError::LEVEL_WARN);
+            ensure("the default createUpscaler gives none", device->createUpscaler(desc).isNull());
+            log.messageWith("the spatial upscaler needs Metal");
+        }
+        Ref<Upscaler> upscaler = new TestUpscaler(desc);
+        Ref<Texture> input = device->createTexture(texture2D(640, 360), "input");
+        Ref<Texture> output = device->createTexture(target(1280, 720), "output");
+        Ref<Texture> wrongSize = device->createTexture(target(1280, 640), "wrong size");
+        Ref<Texture> wrongFormat = device->createTexture(target(1280, 720, Format::RGBA16Float), "wrong format");
+        Ref<Texture> notTarget = device->createTexture(texture2D(1280, 720), "not a target");
+        for (bool checks : { true, false })
+        {
+            const std::string at = checks ? "checks on: " : "checks off: ";
+            EncoderTracker tracker(caps, checks);
+            ensure_equals(at + "outside passes", tracker.upscale(upscaler.get(), input.get(), 640, 360, output.get()),
+                          std::string());
+            ensure_equals(at + "part of the input", tracker.upscale(upscaler.get(), input.get(), 320, 200, output.get()),
+                          std::string());
+            ensure_equals(at + "no upscaler", tracker.upscale(nullptr, input.get(), 640, 360, output.get()).empty(), !checks);
+            ensure_equals(at + "the output of another size",
+                          tracker.upscale(upscaler.get(), input.get(), 640, 360, wrongSize.get()).empty(), !checks);
+            ensure_equals(at + "the output of another format",
+                          tracker.upscale(upscaler.get(), input.get(), 640, 360, wrongFormat.get()).empty(), !checks);
+            ensure_equals(at + "an output without the upscaler's usage",
+                          tracker.upscale(upscaler.get(), input.get(), 640, 360, notTarget.get()).empty(), !checks);
+            ensure_equals(at + "the input as the output",
+                          tracker.upscale(upscaler.get(), input.get(), 640, 360, input.get()).empty(), !checks);
+            ensure_equals(at + "more content than the input",
+                          tracker.upscale(upscaler.get(), input.get(), 641, 360, output.get()).empty(), !checks);
+
+            RenderPassDesc stack = colorDepthPass(*device, "stack", 64);
+            stack.stack = true;
+            ensure(at + "a stack pass begins", tracker.beginRenderPass(stack).empty());
+            ensure_equals(at + "in a stack pass", tracker.upscale(upscaler.get(), input.get(), 640, 360, output.get()),
+                          std::string());
+            tracker.endRenderPass();
+            RenderPassDesc ordinary = colorDepthPass(*device, "ordinary", 64);
+            ensure(at + "an ordinary pass begins", tracker.beginRenderPass(ordinary).empty());
+            ensure(at + "refused in an ordinary pass",
+                   !tracker.upscale(upscaler.get(), input.get(), 640, 360, output.get()).empty());
+            tracker.endRenderPass();
+        }
+        Capabilities compute = caps;
+        compute.computePasses = true;
+        compute.nativePrograms = true;
+        for (bool checks : { true, false })
+        {
+            EncoderTracker tracker(compute, checks);
+            ensure("a compute pass begins", tracker.beginComputePass({ "compute" }).empty());
+            ensure(std::string(checks ? "checks on" : "checks off") + ": refused in a compute pass",
+                   !tracker.upscale(upscaler.get(), input.get(), 640, 360, output.get()).empty());
+            tracker.endComputePass();
+        }
+        {
+            CaptureLog log(LLError::LEVEL_WARN);
+            ensure("the default encoder refuses", !device->encoder().upscale(upscaler.get(), input.get(), 640, 360, output.get()));
+            log.messageWith("upscale: the spatial upscaler needs Metal");
+        }
+    }
+
+    /// A temporal upscaler whose inputs must be sampled and whose output is a render target, for the tracker's rules.
+    class TestTemporalUpscaler : public TemporalUpscaler
+    {
+    public:
+        explicit TestTemporalUpscaler(const TemporalUpscalerDesc& desc) : mDesc(desc) {}
+        const TemporalUpscalerDesc& desc() const override { return mDesc; }
+        U8 colorUsage() const override { return TEXTURE_SAMPLED; }
+        U8 depthUsage() const override { return TEXTURE_SAMPLED; }
+        U8 motionUsage() const override { return TEXTURE_SAMPLED; }
+        U8 reactiveUsage() const override { return TEXTURE_SAMPLED; }
+        U8 outputUsage() const override { return TEXTURE_RENDER_TARGET; }
+
+    private:
+        const TemporalUpscalerDesc mDesc;
+    };
+
+    template<> template<>
+    void encoder_object::test<31>()
+    {
+        set_test_name("Temporal upscalers: validate(TemporalUpscalerDesc) with the device's scales, the default device and "
+                      "encoder refuse, and EncoderTracker::upscaleTemporal takes the upscaler's textures outside passes and "
+                      "in a stack pass, refusing other passes, a compute pass, a missing or extra mask, the output as an "
+                      "input and a jitter past a texel");
+        Capabilities caps = testCapabilities();
+        TemporalUpscalerDesc desc;
+        desc.reactiveFormat = Format::R8Unorm;
+        desc.inputWidth = 640;
+        desc.inputHeight = 360;
+        desc.outputWidth = 1280;
+        desc.outputHeight = 720;
+        ensure("no temporal upscaler: refused", !validate(desc, caps).empty());
+        caps.temporalUpscaler = true;
+        caps.temporalMinScale = 1.f;
+        caps.temporalMaxScale = 3.f;
+        ensure_equals("2x", validate(desc, caps), std::string());
+        TemporalUpscalerDesc quarter = desc;
+        quarter.inputWidth = 320;
+        quarter.inputHeight = 180;
+        ensure("4x beyond the device's 3x", !validate(quarter, caps).empty());
+        TemporalUpscalerDesc smaller = desc;
+        smaller.outputWidth = 320;
+        ensure("an output narrower than the input", !validate(smaller, caps).empty());
+        TemporalUpscalerDesc depth = desc;
+        depth.depthFormat = Format::R32Float;
+        ensure("a depth format that is not Depth32Float", !validate(depth, caps).empty());
+        TemporalUpscalerDesc motion = desc;
+        motion.motionFormat = Format::RGBA16Float;
+        ensure("a motion format of four channels", !validate(motion, caps).empty());
+        TemporalUpscalerDesc reactive = desc;
+        reactive.reactiveFormat = Format::RGBA8Unorm;
+        ensure("a reactive format of four channels", !validate(reactive, caps).empty());
+        TemporalUpscalerDesc unmasked = desc;
+        unmasked.reactiveFormat = Format::Unknown;
+        ensure_equals("no reactive mask", validate(unmasked, caps), std::string());
+
+        TestGpu gpu;
+        NativeCounter native;
+        Ref<TestDevice> device = new TestDevice(gpu, native);
+        {
+            CaptureLog log(LLError::LEVEL_WARN);
+            ensure("the default createTemporalUpscaler gives none", device->createTemporalUpscaler(desc).isNull());
+            log.messageWith("the temporal upscaler needs Metal");
+        }
+        Ref<TemporalUpscaler> upscaler = new TestTemporalUpscaler(desc);
+        Ref<Texture> color = device->createTexture(texture2D(640, 360), "colour");
+        Ref<Texture> depthMap = device->createTexture(texture2D(640, 360, Format::Depth32Float), "depth");
+        Ref<Texture> motionMap = device->createTexture(texture2D(640, 360, Format::RG16Float), "motion");
+        Ref<Texture> mask = device->createTexture(texture2D(640, 360, Format::R8Unorm), "mask");
+        Ref<Texture> output = device->createTexture(target(1280, 720), "output");
+        Ref<Texture> wrongSize = device->createTexture(texture2D(320, 360, Format::RG16Float), "motion of another size");
+        // A 1x upscaler, whose colour and output have the same size, format and usages, so a target can be both.
+        TemporalUpscalerDesc same = desc;
+        same.outputWidth = 640;
+        same.outputHeight = 360;
+        ensure_equals("1x", validate(same, caps), std::string());
+        Ref<TemporalUpscaler> sameSize = new TestTemporalUpscaler(same);
+        Ref<Texture> both = device->createTexture(target(640, 360), "colour and output");
+        Ref<Texture> sameOutput = device->createTexture(target(640, 360), "1x output");
+        Ref<TemporalUpscaler> maskless = new TestTemporalUpscaler(unmasked);
+        TemporalUpscaleInputs inputs;
+        inputs.color = color.get();
+        inputs.depth = depthMap.get();
+        inputs.motion = motionMap.get();
+        inputs.reactive = mask.get();
+        inputs.output = output.get();
+        inputs.width = 640;
+        inputs.height = 360;
+        inputs.jitterX = 0.25f;
+        inputs.jitterY = -0.4f;
+        for (bool checks : { true, false })
+        {
+            const std::string at = checks ? "checks on: " : "checks off: ";
+            EncoderTracker tracker(caps, checks);
+            ensure_equals(at + "outside passes", tracker.upscaleTemporal(upscaler.get(), inputs), std::string());
+            TemporalUpscaleInputs unmaskedInputs = inputs;
+            unmaskedInputs.reactive = nullptr;
+            ensure_equals(at + "no mask for an upscaler with one",
+                          tracker.upscaleTemporal(upscaler.get(), unmaskedInputs).empty(), !checks);
+            TemporalUpscaleInputs sized = inputs;
+            sized.motion = wrongSize.get();
+            ensure_equals(at + "motion of another size", tracker.upscaleTemporal(upscaler.get(), sized).empty(), !checks);
+            TemporalUpscaleInputs far = inputs;
+            far.jitterX = 1.5f;
+            ensure_equals(at + "a jitter past a texel", tracker.upscaleTemporal(upscaler.get(), far).empty(), !checks);
+            TemporalUpscaleInputs self = inputs;
+            self.output = color.get();
+            ensure_equals(at + "the colour as a 2x upscaler's output, of the input's size",
+                          tracker.upscaleTemporal(upscaler.get(), self).empty(), !checks);
+            // The 1x upscaler's checks of size, format and usage all pass a target that is colour and output, so only
+            // the identity check refuses it.
+            TemporalUpscaleInputs selfSame = inputs;
+            selfSame.color = both.get();
+            selfSame.output = both.get();
+            const std::string selfWhy = tracker.upscaleTemporal(sameSize.get(), selfSame);
+            ensure(at + "the colour as the output: " + selfWhy,
+                   checks ? selfWhy.find("the output is one of the inputs") != std::string::npos : selfWhy.empty());
+            TemporalUpscaleInputs ownSame = selfSame;
+            ownSame.output = sameOutput.get();
+            ensure_equals(at + "a 1x upscaler with an output of its own", tracker.upscaleTemporal(sameSize.get(), ownSame),
+                          std::string());
+            const std::string extraWhy = tracker.upscaleTemporal(maskless.get(), inputs);
+            ensure(at + "a mask for an upscaler made without one: " + extraWhy,
+                   checks ? extraWhy.find("a reactive mask for an upscaler made without one") != std::string::npos
+                          : extraWhy.empty());
+            ensure_equals(at + "no mask for an upscaler made without one",
+                          tracker.upscaleTemporal(maskless.get(), unmaskedInputs), std::string());
+
+            RenderPassDesc stack = colorDepthPass(*device, "stack", 64);
+            stack.stack = true;
+            ensure(at + "a stack pass begins", tracker.beginRenderPass(stack).empty());
+            ensure_equals(at + "in a stack pass", tracker.upscaleTemporal(upscaler.get(), inputs), std::string());
+            tracker.endRenderPass();
+            RenderPassDesc ordinary = colorDepthPass(*device, "ordinary", 64);
+            ensure(at + "an ordinary pass begins", tracker.beginRenderPass(ordinary).empty());
+            ensure(at + "refused in an ordinary pass", !tracker.upscaleTemporal(upscaler.get(), inputs).empty());
+            tracker.endRenderPass();
+        }
+        Capabilities compute = caps;
+        compute.computePasses = true;
+        compute.nativePrograms = true;
+        for (bool checks : { true, false })
+        {
+            EncoderTracker tracker(compute, checks);
+            ensure("a compute pass begins", tracker.beginComputePass({ "compute" }).empty());
+            ensure(std::string(checks ? "checks on" : "checks off") + ": refused in a compute pass",
+                   !tracker.upscaleTemporal(upscaler.get(), inputs).empty());
+            tracker.endComputePass();
+        }
+        {
+            CaptureLog log(LLError::LEVEL_WARN);
+            ensure("the default encoder refuses", !device->encoder().upscaleTemporal(upscaler.get(), inputs));
+            log.messageWith("upscaleTemporal: the temporal upscaler needs Metal");
+        }
+    }
+
+    template<> template<>
+    void encoder_object::test<32>()
+    {
+        set_test_name("with draw checks off the tracker skips the pipeline's formats and primitive class, the vertex and index "
+                      "buffers' usage and the texture checks, and still refuses depth writes in a read-only pass, an "
+                      "indexed draw without its index buffer or past its end, and what the other checks refuse");
+        TestGpu gpu;
+        NativeCounter native;
+        Ref<TestDevice> device = new TestDevice(gpu, native);
+        EncoderTracker tracker(testCapabilities(), true, false);
+        RenderPassDesc pass = colorDepthPass(*device, "pass", 64);
+        ensure("the pass begins", tracker.beginRenderPass(pass).empty());
+        Ref<Program> simple = device->createProgram(program("objectSimpleProgram"));
+        Ref<Pipeline> hdr = device->getPipeline(*simple, colorPipeline(Format::RGBA16Float));
+        ensure("no format check when set", tracker.setPipeline(hdr.get()).empty());
+        ensure("bound", tracker.pipeline() == hdr.get());
+        ensure("no format or vertex buffer check at the draw", tracker.draw(PrimitiveType::Triangles).empty());
+        ensure("no primitive class check", tracker.draw(PrimitiveType::Points).empty());
+        BufferDesc indexDesc = vertexBuffer(64);
+        indexDesc.usage = BUFFER_INDEX;
+        Ref<Buffer> indices = device->createBuffer(indexDesc, {}, "indices");
+        Ref<Buffer> vertices = device->createBuffer(vertexBuffer(64), {}, "vertices");
+        VertexStreams beyond;
+        beyond.attributeMask = 1;
+        beyond.offset[0] = 128;
+        ensure("no vertex usage or stream check", tracker.setVertexBuffer(indices.get(), beyond).empty());
+        ensure("the vertex buffer bound", tracker.vertexBuffer() == indices.get());
+        ensure_contains("an indexed draw without an index buffer is still refused",
+                        tracker.drawIndexed(PrimitiveType::Triangles, 0, 3), "no index buffer is bound");
+        ensure("no index usage check", tracker.setIndexBuffer(vertices.get(), IndexType::U16).empty());
+        ensure_contains("indices past the buffer are still refused", tracker.drawIndexed(PrimitiveType::Triangles, 30, 4),
+                        "are beyond index buffer 'vertices'");
+        ensure("indices within the buffer", tracker.drawIndexed(PrimitiveType::Triangles, 0, 32).empty());
+        TextureDesc targetOnly = target(64, 64);
+        targetOnly.usage = TEXTURE_RENDER_TARGET;
+        Ref<Texture> notSampled = device->createTexture(targetOnly, "target only");
+        ensure("no sampling check", tracker.setTexture(0, notSampled.get()).empty());
+        ensure("no channel range check", tracker.setTexture(1000, notSampled.get()).empty());
+        ensure("an update past the buffer is still refused", !tracker.updateBuffer(vertices.get(), 60, 8).empty());
+        ensure("the uniform buffer's usage is still checked", !tracker.setUniformBuffer(0, vertices.get(), 0, 16).empty());
+        ensure("the pass ends", tracker.endRenderPass().endPass);
+        RenderPassDesc readOnly = pass;
+        readOnly.depth.readOnly = true;
+        ensure("the read-only pass begins", tracker.beginRenderPass(readOnly).empty());
+        ensure_contains("a clear of the read-only depth is still refused", tracker.clear(false, true), "read-only depth");
+        Ref<DepthStencilState> writes = device->getDepthStencilState({ true, true, CompareFunc::LessEqual });
+        tracker.setDepthStencilState(writes.get());
+        ensure("set in the read-only pass", tracker.setPipeline(hdr.get()).empty());
+        ensure_contains("depth writes in a read-only pass are still refused", tracker.draw(PrimitiveType::Triangles),
+                        "has a read-only depth");
+        tracker.endRenderPass();
+        EncoderTracker checked(testCapabilities());
+        ensure("the same pass begins with every check", checked.beginRenderPass(pass).empty());
+        ensure("with draw checks the formats are checked", !checked.setPipeline(hdr.get()).empty());
+        ensure("with draw checks the streams are checked", !checked.setVertexBuffer(vertices.get(), beyond).empty());
+        ensure("with draw checks the sampling is checked", !checked.setTexture(0, notSampled.get()).empty());
+        checked.endRenderPass();
+        tracker = EncoderTracker();
+        checked = EncoderTracker();
+    }
 }
 
 // The tracker's record of a pass's dynamic state and the GL-enum tables for cull and fill (P2-05a) -------------------------

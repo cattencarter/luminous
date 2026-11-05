@@ -37,6 +37,11 @@ uniform float max_cof;
 uniform float res_scale;
 uniform float dof_width;
 uniform float dof_height;
+// <Luminous> MetalFX temporal's jitter in texture coordinates: the blur,
+// gathered where the camera without the jitter saw the frame, read back
+// where the jittered camera sees it. 0 otherwise.
+uniform vec2 luminous_jitter_uv;
+// </Luminous>
 
 in vec2 vary_fragcoord;
 
@@ -52,7 +57,7 @@ void main()
 {
     vec2 tc = vary_fragcoord.xy;
 
-    vec4 dof = dofSample(diffuseRect, vary_fragcoord.xy*res_scale);
+    vec4 dof = dofSample(diffuseRect, (vary_fragcoord.xy - luminous_jitter_uv)*res_scale); // <Luminous/>
 
     vec4 diff = texture(lightMap, vary_fragcoord.xy);
 

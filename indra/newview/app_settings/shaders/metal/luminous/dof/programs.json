@@ -21,6 +21,20 @@
           "colorFormats": ["RGBA16Float"],
           "depthFormat": "",
           "blend": "none"
+        },
+        {
+          "vertex": "luminous_fullscreen_vs",
+          "fragment": "luminous_dof_layer_fs",
+          "colorFormats": ["RGBA16Float"],
+          "depthFormat": "",
+          "blend": "none"
+        },
+        {
+          "vertex": "luminous_fullscreen_vs",
+          "fragment": "luminous_dof_settled_fs",
+          "colorFormats": ["RGBA16Float"],
+          "depthFormat": "",
+          "blend": "alpha"
         }
       ]
     }

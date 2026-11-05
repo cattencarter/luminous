@@ -75,7 +75,8 @@ struct MetalSupport
 Ref<Device> metalBackend(MetalSupport& support, const DeviceCreateInfo* create);
 
 /// The Metal backend's own debug setting: labels on textures and buffers, the binding site's checks
-/// of residency, vertex ranges and bindings, and Metal API Validation and shader validation. An
+/// of residency, vertex ranges and bindings, the encoder tracker's draw checks (EncoderTracker), and Metal API
+/// Validation and shader validation. An
 /// explicit setMetalDebug wins, else LL_METAL_DEBUG=1 in the environment, else LL_DEBUG builds. A
 /// device follows the value when it is made; the validation variables follow it once, at the first
 /// metalBackend call. In llrhimetaldevice-objc.mm.
@@ -106,10 +107,7 @@ std::string metalMemoryCensus(Device& device, size_t top);
 /// its first Metal or GL device; without it the device writes one WARN line and captures nothing. An empty path
 /// takes back a request no device has taken. With AfterCurrentFrame the frame that begins after a device's current
 /// frame ends is captured instead (the viewer: its first frame holds the whole start-up from the device on, and a
-/// capture of it leaves no document). Ask for the capture before the Metal device is made: a device made while
-/// a capture is asked for makes only full pipeline states, while one made earlier specializes them, and Metal refuses
-/// to capture a device that has specialized a render pipeline state ("Capturing Render pipeline specialization is not
-/// supported"; a specialization made during a capture leaves no document). The device logs one INFO line when the
+/// capture of it leaves no document). The device logs one INFO line when the
 /// capture begins and one when Metal has written the document, or a WARN line when Metal left none at path. In
 /// llrhimetaldevice-objc.mm.
 enum class MetalFrameCaptureStart
@@ -145,21 +143,39 @@ struct MetalFacadeClear
 MetalFacadeClear metalFacadeClear();
 
 /// [Viewer Lab] The Metal surface's counters and its layer's state, for the tests and the golden hook. A
-/// present() either presents a drawable, finds a 0 in the surface's size, leaves the frame in the back buffer while
-/// the window server has the layer's other drawables (displaySync off) or gets no drawable within the layer's
-/// timeout; once the frame's command buffer is sent, presents == drawablesPresented + presentsSkippedZero +
-/// presentsPaced + drawableTimeouts, and each presented drawable had one wait and one signal on the queue.
+/// present() either presents a drawable, finds a 0 in the surface's size, leaves the frame in the back buffer (VSync
+/// off: while the window server has a drawable queued, the window is hidden or the layer has just refused one) or
+/// gets no drawable within the layer's timeout; once the frame's command buffer is sent, presents ==
+/// drawablesPresented + presentsSkippedZero + presentsPaced + drawableTimeouts, and each presented drawable had one
+/// wait and one signal on the queue.
 struct MetalSurfaceStats
 {
     U64  presents            = 0;     ///< present() calls
     U64  drawablesPresented  = 0;     ///< drawables drawn into and presented, at the submit that sent their flip pass
     U64  presentsSkippedZero = 0;     ///< presents without a drawable, because the surface's size has a 0
-    U64  presentsPaced       = 0;     ///< presents left in the back buffer with displaySync off (metalPresentPaced)
-    U32  drawablesWithWindowServer = 0; ///< presented with displaySync off, their presented handler not run yet
+    U64  presentsPaced       = 0;     ///< presents left in the back buffer with VSync off (metalPresentPaced and
+                                      ///< the two below)
+    U64  presentsWindowHidden = 0;    ///< of them, while none of the window showed (its occlusion state)
+    U64  presentsAfterTimeout = 0;    ///< of them, after a drawable timeout, before a presented handler or the retry
+    U32  drawablesWithWindowServer = 0; ///< presented with VSync off, their presented handler not run yet
     U64  drawableTimeouts    = 0;     ///< presents whose nextDrawable gave nil (its 1 s timeout)
+    U64  nextDrawableNs      = 0;     ///< the main thread's time in nextDrawable, in all
+    U64  nextDrawableLongNs  = 0;     ///< the longest one nextDrawable call took
+    U64  nextDrawableOver1ms = 0;     ///< nextDrawable calls that took more than 1 ms
     U64  drawableWaits       = 0;     ///< waitForDrawable: on the queue
     U64  drawableSignals     = 0;     ///< signalDrawable: on the queue
-    bool displaySync         = false; ///< the layer's displaySyncEnabled, which setVSync sets
+    U64  finishedFlips       = 0;     ///< VSync off presents on the finished path whose frame went into a finished
+                                      ///< frame (MetalSurface::setPresentDirect)
+    U64  finishedSkipped     = 0;     ///< the finished path's presents that found no finished frame free: not shown
+    U64  finishedPresented   = 0;     ///< drawables the present queue filled from a finished frame (of
+                                      ///< drawablesPresented)
+    U64  finishedHeld        = 0;     ///< times a finished frame was not given to the window server when it could
+                                      ///< have been, by metalPresentPaced or presentWithheld (a newer one goes later)
+    U64  finishedTimeouts    = 0;     ///< of drawableTimeouts, the finished path's
+    bool displaySync         = false; ///< the VSync setting (setVSync); off, present() paces by the window
+                                      ///< server's drawables (metalPresentPaced)
+    bool layerDisplaySync    = false; ///< the layer's displaySyncEnabled: on whatever the setting, off only with
+                                      ///< LL_METAL_PRESENT_UNSYNCED and VSync off
     U32  drawableWidth       = 0;     ///< the layer's drawableSize
     U32  drawableHeight      = 0;
     F32  contentsScale       = 0.f; ///< the layer's contentsScale
@@ -220,12 +236,11 @@ struct MetalUploadCounts
 MetalUploadCounts metalUploadCounts(Device& device);
 
 /// [Viewer Lab] What a calling thread waited for: a program's libraries, a point variant, or a draw's render pipeline
-/// state by its kind: a specialized state, a full state or a full state's variant without alpha.
+/// state by its kind: a full state or a full state's variant without alpha.
 enum class MetalWaitKind : U8
 {
     Program,
     Point,
-    Specialized,
     Full,
     Variant,
 };
@@ -240,21 +255,16 @@ struct MetalWaits
 };
 
 /// [Viewer Lab] The Metal device's compilations since it was made, for the golden hook, the viewer's line 30 s after
-/// STATE_STARTED and the tests. The counts are the render pipeline states sent to Metal's compiler: an unspecialized
-/// state per program, attributes, primitive class and sample count, specialized per attachments, and full states for
-/// keys whose blending ends Disabled; a state that later goes with its program stays counted. The waits are the calling
-/// threads' time blocked on compilations, in microseconds: information, as Metal's own caches decide them.
+/// STATE_STARTED and the tests. The counts are the render pipeline states sent to Metal's compiler, a full state per
+/// program, attributes, primitive class, sample count and attachments; a state that later goes with its program stays
+/// counted. The waits are the calling threads' time blocked on compilations, in microseconds: information, as Metal's
+/// own caches decide them.
 struct MetalCompileStats
 {
-    U64 unspecialized = 0; ///< unspecialized states sent
-    U64 specialized   = 0; ///< specializations made from them
-    U64 full          = 0; ///< full states, for keys whose blending ends Disabled
+    U64 full          = 0; ///< full states sent
     U64 alphaVariants = 0; ///< full states without alpha, for attachments that have none in GL
     U64 refused       = 0; ///< keys refused, each with its one WARN line
     U64 cached        = 0; ///< PipelineCache's pipelines now
-    /// Without full states: the unspecialized states it would have sent, the distinct (program, attributes, primitive
-    /// class, samples) among the unspecialized and the full states; the full states would then be specializations.
-    U64 e14Unspecialized    = 0;
     U64 callerTranslations  = 0; ///< translations on the calling thread: the login programs and wait()'s stolen jobs
     U64 callerTranslationUs = 0; ///< their time
     U64 programWaitUs       = 0; ///< Program::wait's wait for the libraries, after its stolen translations
@@ -326,6 +336,11 @@ size_t metalSamplerCount(Device& device);
 /// YES again and drops the copy. framebufferOnly changes only what the CPU and copies may do with a drawable, not a
 /// pixel (CAMetalLayer.h:79-87). Nothing for a device that is not Metal's or has no surface. Main thread.
 void setMetalDrawableReadback(Device& device, bool on);
+/// VSync off's present path (MetalSurface::setPresentDirect): false, the default, gives the window server the newest
+/// frame the GPU has finished through a second queue; true presents each frame's own drawable from its command buffer
+/// (LuminousMetalPresentDirect, for a comparison run). Nothing for a device that is not Metal's or has no surface.
+/// Main thread.
+void setMetalPresentDirect(Device& device, bool direct);
 /// The last copy setMetalDrawableReadback asked for: waits for its command buffer (sent first when it is still being
 /// recorded) and gives the drawable's pixels as RGBA8, rows from the top of the drawable down (its memory order), with
 /// its size. False, with pixels empty, when there is no copy or its command buffer failed. Main thread.
