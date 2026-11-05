@@ -684,7 +684,28 @@ bool MetalSurface::presentFinished(U64 now, U64 progress, bool justFlipped)
         // (MTL4CommandQueue.h:296-308); it signals the drawable before its present (:277-294).
         [mPresentQueue waitForEvent:newest->stamp->event value:newest->stamp->serial];
         [mPresentQueue waitForDrawable:drawable];
-        [mPresentQueue commit:&buffer count:1];
+        // Its errors in the failure log as the frames' own, with what it waited for
+        MTL4CommitOptions* options = [MTL4CommitOptions new];
+        std::shared_ptr<MetalFailureLog> failures = mDevice.failureLogShared();
+        IdMTLSharedEvent flipEvent = newest->stamp->event;
+        const U64 flipSerial = newest->stamp->serial;
+        const U64 frame = mDevice.frameNumber();
+        const double committedT = CACurrentMediaTime();
+        [options addFeedbackHandler:^(IdMTL4CommitFeedback commitFeedback) {
+            if (!commitFeedback.error)
+            {
+                return;
+            }
+            char line[320];
+            snprintf(line, sizeof(line),
+                     "GPU error in frame %llu's present of a finished frame (VSync off): %s; committed %.2f s ago, "
+                     "begun on the GPU: %s; it waited for the flip's serial %llu (signalled %llu now) and its drawable",
+                     (unsigned long long)frame, metalErrorName(commitFeedback.error).c_str(),
+                     CACurrentMediaTime() - committedT, commitFeedback.GPUStartTime > 0.0 ? "yes" : "no",
+                     (unsigned long long)flipSerial, (unsigned long long)flipEvent.signaledValue);
+            failures->add(MetalFailureLog::Kind::GpuError, line);
+        }];
+        [mPresentQueue commit:&buffer count:1 options:options];
         [mPresentQueue signalDrawable:drawable];
         [drawable present];
         [mPresentQueue signalEvent:mPresentEvent value:++mPresentSerial];

@@ -1982,7 +1982,26 @@ bool LLAppViewer::doFrame()
             // panel has the focus, so the viewer counts itself in the
             // background) would keep the panel waiting. Five milliseconds a
             // turn, so it answers at once and the CPU rests.
-            const bool file_panel = LLFilePicker::panelShowing();
+            bool file_panel = LLFilePicker::panelShowing();
+            {
+                // Test tool: the frame stands for LuminousTestPauseDisplay seconds, as while a panel shows
+                static LLCachedControl<F32> test_pause(gSavedSettings, "LuminousTestPauseDisplay", 0.f);
+                static F64 test_pause_until = 0.0;
+                if (test_pause() > 0.f)
+                {
+                    test_pause_until = LLTimer::getTotalSeconds() + test_pause();
+                    gSavedSettings.setF32("LuminousTestPauseDisplay", 0.f);
+                }
+                file_panel = file_panel || LLTimer::getTotalSeconds() < test_pause_until;
+                // and LuminousTestStallMainThread: the main thread sleeps that long once
+                static LLCachedControl<F32> test_stall(gSavedSettings, "LuminousTestStallMainThread", 0.f);
+                if (test_stall() > 0.f)
+                {
+                    const S32 ms = S32(test_stall() * 1000.f);
+                    gSavedSettings.setF32("LuminousTestStallMainThread", 0.f);
+                    ms_sleep(ms);
+                }
+            }
             if (file_panel)
             {
                 ms_sleep(5);

@@ -946,6 +946,7 @@ bool MetalEncoder::open()
 
     zeroNewTargets(); // before the segment, which may draw into or sample one
     mDevice.endCopies();
+    mDevice.splitBeforeEncoder(metalString(pass.name));
     IdMTL4CommandBuffer buffer = mDevice.commandBuffer();
     // The open debug groups leave the command buffer before the encoder begins and go on in the encoder
     // (MTL4CommandBuffer.h:157-160, MTL4CommandEncoder.h:161-164), so no native group crosses its begin or end.
@@ -1216,6 +1217,7 @@ IdMTL4RenderCommandEncoder MetalEncoder::openOwnEncoder(MTL4RenderPassDescriptor
 {
     zeroNewTargets(); // before the encoder, which may draw into one; finds none when it is zeroNewTargets' own
     mDevice.endCopies();
+    mDevice.splitBeforeEncoder(label);
     // As open(): the command buffer first, because a new one begins with the open debug groups pushed; then the
     // groups leave it before the encoder begins and go on in the encoder (MTL4CommandBuffer.h:157-160,
     // MTL4CommandEncoder.h:161-164), so no native group crosses its begin or end.
@@ -2478,6 +2480,7 @@ bool MetalEncoder::upscale(Upscaler* upscaler, Texture* input, U32 width, U32 he
     // MetalFX records encoders of its own on the command buffer, so the open segment ends first, as for a copy (its
     // draws are stored, and a stack pass goes on in a new segment that loads them).
     splitPass();
+    mDevice.sendBeforeScaler();
     // Resources are untracked on Metal 4, so the scaler's work is ordered by hand. An encoder of its own begins with
     // the queue barrier (openCopies): it runs after the queue's earlier work, which wrote the input and read the last
     // output. Its producer barrier keeps every later encoder's stages, MetalFX's included, from starting before that
@@ -2540,6 +2543,7 @@ bool MetalEncoder::upscaleTemporal(TemporalUpscaler* upscaler, const TemporalUps
     // earlier work (which wrote every input and read the last output) and updates the scaler's fence, and the next
     // encoder's queue barrier orders what reads the output after it.
     splitPass();
+    mDevice.sendBeforeScaler();
     IdMTL4ComputeCommandEncoder before = mDevice.beginUploadCopies(@"Upscale temporal");
     if (!before)
     {
@@ -3071,6 +3075,7 @@ bool MetalEncoder::openCompute()
     // work wrote (MTL4CommandEncoder.h:50-58).
     const std::string& name = mTracker.computePass().name;
     mDevice.endCopies();
+    mDevice.splitBeforeEncoder(metalString(name));
     IdMTL4CommandBuffer buffer = mDevice.commandBuffer();
     // The pass timer's begin, on the command buffer before the encoder (MetalPassTimes).
     mComputeStamp = mDevice.passTimes().recording()

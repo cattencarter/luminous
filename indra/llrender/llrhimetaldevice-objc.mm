@@ -1882,6 +1882,13 @@ void MetalDevice::submit()
         ++feedback->outstanding;
     }
     std::shared_ptr<MetalFailureLog> failures = mCompileState->failures; // as feedback
+    // What the queue waits for before it runs this command buffer, named in its error line with when the GPU began
+    // it: a Timeout on work that never began waited on one of these, one that began ran too long.
+    IdMTLSharedEvent waitedUploads = mUploadWait;
+    const U64 waitedUploadValue = mUploadWaitValue;
+    const size_t waitedDrawables = mPendingDrawables.size();
+    const bool waitedGate = mGate != nil;
+    const double committedT = CACurrentMediaTime();
     MTL4CommitOptions* options = [MTL4CommitOptions new];
     [options addFeedbackHandler:^(IdMTL4CommitFeedback commitFeedback) {
         NSError* error = commitFeedback.error ? commitFeedback.error : injected;
@@ -1905,6 +1912,26 @@ void MetalDevice::submit()
                  << "': " << metalErrorName(error)
                  << (lost ? ", the device is lost" : timeout ? ", counted (a second in a row loses the device)" : "")
                  << ": " << error.localizedDescription.UTF8String;
+            char when[160];
+            const double began = commitFeedback.GPUStartTime;
+            const double ended = commitFeedback.GPUEndTime;
+            if (began > 0.0)
+            {
+                snprintf(when, sizeof(when),
+                         "; committed %.2f s ago, begun on the GPU %.2f s after it, ended %.2f s after it",
+                         CACurrentMediaTime() - committedT, began - committedT,
+                         ended > 0.0 ? ended - committedT : -1.0);
+            }
+            else
+            {
+                snprintf(when, sizeof(when), "; committed %.2f s ago, never begun on the GPU",
+                         CACurrentMediaTime() - committedT);
+            }
+            line << when << "; it waited for: uploads "
+                 << (waitedUploads ? std::to_string(waitedUploadValue) + " (signalled " +
+                                         std::to_string(waitedUploads.signaledValue) + " now)"
+                                   : std::string("none"))
+                 << ", " << waitedDrawables << " drawable(s)" << (waitedGate ? ", the test gate" : "");
             failures->add(lost ? MetalFailureLog::Kind::DeviceLost : MetalFailureLog::Kind::GpuError, line.str());
         }
         {
@@ -1917,6 +1944,13 @@ void MetalDevice::submit()
             {
                 feedback->gpu.add(commitFeedback.GPUStartTime, commitFeedback.GPUEndTime);
                 submission->gpuEnd.store(commitFeedback.GPUEndTime, std::memory_order_relaxed);
+                const double ran = commitFeedback.GPUEndTime - commitFeedback.GPUStartTime;
+                if (commitFeedback.GPUStartTime > 0.0 && ran > 0.5)
+                {
+                    // Half the watchdog's limit: named, so a pass that grows towards a Timeout is found
+                    LL_WARNS("RHI") << "Command buffer '" << (label ? label.UTF8String : "") << "' of frame " << frame
+                                    << " ran " << ran << " s on the GPU" << LL_ENDL;
+                }
             }
             if (feedback->timedFirst != 0 && frame >= feedback->timedFirst && frame <= feedback->timedLast)
             {
@@ -1983,6 +2017,40 @@ void MetalDevice::submit()
     mStamps.clear();
 }
 
+void MetalDevice::splitBeforeEncoder(NSString* name)
+{
+    static const bool split = [] {
+        const char* env = getenv("LL_METAL_SPLIT_PASSES");
+        return env && std::strcmp(env, "1") == 0;
+    }();
+    if (!split || mEncoder.openEncoder())
+    {
+        return;
+    }
+    if (mCommandBuffer)
+    {
+        submit();
+    }
+    IdMTL4CommandBuffer buffer = commandBuffer();
+    buffer.label = [NSString stringWithFormat:@"%@: %@", buffer.label, name ? name : @"?"];
+}
+
+void MetalDevice::sendBeforeScaler()
+{
+    // MetalFX's Metal 4 scalers recorded after other work in the same command buffer: after the frame had stood
+    // for a few seconds (an open or save panel shows: bulk upload, model upload), that command buffer ran until the
+    // queue's watchdog stopped it, the next frame's did the same, and the device was lost, about 12 s after the
+    // panel closed. At the start of a command buffer, the work before it sent in the one before, the temporal scaler
+    // runs as in any other frame (run-time probes on an M4 Max, the frame stood 15 s: a submit after the scaler alone
+    // still hung, one before it did not). The spatial scaler is sent the same way. One more submit in a frame MetalFX
+    // scales.
+    if (mCommandBuffer)
+    {
+        endCopies();
+        submit();
+    }
+}
+
 void MetalDevice::submitPending()
 {
     // "wait() ends the pass": the open segment and its copies go with this submit. The next
@@ -2001,6 +2069,7 @@ IdMTL4ComputeCommandEncoder MetalDevice::openCopies(NSString* label)
     if (!mCopies)
     {
         mEncoder.zeroNewTargets(); // before copies that may write into or read one
+        splitBeforeEncoder(label);
         mCopiesStamp = mPassTimes.recording() ? mPassTimes.beginCompute(commandBuffer(), label ? label.UTF8String : "",
                                                                        MetalPassTimes::Kind::Copies,
                                                                        mLifecycle.currentFrame())

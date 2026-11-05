@@ -2461,6 +2461,12 @@ public:
     /// wait()'s submit: the open segment ends, the copies waiting on it are encoded, and what
     /// is recorded is sent; the pass goes on in a new segment.
     void submitPending();
+    /// LL_METAL_SPLIT_PASSES=1, for finding a pass that runs too long: what is recorded is sent before each encoder
+    /// begins, and the next command buffer's label names the encoder, so a GPU error's line names the pass.
+    void splitBeforeEncoder(NSString* name);
+    /// Before MetalFX records its encoders: what is recorded is sent, so the scaler's work begins a command buffer
+    /// of its own (nothing when nothing is recorded).
+    void sendBeforeScaler();
     /// Encodes a readback's copy now, on the command buffer's open compute encoder, which begins
     /// with the queue barrier.
     void encodeCopy(const MetalCopy& copy);
@@ -2783,6 +2789,8 @@ private:
 public:
     /// The failure lines for the main thread (MetalFailureLog), and their writing there.
     MetalFailureLog& failureLog() { return *mCompileState->failures; }
+    /// The same log for a feedback handler, which may outlive the device
+    std::shared_ptr<MetalFailureLog> failureLogShared() { return mCompileState->failures; }
     void writeFailureLines(bool final = false) { mCompileState->failures->write(final); }
 private:
     /// The open compute encoder of copies, begun with the queue barrier when none is open.

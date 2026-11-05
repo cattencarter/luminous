@@ -15445,6 +15445,28 @@ Change of this parameter will affect the layout of buttons in notification toast
       <key>Value</key>
       <real>8.0</real>
   </map>
+  <key>LuminousTestStallMainThread</key>
+    <map>
+      <key>Comment</key>
+      <string>Test tool: the main thread sleeps this many seconds once, before the next frame's display, then the setting goes back to 0.</string>
+      <key>Persist</key>
+      <integer>0</integer>
+      <key>Type</key>
+      <string>F32</string>
+      <key>Value</key>
+      <real>0.0</real>
+  </map>
+  <key>LuminousTestPauseDisplay</key>
+    <map>
+      <key>Comment</key>
+      <string>Test tool: the frame stands for this many seconds, as while an open or save panel shows (no display, empty frames), then the setting goes back to 0.</string>
+      <key>Persist</key>
+      <integer>0</integer>
+      <key>Type</key>
+      <string>F32</string>
+      <key>Value</key>
+      <real>0.0</real>
+  </map>
   <key>LuminousMetalFXTemporalSettleEnhance</key>
     <map>
       <key>Comment</key>
