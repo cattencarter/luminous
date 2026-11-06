@@ -15621,30 +15621,6 @@ For the full picture, use Render in the Luminous sidebar.
     <unique/>
 Pause the scene before choosing a portrait style or framing.
   </notification>
-  <!-- Glitch turned on live while MetalFX upscaling scales, or MetalFX upscaling brought to scale while Glitch is live
-       (LuminousPhotoMode::askGlitchQuestion). Until it is answered, Glitch is held off the live view. -->
-  <notification
-   icon="alertmodal.tga"
-   name="LuminousGlitchMetalFX"
-   type="alertmodal">
-Glitch doesn't work with MetalFX upscaling yet.
-Turning MetalFX off may lower the frame rate.
-    <form name="form">
-      <button
-       index="0"
-       name="FullResolution"
-       text="Turn off MetalFX"/>
-      <button
-       index="1"
-       name="GlitchInRenders"
-       text="Glitch in renders only"/>
-      <button
-       default="true"
-       index="2"
-       name="Cancel"
-       text="Cancel"/>
-    </form>
-  </notification>
   <!-- </Luminous> -->
 
 </notifications>

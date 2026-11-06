@@ -8,6 +8,7 @@
 
 #include "lenscommon.h"
 #include "luminous/common/distortion.h"
+#include "luminous/common/glitch.h"
 #include "luminous/common/fullscreen.h"
 
 namespace luminous_lens
@@ -47,117 +48,27 @@ namespace luminous_lens
                                                              : frame.sample(lensLinearClamp, at, level(0.0)).rgb;
     }
 
-    inline float glitchHash(float2 q)
-    {
-        float3 p3 = fract(float3(q.xyx) * 0.1031);
-        p3 += dot(p3, p3.yzx + 33.33);
-        return fract((p3.x + p3.y) * p3.z);
-    }
-
-    inline float glitchNoise(float2 q)
-    {
-        const float2 i = floor(q);
-        float2 f = fract(q);
-        f = f * f * (3.0 - 2.0 * f);
-        return mix(mix(glitchHash(i), glitchHash(i + float2(1.0, 0.0)), f.x),
-                   mix(glitchHash(i + float2(0.0, 1.0)), glitchHash(i + float2(1.0, 1.0)), f.x), f.y);
-    }
-
-    /// Glitch: red and cyan pulled apart; VHS (rows wavering, tracking bands with static, colour smeared sideways);
-    /// bands rippled in a zigzag; scan lines. Laid out in picture heights from a hash, so the same live and in every
-    /// frame of a render, on the picture rather than a render's margin.
+    /// Glitch (common/glitch.h) on the picture aberration and distortion make, those the mode names.
     inline float3 glitched(constant LuminousLensParams& p, texture2d<float> frame, float2 uv, uint mode)
     {
-        const float frame_scale = lensFrameScale(p);
-        const float aspect = p.frameSize.x / max(p.frameSize.y, 1.0);
-        const float2 to_uv = 1.0 / (float2(aspect, 1.0) * frame_scale);
-        const float2 q = (uv - 0.5) / to_uv;          // picture heights from its middle
-        const float px = frame_scale / max(p.frameSize.y, 1.0); // one pixel, in picture heights
-        const float seed = p.glitchSeed * 7.31;
-        const float picture_aspect = p.pictureAspect > 0.0 ? p.pictureAspect : aspect;
-
-        const float split = p.glitchParts.x * p.glitch;
-        const float vhs = p.glitchParts.y * p.glitch;
-        const float waves = p.glitchParts.z * p.glitch;
-        const float lines = p.glitchParts.w * p.glitch;
-
-        float2 at = q;         // where the picture is read
-        float tracking = 0.0;  // inside a tracking band, 0 .. 1
-
-        if (vhs > 0.0)
-        {
-            at.x += (glitchNoise(float2(q.y * 14.0, seed + 31.0)) - 0.5) * 0.016 * vhs
-                  + (glitchNoise(float2(q.y * 700.0, seed + 32.0)) - 0.5) * 0.003 * vhs;
-            const float bottom = 1.0 - smoothstep(0.0, 0.025, q.y + 0.5);
-            at.x += bottom * bottom * 0.04 * vhs;
-            for (int i = 0; i < 2; ++i)
-            {
-                const float centre = i == 0 ? -0.45 + 0.2 * glitchHash(float2(0.0, seed + 33.0))
-                                            : (glitchHash(float2(1.0, seed + 33.0)) - 0.5) * 0.9;
-                const float half_height = 0.01 + 0.04 * glitchHash(float2(float(i), seed + 34.0));
-                float band = 1.0 - smoothstep(0.4 * half_height, half_height, abs(q.y - centre));
-                if (i == 1 && glitchHash(float2(1.0, seed + 35.0)) > vhs)
-                {
-                    band = 0.0;
-                }
-                at.x += (glitchNoise(float2(q.y * 260.0, seed + 36.0 + float(i))) - 0.5) * 0.04 * vhs * band;
-                tracking = max(tracking, band);
-            }
-        }
-
-        if (waves > 0.0)
-        {
-            const float row = floor(q.y * 7.0);
-            if (glitchHash(float2(row, seed + 11.0)) < 0.35 * waves)
-            {
-                const float centre = (glitchHash(float2(row, seed + 12.0)) - 0.5) * picture_aspect;
-                const float half_width = 0.05 + 0.2 * glitchHash(float2(row, seed + 13.0));
-                const float across = 1.0 - smoothstep(half_width * 0.7, half_width, abs(q.x - centre));
-                const float t = fract(q.y * 7.0);
-                const float within = smoothstep(0.1, 0.25, t) * (1.0 - smoothstep(0.75, 0.9, t));
-                const float freq = mix(120.0, 360.0, glitchHash(float2(row, seed + 14.0)));
-                const float zig = abs(fract(q.y * freq) * 2.0 - 1.0) * 2.0 - 1.0; // a triangle wave, -1 .. 1
-                const float amplitude = (0.006 + 0.02 * glitchHash(float2(row, seed + 15.0))) * waves;
-                at.x += zig * amplitude * across * within;
-            }
-        }
-
-        const float2 offset = float2(1.0, 0.15) * 0.018 * split * split;
+        const LuminousGlitch g = luminousGlitchAt(uv, p.frameSize.x / max(p.frameSize.y, 1.0), p.frameSize.y,
+                                                  lensFrameScale(p), p.pictureAspect, p.glitch, p.glitchParts,
+                                                  p.glitchSeed);
         float3 colour;
-        colour.r = lensImage(p, frame, (at + offset) * to_uv + 0.5, mode).r;
-        colour.gb = lensImage(p, frame, (at - offset) * to_uv + 0.5, mode).gb;
-
-        if (vhs > 0.0)
+        colour.r = lensImage(p, frame, luminousGlitchUV(g, g.at + g.offset), mode).r;
+        colour.gb = lensImage(p, frame, luminousGlitchUV(g, g.at - g.offset), mode).gb;
+        if (g.vhs > 0.0)
         {
-            const float3 left = lensImage(p, frame, (at - float2(0.002, 0.0)) * to_uv + 0.5, mode);
-            const float3 right = lensImage(p, frame, (at + float2(0.002, 0.0)) * to_uv + 0.5, mode);
-            colour = mix(colour, (left + colour + right) / 3.0, 0.7 * vhs);
+            const float3 left = lensImage(p, frame, luminousGlitchSideUV(g, -1.0), mode);
+            const float3 right = lensImage(p, frame, luminousGlitchSideUV(g, 1.0), mode);
             float3 chroma = float3(0.0);
             for (int k = 1; k <= 4; ++k)
             {
-                const float3 behind = lensImage(p, frame, (at - float2(float(k) * 0.005 * vhs, 0.0)) * to_uv + 0.5, mode);
-                chroma += behind - dot(behind, LENS_LUMA);
+                chroma += luminousGlitchChroma(lensImage(p, frame, luminousGlitchBehindUV(g, k), mode));
             }
-            const float y = dot(colour, LENS_LUMA);
-            colour = mix(colour, max(float3(y) + chroma * 0.25 * (1.0 - 0.25 * vhs), float3(0.0)), 0.85 * vhs);
-            if (tracking > 0.0)
-            {
-                const float n = glitchHash(floor(float2(q.x * 90.0, q.y / max(px, 1e-5))) + seed);
-                const float streak = smoothstep(0.8, 0.95, n);
-                const float grey = dot(colour, LENS_LUMA);
-                colour = mix(colour, float3(grey * (0.8 + 2.5 * streak)), 0.7 * tracking * vhs);
-            }
+            colour = luminousGlitchTape(g, colour, left, right, chroma);
         }
-
-        if (lines > 0.0)
-        {
-            // a line every so many pixels of a 1080-line picture, left out where the frame has too few pixels
-            const float period = clamp(p.glitchLineSize, 2.0, 8.0) / 1080.0;
-            const float shown = 1.0 - smoothstep(0.3, 0.45, px / period);
-            const float l = 0.5 + 0.5 * cos(6.2831853 * q.y / period);
-            colour *= 1.0 - lines * 0.4 * l * shown;
-        }
-        return colour;
+        return luminousGlitchLines(g, colour, p.glitchLineSize);
     }
 }
 

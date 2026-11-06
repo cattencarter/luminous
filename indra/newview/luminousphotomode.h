@@ -264,21 +264,21 @@ namespace LuminousPhotoMode
     /// The scale the setting comes to, photo mode on or off (for the window): full with FXAA unless MetalFX temporal
     /// scales, and while MetalFX temporal is held at full size.
     F32 chosenLiveScale();
+    /// The scale the Preview resolution setting itself comes to, FXAA and MetalFX temporal aside: automatic is one
+    /// over the display's backing scale.
+    F32 settingLiveScale();
     /// MetalFX temporal (LuminousMetalFXTemporal) at the chosen preview resolution: Off -- switched off, or Metal
     /// cannot run it here (OpenGL, no temporal scaler) -- Scales, or rests: at full size there is nothing to scale,
     /// and below a third each way (Quarter) is beyond the scaler's range, where the plain filter scales.
     enum class Temporal { Off, Scales, RestsAtFull, RestsBeyondRange };
     Temporal temporal();
-    /// MetalFX temporal would scale the live view (Scales) but cannot (LuminousMetal::temporalUsable false: something
-    /// fixed to the screen drawn live, or refused at the window's size): the live view is at full size then
-    /// (chosenLiveScale), never smaller and scaled up the plain way.
+    /// MetalFX temporal would scale the live view (Scales) but cannot (LuminousMetal::temporalUsable false: refused at
+    /// the window's size): the live view is at full size then (chosenLiveScale), never smaller and scaled up the plain
+    /// way.
     bool temporalHeldAtFull();
-    /// The grey line under the MetalFX temporal check boxes while it rests, or while it is held at full size for
-    /// Glitch shown live or for the window's size; empty otherwise.
+    /// The grey line under the MetalFX temporal check boxes while it rests, or while it is held at full size for the
+    /// window's size; empty otherwise.
     std::string temporalRestText();
-    /// Glitch is held off the live view while MetalFX temporal scales: the user turned Glitch on live there, or
-    /// MetalFX on with Glitch live, and has not yet answered the question that asks what to do. Renders keep it.
-    bool glitchHeldLive();
     /// FXAA keeps the live view at full size (chosenLiveScale; FXAA sets the window's viewport on its target): FXAA
     /// is chosen and MetalFX temporal, which smooths the edges in its place, is Off.
     bool fxaaKeepsFullSize();
@@ -391,9 +391,6 @@ namespace LuminousPhotoMode
     /// The live view's jitter for MetalFX temporal, in clip units, for a perspective set up for this rect: the main
     /// world view's only, never a preview's, a probe's, a snapshot's or a render frame's. False without.
     bool liveJitter(S32 x, S32 y_from_bottom, S32 width, S32 height, F32& ndc_x, F32& ndc_y);
-    /// Something fixed to the screen is drawn into the live picture that is not drawn after the upscale (Glitch shown
-    /// live), which MetalFX temporal would smear: the live view is at full size without it then (chosenLiveScale).
-    bool screenLockedLive();
     /// Film grain for MetalFX temporal's present, drawn on the scaled frame (0 without); size in pixels of a
     /// 1080-line frame.
     F32 grainAfterUpscale(F32& size);

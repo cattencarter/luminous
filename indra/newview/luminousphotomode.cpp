@@ -969,6 +969,24 @@ namespace LuminousPhotoMode
         {
             return !keptForRenders(effect) || pictureFrame();
         }
+
+        // Glitch's amount in this frame, 0 when it is not drawn now; its parts (colour split, VHS, waves, scan
+        // lines), line size and pattern, for the lens's pass or the present.
+        F32 glitchNow(simd_float4& parts, F32& line_size, F32& seed)
+        {
+            static LLCachedControl<F32> glitch(gSavedSettings, "LuminousPhotoGlitch", 0.f);
+            static LLCachedControl<F32> split(gSavedSettings, "LuminousPhotoGlitchSplit", 0.5f);
+            static LLCachedControl<F32> vhs(gSavedSettings, "LuminousPhotoGlitchVHS", 0.5f);
+            static LLCachedControl<F32> waves(gSavedSettings, "LuminousPhotoGlitchWaves", 0.3f);
+            static LLCachedControl<F32> lines(gSavedSettings, "LuminousPhotoGlitchLines", 0.3f);
+            static LLCachedControl<F32> glitch_line_size(gSavedSettings, "LuminousPhotoGlitchLineSize", 3.f);
+            static LLCachedControl<F32> glitch_variation(gSavedSettings, "LuminousPhotoGlitchVariation", 0.f);
+            parts = simd_make_float4(llclamp((F32)split(), 0.f, 1.f), llclamp((F32)vhs(), 0.f, 1.f),
+                                     llclamp((F32)waves(), 0.f, 1.f), llclamp((F32)lines(), 0.f, 1.f));
+            line_size = llclamp((F32)glitch_line_size(), 2.f, 8.f);
+            seed = (F32)ll_round(llclamp((F32)glitch_variation(), 0.f, 1.f) * 100.f);
+            return glitch() < 0.005f || !drawnNow(Kept::Glitch) ? 0.f : llclamp((F32)glitch(), 0.f, 1.f);
+        }
     }
 
     // Alpha sorting: worn see-through things, such as hair, drawn in their
@@ -1403,21 +1421,10 @@ namespace LuminousPhotoMode
         p.distortion = std::fabs(distortion()) < 0.005f || !drawnNow(Kept::Distortion) || drawnForScaler()
             ? 0.f : llclamp(distortion(), -1.f, 1.f);
 
-        // glitch
-        static LLCachedControl<F32> glitch(gSavedSettings, "LuminousPhotoGlitch", 0.f);
-        static LLCachedControl<F32> split(gSavedSettings, "LuminousPhotoGlitchSplit", 0.5f);
-        static LLCachedControl<F32> vhs(gSavedSettings, "LuminousPhotoGlitchVHS", 0.5f);
-        static LLCachedControl<F32> waves(gSavedSettings, "LuminousPhotoGlitchWaves", 0.3f);
-        static LLCachedControl<F32> lines(gSavedSettings, "LuminousPhotoGlitchLines", 0.3f);
-        static LLCachedControl<F32> line_size(gSavedSettings, "LuminousPhotoGlitchLineSize", 3.f);
-        static LLCachedControl<F32> glitch_variation(gSavedSettings, "LuminousPhotoGlitchVariation", 0.f);
-        // Not live while the Glitch question holds it off the live view (glitchHeldLive).
-        p.glitch = glitch() < 0.005f || !drawnNow(Kept::Glitch) || (glitchHeldLive() && !pictureFrame())
-            ? 0.f : llclamp((F32)glitch(), 0.f, 1.f);
-        p.glitchParts = simd_make_float4(llclamp((F32)split(), 0.f, 1.f), llclamp((F32)vhs(), 0.f, 1.f),
-                                         llclamp((F32)waves(), 0.f, 1.f), llclamp((F32)lines(), 0.f, 1.f));
-        p.glitchLineSize = llclamp((F32)line_size(), 2.f, 8.f);
-        p.glitchSeed = (F32)ll_round(llclamp((F32)glitch_variation(), 0.f, 1.f) * 100.f);
+        // glitch; none in a frame drawn for MetalFX temporal's scaler: the present draws it on the scaled frame
+        // instead (fillTemporalScreen)
+        const F32 glitch_amount = glitchNow(p.glitchParts, p.glitchLineSize, p.glitchSeed);
+        p.glitch = drawnForScaler() ? 0.f : glitch_amount;
 
         // vignette
         static LLCachedControl<F32> vig_amount(gSavedSettings, "LuminousPhotoVignetteAmount", 0.35f);
@@ -2415,12 +2422,6 @@ namespace LuminousPhotoMode
             return llclamp(scale, 0.25f, 1.f);
         }
 
-        F32 settingLiveScale()
-        {
-            static LLCachedControl<F32> setting(gSavedSettings, "LuminousPhotoLiveScale", 1.f);
-            return liveScaleOf(setting());
-        }
-
         bool fxaaChosen()
         {
             static LLCachedControl<U32> aa(gSavedSettings, "RenderFSAAType", 2);
@@ -2447,40 +2448,12 @@ namespace LuminousPhotoMode
             return Temporal::Scales;
         }
 
-        // The Glitch question is open (askGlitchQuestion): until it is answered, Glitch is held off the live view
-        // while MetalFX temporal scales (glitchHeldLive).
-        bool sGlitchAsked = false;
-
-        // Glitch is set to show in the live view -- on, with an amount, not only in renders -- held or not.
-        bool glitchWantedLive()
-        {
-            static LLCachedControl<F32> glitch(gSavedSettings, "LuminousPhotoGlitch", 0.f);
-            return isOn() && glitch() >= 0.005f && !keptForRenders(Kept::Glitch)
-                && LuminousMetal::on(LuminousMetal::Effect::Glitch);
-        }
-
-        enum class TemporalHold { None, Glitch, WindowSize };
-
-        // Why MetalFX temporal is held at full size (temporalHeldAtFull), for the grey line under its check box:
-        // Glitch shown live, or the scaler refused at the window's size. None while it is not held, and for what
-        // has no line of its own.
-        TemporalHold temporalHeldBy()
-        {
-            if (!temporalHeldAtFull())
-            {
-                return TemporalHold::None;
-            }
-            if (glitchWantedLive() && !glitchHeldLive())
-            {
-                return TemporalHold::Glitch;
-            }
-            return LuminousMetal::temporalRefused() ? TemporalHold::WindowSize : TemporalHold::None;
-        }
     }
 
-    bool glitchHeldLive()
+    F32 settingLiveScale()
     {
-        return sGlitchAsked && temporal() == Temporal::Scales;
+        static LLCachedControl<F32> setting(gSavedSettings, "LuminousPhotoLiveScale", 1.f);
+        return liveScaleOf(setting());
     }
 
     F32 chosenLiveScale()
@@ -2518,16 +2491,10 @@ namespace LuminousPhotoMode
         case Temporal::RestsBeyondRange:
             return "Rests at " + scaleName(settingLiveScale()) + ": beyond its range.";
         case Temporal::Scales:
-            // Held at full size: why, where it has a line of its own.
-            switch (temporalHeldBy())
-            {
-            case TemporalHold::Glitch:
-                return "Full resolution while Glitch shows live: MetalFX would smear its changes.";
-            case TemporalHold::WindowSize:
-                return "Full resolution: MetalFX cannot scale to this window's size.";
-            default:
-                return std::string();
-            }
+            // Held at full size: the scaler was refused at the window's size.
+            return temporalHeldAtFull() && LuminousMetal::temporalRefused()
+                ? std::string("Full resolution: MetalFX cannot scale to this window's size.")
+                : std::string();
         default:
             return std::string();
         }
@@ -2551,164 +2518,15 @@ namespace LuminousPhotoMode
             return LLStartUp::getStartupState() >= STATE_STARTED && !settingTipsHeld();
         }
 
-        // A tip held while the Glitch question is open (temporalTip), shown if its answer keeps what the tip says.
-        std::string sHeldTemporalTip;
-
         void temporalTip(const std::string& message)
         {
             LL_INFOS("LuminousPhotoMode") << "MetalFX temporal tip: " << message << LL_ENDL;
-            // Not beside the Glitch question the same change asked: its answer decides what the tip would say.
-            if (sGlitchAsked)
-            {
-                sHeldTemporalTip = message;
-                return;
-            }
             LLNotificationsUtil::add("SystemMessageTip", LLSD().with("MESSAGE", message));
-        }
-
-        // A setting the Glitch question's Cancel puts back, with its value before the user's change.
-        struct GlitchUndo
-        {
-            std::string name;
-            LLSD value;
-        };
-        // The user's own changes of the settings the question looks at, until the next idle: the first value of
-        // each, so that a change made of several (MetalFX temporal ticked, and Preview resolution set to Half for
-        // it) is put back whole.
-        std::vector<GlitchUndo> sGlitchUndo;
-
-        void noteGlitchUndo(const char* name, const LLSD& previous)
-        {
-            if (sGlitchUndo.empty())
-            {
-                doOnIdleOneTime([]() { sGlitchUndo.clear(); });
-            }
-            for (const GlitchUndo& undo : sGlitchUndo)
-            {
-                if (undo.name == name)
-                {
-                    return;
-                }
-            }
-            sGlitchUndo.push_back({ name, previous });
-        }
-
-        // Glitch turned on live while MetalFX temporal scales, or MetalFX temporal brought to scale while Glitch
-        // is live, by the user's own change. Glitch is not drawn after the upscale, so it cannot show with MetalFX
-        // scaling, and full resolution can cost much frame rate: ask rather than switch. Until it is answered,
-        // Glitch is held off the live view and MetalFX goes on scaling. One question at a time: a slider that goes
-        // on moving asks nothing more.
-        void askGlitchQuestion()
-        {
-            // Not where the scaler was refused at this size: the live view is at full size already, and the grey
-            // line says why.
-            if (sGlitchAsked || !glitchWantedLive() || temporal() != Temporal::Scales || LuminousMetal::temporalRefused())
-            {
-                return;
-            }
-            sGlitchAsked = true;
-            LL_INFOS("LuminousPhotoMode") << "Glitch shown live while MetalFX temporal scales: asking" << LL_ENDL;
-            LLNotificationsUtil::add("LuminousGlitchMetalFX", LLSD(), LLSD(),
-                [undo = sGlitchUndo](const LLSD& notification, const LLSD& response)
-                {
-                    sGlitchAsked = false;
-                    const std::string held_tip = sHeldTemporalTip;
-                    sHeldTemporalTip.clear();
-                    HoldSettingTips quiet; // the answer's own settings: nothing to ask or tip about
-                    switch (LLNotificationsUtil::getSelectedOption(notification, response))
-                    {
-                    case 0:
-                        LL_INFOS("LuminousPhotoMode") << "Glitch question: full resolution, MetalFX temporal off"
-                                                      << LL_ENDL;
-                        gSavedSettings.setBOOL("LuminousMetalFXTemporal", false);
-                        gSavedSettings.setF32("LuminousPhotoLiveScale", 1.f);
-                        break;
-                    case 1:
-                        LL_INFOS("LuminousPhotoMode") << "Glitch question: Glitch only in renders" << LL_ENDL;
-                        gSavedSettings.setBOOL("LuminousPhotoGlitchRenderOnly", true);
-                        // MetalFX temporal stays as the change set it: the tip held for that change is still true.
-                        if (!held_tip.empty())
-                        {
-                            LLNotificationsUtil::add("SystemMessageTip", LLSD().with("MESSAGE", held_tip));
-                        }
-                        break;
-                    default:
-                        // Cancel: the change that asked is put back, in the order it was made (MetalFX temporal off
-                        // before Preview resolution goes back to Full).
-                        LL_INFOS("LuminousPhotoMode") << "Glitch question: cancelled, " << undo.size()
-                                                      << " setting(s) put back" << LL_ENDL;
-                        for (const GlitchUndo& setting : undo)
-                        {
-                            if (LLControlVariable* control = gSavedSettings.getControl(setting.name))
-                            {
-                                control->setValue(setting.value);
-                            }
-                        }
-                        break;
-                    }
-                    return false;
-                });
-        }
-
-        // The user's own changes that can bring Glitch shown live and MetalFX temporal's scaling together ask the
-        // Glitch question. Connected before the MetalFX temporal tips, which may set Preview resolution for the
-        // same change, so that it is noted whole before it asks.
-        void initGlitchQuestion()
-        {
-            gSavedSettings.getControl("LuminousPhotoGlitch")->getSignal()->connect(
-                [](LLControlVariable*, const LLSD& value, const LLSD& previous)
-                {
-                    if (usersOwnChange())
-                    {
-                        noteGlitchUndo("LuminousPhotoGlitch", previous);
-                        if (previous.asReal() < 0.005 && value.asReal() >= 0.005)
-                        {
-                            askGlitchQuestion();
-                        }
-                    }
-                });
-            gSavedSettings.getControl("LuminousPhotoGlitchRenderOnly")->getSignal()->connect(
-                [](LLControlVariable*, const LLSD& value, const LLSD& previous)
-                {
-                    if (usersOwnChange())
-                    {
-                        noteGlitchUndo("LuminousPhotoGlitchRenderOnly", previous);
-                        if (previous.asBoolean() && !value.asBoolean())
-                        {
-                            askGlitchQuestion();
-                        }
-                    }
-                });
-            gSavedSettings.getControl("LuminousMetalFXTemporal")->getSignal()->connect(
-                [](LLControlVariable*, const LLSD& value, const LLSD& previous)
-                {
-                    if (usersOwnChange())
-                    {
-                        noteGlitchUndo("LuminousMetalFXTemporal", previous);
-                        if (!previous.asBoolean() && value.asBoolean())
-                        {
-                            askGlitchQuestion();
-                        }
-                    }
-                });
-            gSavedSettings.getControl("LuminousPhotoLiveScale")->getSignal()->connect(
-                [](LLControlVariable*, const LLSD&, const LLSD& previous)
-                {
-                    if (usersOwnChange())
-                    {
-                        noteGlitchUndo("LuminousPhotoLiveScale", previous);
-                        if (temporalAt(liveScaleOf((F32)previous.asReal())) != Temporal::Scales)
-                        {
-                            askGlitchQuestion();
-                        }
-                    }
-                });
         }
     }
 
     void initTemporalTips()
     {
-        initGlitchQuestion();
         gSavedSettings.getControl("LuminousMetalFXTemporal")->getSignal()->connect(
             [](LLControlVariable*, const LLSD& value, const LLSD& previous)
             {
@@ -3140,27 +2958,6 @@ namespace LuminousPhotoMode
             return false;
         }
         return LuminousMetal::liveJitter(ndc_x, ndc_y);
-    }
-
-    bool screenLockedLive()
-    {
-        if (!isOn() || pictureFrame())
-        {
-            return false;
-        }
-        static LLCachedControl<F32> glitch(gSavedSettings, "LuminousPhotoGlitch", 0.f);
-        // Not while the Glitch question holds it off the live view (glitchHeldLive).
-        if (glitch() >= 0.005f && drawnNow(Kept::Glitch) && LuminousMetal::on(LuminousMetal::Effect::Glitch)
-            && !glitchHeldLive())
-        {
-            return true;
-        }
-        // Not the live lens flare's dirt, specks fixed on the glass: in a frame drawn for the scaler the flare is added
-        // where the frame shows each place, jittered as the scene is (luminousmetallens.cpp, drawLensFlare).
-        // Nor live lens distortion, Worn photo or the light leak: a frame drawn for the scaler leaves them out and the
-        // present draws them on the scaled frame (fillTemporalScreen). Nor the picture frame or Firestorm's capture
-        // frame: they are drawn over the scaled frame after the present (LuminousMetal::drawOverlays).
-        return false;
     }
 
     F32 grainAfterUpscale(F32& size)
@@ -3831,12 +3628,16 @@ namespace LuminousPhotoMode
             return false;
         }
         pictureInFrame(k.frameScale, k.pictureAspect);
-        // Live lens distortion, left out of the frame by fillLensParams, as its passes would draw it.
+        // Live lens distortion and Glitch, left out of the frame by fillLensParams, as their passes would draw them.
         static LLCachedControl<F32> distortion(gSavedSettings, "LuminousPhotoDistortion", 0.f);
         if (std::fabs(distortion()) >= 0.005f && drawnNow(Kept::Distortion)
             && LuminousMetal::on(LuminousMetal::Effect::Distortion))
         {
             k.distortion = llclamp((F32)distortion(), -1.f, 1.f);
+        }
+        if (LuminousMetal::on(LuminousMetal::Effect::Glitch))
+        {
+            k.glitch = glitchNow(k.glitchParts, k.glitchLineSize, k.glitchSeed);
         }
         // The light leak and Worn photo, left out of the frame by fillToneParams, as the tonemap would draw them.
         LuminousToneParams tone;
@@ -3852,7 +3653,7 @@ namespace LuminousPhotoMode
         k.leakHardness = tone.leakHardness;
         k.leakRainbow = tone.leakRainbow;
         k.leakSeed = tone.leakSeed;
-        return k.distortion != 0.f || k.worn > 0.f || k.leak > 0.f;
+        return k.distortion != 0.f || k.glitch > 0.f || k.worn > 0.f || k.leak > 0.f;
     }
 
     void bindLookUniforms(LLGLSLShader& shader)

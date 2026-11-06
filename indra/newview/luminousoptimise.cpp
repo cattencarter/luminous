@@ -50,6 +50,7 @@
 #include "llviewerwindow.h"
 #include "llwindow.h"
 #include "luminousbenchmark.h"
+#include "luminousmetal.h"
 #include "luminousphotomode.h"
 
 #include <algorithm>
@@ -73,6 +74,9 @@ namespace
     const F32 TOO_UNSTEADY = 0.3f; // the view as it is swinging more than this share is not judged
     const F32 SWAY_METRES = 2.f; // the camera may sway this far from where the measure began
     const F32 SWAY_COS = 0.9659f; // and turn up to 15 degrees
+    const F32 SCALER_SETTLE = 4.f; // MetalFX upscaling switched on: its scaler made, the targets at the new size and
+                                   // its history filled
+    const F32 SCALER_WAIT = 6.f; // and how much longer its first scaled frame may take before it counts as not scaling
 
     bool sMeasuring = false;
     bool sOfferedThisSession = false;
@@ -135,6 +139,20 @@ namespace
     std::string scaleName(F32 scale)
     {
         return scale > 0.7f ? "three quarters" : "half";
+    }
+
+    F32 targetMs()
+    {
+        return 1000.f / llmax(1.f, gSavedSettings.getF32("LuminousOptimiseTargetFPS"));
+    }
+
+    // MetalFX upscaling is measured first where it could be switched on: on Metal with MetalFX's temporal scaler, off
+    // (as Luminous ships), Half within its range, and not refused at the window's size.
+    bool metalFXToMeasure()
+    {
+        const F32 most = LuminousMetal::temporalMaxScale();
+        return LuminousMetal::temporalSupported() && !gSavedSettings.getBOOL("LuminousMetalFXTemporal")
+               && (most <= 0.f || most >= 2.f) && !LuminousMetal::temporalRefused();
     }
 
     // --- the Mac ---------------------------------------------------------
@@ -485,17 +503,20 @@ void LuminousOptimiseFloater::onOpen(const LLSD& key)
     // Opened by hand, it is not offered again this session.
     sOfferedThisSession = true;
     const S32 target = ll_round(gSavedSettings.getF32("LuminousOptimiseTargetFPS"));
+    const bool metalfx = metalFXToMeasure();
     std::string intro;
     if (key.has("slow_fps"))
     {
-        intro = llformat("The live view has run at about %d fps here for the last minute. Luminous can measure what each "
+        intro = llformat("The live view has run at about %d fps here for the last minute. Luminous can %s what each "
                          "live effect costs where you are, and suggest what to change to reach %d fps.",
-                         llmax(1, ll_round((F32)key["slow_fps"].asReal())), target);
+                         llmax(1, ll_round((F32)key["slow_fps"].asReal())),
+                         metalfx ? "try MetalFX upscaling and measure" : "measure", target);
     }
     else
     {
-        intro = llformat("Luminous measures what each live effect costs where you are, and suggests what to change to "
-                         "reach %d fps in the live view.", target);
+        intro = llformat("Luminous %s what each live effect costs where you are, and suggests what to change to "
+                         "reach %d fps in the live view.",
+                         metalfx ? "tries MetalFX upscaling and measures" : "measures", target);
     }
     getChild<LLUICtrl>("intro")->setValue(intro);
     if (!sMeasuring)
@@ -543,14 +564,75 @@ void LuminousOptimiseFloater::onMeasure()
 
     mSteps.clear();
     mChanges.clear();
-    // The view as it is is measured again after every third change, so a
-    // view that drifts -- a region still loading -- is measured against
-    // where it has drifted to.
+    mKept.clear();
+    mFirst = 0;
+    mMetalFXWeighed = false;
+    mMetalFXKept = false;
+    mMeasureMetalFX = metalFXToMeasure();
+    mSteps.push_back(baselineStep());
+    if (mMeasureMetalFX)
+    {
+        // MetalFX upscaling first, at Preview resolution Half as its check box sets it, between two measures of the
+        // view as it is; what comes after depends on what it gives (next, weighMetalFX).
+        Step s;
+        s.label = "MetalFX upscaling";
+        s.settings.push_back({ "LuminousMetalFXTemporal", true, LLSD() });
+        if (std::fabs(LuminousPhotoMode::settingLiveScale() - 0.5f) > 0.01f)
+        {
+            s.label += " and preview resolution half";
+            s.settings.push_back({ "LuminousPhotoLiveScale", 0.5, LLSD() });
+        }
+        s.settle = SCALER_SETTLE;
+        s.metalfx = true;
+        s.scaler = true;
+        mMetalFX = mSteps.size();
+        mSteps.push_back(s);
+        mSteps.push_back(baselineStep());
+        mLater = laterSteps().size();
+    }
+    else
+    {
+        const std::vector<Step> later = laterSteps();
+        mSteps.insert(mSteps.end(), later.begin(), later.end());
+    }
+
+    const LLViewerCamera* camera = LLViewerCamera::getInstance();
+    mCameraOrigin = camera->getOrigin();
+    mCameraAt = camera->getAtAxis();
+    sMeasuring = true;
+    getChildView("measure_btn")->setEnabled(false);
+    getChildView("apply_btn")->setEnabled(false);
+    getChild<LLUICtrl>("results")->setValue("");
+    mStep = 0;
+    beginStep();
+    LL_INFOS("LuminousOptimise") << "Measuring " << mSteps.size() << " steps"
+                                 << (mMeasureMetalFX ? ", MetalFX upscaling first" : "") << LL_ENDL;
+
+    LLHandle<LLFloater> handle = getHandle();
+    doOnIdleRepeating([handle]()
+    {
+        LuminousOptimiseFloater* floater = static_cast<LuminousOptimiseFloater*>(handle.get());
+        return !floater || floater->step();
+    });
+}
+
+LuminousOptimiseFloater::Step LuminousOptimiseFloater::baselineStep()
+{
     Step baseline;
     baseline.label = "As you have it";
     baseline.settle = 2.f;
     baseline.baseline = true;
-    mSteps.push_back(baseline);
+    return baseline;
+}
+
+// The steps after the first measure of the view (and after MetalFX upscaling's, where it is measured), as the
+// settings are when they begin: with MetalFX upscaling on where it is kept.
+std::vector<LuminousOptimiseFloater::Step> LuminousOptimiseFloater::laterSteps() const
+{
+    std::vector<Step> steps;
+    // The view as it is is measured again after every third change, so a
+    // view that drifts -- a region still loading -- is measured against
+    // where it has drifted to.
     S32 since_baseline = 0;
     for (const Effect& effect : EFFECTS)
     {
@@ -559,10 +641,10 @@ void LuminousOptimiseFloater::onMeasure()
             Step s;
             s.label = effect.label;
             s.settings.push_back({ effect.render_only, true, LLSD() });
-            mSteps.push_back(s);
+            steps.push_back(s);
             if (++since_baseline == 3)
             {
-                mSteps.push_back(baseline);
+                steps.push_back(baselineStep());
                 since_baseline = 0;
             }
         }
@@ -580,7 +662,7 @@ void LuminousOptimiseFloater::onMeasure()
         s.settings.push_back({ "LuminousPhotoLiveScale", 0.75, LLSD() });
         s.settle = 5.f;
         s.resolution = true;
-        mSteps.push_back(s);
+        steps.push_back(s);
     }
     else if (!LuminousPhotoMode::temporalHeldAtFull())
     {
@@ -595,31 +677,14 @@ void LuminousOptimiseFloater::onMeasure()
             s.settings.push_back({ "LuminousPhotoLiveScale", lower, LLSD() });
             s.settle = 3.f; // the targets are made again at the new size
             s.resolution = true;
-            mSteps.push_back(s);
+            steps.push_back(s);
         }
     }
-    if (!mSteps.back().baseline)
+    if (!steps.empty() && !steps.back().baseline)
     {
-        mSteps.push_back(baseline);
+        steps.push_back(baselineStep());
     }
-
-    const LLViewerCamera* camera = LLViewerCamera::getInstance();
-    mCameraOrigin = camera->getOrigin();
-    mCameraAt = camera->getAtAxis();
-    sMeasuring = true;
-    getChildView("measure_btn")->setEnabled(false);
-    getChildView("apply_btn")->setEnabled(false);
-    getChild<LLUICtrl>("results")->setValue("");
-    mStep = 0;
-    beginStep();
-    LL_INFOS("LuminousOptimise") << "Measuring " << mSteps.size() << " steps" << LL_ENDL;
-
-    LLHandle<LLFloater> handle = getHandle();
-    doOnIdleRepeating([handle]()
-    {
-        LuminousOptimiseFloater* floater = static_cast<LuminousOptimiseFloater*>(handle.get());
-        return !floater || floater->step();
-    });
+    return steps;
 }
 
 void LuminousOptimiseFloater::beginStep()
@@ -634,8 +699,8 @@ void LuminousOptimiseFloater::beginStep()
     }
     mCounting = false;
     mTimer.reset();
-    std::string what = "the live view as it is";
-    if (s.resolution)
+    std::string what = mMetalFXKept ? "the live view with MetalFX upscaling" : "the live view as it is";
+    if (s.resolution || s.metalfx)
     {
         what = s.label;
     }
@@ -643,9 +708,11 @@ void LuminousOptimiseFloater::beginStep()
     {
         what = s.label + " in renders only";
     }
-    const S32 seconds = ll_round((F32)(mSteps.size() - mStep) * (MEASURE + 1.8f));
+    // Until MetalFX upscaling is weighed, the steps after it are not yet in the list
+    const size_t total = mSteps.size() + (mMeasureMetalFX && !mMetalFXWeighed ? mLater : 0);
+    const S32 seconds = ll_round((F32)(total - mStep) * (MEASURE + 1.8f));
     showStatus(llformat("Measuring %d of %d: %s. Keep the camera where it is -- about %d s.", (S32)mStep + 1,
-                        (S32)mSteps.size(), what.c_str(), seconds));
+                        (S32)total, what.c_str(), seconds));
 }
 
 void LuminousOptimiseFloater::endStep()
@@ -664,6 +731,7 @@ void LuminousOptimiseFloater::stop(const std::string& status)
     {
         endStep();
     }
+    putKeptBack();
     mStep = mSteps.size();
     sMeasuring = false;
     getChildView("measure_btn")->setEnabled(true);
@@ -692,6 +760,21 @@ bool LuminousOptimiseFloater::step()
     const F32 t = mTimer.getElapsedTimeF32();
     if (!mCounting)
     {
+        // With MetalFX upscaling on, the count begins with the frames its scaler scales: until then the live view
+        // is scaled up the plain way. Where none comes, MetalFX upscaling does not scale here.
+        if (t >= s.settle && s.scaler && !LuminousMetal::temporalFrame())
+        {
+            if (!LuminousMetal::temporalRefused() && t < s.settle + SCALER_WAIT)
+            {
+                return false;
+            }
+            if (s.metalfx)
+            {
+                LL_INFOS("LuminousOptimise") << s.label << ": MetalFX upscaling does not scale here" << LL_ENDL;
+                s.unavailable = true;
+                return next();
+            }
+        }
         if (t >= s.settle)
         {
             mCounting = true;
@@ -742,29 +825,124 @@ bool LuminousOptimiseFloater::step()
     s.spread = spread;
     LL_INFOS("LuminousOptimise") << s.label << ": " << s.ms << " ms, swinging " << ll_round(spread * 100.f)
                                  << " %, counted " << t << " s" << LL_ENDL;
+    return next();
+}
+
+// A step done: the next begins, or the measure ends. True when it has ended.
+bool LuminousOptimiseFloater::next()
+{
     endStep();
-    if (++mStep < mSteps.size())
+    ++mStep;
+    if (mMeasureMetalFX && !mMetalFXWeighed)
+    {
+        if (mStep == mMetalFX && mSteps.front().ms <= targetMs() * 1.05f)
+        {
+            // The view as it is already reaches the aim: MetalFX upscaling is not needed, and not measured
+            mMeasureMetalFX = false;
+            mSteps.resize(mMetalFX);
+            const std::vector<Step> later = laterSteps();
+            mSteps.insert(mSteps.end(), later.begin(), later.end());
+        }
+        else if (mStep == mMetalFX + 1 && mSteps[mMetalFX].unavailable)
+        {
+            // It did not scale: the rest as without it, the view measured before it standing for the one after
+            mMetalFXWeighed = true;
+            mSteps.erase(mSteps.begin() + mStep);
+            const std::vector<Step> later = laterSteps();
+            mSteps.insert(mSteps.end(), later.begin(), later.end());
+        }
+        else if (mStep == mMetalFX + 2)
+        {
+            mMetalFXWeighed = true;
+            weighMetalFX();
+        }
+    }
+    if (mStep < mSteps.size())
     {
         beginStep();
         return false;
     }
+    finish();
+    return true;
+}
+
+// MetalFX upscaling measured between two measures of the view as it is. Where it reaches the aim, it is proposed
+// alone and nothing more is measured; where it helps but does not, the rest is measured with it on, against the view
+// with it; where it does not help (or the view swung or drifted too much to tell), the rest is measured as without
+// it, and it is left out.
+void LuminousOptimiseFloater::weighMetalFX()
+{
+    const Step& before = mSteps[mMetalFX - 1];
+    const Step& after = mSteps[mMetalFX + 1];
+    const Step& with = mSteps[mMetalFX];
+    const F32 then = 0.5f * (before.ms + after.ms);
+    const F32 then_err = llmax(before.err, after.err);
+    const F32 step_noise = llmax(llmax(1.f, then * 0.05f), 2.f * sqrtf(with.err * with.err + then_err * then_err));
+    const bool steady = llmax(before.spread, after.spread) <= TOO_UNSTEADY && std::fabs(after.ms - before.ms) <= then * 0.25f;
+    const bool helps = steady && then - with.ms > step_noise;
+    const bool alone = helps && with.ms <= targetMs() * 1.05f;
+    LL_INFOS("LuminousOptimise") << "MetalFX upscaling: " << with.ms << " ms against " << then << " ms without"
+                                 << (!steady ? ": the view too unsteady to tell, left out" : !helps ? ": left out"
+                                     : alone ? ": reaches the aim alone" : ": kept on for the rest") << LL_ENDL;
+    if (!helps)
+    {
+        const std::vector<Step> later = laterSteps();
+        mSteps.insert(mSteps.end(), later.begin(), later.end());
+        return;
+    }
+    mMetalFXKept = true;
+    mFirst = mSteps.size();
+    if (alone)
+    {
+        return;
+    }
+    const std::vector<Setting> settings = with.settings;
+    LuminousPhotoMode::HoldSettingTips quiet;
+    for (const Setting& setting : settings)
+    {
+        LLControlVariable* control = gSavedSettings.getControl(setting.name);
+        mKept.push_back({ setting.name, setting.value, control->getValue() });
+        control->setValue(setting.value);
+    }
+    Step kept = baselineStep();
+    kept.label = "With MetalFX upscaling";
+    kept.settle = SCALER_SETTLE;
+    kept.scaler = true;
+    mSteps.push_back(kept);
+    const std::vector<Step> later = laterSteps();
+    mSteps.insert(mSteps.end(), later.begin(), later.end());
+}
+
+void LuminousOptimiseFloater::putKeptBack()
+{
+    LuminousPhotoMode::HoldSettingTips quiet;
+    for (auto setting = mKept.rbegin(); setting != mKept.rend(); ++setting)
+    {
+        gSavedSettings.getControl(setting->name)->setValue(setting->before);
+    }
+    mKept.clear();
+}
+
+void LuminousOptimiseFloater::finish()
+{
+    putKeptBack();
     sMeasuring = false;
     getChildView("measure_btn")->setEnabled(true);
     propose();
-    return true;
 }
 
 void LuminousOptimiseFloater::propose()
 {
-    // The view as it is, measured between the changes: its mean is the
-    // frame now, and each change is measured against it as it stood then,
-    // interpolated between the measurements before and after.
+    // The view as it is (with MetalFX upscaling from mFirst, where it is kept), measured between the changes: its
+    // mean is the frame now, and each change is measured against it as it stood then, interpolated between the
+    // measurements before and after.
     F32 base = 0.f;
     F32 lowest = 1e9f;
     F32 highest = 0.f;
     S32 baselines = 0;
-    for (const Step& s : mSteps)
+    for (size_t i = mFirst; i < mSteps.size(); ++i)
     {
+        const Step& s = mSteps[i];
         if (s.baseline)
         {
             base += s.ms;
@@ -773,7 +951,20 @@ void LuminousOptimiseFloater::propose()
             ++baselines;
         }
     }
-    base /= (F32)llmax(baselines, 1);
+    // MetalFX upscaling reaching the aim alone ends the measure: the view with it is its own step then
+    base = baselines > 0 ? base / (F32)baselines : (mMetalFXKept ? mSteps[mMetalFX].ms : 0.f);
+    // The view as the user has it, before MetalFX upscaling
+    F32 now = 0.f;
+    S32 nows = 0;
+    for (size_t i = 0; i < mFirst; ++i)
+    {
+        if (mSteps[i].baseline)
+        {
+            now += mSteps[i].ms;
+            ++nows;
+        }
+    }
+    now = nows > 0 ? now / (F32)nows : base;
     const F32 target_fps = llmax(1.f, gSavedSettings.getF32("LuminousOptimiseTargetFPS"));
     const F32 target_ms = 1000.f / target_fps;
     auto fps = [](F32 ms) { return ll_round(1000.f / llmax(ms, 1.f)); };
@@ -820,10 +1011,10 @@ void LuminousOptimiseFloater::propose()
     const Step* scale = nullptr;
     F32 scale_ratio = 1.f;
     std::string costs;
-    for (size_t i = 0; i < mSteps.size(); ++i)
+    for (size_t i = mFirst; i < mSteps.size(); ++i)
     {
         const Step& s = mSteps[i];
-        if (s.baseline)
+        if (s.baseline || s.metalfx)
         {
             continue;
         }
@@ -865,17 +1056,31 @@ void LuminousOptimiseFloater::propose()
     }
     std::sort(effects.begin(), effects.end(), [](const Saving& a, const Saving& b) { return a.ms > b.ms; });
 
-    std::string text = llformat("Now: about %d fps (%.1f ms a frame). Aim: %d fps.", fps(base), base, ll_round(target_fps));
+    std::string text = llformat("Now: about %d fps (%.1f ms a frame). Aim: %d fps.", fps(now), now, ll_round(target_fps));
     F32 predicted = base;
-    if (base <= target_ms * 1.05f)
+    // MetalFX upscaling reaches the aim by itself: nothing else is proposed
+    const bool metalfx_alone = mMetalFXKept && base <= target_ms * 1.05f;
+    if (!mMetalFXKept && base <= target_ms * 1.05f)
     {
         text += "\n\nThe live view already reaches it here: nothing needs to change.";
     }
     else
     {
+        if (mMetalFXKept)
+        {
+            const Step& metalfx = mSteps[mMetalFX];
+            Change change{ metalfx.label, {}, 1000.f / base };
+            for (const Setting& setting : metalfx.settings)
+            {
+                change.settings.push_back({ setting.name, setting.value });
+            }
+            mChanges.push_back(change);
+            text += llformat("\n- %s: %d -> %d fps (renders keep full resolution)", metalfx.label.c_str(), fps(now),
+                             fps(base));
+        }
         for (const Saving& saving : effects)
         {
-            if (predicted <= target_ms)
+            if (metalfx_alone || predicted <= target_ms)
             {
                 break;
             }
@@ -886,7 +1091,7 @@ void LuminousOptimiseFloater::propose()
                                  1000.f / predicted });
             text += llformat("\n- %s in renders only: %d -> %d fps", saving.step->label.c_str(), from, fps(predicted));
         }
-        if (predicted > target_ms && scale && scale_ratio < 0.97f)
+        if (!metalfx_alone && predicted > target_ms && scale && scale_ratio < 0.97f)
         {
             const S32 from = fps(predicted);
             predicted *= scale_ratio;
@@ -903,6 +1108,10 @@ void LuminousOptimiseFloater::propose()
             text += "\n\nNo live effect costs enough here to make a difference, and a lower preview resolution "
                     "does not help: the rest of the frame is the region itself -- its objects and avatars.";
         }
+        else if (metalfx_alone)
+        {
+            text += "\n\nThat reaches it here, so nothing else needs to change.";
+        }
         else if (predicted > target_ms)
         {
             text += llformat("\n\nThat comes to about %d fps; the rest of the frame is the region itself -- its "
@@ -913,9 +1122,16 @@ void LuminousOptimiseFloater::propose()
             text += "\n\nApply makes these changes; Put back undoes them.";
         }
     }
+    if (mMeasureMetalFX && mMetalFXWeighed && !mMetalFXKept && !mSteps[mMetalFX].unavailable)
+    {
+        const F32 without = 0.5f * (mSteps[mMetalFX - 1].ms + mSteps[mMetalFX + 1].ms);
+        text += llformat("\n\nMetalFX upscaling does not help here (about %d fps with it, %d without), so it is left "
+                         "out.", fps(mSteps[mMetalFX].ms), fps(without));
+    }
     if (!costs.empty())
     {
-        text += "\n\nWhat each live effect costs here:" + costs;
+        text += std::string("\n\nWhat each live effect costs here") + (mMetalFXKept ? ", with MetalFX upscaling:" : ":")
+                + costs;
     }
     if (any_swing > STEADY)
     {

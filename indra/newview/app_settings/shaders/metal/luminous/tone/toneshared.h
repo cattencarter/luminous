@@ -80,13 +80,14 @@ static_assert(sizeof(LuminousTemporalConstants) == 112, "LuminousTemporalConstan
 
 /// What a frame drawn for MetalFX temporal leaves out because it is fixed to the screen, drawn by the present on the
 /// scaled frame at the world view's size, or on the Catmull-Rom scaled one when the scaler gives no frame: live lens
-/// distortion, the light leak and Worn photo (film grain is LuminousTemporalConstants'). The values are
+/// distortion, Glitch, the light leak and Worn photo (film grain is LuminousTemporalConstants'). The values are
 /// LuminousToneParams' and the lens's; zero where nothing is left out.
 struct LuminousTemporalScreenConstants
 {
-    simd_float4 wornParts;  ///< Worn photo's dust, scratches, stains, edges
-    simd_float4 leakColour; ///< the light leak's hue at full brightness in xyz
-    simd_float2 outputSize; ///< the world view's size in pixels, the present's
+    simd_float4 wornParts;   ///< Worn photo's dust, scratches, stains, edges
+    simd_float4 leakColour;  ///< the light leak's hue at full brightness in xyz
+    simd_float4 glitchParts; ///< Glitch's colour split, VHS, waves and scan lines, each 0 to 1
+    simd_float2 outputSize;  ///< the world view's size in pixels, the present's
     float distortion;       ///< live lens distortion, -1 to 1; 0 without
     float frameScale;       ///< picture heights per frame height
     float pictureAspect;    ///< the picture's width over its height; 0 the frame's own
@@ -99,11 +100,15 @@ struct LuminousTemporalScreenConstants
     float leakHardness;
     float leakRainbow;
     float leakSeed;
+    float glitch;           ///< Glitch, 0 to 1; 0 without
+    float glitchSeed;       ///< Glitch's pattern, a whole number
+    float glitchLineSize;   ///< a scan line every this many pixels of a 1080-line picture
     float pad0;
     float pad1;
+    float pad2;
 };
 
-static_assert(sizeof(LuminousTemporalScreenConstants) == 96, "LuminousTemporalScreenConstants must be 96 bytes in C++ and MSL");
+static_assert(sizeof(LuminousTemporalScreenConstants) == 128, "LuminousTemporalScreenConstants must be 128 bytes in C++ and MSL");
 
 /// The picture frame over the live view: what a render in a shape of its own keeps.
 struct LuminousPictureFrameConstants

@@ -75,7 +75,7 @@ extern bool gCubeSnapshot; // pipeline.cpp: a reflection probe's or mirror's fra
 // The Look, grain, Worn photo and the light leak are drawn inside Firestorm's tonemap and sharpening
 // programs (hosted), translated to Metal with them; they are not drawn here, but for a live frame drawn for
 // MetalFX temporal's scaler, which leaves out what is fixed to the screen: its present draws live lens distortion,
-// the light leak, grain and Worn photo on the scaled frame (LuminousPhotoMode::fillTemporalScreen).
+// Glitch, the light leak, grain and Worn photo on the scaled frame (LuminousPhotoMode::fillTemporalScreen).
 //
 // The library compiles in the background once the viewer is in the world. Until it and its pipelines are
 // ready the passes are not drawn: no frame is shown, and the live view stays at full size.
@@ -623,19 +623,18 @@ namespace LuminousMetal
                    && sTemporalRefused->outputHeight == (U32)gViewerWindow->getWorldViewHeightRaw();
         }
 
-        // Whether MetalFX temporal can scale the live view as it is now: nothing fixed to the screen is drawn into it
-        // live (the present lets the scaler go then), and it was not refused for the world view's size. Only asked
-        // while it would scale (temporal() is Scales, the one case its answer is read in); true otherwise, without
-        // the screen-locked test's cost.
+        // Whether MetalFX temporal can scale the live view as it is now: it was not refused for the world view's
+        // size. What is fixed to the screen does not stop it: a frame drawn for the scaler leaves live lens
+        // distortion, Glitch, the light leak, film grain and Worn photo out and the present draws them on the scaled
+        // frame (LuminousPhotoMode::fillTemporalScreen); the picture frame and Firestorm's capture frame are drawn
+        // over it after the present (drawOverlays); the lens flare's dirt is added where the frame shows each place,
+        // jittered as the scene is (luminousmetallens.cpp, drawLensFlare). Only asked while it would scale
+        // (temporal() is Scales, the one case its answer is read in); true otherwise.
         bool usableNow()
         {
             if (LuminousPhotoMode::temporal() != LuminousPhotoMode::Temporal::Scales)
             {
                 return true;
-            }
-            if (LuminousPhotoMode::screenLockedLive())
-            {
-                return false;
             }
             return !refusedAtWorldViewSize();
         }
@@ -940,7 +939,7 @@ namespace LuminousMetal
                 return nullptr;
             }
             sTemporalNext = false;
-            if (!on() || !device.capabilities().temporalUpscaler || !frame_depth || LuminousPhotoMode::screenLockedLive())
+            if (!on() || !device.capabilities().temporalUpscaler || !frame_depth)
             {
                 if (sTemporal.notNull())
                 {
@@ -1120,7 +1119,7 @@ namespace LuminousMetal
                 : nullptr;
             const bool temporal = scaled != nullptr;
             // What a frame drawn for the scaler leaves out because it is fixed to the screen (live lens distortion,
-            // the light leak, film grain, Worn photo) is drawn on the scaled frame; where the scaler gave no frame
+            // Glitch, the light leak, film grain, Worn photo) is drawn on the scaled frame; where the scaler gave no frame
             // for it, on the Catmull-Rom scaled one by the screen present. Any other frame has none of it, and its
             // present is as before.
             LuminousTemporalScreenConstants screen_constants;

@@ -43,7 +43,10 @@
  * The Optimise window measures, where the user stands, what each live effect
  * costs and what a lower preview resolution gives, and proposes the fewest
  * changes that reach LuminousOptimiseTargetFPS; nothing changes until Apply,
- * and Put back undoes it. It opens by itself once a session when the live
+ * and Put back undoes it. On Metal with MetalFX upscaling off, it measures
+ * that first: where it reaches the aim it is proposed alone, where it helps
+ * but does not the rest is measured with it on, and where it does not help
+ * it is left out. It opens by itself once a session when the live
  * view has stayed under LuminousOptimiseOfferFPS for a minute
  * (LuminousOptimiseOffer), and from the Settings tab.
  */
@@ -82,8 +85,11 @@ private:
         F32 ms = 0.f;                   // the frame time measured
         F32 err = 0.f;                  // how far the frame time measured may be off, from how much it swung
         F32 spread = 0.f;               // how much the half-second frame times swung, as a share of their mean
-        bool baseline = false;          // the view as the user has it, nothing changed
+        bool baseline = false;          // the view as the user has it, nothing changed (or MetalFX upscaling kept on)
         bool resolution = false;        // a lower preview resolution, not an effect
+        bool metalfx = false;           // MetalFX upscaling switched on, weighed on its own
+        bool scaler = false;            // counted only once MetalFX's scaler scales the frames
+        bool unavailable = false;       // MetalFX upscaling did not scale here: not measured
     };
     struct Change
     {
@@ -96,15 +102,28 @@ private:
     void onApply();
     void onPutBack();
     bool step();
+    bool next();
     void beginStep();
     void endStep();
     void stop(const std::string& status);
+    void finish();
+    static Step baselineStep();
+    std::vector<Step> laterSteps() const;
+    void weighMetalFX();
+    void putKeptBack();
     void propose();
     void showStatus(const std::string& text);
     bool cameraMoved() const;
 
     std::vector<Step> mSteps;
     size_t mStep = 0;
+    size_t mFirst = 0;                  // the first step the proposal counts from: MetalFX kept on from there
+    size_t mMetalFX = 0;                // the MetalFX upscaling step, if mMeasureMetalFX
+    bool mMeasureMetalFX = false;       // MetalFX upscaling is measured first
+    bool mMetalFXWeighed = false;
+    bool mMetalFXKept = false;          // it helps: proposed, and the rest measured with it on
+    size_t mLater = 0;                  // steps expected after MetalFX's, for the status line
+    std::vector<Setting> mKept;         // MetalFX upscaling's settings while the rest is measured with it
     bool mCounting = false;
     U32 mFrames = 0;
     std::vector<F32> mChunks;           // the frame time of each half second counted

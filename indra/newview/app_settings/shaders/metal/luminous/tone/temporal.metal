@@ -9,13 +9,14 @@
 // - Present: the scaled frame into the back buffer texel for texel, film grain on it at the window's size, then the
 //   present's noise, clamp and depth (present.metal). What a frame drawn for the scaler leaves out because it is
 //   fixed to the screen is drawn here on the scaled frame (LuminousTemporalScreenConstants): live lens distortion
-//   reads it through the lens's mapping, and the light leak, grain and Worn photo follow in the tonemap's order
-//   (wornleak.h). A frame drawn for the scaler that the scaler gave no frame for is scaled with Catmull-Rom and
-//   given the same.
+//   reads it through the lens's mapping, Glitch reads it where its pattern says (common/glitch.h), and the light
+//   leak, grain and Worn photo follow in the tonemap's order (wornleak.h). A frame drawn for the scaler that the
+//   scaler gave no frame for is scaled with Catmull-Rom and given the same.
 // - Hold: per block of 32 x 32 texels, the largest difference between this frame and the one the hold began with.
 
 #include "luminous/common/distortion.h"
 #include "luminous/common/fullscreen.h"
+#include "luminous/common/glitch.h"
 #include "luminous/tone/toneshared.h"
 #include "luminous/tone/wornleak.h"
 
@@ -107,6 +108,43 @@ inline float4 scaledAt(texture2d<float> frame, float2 uv, constant LuminousTempo
     return frame.read(uint2(texel));
 }
 
+// The picture Glitch reads at uv, in linear light: the scaled frame through live lens distortion, as the lens's passes
+// read it, bilinearly, or with Catmull-Rom for a frame the scaler gave no frame for. Glitch draws on the HDR frame
+// before the tonemap; here its colours are mixed in the display's linear light, which measured closer to that than
+// light lifted back toward the scene's.
+inline float3 glitchRead(texture2d<float> frame, float2 uv, constant LuminousTemporalScreenConstants& s, bool catmull)
+{
+    constexpr sampler linearClamp(filter::linear, address::clamp_to_edge);
+    const float2 at = s.distortion != 0.0 ? distorted(uv, s) : uv;
+    const float3 c = catmull ? luminous_present::catmullRom(frame, at).rgb : frame.sample(linearClamp, at, level(0.0)).rgb;
+    return toLinear(saturate(c));
+}
+
+// Glitch on the scaled frame at the world view's uv, display-referred; the alpha is the pixel's own.
+inline float4 glitched(texture2d<float> frame, float2 uv, float alpha, constant LuminousTemporalScreenConstants& s,
+                       bool catmull)
+{
+    const LuminousGlitch g = luminousGlitchAt(uv, s.outputSize.x / max(s.outputSize.y, 1.0), s.outputSize.y,
+                                              s.frameScale > 0.0 ? s.frameScale : 1.0, s.pictureAspect, s.glitch,
+                                              s.glitchParts, s.glitchSeed);
+    float3 colour;
+    colour.r = glitchRead(frame, luminousGlitchUV(g, g.at + g.offset), s, catmull).r;
+    colour.gb = glitchRead(frame, luminousGlitchUV(g, g.at - g.offset), s, catmull).gb;
+    if (g.vhs > 0.0)
+    {
+        const float3 left = glitchRead(frame, luminousGlitchSideUV(g, -1.0), s, catmull);
+        const float3 right = glitchRead(frame, luminousGlitchSideUV(g, 1.0), s, catmull);
+        float3 chroma = float3(0.0);
+        for (int k = 1; k <= 4; ++k)
+        {
+            chroma += luminousGlitchChroma(glitchRead(frame, luminousGlitchBehindUV(g, k), s, catmull));
+        }
+        colour = luminousGlitchTape(g, colour, left, right, chroma);
+    }
+    colour = luminousGlitchLines(g, colour, s.glitchLineSize);
+    return float4(toDisplay(clamp(colour, 0.0, 1.0)), alpha);
+}
+
 // What is drawn on the finished, display-referred colour of the scaled frame, in linear light as the tonemap's last
 // steps: the light leak, film grain, then Worn photo. uv is the world view's, window the fragment's place in the
 // window.
@@ -132,7 +170,12 @@ inline float4 afterUpscale(float4 c, float2 uv, float2 window, constant Luminous
 inline float4 scaled(texture2d<float> frame, float2 uv, float2 window, constant LuminousTemporalConstants& k,
                      constant LuminousTemporalScreenConstants& s)
 {
-    return luminous_present::finish(afterUpscale(scaledAt(frame, uv, s), uv, window, k, s), window);
+    float4 c = scaledAt(frame, uv, s);
+    if (s.glitch > 0.0)
+    {
+        c = glitched(frame, uv, c.a, s, false);
+    }
+    return luminous_present::finish(afterUpscale(c, uv, window, k, s), window);
 }
 
 // A frame drawn for the scaler that the scaler gave no frame for, scaled with Catmull-Rom (through live lens
@@ -141,7 +184,12 @@ inline float4 screenScaled(texture2d<float> frame, float2 uv, float2 window, con
                            constant LuminousTemporalScreenConstants& s)
 {
     const float2 at = s.distortion != 0.0 ? distorted(uv, s) : uv;
-    return luminous_present::finish(afterUpscale(luminous_present::catmullRom(frame, at), uv, window, k, s), window);
+    float4 c = luminous_present::catmullRom(frame, at);
+    if (s.glitch > 0.0)
+    {
+        c = glitched(frame, uv, c.a, s, true);
+    }
+    return luminous_present::finish(afterUpscale(c, uv, window, k, s), window);
 }
 }
 

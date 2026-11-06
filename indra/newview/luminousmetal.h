@@ -190,11 +190,11 @@ F32 temporalMaxScale();
 /// sizes was ready at the last present), and this frame's jitter.
 void beginTemporalFrame(U64 frame);
 /// This frame is drawn for the temporal scaler: the main camera jittered, SMAA and FXAA left out, and what is fixed to
-/// the screen (grain, live lens distortion, the light leak, Worn photo), which its present draws on the scaled frame.
+/// the screen (grain, live lens distortion, Glitch, the light leak, Worn photo), which its present draws on the scaled
+/// frame.
 bool temporalFrame();
-/// The temporal scaler can scale the live view as it is now: nothing fixed to the screen is drawn into it live
-/// (LuminousPhotoMode::screenLockedLive) and it was not refused for the world view's size. Found once a frame, in
-/// beginTemporalFrame; true before the first. LuminousPhotoMode::chosenLiveScale and fxaaLeftOut ask it, so that
+/// The temporal scaler can scale the live view as it is now: it was not refused for the world view's size. Found once
+/// a frame, in beginTemporalFrame; true before the first. LuminousPhotoMode::chosenLiveScale and fxaaLeftOut ask it, so that
 /// the live view keeps the full size, FXAA running, wherever the scaler would scale but cannot.
 bool temporalUsable();
 /// The temporal scaler was refused for the world view's size as it is now (it could not be made, or would not scale

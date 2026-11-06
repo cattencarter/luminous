@@ -1,13 +1,14 @@
 <?xml version="1.0" encoding="utf-8" standalone="yes" ?>
-<!-- <Luminous> Optimise my settings: measures what each live effect costs
-     where the user stands and proposes what to keep for renders, or a lower
-     preview resolution, to reach LuminousOptimiseTargetFPS. Nothing changes
-     until Apply. LuminousOptimiseFloater. -->
+<!-- <Luminous> Optimise my settings: measures where the user stands what
+     MetalFX upscaling gives (on Metal, where it is off) and what each live
+     effect costs, and proposes MetalFX upscaling, what to keep for renders, or
+     a lower preview resolution, to reach LuminousOptimiseTargetFPS. Nothing
+     changes until Apply. LuminousOptimiseFloater. -->
 <floater
  can_close="true"
  can_minimize="false"
  can_resize="false"
- height="432"
+ height="450"
  layout="topleft"
  name="luminous_optimise"
  positioning="centered"
@@ -17,7 +18,7 @@
  width="420">
 	<text
 	 follows="left|top"
-	 height="44"
+	 height="62"
 	 layout="topleft"
 	 left="12"
 	 name="intro"
