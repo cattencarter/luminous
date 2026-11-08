@@ -77,8 +77,10 @@
 #include <algorithm>
 #include <cmath>
 #include <ctime>
+#include <filesystem>
 #include <functional>
 #include <new>
+#include <system_error>
 #if LL_DARWIN
 #include <mach/mach.h>
 #include <sys/sysctl.h>
@@ -558,14 +560,17 @@ namespace LuminousHDRSnapshot
         // to download or send on.
         enum EShow { SAVE_ONLY, TO_DISK, TEMPORARY };
 
+        const char* extensionOf(EFormat format)
+        {
+            return format == EXR ? "exr" : format == TIFF16 ? "tif" : format == JPEG8 ? "jpg" : format == BMP8 ? "bmp" : "png";
+        }
+
         std::string defaultName(EFormat format)
         {
             char stamp[32];
             time_t now = time(nullptr);
             strftime(stamp, sizeof(stamp), "%Y-%m-%d_%H-%M-%S", localtime(&now));
-            const char* extension = format == EXR ? ".exr" : format == TIFF16 ? ".tif"
-                                  : format == JPEG8 ? ".jpg" : format == BMP8 ? ".bmp" : ".png";
-            return std::string("Luminous_") + stamp + extension;
+            return std::string("Luminous_") + stamp + "." + extensionOf(format);
         }
 
         void report(const std::string& message)
@@ -1023,26 +1028,40 @@ namespace LuminousHDRSnapshot
                 return;
             }
             // Next to Firestorm's own snapshots, once a folder has been chosen
-            // for them; else ask.
-            std::string dir = gSavedPerAccountSettings.getString("SnapshotBaseDir");
+            // for them: under the name chosen for renders and Download,
+            // numbered, else the date and time. Else ask.
+            const std::string dir = gSavedPerAccountSettings.getString("SnapshotBaseDir");
+            const std::string name = chosenName();
+            const std::string extension = extensionOf(format);
             if (!dir.empty() && LLFile::isdir(dir))
             {
-                saveWhenSharp(format, gDirUtilp->add(dir, defaultName(format)), show);
+                saveWhenSharp(format, name.empty() ? gDirUtilp->add(dir, defaultName(format)) : nextNumbered(dir, name, extension), show);
                 return;
             }
+            // the dialog offers the format's own type, so the name keeps its extension
+            const std::string proposed = name.empty() ? defaultName(format) : name + "." + extension;
+            const bool named = !name.empty();
             LLFilePickerReplyThread::startPicker(
-                [format, show](const std::vector<std::string>& files, LLFilePicker::ELoadFilter, LLFilePicker::ESaveFilter)
+                [format, show, named, extension](const std::vector<std::string>& files, LLFilePicker::ELoadFilter, LLFilePicker::ESaveFilter)
                 {
-                    if (!files.empty())
+                    if (files.empty())
                     {
-                        // The folder is remembered, so the next render does
-                        // not ask again; it is Firestorm's own snapshot
-                        // folder, changed on the Render tab.
-                        gSavedPerAccountSettings.setString("SnapshotBaseDir", gDirUtilp->getDirName(files[0]));
-                        saveWhenSharp(format, files[0], show);
+                        return;
                     }
+                    if (named)
+                    {
+                        // a new folder for the chosen name, and the name as
+                        // the panel had it: numbered there
+                        saveWhenSharp(format, chooseNameAndFolder(files[0], extension), show);
+                        return;
+                    }
+                    // The folder is remembered, so the next render does
+                    // not ask again; it is Firestorm's own snapshot
+                    // folder, changed on the Render tab.
+                    gSavedPerAccountSettings.setString("SnapshotBaseDir", gDirUtilp->getDirName(files[0]));
+                    saveWhenSharp(format, files[0], show);
                 },
-                LLFilePicker::FFSAVE_ALL, defaultName(format));
+                LLFilePicker::saveFilterFor(proposed), proposed);
         }
     }
 
@@ -1328,14 +1347,20 @@ namespace LuminousHDRSnapshot
         // picture to keep its size.
         U64 roomNeededBytes(U32 scale)
         {
-            static LLCachedControl<U32> scale_setting(gSavedSettings, "LuminousSnapshotScale", 1);
             static LLCachedControl<F32> bytes_setting(gSavedSettings, "LuminousRenderBytesPerPixel", 140.f);
             static LLCachedControl<U32> format_setting(gSavedSettings, "LuminousSnapshotFormat", 0);
             static LLCachedControl<U32> shadow_setting(gSavedSettings, "LuminousPhotoShadowMapSize", 8192);
             static LLCachedControl<S32> shadow_detail(gSavedSettings, "RenderShadowDetail", 2);
             U32 w = 0;
             U32 h = 0;
-            pictureSize((F32)llclamp(scale > 0 ? scale : (U32)scale_setting(), 1U, 2U), w, h);
+            if (scale > 0)
+            {
+                pictureSize((F32)llclamp(scale, 1U, 2U), w, h);
+            }
+            else
+            {
+                chosenSize(w, h);
+            }
             const bool eight_bit = format_setting() != 1 && format_setting() != 2; // not TIFF or EXR
             // TIFF and EXR: on OpenGL 20 bytes a pixel for the floats read
             // back; on Metal the render group's reads, counted (readBytes).
@@ -1356,6 +1381,15 @@ namespace LuminousHDRSnapshot
         {
             return footprint > 0 && footprint + roomNeededBytes() > memoryLimitFor(footprint, availableBytes());
         }
+    }
+
+    bool chosenSizeFits(U64& need, U64& room)
+    {
+        const U64 footprint = footprintBytes();
+        const U64 limit = footprint > 0 ? memoryLimitFor(footprint, availableBytes()) : 0;
+        need = roomNeededBytes();
+        room = limit > footprint ? limit - footprint : 0;
+        return footprint == 0 || need <= room;
     }
 
     bool roomShort()
@@ -1379,10 +1413,23 @@ namespace LuminousHDRSnapshot
         timer.reset();
         const U64 footprint = footprintBytes();
         const bool was_short = short_now;
-        short_now = lacksRoom(footprint);
+        // A custom size larger than Double that cannot fit beside the viewer
+        // even with the whole share of the Mac a render may reach
+        // (memoryLimitFor with nothing known of what macOS could give) keeps
+        // no room: letting textures out of view go would not make it fit, and
+        // the render then chooses a size that does (takeAndSave). Window size
+        // and Double keep room as before, since letting textures go is what
+        // makes them fit. Making room just before a render (whenSharp) still
+        // counts the size chosen.
+        const U64 need = roomNeededBytes();
+        const bool never_fits = footprint > 0 && need > roomNeededBytes(2)
+            && footprint + need > memoryLimitFor(footprint, 0);
+        short_now = !never_fits && lacksRoom(footprint);
         if (short_now != was_short)
         {
-            LL_INFOS("LuminousHDRSnapshot") << (short_now ? "Short of room for a render at its size" : "Room for a render at its size again")
+            LL_INFOS("LuminousHDRSnapshot") << (short_now ? "Short of room for a render at its size"
+                                                : never_fits ? "No room kept for a render at its size, which cannot fit on this Mac"
+                                                : "Room for a render at its size again")
                 << ": the viewer at " << footprint / (1024 * 1024) << " MB of " << memoryLimitFor(footprint, availableBytes()) / (1024 * 1024)
                 << " MB allowed, the render needs about " << roomNeededBytes() / (1024 * 1024) << " MB"
                 << (short_now ? "; textures out of view give way" : "") << LL_ENDL;
@@ -1497,9 +1544,11 @@ namespace LuminousHDRSnapshot
             error = LuminousPhotoMode::needsOpenGLText();
             return false;
         }
-        // The window's size, in pixels, or twice it.
+        // The window's size, in pixels, twice it, or a size of the user's own
+        // (chosenSize), as a scale of the window's.
         static LLCachedControl<U32> scale_setting(gSavedSettings, "LuminousSnapshotScale", 1);
-        const U32 asked_scale = sPreview || sWindowSizeOnly ? 1U : llclamp((U32)scale_setting(), 1U, 2U); // what fits may be less (below)
+        const bool custom = !sPreview && !sWindowSizeOnly && scale_setting() == 0;
+        const F32 asked_scale = sPreview || sWindowSizeOnly ? 1.f : chosenScale(); // what fits may be less (below)
         static LLCachedControl<bool> smooth(gSavedSettings, "LuminousHDRSnapshotSmooth", true);
         static LLCachedControl<U32> frames_setting(gSavedSettings, "LuminousSnapshotFrames", 16);
         // A preview takes four: enough for smooth edges and hair.
@@ -1527,7 +1576,14 @@ namespace LuminousHDRSnapshot
         auto sizes_for = [&](F32 scale, bool margin)
         {
             Sizes z;
-            pictureSize(scale, z.out_w, z.out_h);
+            if (custom && scale == asked_scale)
+            {
+                chosenSize(z.out_w, z.out_h); // the custom size to the pixel
+            }
+            else
+            {
+                pictureSize(scale, z.out_w, z.out_h);
+            }
             // An eight-bit picture is read after anti-aliasing, and an
             // accumulated snapshot's frames are shifted by fractions of a
             // pixel, so neither needs doubling.
@@ -1550,6 +1606,9 @@ namespace LuminousHDRSnapshot
                 {
                     z.margin_y = (U32)ll_round(z.picture_h * share);
                     z.margin_x = (U32)ll_round(z.picture_w * (F32)z.margin_y / (F32)z.picture_h);
+                    // rounded, a side could pass the largest texture: each kept within it
+                    z.margin_x = llmin(z.margin_x, (most - llmin(z.picture_w, most)) / 2);
+                    z.margin_y = llmin(z.margin_y, (most - llmin(z.picture_h, most)) / 2);
                 }
             }
             z.render_w = z.picture_w + 2 * z.margin_x;
@@ -1643,6 +1702,12 @@ namespace LuminousHDRSnapshot
         {
             options.push_back({ scale, small_shadow, false });
         }
+        // A custom size larger than the window's ends at the window's too, as
+        // Double does; one smaller than it has nothing smaller to fall to.
+        if (custom && options.back().scale > 1.01f)
+        {
+            options.push_back({ 1.f, small_shadow, false });
+        }
         Option chosen = options.front(); // unread memory: as asked, the limit between frames still holds
         bool fits = true;
         static LLCachedControl<bool> when_short(gSavedSettings, "LuminousRenderWhenShort", true);
@@ -1716,16 +1781,23 @@ namespace LuminousHDRSnapshot
                 // the overlay
                 LL_INFOS("LuminousHDRSnapshot") << "Rendering at " << how << " (" << taken.out_w << " x " << taken.out_h << ") instead of "
                     << asked.out_w << " x " << asked.out_h << ": needs about " << need_gb << " GB, " << free_gb << " GB free" << LL_ENDL;
-                LuminousPictureView::setNote(
-                    llformat("This render is %s (%u x %u), not twice it (%u x %u): twice it needs about %.1f GB, and this Mac has %.1f GB free for it with this region loaded.",
-                             how.c_str(), taken.out_w, taken.out_h, asked.out_w, asked.out_h, need_gb, free_gb)
+                // a custom size named by its pixels, the size taken too
+                const std::string said = custom
+                    ? llformat("This render is %u x %u, not the %u x %u chosen: that needs about %.1f GB, and this Mac has %.1f GB free for it with this region loaded.",
+                               taken.out_w, taken.out_h, asked.out_w, asked.out_h, need_gb, free_gb)
+                    : llformat("This render is %s (%u x %u), not twice it (%u x %u): twice it needs about %.1f GB, and this Mac has %.1f GB free for it with this region loaded.",
+                               how.c_str(), taken.out_w, taken.out_h, asked.out_w, asked.out_h, need_gb, free_gb);
+                LuminousPictureView::setNote(said
                     + "\nFor the full size, quit apps you are not using -- right-click each in the Dock and choose Quit (Preview with large pictures open can hold a lot) -- and render again."
                     + (sFullTextures ? " Turning off Full detail on the Render tab helps too." : ""));
             }
             else
             {
-                report(llformat("Rendering at %s (%u x %u): twice it (%u x %u) needs about %.1f GB, and this Mac has %.1f GB free for it with this region loaded.",
-                                how.c_str(), taken.out_w, taken.out_h, asked.out_w, asked.out_h, need_gb, free_gb)
+                report((custom
+                            ? llformat("Rendering at %u x %u: the %u x %u chosen needs about %.1f GB, and this Mac has %.1f GB free for it with this region loaded.",
+                                       taken.out_w, taken.out_h, asked.out_w, asked.out_h, need_gb, free_gb)
+                            : llformat("Rendering at %s (%u x %u): twice it (%u x %u) needs about %.1f GB, and this Mac has %.1f GB free for it with this region loaded.",
+                                       how.c_str(), taken.out_w, taken.out_h, asked.out_w, asked.out_h, need_gb, free_gb))
                        + QUIT_OTHER_APPS);
             }
         }
@@ -1741,7 +1813,9 @@ namespace LuminousHDRSnapshot
             : memory_limit;
         if (on_swap)
         {
-            const std::string how = chosen.scale > 1.01f ? llformat("%g times the window's size", chosen.scale) : std::string("the window's size");
+            const Sizes taken = sizes_for(chosen.scale, false);
+            const std::string how = custom ? llformat("%u x %u", taken.out_w, taken.out_h) // a custom size by its pixels
+                                  : chosen.scale > 1.01f ? llformat("%g times the window's size", chosen.scale) : std::string("the window's size");
             LL_INFOS("LuminousHDRSnapshot") << "Rendering at " << how << " beyond the limit: the viewer at " << footprint_now / (1024 * 1024)
                 << " MB of " << memory_limit / (1024 * 1024) << " MB allowed, macOS could give " << available_now / (1024 * 1024)
                 << " MB more; frames stop past " << frame_limit / (1024 * 1024) << " MB or at critical memory pressure" << LL_ENDL;
@@ -1898,6 +1972,13 @@ namespace LuminousHDRSnapshot
             const F32 window_aspect = (F32)gViewerWindow->getWindowWidthRaw() / (F32)llmax(gViewerWindow->getWindowHeightRaw(), 1);
             const F32 aspect = chosenAspect();
             sShapedRender = aspect > 0.f && std::fabs(aspect - window_aspect) > 0.002f;
+            // So is any size smaller than the window either way: rawSnapshot
+            // would draw the window's and scale it, a frame TIFF and EXR do
+            // not read.
+            if (render_w < (U32)gViewerWindow->getWindowWidthRaw() || render_h < (U32)gViewerWindow->getWindowHeightRaw())
+            {
+                sShapedRender = true;
+            }
         }
         U64 peak_footprint = 0; // before each frame and after the last, for the log
         for (S32 f = 0; f < frames && rendered; ++f)
@@ -2035,7 +2116,7 @@ namespace LuminousHDRSnapshot
             // more frames do not cost more: they reuse the same targets
             error = std::string("this region and the render together need more memory than this Mac has free.")
                 + (sFullTextures ? " Try without Full detail on the Render tab."
-                   : chosen.scale > 1 ? " Try the window's size on the Render tab." : "")
+                   : chosen.scale > 1 ? (custom ? " Try a smaller size on the Render tab." : " Try the window's size on the Render tab.") : "")
                 + QUIT_OTHER_APPS;
             return false;
         }
@@ -2067,9 +2148,11 @@ namespace LuminousHDRSnapshot
                 const U32 cut_x = (frame_w - picture_w) / 2;
                 const U32 cut_y = ((U32)raw->getHeight() - picture_h) / 2;
                 const S32 c = raw->getComponents();
-                LLPointer<LLImageRaw> cut = new LLImageRaw(picture_w, picture_h, c);
+                // made empty and allowed past 256 MB before its buffer is
+                // made: the constructor that takes a size refuses a larger one
+                LLPointer<LLImageRaw> cut = new LLImageRaw;
                 cut->enableOverSize();
-                if (cut->isBufferInvalid())
+                if (!cut->resize((U16)picture_w, (U16)picture_h, (S8)c))
                 {
                     error = "not enough memory to cut the picture from its margin";
                     return false;
@@ -2227,10 +2310,17 @@ namespace LuminousHDRSnapshot
             // An eight-bit copy to show, bottom row first as images are: the
             // TIFF's values are the finished picture's; the EXR's are light,
             // shown at the render's exposure, clipped -- without the Look's
-            // tone, which an EXR leaves to its editor.
-            LLPointer<LLImageRaw> shown = new LLImageRaw(out_w, out_h, 3);
+            // tone, which an EXR leaves to its editor. Made empty and allowed
+            // past 256 MB before its buffer is made. Without memory for it the
+            // file is still written, and the overlay keeps it to download.
+            LLPointer<LLImageRaw> shown = new LLImageRaw;
             shown->enableOverSize();
-            if (!shown->isBufferInvalid())
+            if (!shown->resize((U16)out_w, (U16)out_h, 3))
+            {
+                LL_WARNS("LuminousHDRSnapshot") << "No memory for the " << out_w << "x" << out_h
+                                                << " picture to show; only the file is kept" << LL_ENDL;
+            }
+            else
             {
                 U8* data = shown->getData();
                 for (U32 y = 0; y < out_h; ++y)
@@ -2282,10 +2372,18 @@ namespace LuminousHDRSnapshot
         }
         // The picture's pixels per pixel of the window, the margin included:
         // a texture as fine as the picture shows it. A texture large on
-        // screen still loads at full size.
-        static LLCachedControl<U32> scale_setting(gSavedSettings, "LuminousSnapshotScale", 1);
+        // screen still loads at full size. A custom size smaller than the
+        // window loads as the window's does. Asked for every texture
+        // updated: the size once a frame.
         static LLCachedControl<bool> margin(gSavedSettings, "LuminousSnapshotMargin", true);
-        const F32 side = (F32)llclamp((U32)scale_setting(), 1U, 2U) * (margin() && LuminousPhotoMode::isOn() ? 1.2f : 1.f);
+        static U32 frame = 0;
+        static F32 scale = 1.f;
+        if (frame != gFrameCount)
+        {
+            frame = gFrameCount;
+            scale = llmax(chosenScale(), 1.f);
+        }
+        const F32 side = scale * (margin() && LuminousPhotoMode::isOn() ? 1.2f : 1.f);
         return side * side;
     }
 
@@ -2338,8 +2436,48 @@ namespace LuminousHDRSnapshot
         return forget;
     }
 
+    namespace
+    {
+        void customSizeFor(S32 shape, bool portrait, U32& width, U32& height); // below
+    }
+
     void init()
     {
+        // Free starts from Custom's size in the shape before it (at Window
+        // size and Double only Free's shape counts, the same), and a shape
+        // chosen after Free keeps Free's size (Custom's long side) and its
+        // lying or standing.
+        if (LLControlVariable* shape = gSavedSettings.getControl("LuminousSnapshotAspect"))
+        {
+            shape->getSignal()->connect([](LLControlVariable*, const LLSD& now, const LLSD& before)
+            {
+                const S32 to = now.asInteger();
+                const S32 from = before.asInteger();
+                if (to == from || (to != SHAPE_FREE && from != SHAPE_FREE))
+                {
+                    return;
+                }
+                static LLCachedControl<bool> portrait(gSavedSettings, "LuminousSnapshotPortrait", false);
+                static LLCachedControl<U32> scale(gSavedSettings, "LuminousSnapshotScale", 1);
+                U32 w, h;
+                if (to == SHAPE_FREE)
+                {
+                    customSizeFor(from, portrait(), w, h);
+                    gSavedSettings.setU32("LuminousSnapshotWidth", w);
+                    gSavedSettings.setU32("LuminousSnapshotHeight", h);
+                    return;
+                }
+                freeSize(w, h);
+                if (scale() == 0)
+                {
+                    gSavedSettings.setU32("LuminousSnapshotLongSide", llclamp(llmax(w, h), SMALLEST_LONG_SIDE, largestSide()));
+                }
+                if (w != h)
+                {
+                    gSavedSettings.setBOOL("LuminousSnapshotPortrait", h > w);
+                }
+            });
+        }
         // Renders left in the temporary folder by a session that ended
         // without closing them (a crash): theirs only, by name.
         const std::string temp = gDirUtilp->getExpandedFilename(LL_PATH_TEMP, "");
@@ -2375,37 +2513,145 @@ namespace LuminousHDRSnapshot
             [](LLUICtrl*, const LLSD&) { renderPreview(); });
     }
 
+    namespace
+    {
+        // A shape of the menu, width over height: landscape as listed,
+        // Portrait turns them upright; Free its own width and height; 0 the
+        // window's.
+        F32 shapeAspect(S32 shape, bool portrait)
+        {
+            if (shape == SHAPE_FREE)
+            {
+                U32 w, h;
+                freeSize(w, h);
+                return (F32)w / (F32)h;
+            }
+            static const F32 ASPECTS[] = { 0.f, 1.f, 5.f / 4.f, 4.f / 3.f, 3.f / 2.f, 16.f / 9.f, 21.f / 9.f };
+            const F32 a = ASPECTS[llclamp(shape, 0, (S32)LL_ARRAY_SIZE(ASPECTS) - 1)];
+            return a > 0.f && portrait ? 1.f / a : a;
+        }
+
+        // The window's picture at a scale, in a shape (0 the window's): the
+        // largest centred part of it in that shape.
+        void pictureSizeIn(F32 aspect, F32 scale, U32& width, U32& height)
+        {
+            const U32 most = (U32)gGLManager.mGLMaxTextureSize;
+            const F32 window_w = (F32)gViewerWindow->getWindowWidthRaw() * scale;
+            const F32 window_h = (F32)gViewerWindow->getWindowHeightRaw() * scale;
+            F32 w = window_w;
+            F32 h = window_h;
+            if (aspect > 0.f && window_h > 0.f)
+            {
+                if (aspect < window_w / window_h)
+                {
+                    w = window_h * aspect; // narrower: the height kept, the sides cut
+                }
+                else
+                {
+                    h = window_w / aspect; // wider: the width kept, top and bottom cut
+                }
+            }
+            width = llclamp((U32)ll_round(w), 16U, most);
+            height = llclamp((U32)ll_round(h), 16U, most);
+        }
+
+        // The Render tab's size as it would be in a shape and lying or
+        // standing (chosenSize with those).
+        void sizeFor(S32 shape, bool portrait, U32& width, U32& height)
+        {
+            static LLCachedControl<U32> scale_setting(gSavedSettings, "LuminousSnapshotScale", 1);
+            if (scale_setting() != 0)
+            {
+                pictureSizeIn(shapeAspect(shape, portrait), (F32)llclamp((U32)scale_setting(), 1U, 2U), width, height);
+                return;
+            }
+            customSizeFor(shape, portrait, width, height);
+        }
+
+        // Custom's size in a shape and lying or standing.
+        void customSizeFor(S32 shape, bool portrait, U32& width, U32& height)
+        {
+            if (shape == SHAPE_FREE)
+            {
+                freeSize(width, height);
+                return;
+            }
+            // Custom: the long side in the shape, or the window's; the other
+            // side follows it.
+            static LLCachedControl<U32> long_side(gSavedSettings, "LuminousSnapshotLongSide", 7680);
+            const U32 most = largestSide();
+            const F32 side = (F32)llclamp((U32)long_side(), SMALLEST_LONG_SIDE, most);
+            F32 aspect = shapeAspect(shape, portrait);
+            if (aspect <= 0.f)
+            {
+                aspect = (F32)gViewerWindow->getWindowWidthRaw() / (F32)llmax(gViewerWindow->getWindowHeightRaw(), 1);
+            }
+            aspect = llclamp(aspect, 0.05f, 20.f);
+            const F32 w = aspect >= 1.f ? side : side * aspect;
+            const F32 h = aspect >= 1.f ? side / aspect : side;
+            width = llclamp((U32)ll_round(w), 16U, most);
+            height = llclamp((U32)ll_round(h), 16U, most);
+        }
+    }
+
+    void freeSize(U32& width, U32& height)
+    {
+        static LLCachedControl<U32> width_setting(gSavedSettings, "LuminousSnapshotWidth", 7680);
+        static LLCachedControl<U32> height_setting(gSavedSettings, "LuminousSnapshotHeight", 4320);
+        const U32 most = largestSide();
+        width = llclamp((U32)width_setting(), SMALLEST_SIDE, most);
+        height = llclamp((U32)height_setting(), SMALLEST_SIDE, most);
+        // no thinner than 1:20: the shorter side raised
+        width = llmax(width, (height + 19) / 20);
+        height = llmax(height, (width + 19) / 20);
+    }
+
     F32 chosenAspect()
     {
-        // landscape as listed; Portrait turns them upright
-        static const F32 ASPECTS[] = { 0.f, 1.f, 5.f / 4.f, 4.f / 3.f, 3.f / 2.f, 16.f / 9.f, 21.f / 9.f };
         static LLCachedControl<S32> aspect(gSavedSettings, "LuminousSnapshotAspect", 0);
         static LLCachedControl<bool> portrait(gSavedSettings, "LuminousSnapshotPortrait", false);
-        const F32 a = ASPECTS[llclamp((S32)aspect(), 0, (S32)LL_ARRAY_SIZE(ASPECTS) - 1)];
-        return a > 0.f && portrait() ? 1.f / a : a;
+        return shapeAspect(aspect(), portrait());
+    }
+
+    F32 customAspect()
+    {
+        F32 aspect = chosenAspect();
+        if (aspect <= 0.f)
+        {
+            aspect = (F32)gViewerWindow->getWindowWidthRaw() / (F32)llmax(gViewerWindow->getWindowHeightRaw(), 1);
+        }
+        return llclamp(aspect, 0.05f, 20.f);
     }
 
     void pictureSize(F32 scale, U32& width, U32& height)
     {
-        const U32 most = (U32)gGLManager.mGLMaxTextureSize;
-        const F32 window_w = (F32)gViewerWindow->getWindowWidthRaw() * scale;
-        const F32 window_h = (F32)gViewerWindow->getWindowHeightRaw() * scale;
-        F32 w = window_w;
-        F32 h = window_h;
-        const F32 aspect = chosenAspect();
-        if (aspect > 0.f && window_h > 0.f)
+        pictureSizeIn(chosenAspect(), scale, width, height);
+    }
+
+    U32 largestSide()
+    {
+        return (U32)llmax(gGLManager.mGLMaxTextureSize, (S32)SMALLEST_LONG_SIDE);
+    }
+
+    void chosenSize(U32& width, U32& height)
+    {
+        static LLCachedControl<S32> aspect(gSavedSettings, "LuminousSnapshotAspect", 0);
+        static LLCachedControl<bool> portrait(gSavedSettings, "LuminousSnapshotPortrait", false);
+        sizeFor(aspect(), portrait(), width, height);
+    }
+
+    F32 chosenScale()
+    {
+        static LLCachedControl<U32> scale_setting(gSavedSettings, "LuminousSnapshotScale", 1);
+        if (scale_setting() != 0)
         {
-            if (aspect < window_w / window_h)
-            {
-                w = window_h * aspect; // narrower: the height kept, the sides cut
-            }
-            else
-            {
-                h = window_w / aspect; // wider: the width kept, top and bottom cut
-            }
+            return (F32)llclamp((U32)scale_setting(), 1U, 2U);
         }
-        width = llclamp((U32)ll_round(w), 16U, most);
-        height = llclamp((U32)ll_round(h), 16U, most);
+        // the custom size's long side over the window's picture's, the same shape
+        U32 w, h, window_w, window_h;
+        chosenSize(w, h);
+        pictureSize(1.f, window_w, window_h);
+        return (F32)llmax(w, h) / (F32)llmax(llmax(window_w, window_h), 1U);
     }
 
     bool shapedRender()
@@ -2425,9 +2671,15 @@ namespace LuminousHDRSnapshot
     F32 pictureAspect()
     {
         // as takeAndSave sizes the picture
-        static LLCachedControl<U32> scale_setting(gSavedSettings, "LuminousSnapshotScale", 1);
         U32 w, h;
-        pictureSize(sPreview ? 1.f : (F32)llclamp((U32)scale_setting(), 1U, 2U), w, h);
+        if (sPreview)
+        {
+            pictureSize(1.f, w, h);
+        }
+        else
+        {
+            chosenSize(w, h);
+        }
         return (F32)w / (F32)llmax(h, 1U);
     }
 
@@ -2460,6 +2712,66 @@ namespace LuminousHDRSnapshot
             setAnimationTime(sPreviewHeldFactor);
             LLEyeMotion::sHoldGaze = false;
         }
+    }
+
+    std::string chosenName()
+    {
+        return gSavedPerAccountSettings.getString("LuminousRenderName");
+    }
+
+    std::string nextNumbered(const std::string& dir, const std::string& name, const std::string& extension)
+    {
+        const std::string tail = extension.empty() ? std::string() : "." + extension;
+        // <name>_<digits><tail>, in any case (macOS's volumes mostly ignore it)
+        std::string lower_name = name;
+        std::string lower_tail = tail;
+        LLStringUtil::toLower(lower_name);
+        LLStringUtil::toLower(lower_tail);
+        U32 highest = 0;
+        std::error_code ec;
+        for (std::filesystem::directory_iterator it(dir, ec), end; !ec && it != end; it.increment(ec))
+        {
+            std::string file = it->path().filename().string();
+            LLStringUtil::toLower(file);
+            const size_t start = lower_name.size() + 1;
+            if (file.size() <= start + lower_tail.size()
+                || file.compare(0, lower_name.size(), lower_name) != 0 || file[lower_name.size()] != '_'
+                || file.compare(file.size() - lower_tail.size(), lower_tail.size(), lower_tail) != 0)
+            {
+                continue;
+            }
+            const std::string digits = file.substr(start, file.size() - lower_tail.size() - start);
+            if (digits.size() > 9 || !std::all_of(digits.begin(), digits.end(), [](char c) { return c >= '0' && c <= '9'; }))
+            {
+                continue;
+            }
+            highest = llmax(highest, (U32)std::stoul(digits));
+        }
+        for (U32 number = highest + 1;; ++number)
+        {
+            const std::string path = gDirUtilp->add(dir, llformat("%s_%03u%s", name.c_str(), number, tail.c_str()));
+            if (!LLFile::isfile(path) && !LLFile::isdir(path))
+            {
+                return path;
+            }
+        }
+    }
+
+    std::string chooseNameAndFolder(const std::string& picked, const std::string& extension)
+    {
+        const std::string dir = gDirUtilp->getDirName(picked);
+        std::string name = gDirUtilp->getBaseFileName(picked, true);
+        // a number of its own (_004, as a numbered picture is named): the
+        // name of the series it belongs to
+        const size_t n = name.size();
+        if (n > 4 && name[n - 4] == '_' && std::all_of(name.end() - 3, name.end(), [](char c) { return c >= '0' && c <= '9'; }))
+        {
+            name.resize(n - 4);
+        }
+        gSavedPerAccountSettings.setString("SnapshotBaseDir", dir);
+        gSavedPerAccountSettings.setString("LuminousRenderName", name);
+        LL_INFOS("LuminousHDRSnapshot") << "Pictures saved as " << name << "_001, _002... from now on" << LL_ENDL;
+        return nextNumbered(dir, name, extension);
     }
 
     void renderImage()

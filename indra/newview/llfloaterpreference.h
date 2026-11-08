@@ -439,6 +439,7 @@ private:
 
     void onPresetsListChange();
     LLTextBox* mTemporalRest = nullptr; // <Luminous/> the grey line under MetalFX temporal while it rests
+    LLUICtrl* mLiveView = nullptr;      // <Luminous/> the Preview resolution menu
     LOG_CLASS(LLPanelPreferenceGraphics);
 };
 

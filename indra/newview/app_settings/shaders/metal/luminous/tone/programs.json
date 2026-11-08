@@ -130,6 +130,15 @@
         },
         {
           "vertex": "luminous_fullscreen_vs",
+          "fragment": "luminous_temporal_hold_fold_fs",
+          "colorFormats": [
+            "R32Float"
+          ],
+          "depthFormat": "",
+          "blend": "none"
+        },
+        {
+          "vertex": "luminous_fullscreen_vs",
           "fragment": "luminous_present_temporal_fs",
           "colorFormats": [
             "RGBA8Unorm"

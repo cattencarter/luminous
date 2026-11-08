@@ -3645,6 +3645,7 @@ Copyright (c) 2012, 2014, 2015, 2016 nghttp2 contributors</string>
                 <array>
                   <string>-G</string>
                   <string>Xcode</string>
+                  <string>-DOPENSIM:BOOL=ON</string>
                 </array>
               </map>
               <key>build</key>

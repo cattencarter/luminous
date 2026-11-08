@@ -18,7 +18,7 @@ if( NOT USE_CONAN )
 endif()
 
 # <FS:TJ> Keep Vivox only for OpenSim viewers
-if (OPENSIM)
+if (OPENSIM AND (LUMINOUS_VIVOX OR NOT DARWIN)) # <Luminous/>
     use_prebuilt_binary(slvoice)
 endif ()
 # </FS:TJ>

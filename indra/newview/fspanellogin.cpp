@@ -251,13 +251,24 @@ FSPanelLogin::FSPanelLogin(const LLRect &rect,
     LLTextBox* create_new_account_text = getChild<LLTextBox>("create_new_account_text");
     create_new_account_text->setClickedCallback(onClickNewAccount, NULL);
 
-    LLTextBox* grid_mgr_help_text = getChild<LLTextBox>("grid_login_text");
-    grid_mgr_help_text->setClickedCallback(onClickGridMgrHelp, NULL);
+    // <Luminous> "Grid:" is a plain label: the grid manager's help topic
+    // has no page in this viewer.
+    //LLTextBox* grid_mgr_help_text = getChild<LLTextBox>("grid_login_text");
+    //grid_mgr_help_text->setClickedCallback(onClickGridMgrHelp, NULL);
+    // </Luminous>
 
 #ifdef OPENSIM
     LLTextBox* grid_builder_text = getChild<LLTextBox>("grid_builder_text");
     grid_builder_text->setClickedCallback(onClickGridBuilder, NULL);
     grid_builder_text->setVisible(true);
+
+    // <Luminous> "Other grids" shows the grid row for someone who wants a
+    // grid other than Second Life's; until then the screen stays as it is.
+    if (LLTextBox* other_grids_text = findChild<LLTextBox>("other_grids_text"))
+    {
+        other_grids_text->setClickedCallback(onClickOtherGrids, NULL);
+    }
+    // </Luminous>
 #endif
 
     LLSLURL start_slurl(LLStartUp::getStartSLURL());
@@ -756,6 +767,20 @@ void FSPanelLogin::updateLocationSelectorsVisibility()
         sInstance->getChild<LLLayoutPanel>("start_location_panel")->setVisible(show_start);
 
         bool show_server = gSavedSettings.getBOOL("ForceShowGrid");
+#if defined(OPENSIM) && !defined(SINGLEGRID)
+        // <Luminous> The grid row also shows whenever the chosen grid is not
+        // Second Life's (a grid given on the command line, or the last login's);
+        // "Other grids" offers it otherwise.
+        if (!show_server && !LLGridManager::getInstance()->isInSecondLife())
+        {
+            show_server = true;
+        }
+        if (LLView* other_grids_text = sInstance->findChild<LLView>("other_grids_text"))
+        {
+            other_grids_text->setVisible(!show_server);
+        }
+        // </Luminous>
+#endif
         sInstance->getChild<LLLayoutPanel>("grid_panel")->setVisible(show_server);
         sInstance->addUsersToCombo(show_server);
     }
@@ -1482,8 +1507,23 @@ void FSPanelLogin::onClickGridMgrHelp(void*)
 //static
 void FSPanelLogin::onClickGridBuilder(void*)
 {
-    LLWeb::loadURLInternal(gSavedSettings.getString("FSGridBuilderURL"));
+    // <Luminous> A grid is added in Preferences > OpenSim, the grid manager,
+    // not on a web page.
+    //LLWeb::loadURLInternal(gSavedSettings.getString("FSGridBuilderURL"));
+    LLFloaterReg::showInstance("preferences", LLSD().with("tab", "opensim"));
+    // </Luminous>
 }
+
+// <Luminous>
+//static
+void FSPanelLogin::onClickOtherGrids(void*)
+{
+    // Persists, so the row stays for this user; Preferences > Advanced >
+    // "Allow login to other grids" takes it away again.
+    gSavedSettings.setBOOL("ForceShowGrid", true);
+    updateLocationSelectorsVisibility();
+}
+// </Luminous>
 
 void FSPanelLogin::onSelectUser()
 {

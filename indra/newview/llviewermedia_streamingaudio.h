@@ -94,6 +94,7 @@ private:
     std::string mTitle;
     LLSD mMetadata;
     // </FS:ND>
+    bool mHoldMetadata; // <Luminous> an automatic reconnect keeps the title until the new plugin reports one
 
     F32 mGain;
 };

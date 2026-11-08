@@ -69,9 +69,8 @@ namespace LuminousHDRSnapshot
     /// nothing unless a snapshot is being taken.
     void capture(LLRenderTarget* hdr_screen, LLRenderTarget* exposure_map);
 
-    /// Takes the snapshot at the window's size, or twice it (LuminousSnapshotScale), and
-    /// writes it to path. Returns false, with the reason in error, if it could
-    /// not.
+    /// Takes the snapshot at the Render tab's size (chosenSize) and writes it
+    /// to path. Returns false, with the reason in error, if it could not.
     bool takeAndSave(EFormat format, const std::string& path, std::string& error);
     /// The same render as a PNG, kept as an image instead of written to a
     /// file: for Second Life's own places (inventory, profile feed, ...).
@@ -89,17 +88,63 @@ namespace LuminousHDRSnapshot
     bool previewing();
     /// The preview's overlay closed without Render: the animations go on.
     void endPreview();
+    /// The name Download and renders to disk save pictures under once one
+    /// has been chosen in a save panel (LuminousRenderName, per account):
+    /// <name>_001, _002... in the folder (SnapshotBaseDir). Empty until
+    /// then: renders to disk are named Luminous_ and the date and time, and
+    /// Download asks.
+    std::string chosenName();
+    /// The next file for name in dir: <name>_<number>.<extension>, the
+    /// number one above the highest of that name and extension there, 001
+    /// in a folder without one. Never a file that is there.
+    std::string nextNumbered(const std::string& dir, const std::string& name, const std::string& extension);
+    /// A file picked in a save panel, taken as the folder and the name for
+    /// the pictures after it: SnapshotBaseDir and LuminousRenderName set,
+    /// the name without its extension or a number of its own at the end
+    /// (_004). Returns the file to save to, the next numbered one there in
+    /// the given extension.
+    std::string chooseNameAndFolder(const std::string& picked, const std::string& extension);
     /// The shape a render from Render image will have: width over height.
     F32 pictureAspect();
     /// The shape chosen on the Render tab (LuminousSnapshotAspect, turned
-    /// upright by LuminousSnapshotPortrait), width over height; 0 for the
-    /// window's own.
+    /// upright by LuminousSnapshotPortrait, or Free's own width and height),
+    /// width over height; 0 for the window's own.
     F32 chosenAspect();
+    /// The shape a Custom size follows: the chosen one, or the window's.
+    F32 customAspect();
+    /// Free's width and height as a render takes them
+    /// (LuminousSnapshotWidth, LuminousSnapshotHeight): each side from
+    /// SMALLEST_SIDE to largestSide(), and neither more than 20 times the
+    /// other (the shorter raised).
+    void freeSize(U32& width, U32& height);
     /// The picture's size at a scale of the window: the window's, or the
     /// largest centred part of it in the chosen shape, as rawSnapshot draws
     /// it (a narrower shape keeps the height, a wider one the width). At
     /// most the GPU's largest texture.
     void pictureSize(F32 scale, U32& width, U32& height);
+    /// The size chosen on the Render tab, in pixels (LuminousSnapshotScale):
+    /// the window's or twice it in the chosen shape (pictureSize), or with
+    /// Custom (0) Free's width and height, or a long side of the user's own
+    /// (LuminousSnapshotLongSide) in the chosen shape, the window's when none.
+    void chosenSize(U32& width, U32& height);
+    /// That size as a scale of the window's picture in the same shape: 1, 2,
+    /// or what the custom size comes to.
+    F32 chosenScale();
+    /// The longest side a render can have: the GPU's largest texture, which
+    /// its render targets share (16384 on Apple silicon, Metal and OpenGL).
+    U32 largestSide();
+    /// The shortest long side Custom takes.
+    constexpr U32 SMALLEST_LONG_SIDE = 256;
+    /// The smallest side of a Free size.
+    constexpr U32 SMALLEST_SIDE = 64;
+    /// The Render tab's Shape menu: Free, a width and height of the user's own.
+    constexpr S32 SHAPE_FREE = 7;
+    /// Whether a render at the Render tab's size fits beside the scene now,
+    /// as takeAndSave reckons the least it takes at that size; need is that
+    /// least, room what the viewer may still take, both in bytes. Where
+    /// macOS's figures are unknown, room is 0 and the render counts as
+    /// fitting.
+    bool chosenSizeFits(U64& need, U64& room);
     /// During one of Luminous's renders in a shape other than the window's:
     /// rawSnapshot then draws into targets of the picture's size, as for a
     /// picture larger than the window.
@@ -146,7 +191,10 @@ namespace LuminousHDRSnapshot
     /// its footprint and the render's need past what a render may reach
     /// (what macOS could still give, less a margin), measured twice a
     /// second. LLViewerTexture::updateClass then lets textures out of view
-    /// give way, the discard bias up to ROOM_BIAS and no further.
+    /// give way, the discard bias up to ROOM_BIAS and no further. Never
+    /// short for a size that cannot fit beside the viewer even with the
+    /// whole share of the Mac a render may reach: giving way would not make
+    /// it fit, and the render then takes a size that does.
     bool roomShort();
     /// Whether the scene itself leaves no room for a render at the window's
     /// size (LuminousMemoryStepDown): macOS compresses and swaps rather than

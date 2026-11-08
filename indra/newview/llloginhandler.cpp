@@ -67,7 +67,14 @@ void LLLoginHandler::parse(const LLSD& queryMap)
 
     if (queryMap.has("grid"))
     {
+#ifdef OPENSIM
+      // <Luminous> The link comes from outside the viewer: it may select a
+      // grid the user already has, never add one or fetch from its host.
+      LLGridManager::getInstance()->setGridChoiceIfKnown(queryMap["grid"].asString());
+      // </Luminous>
+#else
       LLGridManager::getInstance()->setGridChoice(queryMap["grid"].asString());
+#endif
     }
 
 
@@ -75,8 +82,16 @@ void LLLoginHandler::parse(const LLSD& queryMap)
 
     if (startLocation == "specify")
     {
+#ifdef OPENSIM
+      // <Luminous> The OpenSim grid manager names a location's grid by its
+      // name in the grid list, as the rest of the viewer does.
+      LLStartUp::setStartSLURL(LLSLURL(LLGridManager::getInstance()->getGrid(),
+                       queryMap["region"].asString()));
+      // </Luminous>
+#else
       LLStartUp::setStartSLURL(LLSLURL(LLGridManager::getInstance()->getGridLoginID(),
                        queryMap["region"].asString()));
+#endif
     }
     else if (startLocation == "home")
     {

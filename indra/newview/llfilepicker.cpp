@@ -93,6 +93,37 @@ bool LLFilePicker::panelShowing()
     return false;
 #endif
 }
+
+//static
+LLFilePicker::ESaveFilter LLFilePicker::saveFilterFor(const std::string& filename)
+{
+    const std::string extension = gDirUtilp->getExtension(filename); // lower case
+    if (extension == "png")
+    {
+        return FFSAVE_PNG;
+    }
+    if (extension == "jpg" || extension == "jpeg")
+    {
+        return FFSAVE_JPEG;
+    }
+    if (extension == "bmp")
+    {
+        return FFSAVE_BMP;
+    }
+    if (extension == "tif" || extension == "tiff")
+    {
+        return FFSAVE_TIFF;
+    }
+    if (extension == "exr")
+    {
+        return FFSAVE_EXR;
+    }
+    if (extension == "tga")
+    {
+        return FFSAVE_TGA;
+    }
+    return FFSAVE_ALL;
+}
 // </Luminous>
 
 //
@@ -641,6 +672,28 @@ bool LLFilePicker::getSaveFile(ESaveFilter filter, const std::string& filename, 
         L"\0";
         break;
 // </Firestorm>
+    // <Luminous>
+    case FFSAVE_TIFF:
+        if (filename.empty())
+        {
+            wcsncpy( mFilesW,L"untitled.tif", FILENAME_BUFFER_SIZE);    /*Flawfinder: ignore*/
+        }
+        mOFN.lpstrDefExt = L"tif";
+        mOFN.lpstrFilter =
+            L"TIFF Images (*.tif; *.tiff)\0*.tif;*.tiff\0" \
+            L"\0";
+        break;
+    case FFSAVE_EXR:
+        if (filename.empty())
+        {
+            wcsncpy( mFilesW,L"untitled.exr", FILENAME_BUFFER_SIZE);    /*Flawfinder: ignore*/
+        }
+        mOFN.lpstrDefExt = L"exr";
+        mOFN.lpstrFilter =
+            L"OpenEXR Images (*.exr)\0*.exr\0" \
+            L"\0";
+        break;
+    // </Luminous>
     default:
         return false;
     }
@@ -857,7 +910,10 @@ void set_nav_save_data(LLFilePicker::ESaveFilter filter, std::string &extension,
         case LLFilePicker::FFSAVE_JPEG:
             type = "JPEG";
             creator = "prvw";
-            extension = "jpeg";
+            // <Luminous> both: with "jpeg" alone the panel turns a name
+            // ending in .jpg into .jpg.jpeg
+            extension = "jpg,jpeg";
+            // </Luminous>
             break;
         case LLFilePicker::FFSAVE_PNG:
             type = "PNG ";
@@ -931,6 +987,18 @@ void set_nav_save_data(LLFilePicker::ESaveFilter filter, std::string &extension,
             creator = "\?\?\?\?";
             extension = "xml";
             break;
+        // <Luminous>
+        case LLFilePicker::FFSAVE_TIFF:
+            type = "TIFF";
+            creator = "prvw";
+            extension = "tif,tiff";
+            break;
+        case LLFilePicker::FFSAVE_EXR:
+            type = "\?\?\?\?";
+            creator = "prvw";
+            extension = "exr";
+            break;
+        // </Luminous>
 
         case LLFilePicker::FFSAVE_ALL:
         default:
@@ -1918,6 +1986,14 @@ bool LLFilePicker::openFileDialog( int32_t filter, bool blocking, EType aType )
                 file_type = "csv_files";
                 file_dialog_filter = "*.csv";
                 break;
+            // <Luminous>
+            case FFSAVE_TIFF:
+                file_dialog_filter = "*.{tif,tiff}";
+                break;
+            case FFSAVE_EXR:
+                file_dialog_filter = "*.exr";
+                break;
+            // </Luminous>
 
 #ifdef _CORY_TESTING
             case FFSAVE_GEOMETRY:

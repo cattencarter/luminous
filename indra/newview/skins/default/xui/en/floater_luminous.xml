@@ -4582,7 +4582,7 @@
 							 left="22"
 							 mouse_opaque="true"
 							 name="snapshot_size_label"
-							 tool_tip="The picture's size: the window's, or double."
+							 tool_tip="The picture's size: the window's, double, or a width and height of your own."
 							 top="7"
 							 width="115">Resolution</text>
 							<combo_box
@@ -4592,7 +4592,7 @@
 							 layout="topleft"
 							 left="138"
 							 name="snapshot_scale"
-							 tool_tip="The picture's size: the window's, or double."
+							 tool_tip="The picture's size: the window's, double, or a width and height of your own."
 							 top="4"
 							 width="146">
 								<combo_box.item
@@ -4603,7 +4603,78 @@
 								 label="Double"
 								 name="x2"
 								 value="2" />
+								<combo_box.item
+								 label="Custom"
+								 name="custom"
+								 value="0" />
 							</combo_box>
+						</layout_panel>
+						<layout_panel
+						 auto_resize="false"
+						 follows="left|top|right"
+						 height="28"
+						 layout="topleft"
+						 name="snapshot_custom_lp"
+						 user_resize="false"
+						 visible="false"
+						 width="316">
+							<text
+							 follows="left|top"
+							 height="16"
+							 layout="topleft"
+							 left="22"
+							 mouse_opaque="true"
+							 name="snapshot_size_label"
+							 tool_tip="The picture's width and height in pixels. With a shape the other side follows; choose Free under Shape to set both."
+							 top="7"
+							 width="115">Size</text>
+							<spinner
+							 decimal_digits="0"
+							 follows="left|top"
+							 height="22"
+							 increment="256"
+							 label=""
+							 label_width="0"
+							 layout="topleft"
+							 left="138"
+							 max_val="16384"
+							 min_val="64"
+							 name="snapshot_width"
+							 tool_tip="The picture's width in pixels. With a shape the height follows; choose Free under Shape to set both."
+							 top="4"
+							 width="68" />
+							<text
+							 follows="left|top"
+							 halign="center"
+							 height="16"
+							 layout="topleft"
+							 left="206"
+							 name="snapshot_size_times"
+							 top="7"
+							 width="14">x</text>
+							<spinner
+							 decimal_digits="0"
+							 follows="left|top"
+							 height="22"
+							 increment="256"
+							 label=""
+							 label_width="0"
+							 layout="topleft"
+							 left="220"
+							 max_val="16384"
+							 min_val="64"
+							 name="snapshot_height"
+							 tool_tip="The picture's height in pixels. With a shape the width follows; choose Free under Shape to set both."
+							 top="4"
+							 width="68" />
+							<text
+							 follows="left|top"
+							 height="16"
+							 layout="topleft"
+							 left="291"
+							 name="snapshot_size_unit"
+							 top="7"
+							 width="22">px</text>
 						</layout_panel>
 						<layout_panel
 						 auto_resize="false"
@@ -4620,7 +4691,7 @@
 							 left="22"
 							 mouse_opaque="true"
 							 name="snapshot_shape_label"
-							 tool_tip="The picture's shape: the window's, or the middle of the view in another. The live view shows what a render keeps, the rest dimmed."
+							 tool_tip="The picture's shape: the window's, the middle of the view in another, or Free, the shape of your own width and height (Custom). The live view shows what a render keeps, the rest dimmed."
 							 top="7"
 							 width="115">Shape</text>
 							<combo_box
@@ -4630,7 +4701,7 @@
 							 layout="topleft"
 							 left="138"
 							 name="snapshot_aspect"
-							 tool_tip="The picture's shape: the window's, or the middle of the view in another. The live view shows what a render keeps, the rest dimmed."
+							 tool_tip="The picture's shape: the window's, the middle of the view in another, or Free, the shape of your own width and height (Custom). The live view shows what a render keeps, the rest dimmed."
 							 top="4"
 							 width="98">
 								<combo_box.item label="Window" name="aspect_window" value="0" />
@@ -4640,6 +4711,7 @@
 								<combo_box.item label="3:2" name="aspect_3_2" value="4" />
 								<combo_box.item label="16:9" name="aspect_16_9" value="5" />
 								<combo_box.item label="21:9" name="aspect_21_9" value="6" />
+								<combo_box.item label="Free" name="aspect_free" value="7" />
 							</combo_box>
 							<button
 							 follows="left|top"
@@ -4681,9 +4753,10 @@
 							 height="16"
 							 layout="topleft"
 							 left="138"
+							 mouse_opaque="true"
 							 name="snapshot_size_px"
 							 top="0"
-							 width="146">0 x 0</text>
+							 width="170">0 x 0</text>
 						</layout_panel>
 						<layout_panel
 						 auto_resize="false"
@@ -5079,7 +5152,7 @@
 			 width="118">
 				<button.commit_callback
 				 function="Luminous.ResetSettings"
-				 parameter="LuminousSnapshotScale,LuminousHDRSnapshotSmooth,LuminousSnapshotFrames,LuminousSnapshotMargin,LuminousSnapshotSampledDoF,LuminousSnapshotSampledShadows,LuminousSnapshotFullTextures,LuminousSnapshotOpen,LuminousAnimationSpeed,LuminousSnapshotFormat,LuminousRenderToDisk" />
+				 parameter="LuminousSnapshotScale,LuminousSnapshotLongSide,LuminousSnapshotWidth,LuminousSnapshotHeight,LuminousHDRSnapshotSmooth,LuminousSnapshotFrames,LuminousSnapshotMargin,LuminousSnapshotSampledDoF,LuminousSnapshotSampledShadows,LuminousSnapshotFullTextures,LuminousSnapshotOpen,LuminousAnimationSpeed,LuminousSnapshotFormat,LuminousRenderToDisk" />
 			</button>
 			<button
 			 control_name="LuminousScenePaused"
@@ -5816,7 +5889,7 @@
 							 left="22"
 							 mouse_opaque="true"
 							 name="live_view_label"
-							 tool_tip="Fewer pixels make the live view faster but softer. Renders always use all of them."
+							 tool_tip="Standard draws one pixel per point: on a Retina screen half its pixels each way, on other screens all of them. Full draws every pixel of a Retina screen: sharper, but the Mac works harder. Renders always use all of them."
 							 top="7"
 							 width="115">Preview resolution</text>
 							<combo_box
@@ -5826,11 +5899,11 @@
 							 layout="topleft"
 							 left="138"
 							 name="live_view_combo"
-							 tool_tip="Fewer pixels make the live view faster but softer. Renders always use all of them."
+							 tool_tip="Standard draws one pixel per point: on a Retina screen half its pixels each way, on other screens all of them. Full draws every pixel of a Retina screen: sharper, but the Mac works harder. Renders always use all of them."
 							 top="4"
 							 width="146">
 								<combo_box.item
-								 label="Automatic"
+								 label="Standard"
 								 name="live_view_auto"
 								 value="0" />
 								<combo_box.item
@@ -5880,7 +5953,7 @@
 							 layout="topleft"
 							 left="22"
 							 name="metalfx_temporal"
-							 tool_tip="Draws the live view smaller and builds a sharp picture from several frames with Apple's MetalFX, for a faster view. Anti-aliasing is left out while it runs. Finished pictures are not affected."
+							 tool_tip="Builds the 3D view up to every pixel of the screen from a smaller picture and several frames, with Apple's MetalFX: sharper than Standard on a Retina screen, and faster where the view would otherwise draw every pixel. Anti-aliasing is left out while it runs. Finished pictures are not affected."
 							 top="4"
 							 width="284" />
 						</layout_panel>

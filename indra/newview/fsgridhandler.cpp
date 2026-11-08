@@ -166,6 +166,16 @@ const char* DEFAULT_HOP_BASE       = "hop://%s/"; // <AW: hop:// protocol>
 const char* DEFAULT_SLURL_BASE     = "https://%s/region/";
 const char* DEFAULT_APP_SLURL_BASE = "x-grid-location-info://%s/app";
 
+// <Luminous> Whether a host is Linden Lab's: lindenlab.com itself or a name
+// under it. A host that only contains the name, such as
+// lindenlab.com.example.net, is someone else's.
+static bool is_linden_lab_host(std::string host)
+{
+    LLStringUtil::toLower(host);
+    return host == "lindenlab.com" || LLStringUtil::endsWith(host, std::string(".lindenlab.com"));
+}
+// </Luminous>
+
 // <AW opensim>
 LLGridManager::LLGridManager() : EGridPlatform(GP_NOTSET), mReadyToLogin(false), mCommandLineDone(false), mResponderCount(0), mClassifiedFee(0), mDirectoryFee(0)
 {
@@ -608,7 +618,10 @@ void LLGridManager::addGrid(GridEntry* grid_entry, AddState state)
             uri = "http://" + grid;
         }
 
-        if (std::string::npos != uri.find("lindenlab.com"))
+        // <Luminous> Only Linden Lab's own hosts skip the grid info fetch.
+        //if (std::string::npos != uri.find("lindenlab.com"))
+        if (is_linden_lab_host(LLURI(uri).hostName()))
+        // </Luminous>
         {
             state = SYSTEM;
         }
@@ -1052,6 +1065,52 @@ void LLGridManager::setGridChoice(const std::string& grid)
     }
 }
 
+// <Luminous> A link or start location names its grid by the grid list's
+// name, its host or its login id ("Agni", "Aditi"). Only a grid the list
+// has, and the user has not removed, is selected, by its name in the list;
+// any other is left alone, so a link can never add a grid, fetch from its
+// host or log in there. Nicks are not matched: a grid's own grid info sets
+// its nick, so another grid could claim Second Life's. Before the grid list
+// is read nothing is known, and nothing is selected.
+bool LLGridManager::setGridChoiceIfKnown(const std::string& grid)
+{
+    if (grid.empty())
+    {
+        return false;
+    }
+
+    std::string grid_name = getGrid(grid);
+    if (grid_name.empty())
+    {
+        grid_name = getGridByAttribute(GRID_ID_VALUE, grid, false);
+    }
+
+    if (grid_name.empty() || !mGridList.get(grid_name).isMap() ||
+        mGridList.get(grid_name).has("USER_DELETED") || mGridList.get(grid_name).has("DEPRECATED"))
+    {
+        LL_WARNS("GridManager") << "Not selecting grid '" << grid << "': it is not in the grid list" << LL_ENDL;
+        return false;
+    }
+
+    setGridChoice(grid_name);
+    return true;
+}
+
+std::string LLGridManager::getGridLoginID()
+{
+    std::string login_id;
+    if (mGridList.has(mGrid))
+    {
+        login_id = mGridList[mGrid][GRID_ID_VALUE].asString();
+    }
+    if (login_id.empty())
+    {
+        login_id = getGridId();
+    }
+    return login_id;
+}
+// </Luminous>
+
 std::string LLGridManager::getGridByProbing(const std::string& probe_for, bool case_sensitive) const
 {
     std::string ret;
@@ -1211,13 +1270,21 @@ void LLGridManager::updateIsInProductionGrid()
     LLURI login_uri = LLURI(uris[0]);
     // LL looks if "agni" is contained in the string for SL main grid detection.
     // cool for http://agni.nastyfraud.com/steal.php#allyourmoney
-    if (login_uri.authority().find("login.agni.lindenlab.com") == 0)
+    // <Luminous> The login host itself decides, matched whole: a host that
+    // starts with or contains Linden Lab's name is not Second Life.
+    const std::string login_host = login_uri.hostName();
+    //if (login_uri.authority().find("login.agni.lindenlab.com") == 0)
+    if (login_host == "login.agni.lindenlab.com")
+    // </Luminous>
     {
         LL_DEBUGS("GridManager") << "uri: " << login_uri.authority() << " setting grid platform to SL MAIN" << LL_ENDL;
         EGridPlatform = GP_SLMAIN;
         return;
     }
-    else if (login_uri.authority().find("lindenlab.com") != std::string::npos) // here is no real money
+    // <Luminous>
+    //else if (login_uri.authority().find("lindenlab.com") != std::string::npos) // here is no real money
+    else if (is_linden_lab_host(login_host)) // here is no real money
+    // </Luminous>
     {
         LL_DEBUGS("GridManager") << "uri: " << login_uri.authority() << " setting grid platform to SL BETA" << LL_ENDL;
         EGridPlatform = GP_SLBETA;
@@ -1235,7 +1302,10 @@ void LLGridManager::updateIsInProductionGrid()
     // NOTE: This is more TPVP compliant than LLs own viewer, where
     // setting the command line login page can be used for spoofing.
     LLURI login_page = LLURI(getLoginPage());
-    if (login_page.authority().find("lindenlab.com") != std::string::npos)
+    // <Luminous> Linden Lab's own hosts only, matched whole.
+    //if (login_page.authority().find("lindenlab.com") != std::string::npos)
+    if (is_linden_lab_host(login_page.hostName()))
+    // </Luminous>
     {
         setGridChoice(MAINGRID);
         return;
@@ -1450,7 +1520,15 @@ std::string LLGridManager::getAppSLURLBase(const std::string& grid)
 class FSGridManagerCommandHandler : public LLCommandHandler
 {
 public:
-    FSGridManagerCommandHandler() : LLCommandHandler("gridmanager", UNTRUSTED_THROTTLE), mDownloadConnection() {}
+    // <Luminous> Adding a grid saves it to the user's grid list, so from an
+    // untrusted source it takes a click in the viewer: a page that navigates
+    // by itself (prim media, profiles, search) cannot add one, and neither can
+    // a link opened from another app while the viewer runs (Preferences >
+    // OpenSim adds grids). A start location given to the viewer at launch is
+    // dispatched as a click (LLStartUp::setStartSLURL).
+    //FSGridManagerCommandHandler() : LLCommandHandler("gridmanager", UNTRUSTED_THROTTLE), mDownloadConnection() {}
+    FSGridManagerCommandHandler() : LLCommandHandler("gridmanager", UNTRUSTED_CLICK_ONLY), mDownloadConnection() {}
+    // </Luminous>
 
     ~FSGridManagerCommandHandler()
     {
@@ -1472,6 +1550,13 @@ public:
         if (params[0].asString() == "addgrid")
         {
             std::string login_uri = LLURI::unescape(params[1].asString());
+            // <Luminous> One callback at a time: a second link replaces the
+            // first one's, which would otherwise stay connected.
+            if (mDownloadConnection.connected())
+            {
+                mDownloadConnection.disconnect();
+            }
+            // </Luminous>
             mDownloadConnection   = LLGridManager::instance().addGridListChangedCallback(
                 boost::bind(&FSGridManagerCommandHandler::handleGridDownloadComplete, this, _1));
             LLGridManager::instance().addGrid(login_uri);

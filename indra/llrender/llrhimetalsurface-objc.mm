@@ -112,10 +112,11 @@ MetalSurface::~MetalSurface()
                     << mWindowServer->drawables.load()
                     << " drawables with the window server at close; finished frames: " << mStats.finishedFlips
                     << " flipped, " << mStats.finishedSkipped << " skipped (none free), " << mStats.finishedPresented
-                    << " presented, " << mStats.finishedHeld << " held, " << mStats.finishedTimeouts
-                    << " drawable timeouts; nextDrawable " << mStats.nextDrawableNs / 1000000
-                    << " ms in all, " << mStats.nextDrawableOver1ms << " calls over 1 ms, the longest "
-                    << mStats.nextDrawableLongNs / 1000 << " us; VSync " << (mVSync ? "on" : "off") << ", layer "
+                    << " presented, " << mStats.finishedHeld << " held, " << mStats.finishedAfterGap
+                    << " after a gap, " << mStats.finishedTimeouts << " drawable timeouts; nextDrawable "
+                    << mStats.nextDrawableNs / 1000000 << " ms in all, " << mStats.nextDrawableOver1ms
+                    << " calls over 1 ms, the longest " << mStats.nextDrawableLongNs / 1000 << " us; VSync "
+                    << (mVSync ? "on" : "off") << ", layer "
                     << (mLayer.displaySyncEnabled ? "display synced" : "unsynced") << LL_ENDL;
     // The back buffer and its depth go with their Refs, through FrameLifecycle.
     dropCopy();
@@ -593,6 +594,13 @@ bool MetalSurface::presentFinished(U64 now, U64 progress, bool justFlipped)
         // frame), so its drawable waits for that frame's own work alone; else it goes once finished, as any.
         return false;
     }
+    if (justFlipped && presentGap(now))
+    {
+        // After a gap in the copies, as when the frame stood while a panel showed: the frame goes once finished
+        // (METAL_PRESENT_GAP_NS).
+        ++mStats.finishedAfterGap;
+        return false;
+    }
     const bool trace = metalPresentTraceKnob();
     const U32 withWindowServer = mWindowServer->drawables.load();
     const U64 since = now > progress ? now - progress : 0;
@@ -705,10 +713,18 @@ bool MetalSurface::presentFinished(U64 now, U64 progress, bool justFlipped)
                      (unsigned long long)flipSerial, (unsigned long long)flipEvent.signaledValue);
             failures->add(MetalFailureLog::Kind::GpuError, line);
         }];
-        [mPresentQueue commit:&buffer count:1 options:options];
+        mDevice.residency().commitToQueue(mPresentQueue, buffer, options); // the device's set is on this queue too
         [mPresentQueue signalDrawable:drawable];
         [drawable present];
         [mPresentQueue signalEvent:mPresentEvent value:++mPresentSerial];
+        // The first copy after a gap is one of a finished frame (presentGap), and the next frame just flipped waits
+        // until it has run.
+        const U64 sent = steadyNowNs();
+        if (mLastCopyNs != 0 && sent > mLastCopyNs && sent - mLastCopyNs > METAL_PRESENT_GAP_NS)
+        {
+            mGapCopySerial = mPresentSerial;
+        }
+        mLastCopyNs = sent;
         if (record)
         {
             // From the frame's own present() and its submission, as on the direct path: present->glass is the frame's
@@ -729,6 +745,19 @@ bool MetalSurface::presentFinished(U64 now, U64 progress, bool justFlipped)
     ++mStats.drawableSignals;
     ++mStats.finishedPresented;
     return true;
+}
+
+bool MetalSurface::presentGap(U64 now)
+{
+    if (mGapCopySerial != 0)
+    {
+        if (mPresentEvent.signaledValue < mGapCopySerial)
+        {
+            return true;
+        }
+        mGapCopySerial = 0;
+    }
+    return mLastCopyNs != 0 && now > mLastCopyNs && now - mLastCopyNs > METAL_PRESENT_GAP_NS;
 }
 
 void MetalSurface::frameEnded()

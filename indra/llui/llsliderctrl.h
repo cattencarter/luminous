@@ -106,6 +106,12 @@ public:
     F32             getMinValue() const { return mSlider->getMinValue(); }
     F32             getMaxValue() const { return mSlider->getMaxValue(); }
 
+    // <Luminous> the bar's detent and the value a double click on it puts
+    // back (LLSlider); both off unless set
+    void            setDetent(F32 value, S32 pixels) { mSlider->setDetent(value, pixels); }
+    void            setResetValue(F32 value) { mSlider->setResetValue(value); }
+    // </Luminous>
+
     void            setLabel(const LLStringExplicit& label)     { if (mLabelBox) mLabelBox->setText(label); }
     void            setLabelColor(const LLUIColor& c)            { mTextEnabledColor = c; }
     void            setDisabledLabelColor(const LLUIColor& c)    { mTextDisabledColor = c; }

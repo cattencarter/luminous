@@ -127,15 +127,53 @@ std::string LLVoiceClientStatusObserver::status2string(LLVoiceClientStatusObserv
     return result;
 }
 
+#ifdef OPENSIM
+// <Luminous> Vivox runs only away from Second Life, and only in a build that
+// ships its client (LUMINOUS_VIVOX); in Second Life voice is WebRTC alone.
+static bool luminous_use_vivox()
+{
+#ifdef LUMINOUS_VIVOX
+    return !LLGridManager::getInstance()->isInSecondLife();
+#else
+    return false;
+#endif
+}
+
+// Without Vivox, a grid whose voice is Vivox's has none; said once a session,
+// and only to someone with voice on.
+static void luminous_tell_no_vivox()
+{
+    static bool told = false;
+    if (told || !gSavedSettings.getBOOL("EnableVoiceChat"))
+    {
+        return;
+    }
+    told = true;
+    LL_INFOS("Voice") << "This grid's voice is Vivox, which this build does not include; voice is off." << LL_ENDL;
+    LLNotificationsUtil::add("LuminousNoVivoxVoice");
+}
+// </Luminous>
+#endif
+
 LLVoiceModuleInterface *getVoiceModule(const std::string &voice_server_type)
 {
     // <FS:TJ> Keep Vivox only for OpenSim viewers
 #ifdef OPENSIM
-    if (voice_server_type == VIVOX_VOICE_SERVER_TYPE || (voice_server_type.empty() && !LLGridManager::getInstance()->isInSecondLife()))
+    // <Luminous> Never in Second Life: a region there that names Vivox gets
+    // the version notice below, as before.
+    //if (voice_server_type == VIVOX_VOICE_SERVER_TYPE || (voice_server_type.empty() && !LLGridManager::getInstance()->isInSecondLife()))
+    if (!LLGridManager::getInstance()->isInSecondLife() &&
+        (voice_server_type == VIVOX_VOICE_SERVER_TYPE || voice_server_type.empty()))
     {
+        if (!luminous_use_vivox())
+        {
+            luminous_tell_no_vivox();
+            return nullptr;
+        }
         return (LLVoiceModuleInterface *) LLVivoxVoiceClient::getInstance();
     }
     else
+    // </Luminous>
 #endif
     // </FS:TJ>
     if (voice_server_type == WEBRTC_VOICE_SERVER_TYPE || voice_server_type.empty())
@@ -286,6 +324,22 @@ void LLVoiceClient::setSpatialVoiceModule(const std::string &voice_server_type)
     LLVoiceModuleInterface *module = getVoiceModule(voice_server_type);
     if (!module)
     {
+#ifdef OPENSIM
+        // <Luminous> Away from Second Life, a region whose voice this viewer
+        // has no module for (Vivox in a build without it) has no spatial
+        // voice. The previous region's module is stopped and let go, so it
+        // does not try to connect here; a region with voice it has picks a
+        // module again. A call that shares the module keeps it running.
+        if (mSpatialVoiceModule && !LLGridManager::getInstance()->isInSecondLife())
+        {
+            if (mSpatialVoiceModule != mNonSpatialVoiceModule)
+            {
+                mSpatialVoiceModule->processChannels(false);
+            }
+            mSpatialVoiceModule = nullptr;
+        }
+        // </Luminous>
+#endif
         return;
     }
     if (module != mSpatialVoiceModule)
@@ -381,6 +435,7 @@ void LLVoiceClient::updateSettings()
     LLWebRTCVoiceClient::getInstance()->updateSettings();
     // <FS:TJ> Keep Vivox only for OpenSim viewers
 #ifdef OPENSIM
+    if (luminous_use_vivox()) // <Luminous/>
     LLVivoxVoiceClient::getInstance()->updateSettings();
 #endif
     // </FS:TJ>
@@ -394,6 +449,7 @@ void LLVoiceClient::tuningStart()
     LLWebRTCVoiceClient::getInstance()->tuningStart();
     // <FS:TJ> Keep Vivox only for OpenSim viewers
 #ifdef OPENSIM
+    if (luminous_use_vivox()) // <Luminous/>
     LLVivoxVoiceClient::getInstance()->tuningStart();
 #endif
     // </FS:TJ>
@@ -740,7 +796,8 @@ void LLVoiceClient::setVoiceEnabled(bool enabled)
 #ifdef OPENSIM
     if (LLVivoxVoiceClient::instanceExists())
     {
-        LLVivoxVoiceClient::getInstance()->setVoiceEnabled(enabled);
+        //LLVivoxVoiceClient::getInstance()->setVoiceEnabled(enabled);
+        LLVivoxVoiceClient::getInstance()->setVoiceEnabled(enabled && luminous_use_vivox()); // <Luminous/>
     }
 #endif
     // </FS:TJ>

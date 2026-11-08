@@ -338,7 +338,7 @@
       left="45"
       width="250"
       visible="false">
-    + Click to add more grids
+    Add a grid
     </text>
     </layout_panel>
     <!-- <Lumen> No Mode picker, and no panel to hold it: there are no
@@ -372,7 +372,7 @@
       left_delta="0"
       height="16"
       name="create_new_account_text"
-      top_pad="14"
+      top_pad="8"
       width="140">
         Create an account
     </text>
@@ -386,6 +386,19 @@
       top_pad="5"
       width="140">
         Forgot password?
+    </text>
+    <!-- <Luminous> Shows the grid row; hidden while the row is on screen. -->
+    <text
+      follows="left|top|right"
+      font="SansSerifMedium"
+      text_color="EmphasisColor"
+      left_delta="0"
+      height="16"
+      name="other_grids_text"
+      top_pad="5"
+      width="140"
+      visible="false">
+        Other grids
     </text>
   </layout_panel>
   <layout_panel

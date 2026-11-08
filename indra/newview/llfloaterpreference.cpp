@@ -4055,6 +4055,20 @@ void LLPanelPreferenceGraphics::draw()
         mTemporalRest->setText(rest);
     }
     mTemporalRest->setVisible(!rest.empty()); // empty unless Metal runs
+    // Preview resolution, greyed while FXAA keeps the live view at full size, as in the Luminous sidebar
+    if (!mLiveView)
+    {
+        mLiveView = getChild<LLUICtrl>("luminous_live_view");
+    }
+    const bool fxaa = LuminousPhotoMode::fxaaKeepsFullSize();
+    if (mLiveView->getEnabled() == fxaa)
+    {
+        static const std::string live_view_tip = mLiveView->getToolTip();
+        mLiveView->setEnabled(!fxaa);
+        mLiveView->setToolTip(fxaa ? std::string("FXAA keeps the 3D view at full size. Choose SMAA anti-aliasing to "
+                                                 "make it smaller.")
+                                   : live_view_tip);
+    }
     // </Luminous>
     LLPanelPreference::draw();
 }

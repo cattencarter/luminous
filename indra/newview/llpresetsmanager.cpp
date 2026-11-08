@@ -43,6 +43,78 @@
 #include "llperfstats.h"
 #include "luminousphotomode.h" // <Luminous/>
 
+#include <set> // <Luminous/>
+
+// <Luminous>
+namespace
+{
+    // The photo effects' values: the Luminous sidebar sets them, and Preferences > Graphics does not show them
+    // (depth of field's lens and focus, glow, exposure, tone mapping, sharpening, Firestorm's vignette and AO
+    // strength, attached lights, the legacy-sky switch; HDR, which Luminous keeps on). A graphics preset neither
+    // saves nor sets them, so loading one leaves the picture's look as it is. Presets saved before, and a Default
+    // preset made from the feature table, can still hold them.
+    const std::set<std::string> PHOTO_SETTINGS = {
+        "CameraDoFResScale", "CameraFieldOfView", "CameraFocalLength", "CameraFocusTransitionTime", "CameraFNumber",
+        "FSRenderVignette", "RenderAttachedLights", "RenderCASSharpness", "RenderDepthOfFieldInEditMode",
+        "RenderDisableVintageMode", "RenderExposure", "RenderGlow", "RenderGlowHDR", "RenderGlowIterations",
+        "RenderGlowNoise", "RenderSkyAutoAdjustLegacy", "RenderSSAOIrradianceMax", "RenderSSAOIrradianceScale",
+        "RenderTonemapMix", "RenderTonemapType",
+    };
+
+    // Effects on Preferences > Graphics > Luminous that are switched by an amount whose 0 is off: a preset switches
+    // them on or off. One that is on keeps the strength the sidebar gave it; one the preset turns on gets the
+    // strength saved with the preset.
+    const std::set<std::string> EFFECT_AMOUNTS = { "LuminousPhotoHalation", "LuminousPhotoLensFlare" };
+
+    // A graphics preset's settings put in place, less the photo effects' values. Returns how many it set or found
+    // already so; 0 when the file cannot be read.
+    U32 loadGraphicSettings(const std::string& path)
+    {
+        LLSD settings;
+        llifstream file(path.c_str());
+        if (!file.is_open() || LLSDParser::PARSE_FAILURE == LLSDSerialize::fromXML(settings, file) || !settings.isMap())
+        {
+            return 0;
+        }
+        U32 loaded = 0;
+        std::string left_out;
+        for (LLSD::map_const_iterator it = settings.beginMap(); it != settings.endMap(); ++it)
+        {
+            const std::string& name = it->first;
+            if (PHOTO_SETTINGS.count(name))
+            {
+                left_out += " " + name;
+                continue;
+            }
+            LLControlVariable* control = gSavedSettings.getControl(name).get();
+            if (!control)
+            {
+                LL_WARNS("Presets") << "Preset setting " << name << " does not exist" << LL_ENDL;
+                continue;
+            }
+            if (!control->isPersisted())
+            {
+                continue;
+            }
+            const LLSD& value = it->second["Value"];
+            if (EFFECT_AMOUNTS.count(name) && (value.asReal() != 0.0) == (control->getValue().asReal() != 0.0))
+            {
+                ++loaded; // on or off already: the strength stays
+                continue;
+            }
+            control->setValue(value);
+            ++loaded;
+        }
+        if (!left_out.empty())
+        {
+            LL_INFOS("Presets") << "Graphics preset " << gDirUtilp->getBaseFileName(path, true)
+                                << ": photo effects' settings left as they are:" << left_out << LL_ENDL;
+        }
+        return loaded;
+    }
+}
+// </Luminous>
+
 LLPresetsManager::LLPresetsManager()
     // <FS:Ansariel> Graphic preset controls independent from XUI
     : mIsLoadingPreset(false),
@@ -441,6 +513,16 @@ bool LLPresetsManager::savePreset(const std::string& subdirectory, std::string n
         }
     }
 
+    // <Luminous> no photo effects' values, which the feature table's map for the Default preset also holds
+    if (IS_GRAPHIC)
+    {
+        for (const std::string& setting : PHOTO_SETTINGS)
+        {
+            paramsData.erase(setting);
+        }
+    }
+    // </Luminous>
+
     std::string pathName(getPresetsDir(subdirectory) + gDirUtilp->getDirDelimiter() + LLURI::escape(name) + ".xml");
 
  // If the active preset name is the only thing in the list, don't save the list
@@ -531,7 +613,12 @@ void LLPresetsManager::loadPreset(const std::string& subdirectory, std::string n
     LuminousPhotoMode::HoldShaderRebuilds hold_shaders; // <Luminous/> the preset's settings rebuild the shaders once
     mIsLoadingPreset = true; // <FS:Ansariel> Graphic preset controls independent from XUI
     mIgnoreChangedSignal = true;
-    if(gSavedSettings.loadFromFile(full_path, false, true) > 0)
+    // <Luminous> a graphics preset without the photo effects' values
+    //if(gSavedSettings.loadFromFile(full_path, false, true) > 0)
+    const U32 loaded = PRESETS_GRAPHIC == subdirectory ? loadGraphicSettings(full_path)
+                                                       : gSavedSettings.loadFromFile(full_path, false, true);
+    if (loaded > 0)
+    // </Luminous>
     {
         mIgnoreChangedSignal = false;
         if(PRESETS_GRAPHIC == subdirectory)
@@ -539,8 +626,10 @@ void LLPresetsManager::loadPreset(const std::string& subdirectory, std::string n
             gSavedSettings.setString("PresetGraphicActive", name);
 
             // <FS> [FIRE-35390] Old viewer presets have these as true and 0.7, whereas the equivalent on modern viewers is false and 1.0
-            if (auto control = gSavedSettings.getControl("RenderSkyAutoAdjustLegacy"))
-                control->resetToDefault(true);
+            // <Luminous> the legacy-sky switch is the sidebar's, and no preset sets it
+            //if (auto control = gSavedSettings.getControl("RenderSkyAutoAdjustLegacy"))
+            //    control->resetToDefault(true);
+            // </Luminous>
             if (auto control = gSavedSettings.getControl("RenderSkyAmbientScale"))
                 control->resetToDefault(true);
             // </FS>

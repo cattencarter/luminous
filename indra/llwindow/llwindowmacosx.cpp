@@ -38,6 +38,7 @@
 #include "llrhimetal.h" // [Viewer Lab] viewerBackend, metalDebug
 #include "llstring.h"
 #include "lltimer.h" // [Viewer Lab] the CGL query's time
+#include "llframetimer.h" // <Luminous/> the focus check
 #include "lldir.h"
 #include "indra_constants.h"
 
@@ -303,10 +304,16 @@ bool callUnicodeCallback(wchar_t character, unsigned int mask)
     return result;
 }
 
+// <Luminous> Whether the viewer was last told it has the focus (the four
+// focus calls), for LLWindowMacOSX::gatherInput to set right.
+static bool sViewerFocused = false;
+// </Luminous>
+
 void callFocus()
 {
     if (gWindowImplementation && gWindowImplementation->getCallbacks())
     {
+        sViewerFocused = true; // <Luminous/>
         gWindowImplementation->getCallbacks()->handleFocus(gWindowImplementation);
     }
 }
@@ -315,6 +322,7 @@ void callFocusLost()
 {
     if (gWindowImplementation && gWindowImplementation->getCallbacks())
     {
+        sViewerFocused = false; // <Luminous/>
         gWindowImplementation->getCallbacks()->handleFocusLost(gWindowImplementation);
     }
 }
@@ -468,6 +476,7 @@ void callWindowFocus()
 {
    if ( gWindowImplementation && gWindowImplementation->getCallbacks() )
     {
+        sViewerFocused = true; // <Luminous/>
         gWindowImplementation->getCallbacks()->handleFocus (gWindowImplementation);
     }
     else
@@ -482,6 +491,7 @@ void callWindowUnfocus()
 {
     if ( gWindowImplementation && gWindowImplementation->getCallbacks() )
     {
+        sViewerFocused = false; // <Luminous/>
         gWindowImplementation->getCallbacks()->handleFocusLost(gWindowImplementation);
     }
 }
@@ -1130,6 +1140,31 @@ bool LLWindowMacOSX::getFullscreen()
 void LLWindowMacOSX::gatherInput()
 {
     updateCursor();
+    // <Luminous> The viewer's focus set to macOS's, twice a second. A change
+    // of the app's activity that comes while the main thread is held (a
+    // render) can be missed, and the viewer would then stay at the
+    // background's frame rate while in front, or at full speed behind.
+    static LLFrameTimer focus_check;
+    if (focus_check.getElapsedTimeF32() > 0.5f)
+    {
+        focus_check.reset();
+        const bool active = appIsActive();
+        if (active != sViewerFocused && getCallbacks())
+        {
+            LL_INFOS("Window") << "The app is " << (active ? "active" : "not active") << " but the viewer had "
+                               << (sViewerFocused ? "the focus" : "no focus") << ": focus "
+                               << (active ? "given back" : "taken away") << LL_ENDL;
+            if (active)
+            {
+                callWindowFocus();
+            }
+            else
+            {
+                callWindowUnfocus();
+            }
+        }
+    }
+    // </Luminous>
 }
 
 // <Luminous>

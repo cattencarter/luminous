@@ -1,18 +1,11 @@
 <llsd>
 	<array>
 		<string>AgentPause</string>
-		<string>CameraDoFResScale</string>
-		<string>CameraFieldOfView</string>
-		<string>CameraFocalLength</string>
-		<string>CameraFocusTransitionTime</string>
-		<string>CameraFNumber</string>
 		<string>FramePerSecondLimit</string>
 		<string>FSLimitFramerate</string>
 		<string>FSLimitTextureVRAMUsage</string>
-		<string>FSRenderVignette</string>
 		<string>FullScreen</string>
 		<string>RenderAnisotropic</string>
-		<string>RenderAttachedLights</string>
 		<string>RenderAttachedParticles</string>
 		<string>RenderAutoMaskAlphaDeferred</string>
 		<string>RenderAutoMaskAlphaNonDeferred</string>
@@ -21,26 +14,18 @@
 		<string>RenderAvatarMaxComplexity</string>
 		<string>RenderAvatarMaxNonImpostors</string>
 		<string>RenderAvatarPhysicsLODFactor</string>
-		<string>RenderCASSharpness</string>
 		<string>RenderCompressTextures</string>
 		<string>RenderDeferredSSAO</string>
 		<string>RenderDepthOfField</string>
-		<string>RenderDepthOfFieldInEditMode</string>
 		<string>RenderDesaturateIrradiance</string>
 		<string>RenderDiffuseLuminanceScale</string>
 		<string>RenderDisablePostProcessing</string>
-		<string>RenderDisableVintageMode</string>
 		<string>RenderDefaultProbeUpdatePeriod</string>
 		<string>RenderDynamicExposureCoefficient</string>
-		<string>RenderExposure</string>
 		<string>RenderFarClip</string>
 		<string>RenderFlexTimeFactor</string>
 		<string>RenderFSAASamples</string>
 		<string>RenderFSAAType</string>
-		<string>RenderGlow</string>
-		<string>RenderGlowHDR</string>
-		<string>RenderGlowIterations</string>
-		<string>RenderGlowNoise</string>
 		<string>RenderGlowResolutionPow</string>
 		<string>RenderHDRIExposure</string>
 		<string>RenderHDRIRotation</string>
@@ -80,11 +65,8 @@
 		<string>RenderSkyAutoAdjustBlueHorizonScale</string>
 		<string>RenderSkyAutoAdjustSunColorScale</string>
 		<string>RenderSkyAutoAdjustHDRScale</string>
-		<string>RenderSkyAutoAdjustLegacy</string>
 		<string>RenderSkyAutoAdjustProbeAmbiance</string>
 		<string>RenderSkySunlightScale</string>
-		<string>RenderSSAOIrradianceScale</string>
-		<string>RenderSSAOIrradianceMax</string>
 		<string>RenderSunDynamicRange</string>
 		<string>RenderTerrainDetail</string>
 		<string>RenderTerrainLODFactor</string>
@@ -94,8 +76,6 @@
 		<string>RenderTerrainPBRTriplanarBlendFactor</string>
 		<string>RenderTerrainScale</string>
 		<string>RenderTextureVRAMDivisor</string>
-		<string>RenderTonemapMix</string>
-		<string>RenderTonemapType</string>
 		<string>RenderTreeLODFactor</string>
 		<string>RenderTransparentWater</string>
 		<string>RenderUnloadedAvatar</string>
@@ -108,5 +88,35 @@
 		<string>TextureDiscardBackgroundedTime</string>
 		<string>TextureDiscardMinimizedTime</string>
 		<string>WLSkyDetail</string>
+		<!-- <Luminous> Preferences > Graphics > Luminous: each menu's settings (LuminousFloater::prefsEffectSettings),
+		     RenderDepthOfField and RenderDeferredSSAO above being two of them. Halation and lens flare are switched
+		     by their amounts: a preset switches them on or off (LLPresetsManager). -->
+		<string>LuminousPhotoVolumetricLight</string>
+		<string>LuminousPhotoVolumetricLightRenderOnly</string>
+		<string>LuminousPhotoProjectorBeams</string>
+		<string>LuminousPhotoProjectorBeamsRenderOnly</string>
+		<string>LuminousPhotoSunShafts</string>
+		<string>LuminousPhotoSunShaftsRenderOnly</string>
+		<string>LuminousPhotoSoftShadows</string>
+		<string>LuminousPhotoSoftShadowsRenderOnly</string>
+		<string>LuminousPhotoContactShadows</string>
+		<string>LuminousPhotoContactShadowsRenderOnly</string>
+		<string>LuminousPhotoAO</string>
+		<string>LuminousPhotoAORenderOnly</string>
+		<string>LuminousPhotoDepthOfFieldRenderOnly</string>
+		<string>LuminousPhotoDoF</string>
+		<string>LuminousPhotoDoFRenderOnly</string>
+		<string>LuminousPhotoVignette</string>
+		<string>LuminousPhotoVignetteRenderOnly</string>
+		<string>LuminousPhotoBloom</string>
+		<string>LuminousPhotoBloomRenderOnly</string>
+		<string>LuminousPhotoHalation</string>
+		<string>LuminousPhotoHalationRenderOnly</string>
+		<string>LuminousPhotoLensFlare</string>
+		<string>LuminousPhotoLensFlareRenderOnly</string>
+		<!-- Preferences > Graphics > Hardware Settings: Preview resolution and MetalFX upscaling -->
+		<string>LuminousPhotoLiveScale</string>
+		<string>LuminousMetalFXTemporal</string>
+		<!-- </Luminous> -->
 	</array>
 </llsd>

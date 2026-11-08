@@ -99,6 +99,7 @@ namespace LuminousMetal
         const char* const REACTIVE_NONE_FRAGMENT = "luminous_temporal_reactive_none_fs";
         const char* const SETTLE_FRAGMENT = "luminous_temporal_settle_fs";
         const char* const HOLD_DIFF_FRAGMENT = "luminous_temporal_hold_diff_fs";
+        const char* const HOLD_FOLD_FRAGMENT = "luminous_temporal_hold_fold_fs";
         const char* const OVERLAY_CAPTURE_FRAGMENT = "luminous_overlay_capture_frame_fs";
         const char* const OVERLAY_PICTURE_FRAGMENT = "luminous_overlay_picture_frame_fs";
 
@@ -212,6 +213,7 @@ namespace LuminousMetal
             sProgram.render(VERTEX, REACTIVE_MORE_FRAGMENT, pipelineDesc(LL::RHI::Format::R8Unorm, LL::RHI::Format::Unknown));
             sProgram.render(VERTEX, REACTIVE_NONE_FRAGMENT, pipelineDesc(LL::RHI::Format::R8Unorm, LL::RHI::Format::Unknown));
             sProgram.render(VERTEX, HOLD_DIFF_FRAGMENT, pipelineDesc(LL::RHI::Format::R32Float, LL::RHI::Format::Unknown));
+            sProgram.render(VERTEX, HOLD_FOLD_FRAGMENT, pipelineDesc(LL::RHI::Format::R32Float, LL::RHI::Format::Unknown));
             sProgram.render(VERTEX, SETTLE_FRAGMENT, pipelineDesc(LL::RHI::Format::RGBA16Float, LL::RHI::Format::Unknown));
         }
 
@@ -413,9 +415,9 @@ namespace LuminousMetal
         // frame holds nothing until then (Metal's new memory, black or old pictures), and from where the camera was
         // then, so that a slow, steady move adds up. After TEMPORAL_HOLD_SETTLE held frames one is fed to the scaler
         // once more and kept as the reference, so that the picture held and the reference are the same frame's;
-        // every later one is compared with it on the GPU, block by block, and read back a few frames late. A
-        // difference, a camera move, the pause ending, a changed setting, a reset history, a measure (Optimise, the
-        // benchmark) or a new scaler ends the hold.
+        // every later one is compared with it on the GPU, block by block (per tile, then the tiles folded into
+        // blocks), and read back a few frames late. A difference, a camera move, the pause ending, a changed setting
+        // (but the pass timer), a reset history, a measure (Optimise, the benchmark) or a new scaler ends the hold.
         constexpr F64 TEMPORAL_HOLD_SECONDS = 1.5;      // the history settles in about this long
         constexpr F32 TEMPORAL_HOLD_CHANGE = 20.f / 255.f; // one block that differs by more is a change
         constexpr F32 TEMPORAL_HOLD_SPREAD = 6.f / 255.f;  // ... as is a share of blocks differing by more than this
@@ -433,6 +435,7 @@ namespace LuminousMetal
         LLVector3 sHoldUp;
         F32 sHoldView = 0.f;
         LL::RHI::Ref<LL::RHI::Texture> sHoldReference; // the first held frame, the live view's size and format
+        LL::RHI::Ref<LL::RHI::Texture> sHoldTiles;     // per tile the largest difference, R32Float
         LL::RHI::Ref<LL::RHI::Texture> sHoldDiff;      // per block the largest difference, R32Float
         std::deque<LL::RHI::Ref<LL::RHI::Readback>> sHoldReads;
         const char* sHoldBreak = nullptr; // why the hold ends at the next frame: a setting changed or the history was
@@ -524,6 +527,7 @@ namespace LuminousMetal
                 releaseSettled(settled);
             }
             sHoldReference = nullptr;
+            sHoldTiles = nullptr;
             sHoldDiff = nullptr;
             sHoldUnavailable = false;
             sTemporal = nullptr;
@@ -870,17 +874,23 @@ namespace LuminousMetal
                 {
                     sHoldReference = makeTexture(device, d.format, d.width, d.height, LL::RHI::TEXTURE_SAMPLED,
                                                  "MetalFX hold reference");
+                    const U32 tile = LUMINOUS_TONE_HOLD_TILE;
                     const U32 block = LUMINOUS_TONE_HOLD_BLOCK;
+                    sHoldTiles = makeTexture(device, LL::RHI::Format::R32Float, (d.width + tile - 1) / tile,
+                                             (d.height + tile - 1) / tile,
+                                             LL::RHI::TEXTURE_RENDER_TARGET | LL::RHI::TEXTURE_SAMPLED,
+                                             "MetalFX hold tiles");
                     sHoldDiff = makeTexture(device, LL::RHI::Format::R32Float, (d.width + block - 1) / block,
                                             (d.height + block - 1) / block,
                                             LL::RHI::TEXTURE_RENDER_TARGET | LL::RHI::TEXTURE_SAMPLED
                                                 | LL::RHI::TEXTURE_READBACK,
                                             "MetalFX hold difference");
                 }
-                if (sHoldReference.isNull() || sHoldDiff.isNull())
+                if (sHoldReference.isNull() || sHoldTiles.isNull() || sHoldDiff.isNull())
                 {
                     // Not again with this scaler, or the view would go round held frames and a Catmull-Rom one.
                     sHoldReference = nullptr;
+                    sHoldTiles = nullptr;
                     sHoldDiff = nullptr;
                     sHoldUnavailable = true;
                     stopHold("no memory for the hold");
@@ -900,13 +910,26 @@ namespace LuminousMetal
             }
             else if (sHoldReads.size() < TEMPORAL_HOLD_READS)
             {
+                // Per tile, then the tiles folded into blocks, so that many threads share the reads: a thread per
+                // block, reading both frames' 32 x 32 texels in turn, would take milliseconds of the GPU in every
+                // held frame.
                 LL::RHI::Texture* reference = sHoldReference.get();
-                const bool compared = drawInto(device, sHoldDiff.get(), HOLD_DIFF_FRAGMENT, "luminous temporal hold",
-                    [&](LL::RHI::Encoder& encoder)
-                    {
-                        encoder.setNativeTexture(LL::RHI::NativeStage::Fragment, LUMINOUS_TONE_TEXTURE_FRAME, source);
-                        encoder.setNativeTexture(LL::RHI::NativeStage::Fragment, LUMINOUS_TONE_TEXTURE_BEFORE, reference);
-                    });
+                LL::RHI::Texture* tiles = sHoldTiles.get();
+                const bool compared =
+                    drawInto(device, tiles, HOLD_DIFF_FRAGMENT, "luminous temporal hold",
+                             [&](LL::RHI::Encoder& encoder)
+                             {
+                                 encoder.setNativeTexture(LL::RHI::NativeStage::Fragment, LUMINOUS_TONE_TEXTURE_FRAME,
+                                                          source);
+                                 encoder.setNativeTexture(LL::RHI::NativeStage::Fragment, LUMINOUS_TONE_TEXTURE_BEFORE,
+                                                          reference);
+                             })
+                    && drawInto(device, sHoldDiff.get(), HOLD_FOLD_FRAGMENT, "luminous temporal hold blocks",
+                                [&](LL::RHI::Encoder& encoder)
+                                {
+                                    encoder.setNativeTexture(LL::RHI::NativeStage::Fragment,
+                                                             LUMINOUS_TONE_TEXTURE_FRAME, tiles);
+                                });
                 if (compared)
                 {
                     LL::RHI::PixelLayout layout;
@@ -1940,7 +1963,9 @@ namespace LuminousMetal
             {
                 void apply(const std::string& name, LLControlVariable* control) override
                 {
-                    if (control && (name.rfind("Luminous", 0) == 0 || name.rfind("Render", 0) == 0))
+                    // The pass timer measures the frames as they are, the hold included.
+                    if (control && (name.rfind("Luminous", 0) == 0 || name.rfind("Render", 0) == 0)
+                        && name != "LuminousMetalPassTimes")
                     {
                         control->getSignal()->connect([](LLControlVariable*, const LLSD&, const LLSD&)
                                                       { sHoldBreak = "a setting changed"; });

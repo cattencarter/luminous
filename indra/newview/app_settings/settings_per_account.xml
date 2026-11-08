@@ -722,6 +722,17 @@
         <key>Value</key>
         <integer>0</integer>
       </map>
+      <key>LuminousRenderName</key>
+      <map>
+        <key>Comment</key>
+        <string>The name Luminous's renders and their Download are saved under in SnapshotBaseDir, numbered _001, _002...; chosen in the save panel (Share > Download the first time, or Save as...). Empty: renders to disk are named Luminous_ and the date and time, and Download asks.</string>
+        <key>Persist</key>
+        <integer>1</integer>
+        <key>Type</key>
+        <string>String</string>
+        <key>Value</key>
+        <string></string>
+      </map>
       <key>SnapshotBaseDir</key>
       <map>
         <key>Comment</key>

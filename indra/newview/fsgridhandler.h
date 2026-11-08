@@ -145,6 +145,13 @@ public:
     // grid, and the various URIs will be automatically generated.
     void setGridChoice(const std::string& grid);
 
+    // <Luminous> Select a grid the grid list already has, given its name,
+    // host or login id; any other grid is left alone, never added or fetched.
+    // For grids named by links and start locations, which come from outside
+    // the viewer. Returns whether the grid was known.
+    bool setGridChoiceIfKnown(const std::string& grid);
+    // </Luminous>
+
     /// Return the name of a grid, given either its name or its id
     std::string getGrid(const std::string& grid) const;
 
@@ -174,7 +181,10 @@ public:
 
     std::string getHelperURI();
     std::string getLoginPage();
-    std::string getGridLoginID() { return mGridList[mGrid][GRID_ID_VALUE]; }
+    // <Luminous> The selected grid's login id ("Agni", "Aditi"), which names
+    // Second Life's WebRTC STUN servers; its nick when the entry has none.
+    std::string getGridLoginID();
+    // </Luminous>
     std::string getLoginPage(const std::string& grid) { return mGridList[grid][GRID_LOGIN_PAGE_VALUE]; }
     void        getLoginIdentifierTypes(LLSD& idTypes) { idTypes = mGridList[mGrid][GRID_LOGIN_IDENTIFIER_TYPES]; }
 

@@ -422,7 +422,8 @@ std::string LLDir::buildSLOSCacheDir() const
     else
     {
 // <FS:CR> FIRE-8226 - Different flavoured cache directories.
-#ifdef OPENSIM
+// <Luminous> One cache folder: the same Luminous serves Second Life and OpenSim grids.
+#if 0 // OPENSIM
 #if ADDRESS_SIZE == 64
         res = add( getOSCacheDir(), APP_NAME + "OS_x64" );
   #else

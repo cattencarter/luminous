@@ -743,6 +743,15 @@ private:
     F32         mVisibilityPreference;
     U32         mVisibilityRank;
     bool        mVisible;
+    // <Luminous> The impostor limit's hysteresis (cullAvatarsByPixelArea): whether the last ranking put the avatar
+    // within RenderAvatarMaxNonImpostors, and the preference it is sorted by.
+    bool        mRankedFull = false;
+    F32         mRankPreference = 0.f;
+    // The state shouldImpostorHeld() gives, and since when the rank has asked for the other one.
+    bool        mImpostorHeld = false;
+    LLFrameTimer mImpostorHoldTimer;
+    bool        mImpostorOutOfView = false; // an impostor that went out of view (computeUpdatePeriod)
+    // </Luminous>
 
     //--------------------------------------------------------------------
     // Shadowing
@@ -760,6 +769,7 @@ private:
 public:
     virtual bool isImpostor();
     bool        shouldImpostor(const F32 rank_factor = 1.0);
+    bool        shouldImpostorHeld(); // <Luminous> shouldImpostor() with LuminousImpostorHoldSeconds' hold
     bool        needsImpostorUpdate() const;
     const LLVector3& getImpostorOffset() const;
     const LLVector2& getImpostorDim() const;
@@ -768,6 +778,7 @@ public:
     void        setImpostorDim(const LLVector2& dim);
     static void resetImpostors();
     static void updateImpostors();
+    static void logImpostorStates(); // <Luminous> LuminousImpostorLog, once a frame
     LLRenderTarget mImpostor;
 // [RLVa:KB] - Checked: RLVa-2.4 (@setcam_avdist)
     mutable bool mNeedsImpostorUpdate;

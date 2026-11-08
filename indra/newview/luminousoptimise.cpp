@@ -146,13 +146,16 @@ namespace
         return 1000.f / llmax(1.f, gSavedSettings.getF32("LuminousOptimiseTargetFPS"));
     }
 
-    // MetalFX upscaling is measured first where it could be switched on: on Metal with MetalFX's temporal scaler, off
-    // (as Luminous ships), Half within its range, and not refused at the window's size.
+    // MetalFX upscaling is measured first where it could be switched on and could make the live view quicker: on
+    // Metal with MetalFX's temporal scaler, off (as Luminous ships), Half within its range, not refused at the
+    // window's size, and the live view larger than Half now. At Standard on a Retina display the live view already
+    // draws Half's pixels, so MetalFX could only add its own cost.
     bool metalFXToMeasure()
     {
         const F32 most = LuminousMetal::temporalMaxScale();
         return LuminousMetal::temporalSupported() && !gSavedSettings.getBOOL("LuminousMetalFXTemporal")
-               && (most <= 0.f || most >= 2.f) && !LuminousMetal::temporalRefused();
+               && (most <= 0.f || most >= 2.f) && !LuminousMetal::temporalRefused()
+               && LuminousPhotoMode::chosenLiveScale() > 0.51f;
     }
 
     // --- the Mac ---------------------------------------------------------
@@ -214,6 +217,26 @@ namespace
 #endif
     }
 
+    // The scale Preview resolution Standard comes to on the main display: one pixel per point, so a half on a
+    // Retina display with HiDPI on, and 1 on any other.
+    F32 standardScaleOfDisplay()
+    {
+        F32 scale = 1.f;
+#if LL_DARWIN
+        if (CGDisplayModeRef mode = CGDisplayCopyDisplayMode(CGMainDisplayID()))
+        {
+            const size_t points = CGDisplayModeGetWidth(mode);
+            const size_t pixels = CGDisplayModeGetPixelWidth(mode);
+            if (gHiDPISupport && points > 0 && pixels > points)
+            {
+                scale = (F32)points / (F32)pixels;
+            }
+            CGDisplayModeRelease(mode);
+        }
+#endif
+        return scale;
+    }
+
     // Base chips have up to 10 graphics cores, Pro up to 20, Max up to 40 and
     // Ultra more. The count, not the name, so a new chip falls into place.
     enum class Tier { Base, Pro, Max, Ultra };
@@ -268,6 +291,38 @@ namespace
         }
     }
 
+    // The main display's pixels (displayPixels), or the window's where macOS does not say.
+    F64 displayPixelCount(S32& display_x, S32& display_y)
+    {
+        displayPixels(display_x, display_y);
+        if (display_x <= 0 || display_y <= 0)
+        {
+            display_x = gViewerWindow ? gViewerWindow->getWindowWidthRaw() : 0;
+            display_y = gViewerWindow ? gViewerWindow->getWindowHeightRaw() : 0;
+        }
+        return (F64)display_x * (F64)display_y;
+    }
+
+    // The live view made smaller where the display has more pixels than the tier's budget (15% over is let
+    // through, for 1920 x 1200 and the like): three quarters each way, or half; else full.
+    F32 budgetLiveScale(Tier tier, F64 pixels)
+    {
+        const F64 budget = pixelBudget(tier);
+        if (budget > 0.0 && pixels > budget * 1.15)
+        {
+            return std::sqrt(budget / pixels) >= 0.75 ? 0.75f : 0.5f;
+        }
+        return 1.f;
+    }
+
+    // The Preview resolution the set-up chooses: Standard (0, one pixel per point, which follows the screen) unless
+    // the tier's budget asks for fewer pixels than that, as on a large display at 1x.
+    F32 setUpLiveScale(Tier tier, F64 pixels)
+    {
+        const F32 budget = budgetLiveScale(tier, pixels);
+        return budget < standardScaleOfDisplay() - 0.01f ? budget : 0.f;
+    }
+
     // tell: the message that says what was set; without it the settings are
     // only written (photo mode off, where none of them shows yet).
     void setUp(bool tell = true)
@@ -280,13 +335,7 @@ namespace
         // base chip drew its full 3840 x 2160 at 8 frames a second.
         S32 display_x = 0;
         S32 display_y = 0;
-        displayPixels(display_x, display_y);
-        if (display_x <= 0 || display_y <= 0)
-        {
-            display_x = gViewerWindow ? gViewerWindow->getWindowWidthRaw() : 0;
-            display_y = gViewerWindow ? gViewerWindow->getWindowHeightRaw() : 0;
-        }
-        const F64 pixels = (F64)display_x * (F64)display_y;
+        const F64 pixels = displayPixelCount(display_x, display_y);
 
         std::vector<std::string> chosen;
         const bool metal = LL::RHI::viewerBackend() == LL::RHI::BackendType::Metal;
@@ -301,24 +350,20 @@ namespace
         chosen.push_back(std::string("graphics quality ") + levelName(level) + " on " + (metal ? "Metal" : "OpenGL")
                          + ": shadows, transparent water and ambient occlusion on, with SMAA anti-aliasing");
 
-        // The live view made smaller where the display has more pixels than the tier's budget (15% over is
-        // let through, for 1920 x 1200 and the like): three quarters each way, or half. It pays for the level.
-        const F64 budget = pixelBudget(tier);
-        F32 live_scale = 1.f;
-        if (budget > 0.0 && pixels > budget * 1.15)
-        {
-            live_scale = std::sqrt(budget / pixels) >= 0.75 ? 0.75f : 0.5f;
-        }
-        if (live_scale < 1.f)
+        // The live view at Standard, one pixel per point, or smaller where the display has more pixels than the
+        // tier's budget even so. It pays for the level.
+        const F32 live_scale = setUpLiveScale(tier, pixels);
+        if (live_scale > 0.f)
         {
             chosen.push_back(std::string("the live view at ") + (live_scale > 0.7f ? "three quarters" : "half")
                              + llformat(" resolution each way: this display draws %d x %d pixels", display_x, display_y));
         }
         else
         {
-            chosen.push_back("the live view at full resolution");
+            chosen.push_back("the live view at Standard resolution, one pixel per point");
         }
         gSavedSettings.setF32("LuminousPhotoLiveScale", live_scale);
+        gSavedSettings.setBOOL("LuminousPhotoLiveScaleStandardChecked", true);
         if (tier == Tier::Base)
         {
             gSavedSettings.setBOOL("LuminousPhotoVolumetricLightRenderOnly", true);
@@ -466,9 +511,40 @@ namespace LuminousOptimise
         // its default then. Anyone else keeps what they have.
         if (!gLastRunVersion.empty() && gLastRunVersion != "0.0.0")
         {
+            checkStandardLiveScale();
             return;
         }
         setUp(LuminousPhotoMode::isOn());
+    }
+
+    void checkStandardLiveScale()
+    {
+        if (gSavedSettings.getBOOL("LuminousPhotoLiveScaleStandardChecked"))
+        {
+            return;
+        }
+        gSavedSettings.setBOOL("LuminousPhotoLiveScaleStandardChecked", true);
+        // A saved three quarters or half that the set-up chose for this Mac, when full was the default, goes to what
+        // the set-up chooses now: Standard unless the tier's budget asks for fewer pixels. Any other value is the
+        // user's own choice, or Optimise's that they applied, and stays.
+        const F32 saved = gSavedSettings.getF32("LuminousPhotoLiveScale");
+        if ((saved != 0.75f && saved != 0.5f) || gSavedSettings.getString("LuminousSetUpFor").empty())
+        {
+            return;
+        }
+        const Tier tier = tierOf(graphicsCores(), chipName());
+        S32 display_x = 0;
+        S32 display_y = 0;
+        const F64 pixels = displayPixelCount(display_x, display_y);
+        if (std::fabs(budgetLiveScale(tier, pixels) - saved) > 0.01f)
+        {
+            return;
+        }
+        const F32 now = setUpLiveScale(tier, pixels);
+        LL_INFOS("LuminousOptimise") << "Preview resolution " << saved << " from the set-up for this Mac: now "
+                                     << (now > 0.f ? llformat("%g", now) : std::string("Standard")) << LL_ENDL;
+        LuminousPhotoMode::HoldSettingTips quiet;
+        gSavedSettings.setF32("LuminousPhotoLiveScale", now);
     }
 
     void init()
@@ -651,15 +727,31 @@ std::vector<LuminousOptimiseFloater::Step> LuminousOptimiseFloater::laterSteps()
     }
     // A lower preview resolution: the next step down from what is set.
     // FXAA keeps the live view at full resolution (unless MetalFX temporal
-    // smooths the edges in its place), so with FXAA the step is SMAA and
-    // three quarters together, proposed as one change; the shaders are
-    // made again for it, so it settles longer.
+    // smooths the edges in its place), so with FXAA the step is SMAA, under
+    // which the live view comes to the Preview resolution setting itself
+    // (settingLiveScale), proposed as one change. Three quarters is set with
+    // it only where the setting comes to more than that (Full, or Standard
+    // on a 1x screen); at or below it (Standard on a Retina screen, Three
+    // quarters, Half) the setting is left as it is. The shaders are made
+    // again for it, so it settles longer.
     if (LuminousPhotoMode::fxaaKeepsFullSize())
     {
         Step s;
-        s.label = "Anti-aliasing SMAA and preview resolution three quarters";
         s.settings.push_back({ "RenderFSAAType", LLSD::Integer(2), LLSD() });
-        s.settings.push_back({ "LuminousPhotoLiveScale", 0.75, LLSD() });
+        const F32 setting = LuminousPhotoMode::settingLiveScale();
+        if (setting > 0.76f)
+        {
+            s.label = "Anti-aliasing SMAA and preview resolution three quarters";
+            s.settings.push_back({ "LuminousPhotoLiveScale", 0.75, LLSD() });
+        }
+        else if (gSavedSettings.getF32("LuminousPhotoLiveScale") <= 0.f)
+        {
+            s.label = "Anti-aliasing SMAA (preview resolution Standard)";
+        }
+        else
+        {
+            s.label = llformat("Anti-aliasing SMAA (preview resolution %d%%)", ll_round(setting * 100.f));
+        }
         s.settle = 5.f;
         s.resolution = true;
         steps.push_back(s);

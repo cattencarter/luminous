@@ -424,7 +424,8 @@ ProgramDesc metalClearProgramDesc(U32 key);
 /// values of the level above, so 8-bit levels from 2 on may be one step from GL's (golden level 1's
 /// probe_mips allows that one step; its scenes and its mip and texel edge probe are exact). The vertex stage is the clear program's
 /// triangle; the fragment stage samples mip_source, a view of the level above, at gl_FragCoord.xy over the
-/// level's size, with the device's bilinear sampler and no mips.
+/// level's size, with the device's bilinear sampler and no mips. The level's size is the uniform mip_size
+/// (MetalEncoder::bindForMip), never the view's own size query.
 ProgramDesc metalMipProgramDesc();
 
 /// The present program, in GLSL: the mip program's triangle, and a fragment stage that takes the back
@@ -1259,10 +1260,13 @@ private:
     /// unwritten, so the next draw writes its own block there again. False after one WARN line.
     bool bindForClear(Program& program, const std::array<F32, 4>& rgba, F32 depthValue);
     /// A mip level's draw on its own native encoder: the mip program's source, the view of the level
-    /// above, and the device's bilinear sampler on the fragment stage through the same binding site, and
+    /// above, and the device's bilinear sampler on the fragment stage through the same binding site, its mip_size
+    /// (the size of level `level`, the one drawn) in the frame's ring on buffer 0 of the fragment stage, and
     /// the tables set on the encoder; the scratch is checked resident with the Metal debug setting. The
-    /// tracker's bindings are not touched. False after one WARN line.
-    bool bindForMip(Program& program, Texture* scratch, IdMTLTexture source, IdMTL4RenderCommandEncoder encoder);
+    /// tracker's bindings are not touched; the shadow's buffer 0 place is made unwritten, so the next draw writes
+    /// its own block there again. False after one WARN line.
+    bool bindForMip(Program& program, Texture* scratch, IdMTLTexture source, U32 level,
+                    IdMTL4RenderCommandEncoder encoder);
     /// The flip pass's draw on its own native encoder: the present program's source, the back buffer, and
     /// the device's point sampler on the fragment stage through the same binding site, and the tables set on the
     /// encoder; the back buffer is checked resident with the Metal debug setting. The drawable is the encoder's
@@ -1796,7 +1800,8 @@ private:
 /// the residency set's selectors or MTLResidencySet (scripts/metal/residency-site.py). An allocation
 /// is admitted when it is made and retired when it is released. Any thread: the upload thread
 /// may create textures too (llrhi.h's Device contract), and the set documents no thread safety, so
-/// it changes only under the mutex.
+/// it changes only under the mutex, and the queues' commits, which Metal's API validation checks against the
+/// set, run under it too (commitToQueue).
 class API_AVAILABLE(macos(26.0)) MetalResidency
 {
 public:
@@ -1815,6 +1820,10 @@ public:
     bool containsTexture(IdMTLTexture texture) const;
     /// Commits the set when it changed (MTLResidencySet.h:136); before each submit.
     void commitIfChanged();
+    /// Commits one command buffer to a queue that has the set on it (MTL4CommandQueue.h:257), under the mutex: Metal's
+    /// API validation reads the queue's residency sets while it checks a commit (containsAllocation), and a set
+    /// takes no call while another thread is in one, so an admit on the upload thread waits for the commit.
+    void commitToQueue(IdMTL4CommandQueue queue, IdMTL4CommandBuffer buffer, MTL4CommitOptions* options);
     U64 count() const;
     /// Tests: takes the allocation out of the set, as a forgotten admit would leave it.
     void dropForTest(IdMTLAllocation allocation);
@@ -2064,6 +2073,16 @@ inline constexpr U64 METAL_DRAWABLE_RETRY_NS = 3'000'000'000;
 /// occlusion state that stays wrong cannot hold the picture for good (MetalSurface::presentWithheld).
 inline constexpr U64 METAL_HIDDEN_RETRY_NS = 10'000'000'000;
 
+/// With VSync off, a frame just flipped is not copied at once (MetalSurface::presentFinished's justFlipped: a copy that
+/// waits on the GPU for the frame's own work) when the present queue's last copy went more than this long ago, nor
+/// until the first copy after such a gap has run; the frame goes once the GPU has finished it, as any other. After the
+/// frame has stood for a couple of seconds (an open or save panel shows), such a copy and the frame's own command
+/// buffer were seen to hold each other up on the GPU for about 4 s, until the present queue gave up its wait
+/// (run-time probes on an M4 Max); with MetalFX upscaling on, the scaler's command buffers then timed out and the
+/// device was lost. A copy of a frame the GPU has finished does not wait on the GPU for that frame's work, and a frame
+/// limit keeps the copies far closer together.
+inline constexpr U64 METAL_PRESENT_GAP_NS = 250'000'000;
+
 /// With VSync off, the finished frames a surface keeps for its present queue (MetalSurface::flipFinished): the frames
 /// whose flip the main queue may still be running (FrameLifecycle::MAX_FRAMES_IN_FLIGHT - 1 besides the one being
 /// recorded) and the newest one the GPU has finished. Each is a BGRA8Unorm texture of the drawable's size.
@@ -2206,8 +2225,12 @@ private:
     /// The newest finished frame newer than the last shown, copied into the layer's next drawable on the present
     /// queue, with the direct path's pacing (metalPresentPaced, presentWithheld) and counts; true when a drawable was
     /// presented. justFlipped: instead the frame just flipped, before the GPU has finished it, and only while no older
-    /// flip is still on the GPU (the copy then waits on the GPU for that frame's own work alone).
+    /// flip is still on the GPU (the copy then waits on the GPU for that frame's own work alone) and not after a gap
+    /// in the copies (presentGap).
     bool presentFinished(U64 now, U64 progress, bool justFlipped = false);
+    /// Whether the present queue's last copy went more than METAL_PRESENT_GAP_NS before now (none yet: no gap), or
+    /// the first copy after such a gap has not run yet. now: steady_clock nanoseconds.
+    bool presentGap(U64 now);
     /// Its texture leaves the residency set through the frame lifecycle, and the slot is empty.
     void retireFinished(FinishedFrame& slot);
     /// Waits for the present queue's copies (METAL_WAIT_MS at most), then retires every finished frame; none of them
@@ -2292,6 +2315,8 @@ private:
     std::array<IdMTL4CommandAllocator, METAL_FINISHED_FRAMES> mPresentAllocators{};
     std::array<U64, METAL_FINISHED_FRAMES> mAllocatorSerial{}; ///< the copy each allocator last recorded
     size_t mNextAllocator = 0;
+    U64 mLastCopyNs = 0;    ///< steady_clock nanoseconds when the last copy was sent; 0: none yet
+    U64 mGapCopySerial = 0; ///< the first copy after a gap (presentGap), until it has run; 0: none
     bool mPresentQueueFailed = false;
     bool mPresentDirect = false; ///< setPresentDirect's
     /// The finished frames' size: the drawable textures' for the layer's drawableSize layerWidth x layerHeight, which

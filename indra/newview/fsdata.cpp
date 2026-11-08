@@ -320,8 +320,8 @@ void FSData::startDownload()
     // RLVaCompatibilityModeList that a user can still fill in, so the
     // mechanism survives, only uncurated.
     //
-    // The OpenSim script libraries this also fetches are inside #ifdef
-    // OPENSIM, which is OFF in this build.
+    // The OpenSim script libraries this would also fetch go with the rest:
+    // nothing below the return runs, on any grid.
     //
     // mFSDataDone is set here rather than left false ON PURPOSE. llstartup
     // waits on it with a 15 second timeout, so returning without it would add

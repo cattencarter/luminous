@@ -382,8 +382,10 @@ class ViewerManifest(LLManifest,FSViewerManifest):
         app_suffix=self.channel_variant()
 
         #<FS:ND> tag "OS" after CHANNEL_VENDOR_BASE and before any suffix
-        if self.fs_is_opensim():
-            app_suffix = "OS" + app_suffix
+        # <Luminous> No tag: one Luminous serves Second Life and OpenSim grids.
+        #if self.fs_is_opensim():
+        #    app_suffix = "OS" + app_suffix
+        # </Luminous>
         #</FS:ND>
 
         #<FS:ND> Don't separate name by whitespace. This break a lot of things in the old FS installer logic.
@@ -1623,7 +1625,7 @@ class Darwin_x86_64_Manifest(ViewerManifest):
                 self.path("cube.dae")
 
                 # <FS:TJ> Keep Vivox only for OpenSim viewers
-                if self.fs_is_opensim():
+                if self.luminous_ships_vivox(): # <Luminous/>
                     self.path("VivoxAUP.txt")
                 # </FS:TJ>
                 self.path("LGPL-license.txt")
@@ -1701,7 +1703,7 @@ class Darwin_x86_64_Manifest(ViewerManifest):
                     dylibs += path_optional(os.path.join(relpkgdir, libfile), libfile)
 
                 # <FS:TJ> Keep Vivox only for OpenSim viewers
-                if self.fs_is_opensim():
+                if self.luminous_ships_vivox(): # <Luminous/>
                     # SLVoice executable
                     with self.prefix(src=os.path.join(pkgdir, 'bin', 'release')):
                         self.path("SLVoice")
@@ -1970,7 +1972,7 @@ class Darwin_x86_64_Manifest(ViewerManifest):
                             tmp_app_path,
                             ]
                         # <FS:TJ> Keep Vivox only for OpenSim viewers
-                        if self.fs_is_opensim():
+                        if self.luminous_ships_vivox(): # <Luminous/>
                             deep_sign.insert(-1, resources + "SLVoice")
                         # </FS:TJ>
                         for attempt in range(3):
@@ -2578,6 +2580,7 @@ if __name__ == "__main__":
         dict(name='tracy', description="""Indication tracy profiler is enabled""", default='OFF'),
         dict(name='velopack', description="""Use Velopack installer instead of NSIS""", default='OFF'),
         dict(name='avx2', description="""Indication avx2 instruction set is enabled""", default='OFF'),
+        dict(name='vivox', description="""Ship Vivox's voice client for OpenSim grids (Luminous)""", default='OFF'), # <Luminous/>
         ]
     try:
         main(extra=extra_arguments)

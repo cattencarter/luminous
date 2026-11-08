@@ -182,7 +182,7 @@ if(WINDOWS)
 
 elseif(DARWIN)
     # <FS:TJ> Keep Vivox only for OpenSim viewers
-    if (OPENSIM)
+    if (OPENSIM AND LUMINOUS_VIVOX) # <Luminous/>
         set(vivox_lib_dir "${ARCH_PREBUILT_DIRS_RELEASE}")
         set(slvoice_files SLVoice)
         set(vivox_libs
@@ -313,7 +313,7 @@ endif(WINDOWS)
 ################################################################
 
 # <FS:TJ> Keep Vivox only for OpenSim viewers
-if (OPENSIM)
+if (OPENSIM AND (LUMINOUS_VIVOX OR NOT DARWIN)) # <Luminous/>
     # Curiously, slvoice_files are only copied to SHARED_LIB_STAGING_DIR_RELEASE.
     # It's unclear whether this is oversight or intentional, but anyway leave the
     # single copy_if_different command rather than using to_staging_dirs.

@@ -45,6 +45,7 @@ LLStreamingAudio_MediaPlugins::LLStreamingAudio_MediaPlugins() :
     mEverPlayed(false),
     mReconnectsLeft(0),
     // </Lumen>
+    mHoldMetadata(false),   // <Luminous>
     mGain(1.0)
 {
     // nothing interesting to do?
@@ -202,21 +203,44 @@ LLPluginClassMedia* LLStreamingAudio_MediaPlugins::initializeMedia(const std::st
 // <FS:ND> stream metadata from plugin
 void LLStreamingAudio_MediaPlugins::updateMetadata() noexcept
 {
-    if (!mMediaPlugin)
+    // <Luminous> No plugin is no stream, nor is one given up on: what it
+    // reported goes, as the FMOD path clears it on stop.
+    const bool streaming = mMediaPlugin && mFailureReason.empty();
+    const std::string artist = streaming ? mMediaPlugin->getArtist() : std::string();
+    const std::string title = streaming ? mMediaPlugin->getTitle() : std::string();
+
+    // A reconnect starts a new plugin, which has reported nothing yet: the
+    // title stays, so the same song is not announced twice.
+    if (mHoldMetadata)
     {
-        return;
+        if (artist.empty() && title.empty())
+        {
+            return;
+        }
+        mHoldMetadata = false;
     }
 
-    if (mTitle != mMediaPlugin->getTitle() || mArtist != mMediaPlugin->getArtist())
+    if (mTitle != title || mArtist != artist)
     {
-        mArtist = mMediaPlugin->getArtist();
-        mTitle = mMediaPlugin->getTitle();
+        mArtist = artist;
+        mTitle = title;
         mMetadata.clear();
-        mMetadata["ARTIST"] = mArtist;
-        mMetadata["TITLE"] = mTitle;
+        // Only the keys the stream has, as the FMOD path sends them: an
+        // internet radio's "now playing" is a title alone ("Artist - Song"),
+        // and an empty ARTIST would give the toast an empty artist line.
+        if (!mArtist.empty())
+        {
+            mMetadata["ARTIST"] = mArtist;
+        }
+        if (!mTitle.empty())
+        {
+            mMetadata["TITLE"] = mTitle;
+        }
+        LL_INFOS("StreamMetadata") << "Stream title: \"" << mTitle << "\", artist: \"" << mArtist << "\"" << LL_ENDL;
 
         mMetadataUpdateSignal(mMetadata);
     }
+    // </Luminous>
 }
 // </FS:ND>
 
@@ -269,6 +293,7 @@ void LLStreamingAudio_MediaPlugins::resetStreamState()
     mDowngraded     = false;
     mEverPlayed     = false;
     mReconnectsLeft = LUMEN_RECONNECT_ATTEMPTS;
+    mHoldMetadata   = false;   // <Luminous> a new request or a stop clears the title
 }
 
 void LLStreamingAudio_MediaPlugins::playURL(const std::string& url, bool fresh_plugin)
@@ -281,6 +306,12 @@ void LLStreamingAudio_MediaPlugins::playURL(const std::string& url, bool fresh_p
         delete mMediaPlugin;
         mMediaPlugin = nullptr;
     }
+    // <Luminous> a retry of the same request keeps the title shown
+    if (fresh_plugin)
+    {
+        mHoldMetadata = true;
+    }
+    // </Luminous>
 
     if (!mMediaPlugin)
     {
@@ -417,6 +448,7 @@ void LLStreamingAudio_MediaPlugins::checkStreamHealth()
                              "probably off the air or the address is wrong";
         }
         mDowngraded = false;
+        mHoldMetadata = false;   // <Luminous> a silent stream shows no title
         LL_WARNS() << "Giving up on " << mActiveURL << ": " << mFailureReason << LL_ENDL;
         lumen_tell_user(getStreamNote());
     }

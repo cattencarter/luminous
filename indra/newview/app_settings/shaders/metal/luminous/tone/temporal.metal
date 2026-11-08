@@ -12,7 +12,9 @@
 //   reads it through the lens's mapping, Glitch reads it where its pattern says (common/glitch.h), and the light
 //   leak, grain and Worn photo follow in the tonemap's order (wornleak.h). A frame drawn for the scaler that the
 //   scaler gave no frame for is scaled with Catmull-Rom and given the same.
-// - Hold: per block of 32 x 32 texels, the largest difference between this frame and the one the hold began with.
+// - Hold: per block of 32 x 32 texels, the largest difference between this frame and the one the hold began with,
+//   in two passes: per tile of 8 x 8 texels, then per block the largest of its tiles', so the work is spread over
+//   many threads rather than a few thousand that each read a whole block.
 
 #include "luminous/common/distortion.h"
 #include "luminous/common/fullscreen.h"
@@ -348,23 +350,68 @@ fragment float4 luminous_present_screen_nodepth_fs(LuminousFullscreenOut in [[st
     return luminous_temporal::screenScaled(frame, in.uv, in.position.xy, k, s);
 }
 
-// The largest difference of any channel between the frame and the reference within this texel's block of
-// LUMINOUS_TONE_HOLD_BLOCK x LUMINOUS_TONE_HOLD_BLOCK texels of them.
+// The largest difference of any channel between the frame and the reference within this texel's tile of
+// LUMINOUS_TONE_HOLD_TILE x LUMINOUS_TONE_HOLD_TILE texels of them.
 fragment float luminous_temporal_hold_diff_fs(LuminousFullscreenOut in [[stage_in]],
                                               texture2d<float> frame [[texture(LUMINOUS_TONE_TEXTURE_FRAME)]],
                                               texture2d<float> reference [[texture(LUMINOUS_TONE_TEXTURE_BEFORE)]])
 {
     const uint2 size = uint2(frame.get_width(), frame.get_height());
-    const uint block = uint(LUMINOUS_TONE_HOLD_BLOCK);
-    const uint2 base = uint2(in.position.xy) * block;
-    const uint2 end = min(base + block, size);
+    const uint tile = uint(LUMINOUS_TONE_HOLD_TILE);
+    const uint2 base = uint2(in.position.xy) * tile;
     float most = 0.0;
+    if (all(base + tile <= size))
+    {
+        // A whole tile: a fixed count, so the reads can all be in flight at once.
+        for (uint y = 0; y < tile; ++y)
+        {
+            for (uint x = 0; x < tile; ++x)
+            {
+                const uint2 at = base + uint2(x, y);
+                const float3 d = abs(frame.read(at).rgb - reference.read(at).rgb);
+                most = max(most, max(d.r, max(d.g, d.b)));
+            }
+        }
+        return most;
+    }
+    const uint2 end = min(base + tile, size);
     for (uint y = base.y; y < end.y; ++y)
     {
         for (uint x = base.x; x < end.x; ++x)
         {
             const float3 d = abs(frame.read(uint2(x, y)).rgb - reference.read(uint2(x, y)).rgb);
             most = max(most, max(d.r, max(d.g, d.b)));
+        }
+    }
+    return most;
+}
+
+// The largest of the tiles' differences within this texel's block: LUMINOUS_TONE_HOLD_BLOCK / LUMINOUS_TONE_HOLD_TILE
+// tiles a side of the first pass's texture, so a block holds what one pass over its texels would have found.
+fragment float luminous_temporal_hold_fold_fs(LuminousFullscreenOut in [[stage_in]],
+                                              texture2d<float> tiles [[texture(LUMINOUS_TONE_TEXTURE_FRAME)]])
+{
+    const uint2 size = uint2(tiles.get_width(), tiles.get_height());
+    const uint per = uint(LUMINOUS_TONE_HOLD_BLOCK) / uint(LUMINOUS_TONE_HOLD_TILE);
+    const uint2 base = uint2(in.position.xy) * per;
+    float most = 0.0;
+    if (all(base + per <= size))
+    {
+        for (uint y = 0; y < per; ++y)
+        {
+            for (uint x = 0; x < per; ++x)
+            {
+                most = max(most, tiles.read(base + uint2(x, y)).r);
+            }
+        }
+        return most;
+    }
+    const uint2 end = min(base + per, size);
+    for (uint y = base.y; y < end.y; ++y)
+    {
+        for (uint x = base.x; x < end.x; ++x)
+        {
+            most = max(most, tiles.read(uint2(x, y)).r);
         }
     }
     return most;

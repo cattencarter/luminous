@@ -57,7 +57,14 @@ if (NOT CMAKE_BUILD_TYPE)
 endif (NOT CMAKE_BUILD_TYPE)
 
 #<FS:AW optional opensim support>
-option(OPENSIM "OpenSim support" OFF)
+# <Luminous> On: one build serves Second Life and OpenSim grids, as Luminous has
+# no Havok. Vivox's voice client for OpenSim's voice is a separate choice.
+option(OPENSIM "OpenSim support" ON)
+option(LUMINOUS_VIVOX "Ship Vivox's voice client (SLVoice) for voice on OpenSim grids" OFF)
+if (OPENSIM AND LUMINOUS_VIVOX)
+  add_compile_definitions(LUMINOUS_VIVOX)
+endif ()
+# </Luminous>
 if (OPENSIM)
   add_compile_definitions(OPENSIM)
   if (SINGLEGRID)

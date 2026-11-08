@@ -254,9 +254,10 @@ namespace LuminousPhotoMode
     /// Photo mode's live view (LuminousPhotoLiveScale): while a shot is set
     /// up, the 3D frame renders at this fraction of the window's pixels each
     /// way and is scaled up to it (upscaling() then), the interface drawn
-    /// sharp over it. 0 in the setting is automatic: one over the display's
-    /// backing scale, so a Retina display renders as many pixels as a standard
-    /// one of its size. 1 -- full -- as Luminous ships, when photo mode is
+    /// sharp over it. 0 in the setting, Standard, as Luminous ships: one pixel
+    /// per point, one over the backing scale of the screen the window is on,
+    /// so a Retina display renders as many pixels as a standard one of its
+    /// size, and a 1x display all of its own. 1 -- full -- when photo mode is
     /// off, with FXAA, while MetalFX temporal is held at full size
     /// (temporalHeldAtFull), and while a FullResolution is held. LLPipeline sizes the main
     /// targets by it (never the reflection probes' or mirrors').
@@ -264,7 +265,7 @@ namespace LuminousPhotoMode
     /// The scale the setting comes to, photo mode on or off (for the window): full with FXAA unless MetalFX temporal
     /// scales, and while MetalFX temporal is held at full size.
     F32 chosenLiveScale();
-    /// The scale the Preview resolution setting itself comes to, FXAA and MetalFX temporal aside: automatic is one
+    /// The scale the Preview resolution setting itself comes to, FXAA and MetalFX temporal aside: Standard is one
     /// over the display's backing scale.
     F32 settingLiveScale();
     /// MetalFX temporal (LuminousMetalFXTemporal) at the chosen preview resolution: Off -- switched off, or Metal
@@ -487,6 +488,11 @@ namespace LuminousPhotoMode
     /// Luminous's environments as environment items in #Luminous/Environments,
     /// once per account (at login).
     void addEnvironmentsToInventory();
+    /// True, and counted off, for each "Setting updated" alert a grid sends
+    /// back for the items addEnvironmentsToInventory just made (OpenSim
+    /// confirms every settings item made; Second Life sends none), so they
+    /// do not fill the chat.
+    bool takeOwnSettingAlert();
     /// Shows the environment of that name, its sun from the direction it
     /// came from before and at the height it was made for; "" the region's
     /// own sky again. LuminousEnvTemplate, ...EnvSunAzimuth and

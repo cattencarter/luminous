@@ -2112,12 +2112,12 @@ void MetalEncoder::forgetWritten(Texture* texture, U32 level, U32 layer)
 namespace
 {
     /// How generateMipmaps makes the levels. "same" draws each level with the backend's own filter into a scratch it
-    /// samples the level above from; "pingpong" draws into a second scratch instead; "blit" uses Metal 4's
-    /// generateMipmapsForTexture on the texture itself (Metal's own filter). On an M2 Pro (Apple8) both drawn paths
-    /// gave black, then transparent levels (conifer needles, mesh hair, clouds) and blit gave right ones; the
-    /// M4s (Apple9) draw them right. So GPUs without MTLGPUFamilyApple9 (M1, M2) use blit, the others the drawn
-    /// path, until the drawn path's fault on Apple8 is found. LL_METAL_MIPS=same|pingpong|blit overrides it (a
-    /// diagnostic knob, not a setting). Chosen once, at the first mip generation, with a line in the log.
+    /// samples the level above from, the path on every GPU; "pingpong" draws into a second scratch instead; "blit"
+    /// uses Metal 4's generateMipmapsForTexture on the texture itself (Metal's own filter, which takes each block's
+    /// bottom-right texel). The mip program takes the level's size as a uniform, not from the view of the level
+    /// above (metalMipProgramDesc), since that view's size query is not reliable before Apple9 (M1, M2).
+    /// LL_METAL_MIPS=same|pingpong|blit overrides it (a diagnostic knob, not a setting). Chosen once, at the first
+    /// mip generation, with a line in the log that names the GPU family too.
     enum class MipPath
     {
         PingPong,
@@ -2130,7 +2130,7 @@ namespace
         static const MipPath path = [device]()
         {
             const bool apple9 = [device supportsFamily:MTLGPUFamilyApple9];
-            MipPath chosen = apple9 ? MipPath::Same : MipPath::Blit;
+            MipPath chosen = MipPath::Same;
             const char* knob = getenv("LL_METAL_MIPS");
             if (knob)
             {
@@ -2142,9 +2142,8 @@ namespace
             LL_INFOS("RHI") << "Metal mipmaps: "
                             << (chosen == MipPath::Same ? "drawn" : chosen == MipPath::Blit ? "Metal's generateMipmaps"
                                                                                             : "drawn, two scratches")
-                            << (knob ? std::string(" (LL_METAL_MIPS=") + knob + ")"
-                                     : std::string(apple9 ? " (Apple9 GPU)" : " (no Apple9 GPU: M1 or M2)"))
-                            << LL_ENDL;
+                            << (knob ? std::string(" (LL_METAL_MIPS=") + knob + ")" : std::string(" (default)"))
+                            << (apple9 ? " on an Apple9 GPU" : " on a GPU before Apple9 (M1 or M2)") << LL_ENDL;
             return chosen;
         }();
         return path;
@@ -2627,7 +2626,7 @@ void MetalEncoder::generateMipmaps(Texture* texture)
     const MipPath path = metalMipPath(mDevice.mtlDevice());
     if (path == MipPath::Blit)
     {
-        // Metal's own filter on the texture itself, all slices and levels (the path on M1 and M2: metalMipPath).
+        // Metal's own filter on the texture itself, all slices and levels (LL_METAL_MIPS=blit: metalMipPath).
         IdMTL4ComputeCommandEncoder copies = mDevice.beginUploadCopies();
         if (!copies)
         {
@@ -2650,7 +2649,7 @@ void MetalEncoder::generateMipmaps(Texture* texture)
     scratchDesc.swizzle = SwizzleRGBA();
     scratchDesc.usage = TEXTURE_SAMPLED | TEXTURE_RENDER_TARGET;
     // With LL_METAL_MIPS=pingpong, two scratches, a level drawn into the one it does not sample: level 0 and every
-    // even level in the first, the odd levels in the second (a test on the M2 Pro: it did not help there).
+    // even level in the first, the odd levels in the second.
     Ref<Texture> scratch = mDevice.createTexture(scratchDesc, "mip scratch");
     if (scratch.isNull())
     {
@@ -2702,7 +2701,7 @@ void MetalEncoder::generateMipmaps(Texture* texture)
                 return;
             }
             // The encoder's defaults: the viewport and the scissor are the level, no culling and no depth.
-            const bool bound = bindForMip(*program, source, above, encoder);
+            const bool bound = bindForMip(*program, source, above, level, encoder);
             if (bound)
             {
                 [encoder setRenderPipelineState:state];

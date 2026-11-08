@@ -6360,6 +6360,16 @@ This version of [APP_NAME] is not compatible with the Voice Chat feature in this
   <tag>voice</tag>
   </notification>
 
+  <!-- <Luminous> -->
+  <notification
+   icon="notifytip.tga"
+   name="LuminousNoVivoxVoice"
+   type="notifytip">
+Voice on this grid uses Vivox, which [APP_NAME] does not include, so voice is off here.
+  <tag>voice</tag>
+  </notification>
+  <!-- </Luminous> -->
+
   <notification
    icon="alertmodal.tga"
    label="Cannot Buy Objects"

@@ -124,8 +124,18 @@ public:
         // Firestorm additions
         FFSAVE_BEAM = 50,
         FFSAVE_EXPORT = 51,
-        FFSAVE_CSV = 52
+        FFSAVE_CSV = 52,
+
+        // <Luminous> its renders' other formats
+        FFSAVE_TIFF = 60,
+        FFSAVE_EXR = 61
+        // </Luminous>
     };
+
+    // <Luminous> The filter that offers a file name's own type, by its
+    // extension (png, jpg or jpeg, bmp, tif or tiff, exr, tga), so a save
+    // panel keeps that extension; FFSAVE_ALL for any other.
+    static ESaveFilter saveFilterFor(const std::string& filename);
 
     // open the dialog. This is a modal operation
     bool getSaveFile( ESaveFilter filter = FFSAVE_ALL, const std::string& filename = LLStringUtil::null, bool blocking = true);

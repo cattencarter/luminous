@@ -215,6 +215,14 @@ void MetalResidency::commitIfChanged()
     }
 }
 
+void MetalResidency::commitToQueue(IdMTL4CommandQueue queue, IdMTL4CommandBuffer buffer, MTL4CommitOptions* options)
+{
+    // With API validation on, the commit asks the queue's sets whether they hold what the command buffer uses
+    // (containsAllocation); the upload thread's admit must not be adding to the set meanwhile.
+    std::lock_guard<std::mutex> lock(mMutex);
+    [queue commit:&buffer count:1 options:options];
+}
+
 U64 MetalResidency::count() const
 {
     std::lock_guard<std::mutex> lock(mMutex);
@@ -505,13 +513,15 @@ bool MetalEncoder::bindForClear(Program& program, const std::array<F32, 4>& rgba
     return true;
 }
 
-bool MetalEncoder::bindForMip(Program& program, Texture* scratch, IdMTLTexture source, IdMTL4RenderCommandEncoder encoder)
+bool MetalEncoder::bindForMip(Program& program, Texture* scratch, IdMTLTexture source, U32 level,
+                              IdMTL4RenderCommandEncoder encoder)
 {
     if (!makeTables("generateMipmaps"))
     {
         return false;
     }
-    // metalMipProgramDesc: one texture, mip_source, on the fragment stage, and no default block.
+    // metalMipProgramDesc: one texture, mip_source, on the fragment stage, and mip_size in the fragment stage's
+    // default block.
     const MetalProgramLayout& layout = *metalProgramLayout(&program);
     if (layout.fragment.textureUniforms.size() != 1 || !layout.vertex.textureUniforms.empty())
     {
@@ -524,6 +534,41 @@ bool MetalEncoder::bindForMip(Program& program, Texture* scratch, IdMTLTexture s
         LL_WARNS("RHI") << "generateMipmaps: texture '" << scratch->debugName() << "' is not resident" << LL_ENDL;
         return false;
     }
+    // The level's size in texels, as Metal sizes a level (MTLTexture.h), so the program reads no size from the view.
+    const TextureDesc& levels = scratch->desc();
+    const std::array<F32, 2> size = { F32(std::max(1u, levels.width >> level)),
+                                      F32(std::max(1u, levels.height >> level)) };
+    const ProgramReflection& reflection = program.reflection();
+    const MetalStageLayout& fragment = layout.fragment;
+    const MetalUniformPlace* sizePlace = nullptr;
+    for (size_t i = 0; i < reflection.uniforms.size() && i < fragment.places.size(); ++i)
+    {
+        if (reflection.uniforms[i].name == "mip_size" && fragment.places[i].size >= sizeof(size))
+        {
+            sizePlace = &fragment.places[i];
+        }
+    }
+    if (!sizePlace || fragment.blockSize == 0)
+    {
+        LL_WARNS("RHI") << "generateMipmaps: program '" << program.debugName() << "' has no mip_size" << LL_ENDL;
+        return false;
+    }
+    const MetalAllocation uniforms = mDevice.frameAllocation(fragment.blockSize);
+    if (!uniforms.buffer)
+    {
+        return false; // the ring wrote the WARN line
+    }
+    if (mDevice.debugChecks() && !mDevice.residency().contains(uniforms.buffer))
+    {
+        LL_WARNS("RHI") << "generateMipmaps: uniform ring is not resident (program '" << program.debugName() << "')"
+                        << LL_ENDL;
+        return false;
+    }
+    std::memset(uniforms.cpu, 0, fragment.blockSize);
+    std::memcpy(uniforms.cpu + sizePlace->offset, size.data(), sizeof(size));
+    writeAddress(1, 0, uniforms.buffer.gpuAddress + uniforms.offset);
+    // The next draw writes its own block's address here again, whatever the shadow held.
+    mShadows[1].addressWritten[0] = false;
     SamplerDesc desc;
     desc.filter = Filter::Bilinear;
     desc.mipmapped = false;

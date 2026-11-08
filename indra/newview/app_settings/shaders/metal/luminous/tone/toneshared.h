@@ -26,6 +26,7 @@ enum LuminousToneSlots : unsigned int
     LUMINOUS_TONE_TEXTURE_OVERLAY = 8,  ///< a copy of the world view as the present drew it (the capture frame's margin)
     LUMINOUS_TONE_BUFFER_SCREEN = 15,   ///< LuminousTemporalScreenConstants (MetalFX temporal's presents)
     LUMINOUS_TONE_HOLD_BLOCK = 32,      ///< texels per side of a block the hold compares
+    LUMINOUS_TONE_HOLD_TILE = 8,        ///< texels per side of a tile the hold's first pass compares (a block's part)
 };
 
 /// The reactive mask's stages: how strongly the light alpha added marks a texel, and where it does.

@@ -23,19 +23,20 @@
 	 bg_alpha_color="DkGray"
 	 bg_opaque_color="DkGray"
 	 follows="right|bottom"
-	 height="157"
+	 height="182"
 	 layout="topleft"
 	 left="404"
 	 name="share_panel"
-	 top="193"
+	 top="168"
 	 visible="false"
 	 width="180">
-		<button follows="left|top" height="22" label="Download..." layout="topleft" left="4" name="share_download" tool_tip="Saves the picture where you choose." top="4" width="172" />
-		<button follows="left|top" height="22" label="Open in Preview" layout="topleft" left="4" name="share_preview" tool_tip="Opens the picture in its default app (Preview)." top="29" width="172" />
-		<button follows="left|top" height="22" label="Inventory (a texture)..." layout="topleft" left="4" name="share_inventory" top="54" width="172" />
-		<button follows="left|top" height="22" label="Profile feed..." layout="topleft" left="4" name="share_profile" top="79" width="172" />
-		<button follows="left|top" height="22" label="Flickr..." layout="topleft" left="4" name="share_flickr" top="104" width="172" />
-		<button follows="left|top" height="22" label="Email..." layout="topleft" left="4" name="share_email" top="129" width="172" />
+		<button follows="left|top" height="22" label="Download..." layout="topleft" left="4" name="share_download" tool_tip="Asks for a folder and a name, and saves the picture there with _001 after the name; the next ones go there at once, _002, _003..." top="4" width="172" />
+		<button follows="left|top" height="22" label="Save as..." layout="topleft" left="4" name="share_save_as" tool_tip="Asks for a folder and a name again; Download numbers on from there." top="29" width="172" />
+		<button follows="left|top" height="22" label="Open in Preview" layout="topleft" left="4" name="share_preview" tool_tip="Opens the picture in its default app (Preview)." top="54" width="172" />
+		<button follows="left|top" height="22" label="Inventory (a texture)..." layout="topleft" left="4" name="share_inventory" top="79" width="172" />
+		<button follows="left|top" height="22" label="Profile feed..." layout="topleft" left="4" name="share_profile" top="104" width="172" />
+		<button follows="left|top" height="22" label="Flickr..." layout="topleft" left="4" name="share_flickr" top="129" width="172" />
+		<button follows="left|top" height="22" label="Email..." layout="topleft" left="4" name="share_email" top="154" width="172" />
 	</panel>
 	<button
 	 follows="right|bottom"

@@ -2963,6 +2963,7 @@ if (DARWIN)
       "--openal=${USE_OPENAL}"
       "--tracy=${USE_TRACY}"
       "--avx2=${USE_AVX2_OPTIMIZATION}"      
+      "--vivox=${LUMINOUS_VIVOX}"
       --build=${CMAKE_CURRENT_BINARY_DIR}
       --buildtype=$<CONFIG>
       --bundleid=${MACOSX_BUNDLE_GUI_IDENTIFIER}
@@ -3000,6 +3001,7 @@ if (DARWIN)
           "--openal=${USE_OPENAL}"
           "--tracy=${USE_TRACY}"
           "--avx2=${USE_AVX2_OPTIMIZATION}"          
+          "--vivox=${LUMINOUS_VIVOX}"
           --build=${CMAKE_CURRENT_BINARY_DIR}
           --buildtype=${CMAKE_BUILD_TYPE}
           "--channel=${VIEWER_CHANNEL}"

@@ -93,9 +93,15 @@ public:
     // render-only setting, the Firestorm switch it needs or turns on. The
     // menus are bound to no setting, so Preferences' Cancel puts these back.
     static void prefsEffectSettings(const LLView* prefs, std::vector<std::string>& names);
+    // Every slider under root, here and in Preferences > Graphics > Luminous
+    // alike: one whose range is even about 0 catches at 0 while dragged,
+    // and a double click puts any one back to its default.
+    static void setUpSliders(LLView* root);
 
 private:
     void refreshShapeButtons(); ///< the Render tab's lying / standing buttons, by the chosen shape
+    void refreshCustomSize(bool typing_too); ///< Custom's width and height fields, from the size chosen
+    void onCustomSide(bool width_side); ///< a width or height typed for Custom
     void refreshShots(const std::string& select = std::string());
     void refreshTonemapper();
     void refreshLUTs();
@@ -257,6 +263,7 @@ private:
     LLRect onPicture() const;  // what of it shows inside the toolbars, or that part if too small
     void showButtons();
     void drawNote(const LLRect& on) const;
+    void drawSaved() const;    // what Download or Save as just did, over Share and Close for a few seconds
     LLRect area() const;       // where the picture is drawn: all of the overlay
     F32 fitScale() const;      // UI units per picture pixel, the whole picture
     F32 fullScale() const;     // ... one picture pixel to one screen pixel
@@ -267,6 +274,9 @@ private:
     F32 mProgress = -1.f;
     std::string mProgressText;
     std::string mNote;
+    std::string mSaved;        // "Saved <file>" or "Could not save <file>", for drawSaved
+    bool mSaveFailed = false;
+    LLFrameTimer mSavedTimer;
     LLPointer<LLImageRaw> mPicture;
     std::string mPath;
     bool mTemporary = false;

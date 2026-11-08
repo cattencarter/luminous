@@ -201,7 +201,13 @@ std::unique_ptr<std::string> doSaveDialog(const std::string* file,
         //[panel setMessage:@"Save Image File"];
         [panel setTreatsFilePackagesAsDirectories: ( flags & F_NAV_SUPPORT ) ];
         [panel setCanSelectHiddenExtension:true];
-        [panel setAllowedFileTypes:fileType];
+        // <Luminous> no extension (FFSAVE_ALL): any type. As an empty type
+        // the panel would ask for a name ending in "." instead.
+        if ([extensionns length] > 0)
+        {
+            [panel setAllowedFileTypes:fileType];
+        }
+        // </Luminous>
         NSString *fileName = [NSString stringWithCString:file->c_str() encoding:[NSString defaultCStringEncoding]];
 
         NSURL* url = [NSURL fileURLWithPath:fileName];
@@ -236,14 +242,38 @@ void doSaveDialogModeless(const std::string* file,
         //[panel setMessage:@"Save Image File"];
         [panel setTreatsFilePackagesAsDirectories: ( flags & F_NAV_SUPPORT ) ];
         [panel setCanSelectHiddenExtension:true];
-        [panel setAllowedFileTypes:fileType];
-        NSString *fileName = [NSString stringWithCString:file->c_str() encoding:[NSString defaultCStringEncoding]];
-
-        NSURL* url = [NSURL fileURLWithPath:fileName];
+        // <Luminous> no extension (FFSAVE_ALL): any type. As an empty type
+        // the panel would ask for a name ending in "." instead.
+        if ([extensionns length] > 0)
+        {
+            [panel setAllowedFileTypes:fileType];
+        }
+        // </Luminous>
+        // <Luminous> the name as UTF-8, so a name of the user's own keeps
+        // its letters; a full path opens the panel in its folder, with the
+        // file's own name in the name field
+        NSString *fileName = [NSString stringWithUTF8String:file->c_str()];
+        if (!fileName)
+        {
+            fileName = [NSString stringWithCString:file->c_str() encoding:[NSString defaultCStringEncoding]];
+        }
+        bool folder_set = false;
+        if ([fileName isAbsolutePath])
+        {
+            NSString *folder = [fileName stringByDeletingLastPathComponent];
+            BOOL is_folder = NO;
+            if ([[NSFileManager defaultManager] fileExistsAtPath:folder isDirectory:&is_folder] && is_folder)
+            {
+                [panel setDirectoryURL:[NSURL fileURLWithPath:folder isDirectory:YES]];
+                folder_set = true;
+            }
+            fileName = [fileName lastPathComponent];
+        }
         [panel setNameFieldStringValue: fileName];
 
         NSURL *last_url = [[NSUserDefaults standardUserDefaults] URLForKey:@"NSNavLastRootDirectory"];
-        if(!last_url)
+        if(!last_url && !folder_set)
+        // </Luminous>
         {
             NSURL *downloads_url = [[NSFileManager defaultManager] URLsForDirectory:NSDownloadsDirectory inDomains:NSUserDomainMask].firstObject;
             [panel setDirectoryURL:downloads_url];

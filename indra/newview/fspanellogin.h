@@ -109,6 +109,7 @@ private:
     static void onRemoveCallback(const LLSD& notification, const LLSD& response);
     static void onClickGridMgrHelp(void*);
     static void onClickGridBuilder(void*);
+    static void onClickOtherGrids(void*); // <Luminous/>
     static void onShowHidePasswordClick(void*);
     static std::string credentialName();
 

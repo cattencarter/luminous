@@ -188,7 +188,7 @@
         left="5"
         width="190"
         visible="false">
-      + Click to add more grids
+      Add a grid
       </text>
       <text
         follows="left|bottom"

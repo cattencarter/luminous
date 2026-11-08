@@ -83,6 +83,7 @@
 #include "fsprimfeedauth.h"
 #include "fsprimfeedconnect.h"
 #include "llfocusmgr.h"
+#include "llspinctrl.h"
 #include "lllocalcliprect.h"
 #include "luminoushdrsnapshot.h"
 #include "lldirpicker.h"
@@ -645,19 +646,83 @@ LuminousFloater::LuminousFloater(const LLSD& key)
 
 void LuminousFloater::refreshShapeButtons()
 {
-    // lying or standing means nothing for the window's own shape or a square
+    // lying or standing means nothing for the window's own shape or a square;
+    // Free lies or stands by its own width and height
     static LLCachedControl<S32> aspect(gSavedSettings, "LuminousSnapshotAspect", 0);
     static LLCachedControl<bool> portrait(gSavedSettings, "LuminousSnapshotPortrait", false);
-    const bool turns = aspect() >= 2;
+    const bool free_shape = aspect() == LuminousHDRSnapshot::SHAPE_FREE;
+    U32 w = 0;
+    U32 h = 0;
+    if (free_shape)
+    {
+        LuminousHDRSnapshot::freeSize(w, h);
+    }
+    const bool turns = free_shape ? w != h : aspect() >= 2;
+    const bool standing = free_shape ? h > w : portrait();
     for (const char* name : { "snapshot_landscape", "snapshot_portrait" })
     {
         if (LLButton* button = findChild<LLButton>(name))
         {
             const bool is_portrait = std::string(name) == "snapshot_portrait";
             button->setEnabled(turns);
-            button->setToggleState(turns && portrait() == is_portrait);
+            button->setToggleState(turns && standing == is_portrait);
         }
     }
+}
+
+void LuminousFloater::refreshCustomSize(bool typing_too)
+{
+    // Custom's size in its two fields; a field holding typing not yet taken
+    // (its text other than its value) is left alone unless the typing has
+    // just been taken
+    U32 w, h;
+    LuminousHDRSnapshot::chosenSize(w, h);
+    for (const auto& field : { std::make_pair("snapshot_width", w), std::make_pair("snapshot_height", h) })
+    {
+        LLSpinCtrl* spinner = findChild<LLSpinCtrl>(field.first);
+        if (!spinner)
+        {
+            continue;
+        }
+        const S32 shown = ll_round(spinner->getValue().asReal());
+        const LLLineEditor* editor = spinner->findChild<LLLineEditor>("SpinCtrl Editor");
+        const bool typing = editor && gFocusMgr.childHasKeyboardFocus(spinner) && atoi(editor->getText().c_str()) != shown;
+        if (typing_too || (!typing && (U32)shown != field.second))
+        {
+            spinner->forceSetValue(LLSD((F64)field.second)); // the text too, in a field that has the focus
+        }
+    }
+}
+
+void LuminousFloater::onCustomSide(bool width_side)
+{
+    LLSpinCtrl* spinner = findChild<LLSpinCtrl>(width_side ? "snapshot_width" : "snapshot_height");
+    if (!spinner)
+    {
+        return;
+    }
+    const U32 most = LuminousHDRSnapshot::largestSide();
+    const U32 typed = llclamp((U32)llmax(ll_round(spinner->getValue().asReal()), 0), LuminousHDRSnapshot::SMALLEST_SIDE, most);
+    static LLCachedControl<S32> aspect(gSavedSettings, "LuminousSnapshotAspect", 0);
+    if (aspect() == LuminousHDRSnapshot::SHAPE_FREE)
+    {
+        // Free: each side as typed, kept as a render takes them
+        gSavedSettings.setU32(width_side ? "LuminousSnapshotWidth" : "LuminousSnapshotHeight", typed);
+        U32 w, h;
+        LuminousHDRSnapshot::freeSize(w, h);
+        gSavedSettings.setU32("LuminousSnapshotWidth", w);
+        gSavedSettings.setU32("LuminousSnapshotHeight", h);
+    }
+    else
+    {
+        // A shape: the other side follows, and the longer is the long side
+        const F32 shape = LuminousHDRSnapshot::customAspect();
+        const F32 other = width_side ? (F32)typed / shape : (F32)typed * shape;
+        gSavedSettings.setU32("LuminousSnapshotLongSide",
+                              llclamp((U32)ll_round(llmax((F32)typed, other)), LuminousHDRSnapshot::SMALLEST_LONG_SIDE, most));
+    }
+    refreshCustomSize(true);
+    refreshShapeButtons();
 }
 
 bool LuminousFloater::postBuild()
@@ -703,24 +768,10 @@ bool LuminousFloater::postBuild()
         {
             mEffectButtons.push_back({ LLHandle<LLButton>(), -1 });
         }
-        // An amount that runs both ways, 0 off -- lens distortion, clarity --
-        // catches at 0 within 1.5 % of its range, so it can be set back to 0
-        // by dragging.
-        LLSliderCtrl* amount = effect.amount && effect.slider ? findChild<LLSliderCtrl>(effect.slider) : nullptr;
-        if (amount && amount->getMinValue() < 0.f && amount->getMaxValue() > 0.f)
-        {
-            const F32 snap = 0.015f * (amount->getMaxValue() - amount->getMinValue());
-            const std::string setting = effect.amount;
-            amount->setCommitCallback([setting, snap](LLUICtrl*, const LLSD& value)
-            {
-                const F32 v = (F32)value.asReal();
-                if (v != 0.f && std::fabs(v) < snap)
-                {
-                    gSavedSettings.setF32(setting, 0.f); // the slider follows its setting
-                }
-            });
-        }
     }
+    // An amount that runs both ways, 0 off -- lens distortion, clarity --
+    // catches at 0 with the other sliders even about 0 (setUpSliders).
+    setUpSliders(this);
     refreshEffectSwitches();
     refreshCapture();
     // the picture's shape lying or standing (refreshed with the size below)
@@ -731,12 +782,38 @@ bool LuminousFloater::postBuild()
             const bool portrait = std::string(name) == "snapshot_portrait";
             button->setCommitCallback([this, portrait](LLUICtrl*, const LLSD&)
             {
+                // Free turns by swapping its width and height
+                if (gSavedSettings.getS32("LuminousSnapshotAspect") == LuminousHDRSnapshot::SHAPE_FREE)
+                {
+                    U32 w, h;
+                    LuminousHDRSnapshot::freeSize(w, h);
+                    if (portrait ? w > h : h > w)
+                    {
+                        gSavedSettings.setU32("LuminousSnapshotWidth", h);
+                        gSavedSettings.setU32("LuminousSnapshotHeight", w);
+                    }
+                }
                 gSavedSettings.setBOOL("LuminousSnapshotPortrait", portrait);
                 refreshShapeButtons();
+                refreshCustomSize(true);
             });
         }
     }
     refreshShapeButtons();
+    // Custom's width and height, each up to what this GPU renders in one piece
+    for (const char* name : { "snapshot_width", "snapshot_height" })
+    {
+        if (LLSpinCtrl* side = findChild<LLSpinCtrl>(name))
+        {
+            const bool width_side = std::string(name) == "snapshot_width";
+            const U32 most = LuminousHDRSnapshot::largestSide();
+            side->setMaxValue((F32)most);
+            side->setToolTip(llformat("The picture's %s in pixels, up to %u on this Mac. With a shape the other side follows; "
+                                      "choose Free under Shape to set both.", width_side ? "width" : "height", most));
+            side->setCommitCallback([this, width_side](LLUICtrl*, const LLSD&) { onCustomSide(width_side); });
+        }
+    }
+    refreshCustomSize(true);
     if (LLButton* choose = findChild<LLButton>("snapshot_folder_choose"))
     {
         choose->setCommitCallback([](LLUICtrl*, const LLSD&)
@@ -1157,6 +1234,79 @@ namespace
         const F32 hi = s.max + s.offset;
         return llmax(ll_round(lo * powf(hi / lo, llclamp(position, 0.f, 1.f)) - s.offset, 0.01f), s.min);
     }
+
+    // How near 0, in pixels along the bar, a dragged slider even about 0
+    // catches there: from either side, 0 in a drag without hunting for it.
+    constexpr S32 SLIDER_DETENT_PIXELS = 3;
+
+    // Sliders whose neutral value is 1, not 0: they catch at 1 the same way.
+    const std::string SLIDERS_NEUTRAL_AT_ONE[] = { "look_contrast", "look_saturation" };
+
+    // What a double click puts a slider back to: its setting's default, as
+    // Luminous ships it (the tab's Reset button sets the same), on the
+    // slider's own scale where it shows the setting another way -- a radius
+    // on a logarithmic scale, one part of a vector. A slider on no setting
+    // of its own (the colour range's hue, saturation and lightness; the
+    // portrait's view angle) goes back to its initial value.
+    F32 sliderDefault(LLSliderCtrl* slider)
+    {
+        const std::string& name = slider->getName();
+        for (const LogSlider& s : LOG_SLIDERS)
+        {
+            LLControlVariable* control = gSavedSettings.getControl(s.setting);
+            if (name == s.slider && control)
+            {
+                return logPosition(s, (F32)control->getDefault().asReal());
+            }
+        }
+        for (const VectorSlider& v : VECTOR_SLIDERS)
+        {
+            LLControlVariable* control = gSavedSettings.getControl(v.setting);
+            if (name == v.slider && control)
+            {
+                return LLVector3(control->getDefault()).mV[v.component];
+            }
+        }
+        if (LLControlVariable* control = slider->getControlVariable())
+        {
+            return (F32)control->getDefault().asReal();
+        }
+        return slider->getInitialValue();
+    }
+}
+
+// static
+void LuminousFloater::setUpSliders(LLView* root)
+{
+    if (!root)
+    {
+        return;
+    }
+    for (LLView* child : *root->getChildList())
+    {
+        LLSliderCtrl* slider = dynamic_cast<LLSliderCtrl*>(child);
+        if (!slider)
+        {
+            setUpSliders(child);
+            continue;
+        }
+        // Even about 0 (warmth, tint, exposure, split tone, a lens's
+        // distortion...), 0 is the neutral middle.
+        const F32 min = slider->getMinValue();
+        const F32 max = slider->getMaxValue();
+        if (min < 0.f && max > 0.f && fabsf(min + max) <= 1e-6f * (max - min))
+        {
+            slider->setDetent(0.f, SLIDER_DETENT_PIXELS);
+        }
+        // The Look's contrast and saturation: 1 leaves the picture as it is.
+        else if (std::find(std::begin(SLIDERS_NEUTRAL_AT_ONE), std::end(SLIDERS_NEUTRAL_AT_ONE), slider->getName())
+                     != std::end(SLIDERS_NEUTRAL_AT_ONE)
+                 && min < 1.f && max > 1.f)
+        {
+            slider->setDetent(1.f, SLIDER_DETENT_PIXELS);
+        }
+        slider->setResetValue(sliderDefault(slider));
+    }
 }
 
 void LuminousFloater::onMaster(const LLSD& which)
@@ -1185,7 +1335,19 @@ void LuminousFloater::onLogSlider(const LLSD& which)
         LLSliderCtrl* slider = findChild<LLSliderCtrl>(s.slider);
         if (slider && which.asString() == s.slider)
         {
-            gSavedSettings.setF32(s.setting, logValue(s, slider->getValueF32()));
+            const F32 position = slider->getValueF32();
+            F32 value = logValue(s, position);
+            // At the default's own place, where a double click puts the
+            // slider, the default itself: it may lie between the hundredths.
+            if (LLControlVariable* control = gSavedSettings.getControl(s.setting))
+            {
+                const F32 shipped = (F32)control->getDefault().asReal();
+                if (position == logPosition(s, shipped))
+                {
+                    value = shipped;
+                }
+            }
+            gSavedSettings.setF32(s.setting, value);
         }
     }
     refreshLogSliders();
@@ -1277,6 +1439,15 @@ void LuminousFloater::refreshOptions()
     if (alpha_sort_row && alpha_sort_row->getVisible() != alpha_sort)
     {
         alpha_sort_row->setVisible(alpha_sort);
+        fitTabs();
+    }
+    // The width and height row, while the Render tab's size is Custom
+    static LLCachedControl<U32> snapshot_scale(gSavedSettings, "LuminousSnapshotScale", 1);
+    const bool custom_size = snapshot_scale() == 0;
+    LLLayoutPanel* custom_row = findChild<LLLayoutPanel>("snapshot_custom_lp");
+    if (custom_row && custom_row->getVisible() != custom_size)
+    {
+        custom_row->setVisible(custom_size);
         fitTabs();
     }
 }
@@ -1777,14 +1948,27 @@ void LuminousFloater::draw()
         }
         if (LLTextBox* size = findChild<LLTextBox>("snapshot_size_px"))
         {
-            // What the picture comes to, in pixels: the window's, or twice
-            // it, in the chosen shape (LuminousHDRSnapshot::pictureSize)
+            // What the picture comes to, in pixels: the window's, twice it,
+            // or the custom size, in the chosen shape
+            // (LuminousHDRSnapshot::chosenSize). A custom size that does not
+            // fit beside the scene now says what it needs, as the render
+            // reckons it before it begins.
             static LLCachedControl<U32> scale(gSavedSettings, "LuminousSnapshotScale", 1);
             U32 w, h;
-            LuminousHDRSnapshot::pictureSize((F32)llclamp((U32)scale(), 1U, 2U), w, h);
-            size->setText(llformat("%u x %u", w, h));
+            LuminousHDRSnapshot::chosenSize(w, h);
+            U64 need = 0;
+            U64 room = 0;
+            const bool fits = scale() != 0 || LuminousHDRSnapshot::chosenSizeFits(need, room);
+            const F64 gb = 1024.0 * 1024.0 * 1024.0;
+            size->setText(fits ? llformat("%u x %u", w, h) : llformat("%u x %u, needs %.1f GB", w, h, (F64)need / gb));
+            size->setToolTip(fits ? LLStringUtil::null
+                                  : llformat("A render this size needs about %.1f GB beside the scene, and this Mac has %.1f GB free for it now. "
+                                             "Luminous first lets go of textures out of view; if it still does not fit, it renders the largest "
+                                             "size that fits and says so. Quitting apps you are not using makes room.",
+                                             (F64)need / gb, (F64)room / gb));
         }
         refreshShapeButtons();
+        refreshCustomSize(false);
         if (LLTextBox* live = findChild<LLTextBox>("live_view_size"))
         {
             // What the live view renders, before it is scaled up. FXAA keeps it at full size unless MetalFX
@@ -1972,10 +2156,14 @@ void LuminousFloater::refreshCapture()
     {
         const std::string dir = gSavedPerAccountSettings.getString("SnapshotBaseDir");
         const std::string shown = dir.empty() ? std::string("Asked the first time") : gDirUtilp->getBaseFileName(dir);
-        if (folder->getValue().asString() != shown)
+        // and the name renders are saved under, once one is chosen
+        const std::string name = LuminousHDRSnapshot::chosenName();
+        const std::string hint = (dir.empty() ? std::string("The first render asks where to save, and the folder is remembered.") : dir)
+                               + (name.empty() ? std::string() : "\nSaved as " + name + "_001, _002... (Share > Save as... changes it).");
+        if (folder->getValue().asString() != shown || folder->getToolTip() != hint)
         {
             folder->setValue(shown);
-            folder->setToolTip(dir.empty() ? std::string("The first render asks where to save, and the folder is remembered.") : dir);
+            folder->setToolTip(hint);
         }
     }
     static LLCachedControl<U32> format(gSavedSettings, "LuminousSnapshotFormat", 0);
@@ -2069,17 +2257,19 @@ void LuminousRenderFloater::setPicture(const LLPointer<LLImageRaw>& picture, U32
     if (mPicture.notNull() && !mPicture->isBufferInvalid())
     {
         // A copy small enough to show: the window is not 10,000 pixels wide.
-        LLPointer<LLImageRaw> small = new LLImageRaw(mPicture->getData(), mPicture->getWidth(), mPicture->getHeight(),
-                                                     mPicture->getComponents());
-        const F32 shrink = llmin(1.f, 1600.f / (F32)llmax(small->getWidth(), small->getHeight()));
-        if (shrink < 1.f)
+        // Scaled straight from the picture: a full-size copy first can pass
+        // an image's 256 MB limit at a large Custom size.
+        const S32 w = mPicture->getWidth();
+        const S32 h = mPicture->getHeight();
+        const F32 shrink = llmin(1.f, 1600.f / (F32)llmax(w, h));
+        LLPointer<LLImageRaw> small = mPicture->scaled(llmax(1, ll_round(w * shrink)), llmax(1, ll_round(h * shrink)));
+        if (small.notNull() && !small->isBufferInvalid())
         {
-            small->scale(llmax(1, ll_round(small->getWidth() * shrink)), llmax(1, ll_round(small->getHeight() * shrink)));
+            // A texture's sides must be powers of two; drawn back at the
+            // picture's own shape.
+            small->biasedScaleToPowerOfTwo(2048);
+            mPreview = LLViewerTextureManager::getLocalTexture(small.get(), false);
         }
-        // A texture's sides must be powers of two; drawn back at the
-        // picture's own shape.
-        small->biasedScaleToPowerOfTwo(2048);
-        mPreview = LLViewerTextureManager::getLocalTexture(small.get(), false);
         getChild<LLUICtrl>("picture_size")->setValue(llformat("The picture: %d x %d", mPicture->getWidth(), mPicture->getHeight()));
         std::string location;
         LLAgentUI::buildLocationString(location, LLAgentUI::LOCATION_FORMAT_NORMAL);
@@ -2169,53 +2359,122 @@ void LuminousRenderFloater::textureShape(S32& tex_w, S32& tex_h, LLRect& part) c
     }
 }
 
+namespace
+{
+    // The part of a picture inside part, scaled to width x height without a
+    // copy of the part at full size, which at a large Custom size can pass an
+    // image's 256 MB limit: averaged down first, straight from the picture's
+    // rows, by the largest whole factors each way that leave it at least that
+    // size (so less than twice it), then scaled the rest of the way. Null
+    // when there is no memory for it.
+    LLPointer<LLImageRaw> scaledPart(const LLImageRaw* picture, const LLRect& part, S32 width, S32 height)
+    {
+        if (!picture || picture->isBufferInvalid() || width < 1 || height < 1 || part.getWidth() < 1 || part.getHeight() < 1)
+        {
+            return nullptr;
+        }
+        const S32 c = picture->getComponents();
+        // at most 1024 each way: a sum of 1024 x 1024 values of 255 fits a U32
+        const S32 kx = llclamp(part.getWidth() / width, 1, 1024);
+        const S32 ky = llclamp(part.getHeight() / height, 1, 1024);
+        const S32 sw = part.getWidth() / kx;
+        const S32 sh = part.getHeight() / ky;
+        // the few pixels whole factors leave over, split between the sides
+        const S32 left = part.mLeft + (part.getWidth() - sw * kx) / 2;
+        const S32 bottom = part.mBottom + (part.getHeight() - sh * ky) / 2;
+        LLPointer<LLImageRaw> small = new LLImageRaw;
+        if (!small->resize((U16)sw, (U16)sh, (S8)c))
+        {
+            return nullptr;
+        }
+        const U8* src = picture->getData();
+        U8* dst = small->getData();
+        const size_t src_row = (size_t)picture->getWidth() * c;
+        // each pixel the mean of a kx x ky block
+        std::vector<U32> sum((size_t)sw * c);
+        const U32 count = (U32)(kx * ky);
+        for (S32 y = 0; y < sh; ++y)
+        {
+            std::fill(sum.begin(), sum.end(), 0U);
+            for (S32 dy = 0; dy < ky; ++dy)
+            {
+                const U8* p = src + (size_t)(bottom + y * ky + dy) * src_row + (size_t)left * c;
+                for (S32 x = 0; x < sw; ++x)
+                {
+                    U32* s = &sum[(size_t)x * c];
+                    for (S32 dx = 0; dx < kx; ++dx, p += c)
+                    {
+                        for (S32 i = 0; i < c; ++i)
+                        {
+                            s[i] += p[i];
+                        }
+                    }
+                }
+            }
+            U8* out = dst + (size_t)y * sw * c;
+            for (size_t i = 0; i < sum.size(); ++i)
+            {
+                out[i] = (U8)((sum[i] + count / 2) / count);
+            }
+        }
+        if (!small->scale(width, height))
+        {
+            return nullptr;
+        }
+        return small;
+    }
+}
+
 LLPointer<LLImageRaw> LuminousRenderFloater::makeTexture() const
 {
     S32 tex_w, tex_h;
     LLRect part;
     textureShape(tex_w, tex_h, part);
     const S32 shape = getChild<LLComboBox>("shape")->getValue().asInteger();
-    const S32 c = mPicture->getComponents();
-    // the part of the picture used
-    LLPointer<LLImageRaw> cut = new LLImageRaw(part.getWidth(), part.getHeight(), c);
-    const U8* src = mPicture->getData();
-    U8* dst = cut->getData();
-    for (S32 y = 0; y < part.getHeight(); ++y)
-    {
-        memcpy(dst + (size_t)y * part.getWidth() * c,
-               src + ((size_t)(part.mBottom + y) * mPicture->getWidth() + part.mLeft) * c, (size_t)part.getWidth() * c);
-    }
     if (shape != 1)
     {
-        cut->scale(tex_w, tex_h); // cut to the shape, or stretched to it
-        return cut;
+        // the part of the picture used, cut to the shape, or stretched to it
+        return scaledPart(mPicture, part, tex_w, tex_h);
     }
     // the whole picture inside the texture, black bars round it
     const F32 fit = llmin((F32)tex_w / part.getWidth(), (F32)tex_h / part.getHeight());
     const S32 fw = llclamp(ll_round(part.getWidth() * fit), 1, tex_w);
     const S32 fh = llclamp(ll_round(part.getHeight() * fit), 1, tex_h);
-    cut->scale(fw, fh);
+    LLPointer<LLImageRaw> fitted = scaledPart(mPicture, part, fw, fh);
+    if (fitted.isNull())
+    {
+        return nullptr;
+    }
+    const S32 c = fitted->getComponents();
     LLPointer<LLImageRaw> canvas = new LLImageRaw(tex_w, tex_h, c);
+    if (canvas->isBufferInvalid())
+    {
+        return nullptr;
+    }
     canvas->fill(LLColor4U(0, 0, 0, 255));
     const S32 x0 = (tex_w - fw) / 2;
     const S32 y0 = (tex_h - fh) / 2;
     for (S32 y = 0; y < fh; ++y)
     {
-        memcpy(canvas->getData() + ((size_t)(y0 + y) * tex_w + x0) * c, cut->getData() + (size_t)y * fw * c, (size_t)fw * c);
+        memcpy(canvas->getData() + ((size_t)(y0 + y) * tex_w + x0) * c, fitted->getData() + (size_t)y * fw * c, (size_t)fw * c);
     }
     return canvas;
 }
 
 LLPointer<LLImageRaw> LuminousRenderFloater::scaledToFit(S32 longest) const
 {
-    LLPointer<LLImageRaw> copy = new LLImageRaw(mPicture->getData(), mPicture->getWidth(), mPicture->getHeight(),
-                                                mPicture->getComponents());
-    const F32 shrink = llmin(1.f, (F32)longest / (F32)llmax(copy->getWidth(), copy->getHeight()));
-    if (shrink < 1.f)
+    // Scaled straight from the picture: a full-size copy first can pass an
+    // image's 256 MB limit at a large Custom size. Null when there is no
+    // memory for it.
+    const S32 w = mPicture->getWidth();
+    const S32 h = mPicture->getHeight();
+    const F32 shrink = llmin(1.f, (F32)longest / (F32)llmax(w, h));
+    LLPointer<LLImageRaw> scaled = mPicture.get()->scaled(llmax(1, ll_round(w * shrink)), llmax(1, ll_round(h * shrink)));
+    if (scaled.isNull() || scaled->isBufferInvalid())
     {
-        copy->scale(llmax(1, ll_round(copy->getWidth() * shrink)), llmax(1, ll_round(copy->getHeight() * shrink)));
+        return nullptr;
     }
-    return copy;
+    return scaled;
 }
 
 void LuminousRenderFloater::refresh()
@@ -2353,6 +2612,11 @@ void LuminousRenderFloater::onSend()
             // (LLSnapshotLivePreview::saveTexture), with this window's shape,
             // name and description.
             LLPointer<LLImageRaw> texture = makeTexture();
+            if (texture.isNull())
+            {
+                status->setValue("Not enough memory to make the texture.");
+                return;
+            }
             LLTransactionID tid;
             tid.generate();
             const LLAssetID asset = tid.makeAssetID(gAgent.getSecureSessionID());
@@ -2384,8 +2648,14 @@ void LuminousRenderFloater::onSend()
             LLPointer<LLImagePNG> png;
             for (S32 longest : { 2048, 1600, 1280, 1024 })
             {
+                const LLPointer<LLImageRaw> picture = scaledToFit(longest);
+                if (picture.isNull())
+                {
+                    status->setValue("Not enough memory to make the picture.");
+                    return;
+                }
                 png = new LLImagePNG();
-                if (!png->encode(scaledToFit(longest), 0.f))
+                if (!png->encode(picture, 0.f))
                 {
                     status->setValue("Could not encode the picture.");
                     return;
@@ -2417,8 +2687,14 @@ void LuminousRenderFloater::onSend()
         }
         case 3:
         {
+            const LLPointer<LLImageRaw> picture = scaledToFit(4096);
+            if (picture.isNull())
+            {
+                status->setValue("Not enough memory to make the picture.");
+                return;
+            }
             LLPointer<LLImageJPEG> jpeg = new LLImageJPEG(95);
-            if (!jpeg->encode(scaledToFit(4096), 0.f))
+            if (!jpeg->encode(picture, 0.f))
             {
                 status->setValue("Could not encode the picture.");
                 return;
@@ -2455,8 +2731,14 @@ void LuminousRenderFloater::onSend()
         }
         case 4:
         {
+            const LLPointer<LLImageRaw> picture = scaledToFit(4096);
+            if (picture.isNull())
+            {
+                status->setValue("Not enough memory to make the picture.");
+                return;
+            }
             LLPointer<LLImageJPEG> jpeg = new LLImageJPEG(95);
-            if (!jpeg->encode(scaledToFit(4096), 0.f))
+            if (!jpeg->encode(picture, 0.f))
             {
                 status->setValue("Could not encode the picture.");
                 return;
@@ -2505,8 +2787,14 @@ void LuminousRenderFloater::onSend()
                 status->setValue("Postcards cannot be sent from this region.");
                 return;
             }
+            const LLPointer<LLImageRaw> picture = scaledToFit(1024);
+            if (picture.isNull())
+            {
+                status->setValue("Not enough memory to make the picture.");
+                return;
+            }
             LLPointer<LLImageJPEG> jpeg = new LLImageJPEG(90);
-            if (!jpeg->encode(scaledToFit(1024), 0.f))
+            if (!jpeg->encode(picture, 0.f))
             {
                 status->setValue("Could not encode the picture.");
                 return;
@@ -2724,6 +3012,28 @@ namespace
     }
 }
 
+namespace
+{
+    // Download as it will go: at once, under the chosen name in the folder,
+    // or through the save panel ("...") while either is still to choose.
+    void showDownload(LLButton* download)
+    {
+        const std::string dir = gSavedPerAccountSettings.getString("SnapshotBaseDir");
+        const std::string name = LuminousHDRSnapshot::chosenName();
+        if (!dir.empty() && LLFile::isdir(dir) && !name.empty())
+        {
+            download->setLabel(std::string("Download"));
+            download->setToolTip("Saves the picture at once in " + gDirUtilp->getBaseFileName(dir) + " as the next of " + name
+                                 + "_001, _002..., never over another. Save as... picks a new name or folder.");
+        }
+        else
+        {
+            download->setLabel(std::string("Download..."));
+            download->setToolTip(std::string("Asks for a folder and a name, and saves the picture there with _001 after the name; the next ones go there at once, _002, _003..."));
+        }
+    }
+}
+
 LuminousPictureView::LuminousPictureView(const LLSD& key)
     : LLFloater(key)
 {
@@ -2754,9 +3064,13 @@ bool LuminousPictureView::postBuild()
     getChild<LLButton>("share")->setCommitCallback([this](LLUICtrl*, const LLSD&)
     {
         LLView* menu = getChild<LLView>("share_panel");
+        if (!menu->getVisible())
+        {
+            showDownload(getChild<LLButton>("share_download"));
+        }
         menu->setVisible(!menu->getVisible());
     });
-    for (const char* what : { "download", "preview", "inventory", "profile", "flickr", "email" })
+    for (const char* what : { "download", "save_as", "preview", "inventory", "profile", "flickr", "email" })
     {
         const std::string name = std::string("share_") + what;
         getChild<LLButton>(name)->setCommitCallback([this, what](LLUICtrl*, const LLSD&) { onShare(what); });
@@ -2802,6 +3116,7 @@ void LuminousPictureView::beginRender()
     view->mProgress = -1.f;
     view->mProgressText = "Getting ready...";
     view->mNote.clear();
+    view->mSaved.clear();
     view->showButtons();
     view->setFocus(true);
     sWantStill = true;
@@ -2895,6 +3210,30 @@ void LuminousPictureView::drawNote(const LLRect& on) const
                          LLFontGL::DROP_SHADOW);
         y -= line_h;
     }
+}
+
+void LuminousPictureView::drawSaved() const
+{
+    // Four seconds, then a second's fade, right above Share and Close
+    const F32 shown = 4.f;
+    const F32 fade = 1.f;
+    const F32 age = mSavedTimer.getElapsedTimeF32();
+    if (mSaved.empty() || age > shown + fade || mState != State::Done)
+    {
+        return;
+    }
+    const F32 alpha = age < shown ? 1.f : 1.f - (age - shown) / fade;
+    const LLFontGL* font = LLFontGL::getFontSansSerif();
+    const LLView* close = getChild<LLView>("close");
+    const LLView* share = getChild<LLView>("share");
+    const S32 right = close->getRect().mRight;
+    const S32 bottom = llmax(close->getRect().mTop, share->getRect().mTop) + 8;
+    const S32 width = (S32)font->getWidth(mSaved);
+    const S32 height = font->getLineHeight();
+    gl_rect_2d(right - width - 20, bottom + height + 10, right, bottom, LLColor4(0.f, 0.f, 0.f, 0.65f * alpha), true);
+    const LLColor4 colour = mSaveFailed ? LLColor4(1.f, 0.55f, 0.45f, alpha) : LLColor4(1.f, 1.f, 1.f, alpha);
+    font->renderUTF8(mSaved, 0, (F32)(right - 10), (F32)(bottom + 5), colour, LLFontGL::RIGHT, LLFontGL::BOTTOM,
+                     LLFontGL::NORMAL, LLFontGL::DROP_SHADOW);
 }
 
 void LuminousPictureView::endRender()
@@ -3079,6 +3418,8 @@ void LuminousPictureView::showButtons()
     // a picture only in a temporary file can be downloaded; one on disk
     // already is
     getChild<LLUICtrl>("share_download")->setEnabled(done);
+    getChild<LLUICtrl>("share_save_as")->setEnabled(done);
+    showDownload(getChild<LLButton>("share_download"));
     getChild<LLUICtrl>("share_preview")->setEnabled(done && !mPath.empty());
     // An EXR's picture here is the light without the Look's tone: not one to
     // send on (render a PNG or JPEG for that).
@@ -3091,38 +3432,72 @@ void LuminousPictureView::showButtons()
 void LuminousPictureView::onShare(const std::string& what)
 {
     getChild<LLView>("share_panel")->setVisible(false);
-    if (mState != State::Done || mPicture.isNull())
+    // Download, Save as and Open in Preview work from the render's file, so
+    // they work also when there was no memory for the picture shown.
+    if (mState != State::Done)
     {
         return;
     }
-    if (what == "download")
+    if (what == "download" || what == "save_as")
     {
-        // A copy of the file, where the dialog says; its folder remembered,
-        // as for renders to disk.
+        // A copy of the file, numbered under the name chosen for renders, in
+        // their folder (as renders to disk are): at once once both are
+        // known, else -- and with Save as... -- where the save panel says,
+        // which sets both for the pictures after it. The panel offers the
+        // render's own type (PNG, JPEG, BMP, TIFF, EXR).
         const std::string from = mPath;
+        if (from.empty())
+        {
+            return;
+        }
+        const std::string extension = gDirUtilp->getExtension(from);
+        const std::string dir = gSavedPerAccountSettings.getString("SnapshotBaseDir");
+        const std::string name = LuminousHDRSnapshot::chosenName();
+        const bool folder = !dir.empty() && LLFile::isdir(dir);
         LLHandle<LLFloater> handle = getHandle();
-        LLFilePickerReplyThread::startPicker(
-            [from, handle](const std::vector<std::string>& files, LLFilePicker::ELoadFilter, LLFilePicker::ESaveFilter)
+        auto keep = [from, handle](const std::string& to)
+        {
+            const bool saved = LLFile::copy(from, to);
+            // said on the picture too, where it is seen: a tip may go to the chat behind it
+            if (LuminousPictureView* view = dynamic_cast<LuminousPictureView*>(handle.get()))
             {
-                if (files.empty() || from.empty())
+                view->mKept = view->mKept || saved;
+                view->mSaved = (saved ? "Saved " : "Could not save ") + gDirUtilp->getBaseFileName(to);
+                view->mSaveFailed = !saved;
+                view->mSavedTimer.reset();
+            }
+            if (saved)
+            {
+                LL_INFOS("LuminousHDRSnapshot") << "Saved " << to << LL_ENDL;
+                LLNotificationsUtil::add("SystemMessageTip", LLSD().with("MESSAGE", "Saved " + to));
+            }
+            else
+            {
+                LL_WARNS("LuminousHDRSnapshot") << "Could not save " << to << LL_ENDL;
+                LLNotificationsUtil::add("SystemMessageTip", LLSD().with("MESSAGE", "Could not save " + to));
+            }
+        };
+        if (what == "download" && folder && !name.empty())
+        {
+            keep(LuminousHDRSnapshot::nextNumbered(dir, name, extension));
+            return;
+        }
+        // The chosen name, or the render's own until one is chosen; in the
+        // folder, where the panel then opens.
+        std::string proposed = name.empty() ? gDirUtilp->getBaseFileName(from) : name + "." + extension;
+        if (folder)
+        {
+            proposed = gDirUtilp->add(dir, proposed);
+        }
+        LLFilePickerReplyThread::startPicker(
+            [keep, extension](const std::vector<std::string>& files, LLFilePicker::ELoadFilter, LLFilePicker::ESaveFilter)
+            {
+                if (!files.empty())
                 {
-                    return;
-                }
-                if (LLFile::copy(from, files[0]))
-                {
-                    gSavedPerAccountSettings.setString("SnapshotBaseDir", gDirUtilp->getDirName(files[0]));
-                    if (LuminousPictureView* view = dynamic_cast<LuminousPictureView*>(handle.get()))
-                    {
-                        view->mKept = true;
-                    }
-                    LLNotificationsUtil::add("SystemMessageTip", LLSD().with("MESSAGE", "Saved " + files[0]));
-                }
-                else
-                {
-                    LLNotificationsUtil::add("SystemMessageTip", LLSD().with("MESSAGE", "Could not save " + files[0]));
+                    keep(LuminousHDRSnapshot::chooseNameAndFolder(files[0], extension));
                 }
             },
-            LLFilePicker::FFSAVE_ALL, gDirUtilp->getBaseFileName(from));
+            LLFilePicker::saveFilterFor(from), proposed);
         return;
     }
     if (what == "preview")
@@ -3134,7 +3509,13 @@ void LuminousPictureView::onShare(const std::string& what)
         return;
     }
     // On to one of Second Life's places, in the render window, which keeps
-    // its own copy of the picture.
+    // its own copy of the picture: these need the picture itself.
+    if (mPicture.isNull() || mPicture->isBufferInvalid())
+    {
+        LLNotificationsUtil::add("SystemMessageTip", LLSD().with("MESSAGE",
+            "There was not enough memory to keep this render's picture, so it cannot be sent on from here. Download keeps the render's file."));
+        return;
+    }
     const U32 destination = what == "inventory" ? 1 : what == "profile" ? 2 : what == "flickr" ? 3 : what == "primfeed" ? 4 : 5;
     mKept = true;
     LuminousRenderFloater::showPicture(mPicture, destination);
@@ -3203,23 +3584,31 @@ void LuminousPictureView::setPicture(const LLPointer<LLImageRaw>& picture)
     {
         return;
     }
-    // As large as the GPU takes (16384 on Apple silicon: every render fits).
+    // As large as the GPU takes (16384 on Apple silicon: every render fits),
+    // shrunk straight from the picture without a full-size copy. An RGB copy
+    // is made empty and allowed past an image's 256 MB limit before its
+    // buffer is made.
     LLPointer<LLImageRaw> image = picture;
     const S32 most = llmax(gGLManager.mGLMaxTextureSize, 1024);
-    if (image->getWidth() > most || image->getHeight() > most || (image->getComponents() != 3 && image->getComponents() != 4))
+    if (image->getWidth() > most || image->getHeight() > most)
     {
-        image = new LLImageRaw(picture->getData(), picture->getWidth(), picture->getHeight(), picture->getComponents());
-        const F32 shrink = llmin(1.f, (F32)most / (F32)llmax(image->getWidth(), image->getHeight()));
-        if (shrink < 1.f)
+        const F32 shrink = (F32)most / (F32)llmax(image->getWidth(), image->getHeight());
+        image = picture.get()->scaled(llmax(1, (S32)(picture->getWidth() * shrink)), llmax(1, (S32)(picture->getHeight() * shrink)));
+        if (image.isNull() || image->isBufferInvalid())
         {
-            image->scale(llmax(1, (S32)(image->getWidth() * shrink)), llmax(1, (S32)(image->getHeight() * shrink)));
+            return;
         }
-        if (image->getComponents() != 3 && image->getComponents() != 4)
+    }
+    if (image->getComponents() != 3 && image->getComponents() != 4)
+    {
+        LLPointer<LLImageRaw> rgb = new LLImageRaw;
+        rgb->enableOverSize();
+        if (!rgb->resize(image->getWidth(), image->getHeight(), 3))
         {
-            LLPointer<LLImageRaw> rgb = new LLImageRaw(image->getWidth(), image->getHeight(), 3);
-            rgb->copy(image);
-            image = rgb;
+            return;
         }
+        rgb->copy(image);
+        image = rgb;
     }
     const S32 width = image->getWidth();
     const S32 height = image->getHeight();
@@ -3471,7 +3860,18 @@ void LuminousPictureView::draw()
                                                       LLFontGL::LEFT, LLFontGL::BOTTOM, LLFontGL::NORMAL, LLFontGL::DROP_SHADOW);
         drawNote(safe);
     }
+    else if (mState == State::Done && !mPreview && !mPath.empty())
+    {
+        // No picture to show -- no memory for one at this size -- but the
+        // render is in its file, which Share's Download keeps.
+        const LLRect safe = onPicture();
+        LLFontGL::getFontSansSerif()->renderUTF8("This render is too large to show here. Share > Download... keeps it.", 0,
+                                                 (F32)safe.getCenterX(), (F32)safe.getCenterY(), LLColor4::white, LLFontGL::HCENTER,
+                                                 LLFontGL::VCENTER, LLFontGL::NORMAL, LLFontGL::DROP_SHADOW);
+        drawNote(safe);
+    }
     placeOnPicture();
+    drawSaved();
     LLFloater::draw(); // the buttons
 }
 
@@ -3606,6 +4006,7 @@ public:
                 }
             }
         }
+        LuminousFloater::setUpSliders(this); // any slider here as in the sidebar
         return true;
     }
 

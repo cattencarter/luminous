@@ -172,6 +172,9 @@ struct MetalSurfaceStats
     U64  finishedHeld        = 0;     ///< times a finished frame was not given to the window server when it could
                                       ///< have been, by metalPresentPaced or presentWithheld (a newer one goes later)
     U64  finishedTimeouts    = 0;     ///< of drawableTimeouts, the finished path's
+    U64  finishedAfterGap    = 0;     ///< frames just flipped that went once finished, not at once, after a gap in
+                                      ///< the present queue's copies (METAL_PRESENT_GAP_NS); frames while presents
+                                      ///< were withheld anyway (a hidden window, a refused drawable) included
     bool displaySync         = false; ///< the VSync setting (setVSync); off, present() paces by the window
                                       ///< server's drawables (metalPresentPaced)
     bool layerDisplaySync    = false; ///< the layer's displaySyncEnabled: on whatever the setting, off only with

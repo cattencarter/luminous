@@ -650,13 +650,17 @@ ProgramDesc metalMipProgramDesc()
     // The filtered value is written as it is. A 16-bit float render target
     // converts it to a half toward zero, where GL's mips round to the nearest half (the probe's 1x8); that
     // half ULP is accepted, and no rounding is emulated in the shader.
+    // mip_size is the level's size in texels (bindForMip), not asked of mip_source: mip_source is a view of one
+    // level, and a view whose base level is above 0 can report its parent's level-0 size on GPUs before Apple9
+    // (M1, M2), so the levels from 2 on would sample a corner of the level above. It is the value
+    // max(textureSize(mip_source, 0) / 2, 1) gives where the view reports its own size, so the levels are the same.
     const std::string fragment = "#version 400\n"
                                  "uniform sampler2D mip_source;\n"
+                                 "uniform vec2 mip_size;\n"
                                  "out vec4 frag_color;\n"
                                  "void main()\n"
                                  "{\n"
-                                 "    vec2 size = vec2(max(textureSize(mip_source, 0) / 2, ivec2(1)));\n"
-                                 "    frag_color = texture(mip_source, gl_FragCoord.xy / size);\n"
+                                 "    frag_color = texture(mip_source, gl_FragCoord.xy / mip_size);\n"
                                  "}\n";
     desc.stages = { { ShaderStage::Vertex, { vertex } }, { ShaderStage::Fragment, { fragment } } };
     return desc;
@@ -1988,7 +1992,8 @@ void MetalDevice::submit()
         [mQueue waitForDrawable:drawable];
         mSurface->countDrawableWait();
     }
-    [mQueue commit:&buffer count:1 options:options];
+    // Under the residency mutex: API validation checks the commit against the set (MetalResidency::commitToQueue).
+    mResidency.commitToQueue(mQueue, buffer, options);
     if (mPassTimes.timed(frame))
     {
         mPassTimes.countSubmit();
@@ -2037,13 +2042,12 @@ void MetalDevice::splitBeforeEncoder(NSString* name)
 
 void MetalDevice::sendBeforeScaler()
 {
-    // MetalFX's Metal 4 scalers recorded after other work in the same command buffer: after the frame had stood
-    // for a few seconds (an open or save panel shows: bulk upload, model upload), that command buffer ran until the
-    // queue's watchdog stopped it, the next frame's did the same, and the device was lost, about 12 s after the
-    // panel closed. At the start of a command buffer, the work before it sent in the one before, the temporal scaler
-    // runs as in any other frame (run-time probes on an M4 Max, the frame stood 15 s: a submit after the scaler alone
-    // still hung, one before it did not). The spatial scaler is sent the same way. One more submit in a frame MetalFX
-    // scales.
+    // MetalFX's Metal 4 scalers begin a command buffer of their own; the work recorded before them goes in the one
+    // before. After the frame has stood (an open or save panel shows), a stall on the GPU set off by the present
+    // queue (METAL_PRESENT_GAP_NS) ran a scaler recorded after other work in the same command buffer into the
+    // queue's watchdog, and the device was lost; at the start of a command buffer it runs as in any other frame, so
+    // this submit stays as a second guard. The spatial scaler is sent the same way. One more submit in a frame
+    // MetalFX scales.
     if (mCommandBuffer)
     {
         endCopies();

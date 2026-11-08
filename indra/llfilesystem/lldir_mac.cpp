@@ -144,7 +144,8 @@ LLDir_Mac::LLDir_Mac()
             //CreateDirectory(mOSCacheDir, secondLifeString, NULL);
             std::string FSCacheDirName = secondLifeString;
             // This was lifted from Cinder's fix for FIRE-8226.
-#ifdef OPENSIM
+            // <Luminous> One cache folder: the same Luminous serves Second Life and OpenSim grids.
+#if 0 // OPENSIM
   #if ADDRESS_SIZE == 64
                 FSCacheDirName.append("OS_x64");
   #else

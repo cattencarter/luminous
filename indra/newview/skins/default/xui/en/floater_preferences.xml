@@ -207,7 +207,7 @@
         <panel
          class="panel_preference_opensim"
          filename="panel_preferences_opensim.xml"
-         label="Opensim"
+         label="OpenSim"
          layout="topleft"
          help_topic="preferences_opensim_tab"
          name="opensim" />

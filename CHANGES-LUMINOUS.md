@@ -58,9 +58,10 @@ simple.
 | `indra/newview/llagentcamera.cpp` | the camera orbits round the avatar without turning her (`LuminousOrbitTurnsAvatar` brings the old way back) |
 | `indra/newview/app_settings/settings.xml` | `FSTurnAvatarToSelectedObject` off by default; the Avatar Welcome Pack no longer opens by itself on the first login (`llstartup.cpp`, `llviewerwindow.cpp`) |
 | `indra/newview/skins/default/toolbars.xml`, `xui/en/*` | default toolbar and wording changes |
-| `indra/newview/luminousoptimise.{h,cpp}`, `llappviewer.cpp`, `floater_luminous_optimise.xml` | at the very first start, settings for the Mac: the graphics level from the chip's graphics cores and the backend (upstream starts every Apple GPU at Mid-High, without shadows, transparent water or ambient occlusion), SMAA, and on a Retina display a smaller live view (never MetalFX upscaling); and an Optimise window that measures where the user stands and proposes the fewest changes. On Metal with MetalFX upscaling off it measures that first, at Preview resolution Half: where it reaches the aim it is proposed alone, where it helps but does not the effects are measured with it on, and where it does not help it is left out |
+| `indra/newview/luminousoptimise.{h,cpp}`, `llappviewer.cpp`, `floater_luminous_optimise.xml` | at the very first start, settings for the Mac: the graphics level from the chip's graphics cores and the backend (upstream starts every Apple GPU at Mid-High, without shadows, transparent water or ambient occlusion), SMAA, and the live view at Standard, one pixel per point, or smaller where the chip draws fewer pixels well (never MetalFX upscaling); and an Optimise window that measures where the user stands and proposes the fewest changes. On Metal with MetalFX upscaling off, where Preview resolution Half would draw fewer pixels than the live view does, it measures that first, at Half: where it reaches the aim it is proposed alone, where it helps but does not the effects are measured with it on, and where it does not help it is left out. With FXAA it proposes SMAA, with Preview resolution three quarters only where the live view is drawn larger than that |
 | `indra/newview/featuretable_mac.txt` | no graphics level chooses FXAA, which keeps the live view at full size; SMAA instead |
 | `indra/newview/luminousfloater.{h,cpp}`, `skins/default/xui/en/menu_viewer.xml`, `panel_preferences_graphics1.xml`, `app_settings/settings.xml` | the sidebar can be switched off under World > Photo and Video (Luminous Sidebar); Preferences > Graphics has a Luminous tab with the costlier effects, each Off, On or Only in renders, on the same settings as the sidebar's buttons |
+| `indra/llui/llslider.{h,cpp}`, `llsliderctrl.h`, `indra/newview/luminousfloater.{h,cpp}` | Luminous's sliders: one that runs both ways about 0 (exposure, white balance, tint, split tone, distortion, clarity and the like) catches at 0 when a drag crosses it (and holds there until pulled a few pixels away; a drag from one side gives the values next to 0), the Look's contrast and saturation at 1; a double click (or Cmd-click) on any of them puts that one slider back to its default; Firestorm's own sliders are unchanged |
 
 ## Photo rendering
 
@@ -88,7 +89,7 @@ its own, the live view shows that in their place.
 | `.../luminousVignetteF.glsl`, `luminousDistortionF.glsl`, `luminousChromaticAberrationF.glsl`, `luminousClarityF.glsl` | vignette, barrel or pincushion distortion, chromatic aberration and clarity (local contrast), before tonemapping; `cofF.glsl` reads the depth where the distortion took each pixel from |
 | `.../luminousDepthOfFieldF.glsl`, `luminousDoFTileF.glsl`, `class1/deferred/cofF.glsl` | depth of field as a lens blurs ("Enhance"): the upstream focus and lens settings, gathered at full resolution in HDR before tonemapping, so bright points open into discs (shaped by aperture blades) and the background never spreads onto what is in focus; after Dennis Gustafsson's "Bokeh depth of field in a single pass". A better depth of field is Black Dragon's idea |
 | `indra/newview/lldrawpoolalpha.{h,cpp}`, `class2/deferred/alphaF.glsl`, `pbralphaF.glsl`, `class1/deferred/fullbrightF.glsl`, `class3/deferred/materialF.glsl` | worn alpha (hair, fur) in a render sorted pixel by pixel across the render's frames; worn rigged alpha writes its depth only where it covers |
-| `class1/deferred/postDeferredNoDoFF.glsl` | the live view can render at three quarters or half the window's size, scaled up with Catmull-Rom; renders are always at full size |
+| `class1/deferred/postDeferredNoDoFF.glsl`, `luminousphotomode.{h,cpp}`, `pipeline.cpp`, `panel_preferences_graphics1.xml`, `llfloaterpreference.{h,cpp}` | the 3D view renders at one pixel per point as Luminous ships (Preview resolution Standard: half each way on a Retina screen, full on a 1x screen, following the screen the window is on), or at full, three quarters or half the window's size, scaled up with Catmull-Rom while the interface stays sharp; renders are always at full size. Preview resolution is in the Luminous sidebar and in Preferences > Graphics > Hardware Settings |
 | `indra/newview/lldrawpoolwater.cpp` | the water exclusion mask is not drawn when nothing excludes water (white is read in its place) |
 | `indra/newview/luminousbenchmark.{h,cpp}` | a frame-time benchmark, run from a script |
 
@@ -112,20 +113,24 @@ is on OpenGL.
 | `indra/newview/llappviewer.{h,cpp}`, `llstartup.cpp`, `llfeaturemanager.{h,cpp}`, `llfloaterpreference.{h,cpp}`, `skins/default/xui/en/panel_preferences_graphics1.xml`, `notifications.xml`, `strings.xml`, `app_settings/settings.xml`, `cmd_line.xml` | choosing the backend (Preferences > Graphics, "Graphics backend"; `--backend` for one start); the start on OpenGL after a Metal session that did not end normally; Help > About names the backend |
 | `indra/third_party/glslang/`, `indra/third_party/spirv-cross/`, `indra/cmake/Glslang.cmake`, `SPIRVCross.cmake`, `Metal.cmake` | the Khronos Group's glslang and SPIRV-Cross, which translate the GLSL shaders for Metal, built from source; their licences are beside them |
 | `indra/llrender/tests/`, `indra/newview/llgoldentest.{h,cpp}`, `llgoldenwait.{h,cpp}`, `luminous/scripts/msl-check*` | tests of the layer, and a picture test of the whole viewer that runs only when asked for |
+| `indra/llrender/llrhimetal-objc.h`, `llrhimetalbinding-objc.mm`, `llrhimetaldevice-objc.mm`, `llrhimetalencoder-objc.mm` | mipmaps on M1 and M2 are drawn with the smoother filter again, as on newer chips: the mip program takes each level's size as a value instead of asking the view of the level above, which on those chips answers with the whole texture's size; `LL_METAL_MIPS` still chooses another way for a test |
 
 ## Renders
 
 | Where | Change |
 |---|---|
-| `indra/newview/luminoushdrsnapshot.{h,cpp}`, `pipeline.cpp`, `llviewerwindow.cpp`, `.../luminousAverageF.glsl` | renders at the window's size or twice it, in PNG, JPEG, BMP, 16-bit TIFF or OpenEXR (half float, scene-linear); Luminous's own TIFF and EXR writers, no library. 16 frames by default, each shifted by a fraction of a pixel (Halton 2,3), looking through another point of the lens and with the sun moved across its disc, averaged as light before tonemapping. A margin round the picture for the effects that look past its edges. Full detail loads textures and meshes at full detail for what the picture shows. The size and shadow maps are chosen to fit the memory there is, with a note on the picture when they are smaller |
+| `indra/newview/luminoushdrsnapshot.{h,cpp}`, `pipeline.cpp`, `llviewerwindow.cpp`, `.../luminousAverageF.glsl` | renders at the window's size, twice it or a custom size, in PNG, JPEG, BMP, 16-bit TIFF or OpenEXR (half float, scene-linear); Luminous's own TIFF and EXR writers, no library. 16 frames by default, each shifted by a fraction of a pixel (Halton 2,3), looking through another point of the lens and with the sun moved across its disc, averaged as light before tonemapping. A margin round the picture for the effects that look past its edges. Full detail loads textures and meshes at full detail for what the picture shows. The size and shadow maps are chosen to fit the memory there is, with a note on the picture when they are smaller |
 | `indra/newview/llviewercamera.cpp` | the frames' sub-pixel and lens offsets |
 | `indra/newview/luminousfloater.{h,cpp}`, `skins/default/xui/en/floater_luminous_picture.xml`, `floater_luminous_render.xml`, `llsnapshotlivepreview.{h,cpp}`, `llwebprofile.h`, `llfloaterflickr.cpp` | the render over the viewer: a still with progress and Stop, then the picture with Share (Download, Open in Preview, and sending on to inventory, the profile feed, Flickr or email) and Close |
-| `indra/llwindow/llwindow.h`, `llwindowmacosx*.{h,cpp,mm}` | Stop and Esc reach a render that holds up the main loop; file panels answer at once while they are open (`llfilepicker*`) |
+| `indra/llwindow/llwindow.h`, `llwindowmacosx*.{h,cpp,mm}` | Stop and Esc reach a render that holds up the main loop; file panels answer at once while they are open (`llfilepicker*`); the viewer's focus is set to macOS's app activity twice a second, so a change missed while a render held the main loop does not leave it at the background's frame rate |
 | `indra/llrender/llimagegl.{h,cpp}`, `pipeline.cpp`, `llviewerwindow.cpp` | what a render gives back is deleted between its frames, not after the render, and the HDR frame is kept between frames |
 | `indra/newview/llviewertexture.cpp`, `llviewertexturelist.cpp` | Full detail's textures, for what the picture shows |
 | `indra/llcharacter/llheadrotmotion.{h,cpp}` | the eyes are held still while a render takes |
 | `indra/newview/llvoavatar.cpp`, `llviewerpartsim.cpp`, `lldrawpoolwlsky.cpp`, `llenvironment.cpp` | Pause scene: Linden Lab's freeze frame, plus avatars, animations, particles, the day, clouds, waves and stars held; the camera still moves |
 | `indra/newview/luminousphotomode.cpp` | saved camera positions with their depth of field, per account; animation speed down to 0 |
+| `indra/newview/llfilepicker.{h,cpp}`, `llfilepicker_mac.mm`, `luminousfloater.cpp`, `luminoushdrsnapshot.cpp` | a render's Download, and its save panel, ask in the render's own file type (PNG, JPEG, BMP, TIFF, EXR), so macOS no longer asks for a name ending in "." |
+| `indra/newview/luminoushdrsnapshot.{h,cpp}`, `luminousfloater.cpp`, `skins/default/xui/en/floater_luminous.xml` | a custom render size beside Window size and Double: a width and height in pixels, up to the GPU's largest texture (16384) a side, the other side following the chosen shape or both free with the Free shape, fitted to memory as Double is, with what it needs shown before the render; a picture over 256 MB is cut, shown and sent on without a full-size copy, one too large to show can still be downloaded, and a size that can never fit on the Mac does not keep textures out of view lowered |
+| `indra/newview/luminousfloater.cpp`, `luminoushdrsnapshot.{h,cpp}`, `floater_luminous_picture.xml`, `settings_per_account.xml`, `llstartup.cpp` | a render's Download asks for a folder and a name once, then saves at once as <name>_001, _002... in that folder; the picture says for a few seconds, over Share and Close, what was saved (or could not be), never over a file there; Save as... asks again; renders to disk use the same name and numbering once one is chosen; the name is kept per account (`LuminousRenderName`) |
 
 ## Styles, environments and presets
 
@@ -135,6 +140,7 @@ is on OpenGL.
 | `indra/newview/app_settings/luminous_environments/` | ten skies made for photographing people, some mixed by the sun's height |
 | `indra/newview/luminousphotomode.cpp`, `llenvironment.cpp` | the Scene tab's sky and sun as Personal Lighting sets them, the user's own PBR skies listed too; moving the sun keeps the reflection probes |
 | `indra/newview/luminousphotomode.cpp`, `luminousfloater.cpp` | presets: every setting of the Scene, Tone, Colour and Effects tabs, and the sky and sun, saved by name in `user_settings/luminous_presets` |
+| `indra/newview/llpresetsmanager.cpp`, `app_settings/graphic_preset_controls.xml` | graphics presets save what Preferences > Graphics shows, the Luminous tab's Off / On / Only in renders and Preview resolution and MetalFX upscaling included, and no longer the photo effects the sidebar sets (depth of field's f-number and lens, glow, exposure, tone mapping, sharpening, vignette, attached lights, the legacy-sky switch); loading an older preset leaves those as they are |
 
 ## Inventory and the LSL bridge
 
@@ -153,9 +159,27 @@ What Luminous adds that talks to the network, besides Second Life itself:
 | Where | Change |
 |---|---|
 | `indra/newview/luminousbugreport.{h,cpp}`, `luminousbugreportkey.h.in`, `skins/default/xui/en/floater_luminous_bug_report.xml` | Help > Report a Bug sends one report to needfulsl.com when Send is clicked: the text written, optionally the log and a picture, and the viewer's version, macOS and the avatar's name and region |
-| `indra/newview/luminousupdatecheck.{h,cpp}` | once a session, at the login screen, one request for needfulsl.com's `version.json`; a newer version gives a notice once a day |
+| `indra/newview/luminousupdatecheck.{h,cpp}` | once a session, at the login screen, one request for needfulsl.com's `version.json`; a newer version gives a notice once a day; a pre-release viewer is also told of a newer pre-release (the file's `prerelease`), a viewer on the release never |
 | `indra/newview/llfloaterflickr.cpp`, `indra/newview/CMakeLists.txt` | Flickr with Luminous's own app key, read from a private file at configure time; only when the user signs in and sends |
 | `indra/newview/fsfloaterprimfeed.cpp`, `fsprimfeedconnect.cpp`, `xui/en/*` | Primfeed hidden for now |
+| `indra/newview/fsgridhandler.{h,cpp}` (upstream's), `llloginhandler.cpp`, `llstartup.cpp`, `app_settings/settings.xml` | a grid's `get_grid_info` is fetched from that grid only when the user names one Luminous does not know (Preferences > OpenSim, the login screen's grid row, `--grid`); no grid list is downloaded (`GridListDownload` off). A link (`secondlife:///app/login`, `hop://`, a start location) selects only a grid already in the list, and adding a grid by link (`gridmanager/addgrid`) takes a click in the viewer. Second Life's grids are told by their exact host (`lindenlab.com` or a name under it), not by a name that contains it |
+
+## OpenSim
+
+One Luminous serves Second Life and OpenSim grids: upstream's OpenSim support
+is built in, and a Second Life session is as it was without it.
+
+| Where | Change |
+|---|---|
+| `indra/CMakeLists.txt`, `autobuild.xml` | upstream's OpenSim support (`OPENSIM`) on by default and in macOS's ReleaseOS configuration |
+| `indra/cmake/ViewerMiscLibs.cmake`, `Copy3rdPartyLibs.cmake`, `indra/newview/CMakeLists.txt`, `viewer_manifest.py`, `fs_viewer_manifest.py` | Vivox's voice client (SLVoice) is not included: a separate option, `LUMINOUS_VIVOX`, off; the app keeps its name, without upstream's "OS" tag |
+| `indra/llfilesystem/lldir.cpp`, `lldir_mac.cpp` | one cache folder for both, as before (`Luminous_x64`) |
+| `indra/newview/app_settings/grids.xml` | Second Life's grids only, with Linden Lab's own grid ids (and `grid_login_id`, from which Second Life's voice names Linden's STUN servers), SLURL bases and web profiles, as the viewer had them without OpenSim support; OpenSim grids are the user's own (`grids.user.xml`) |
+| `indra/newview/fspanellogin.{h,cpp}`, `skins/default/xui/en/panel_fs_nui_login.xml`, `panel_fs_login.xml`, `app_settings/settings.xml` | the login screen: no grid row for a Second Life user (`FSOpenSimAlwaysForceShowGrid` off); "Other grids" shows it; it shows by itself when the chosen grid is not Second Life's; its "Add a grid" opens Preferences > OpenSim, the grid manager, not a web page |
+| `indra/newview/llvoiceclient.cpp`, `skins/default/xui/en/notifications.xml` | voice: Vivox never runs in Second Life; without its client, a grid whose voice is Vivox has none, said once a session (`LuminousNoVivoxVoice`), and the voice of the region before stops there |
+| `indra/newview/llvoavatar.cpp` | in Second Life avatars always count all eleven bakes |
+| `indra/newview/llviewermessage.cpp`, `luminousphotomode.{h,cpp}` | OpenSim's "Setting updated" for each environment Luminous puts in `#Luminous/#Environments` is not shown in chat |
+| `indra/newview/skins/default/xui/en/floater_preferences.xml`, `panel_preferences_opensim.xml` | the tab is named OpenSim |
 
 ## Build
 
@@ -174,7 +198,7 @@ What Luminous adds that talks to the network, besides Second Life itself:
 |---|---|
 | `indra/newview/llviewerwindow.cpp` | a saved snapshot keeps its post-processing: Linden Lab's L$-balance change passed the balance flag where "no post-processing" belongs |
 | `indra/newview/pipeline.cpp` | the upstream vignette and snapshot frame no longer read and write the same buffer, which they did with depth of field on and anti-aliasing off |
-| `indra/newview/llvoicewebrtc.{h,cpp}`, `llappviewer.cpp` | a quit no longer hangs when voice's audio devices are locked; a quit that hangs anyway ends after 45 seconds |
+| `indra/newview/llvoicewebrtc.{h,cpp}`, `llappviewer.cpp` | a quit no longer hangs when voice's audio devices are locked; a quit that hangs anyway ends after 45 seconds, and a Metal session that ended its main loop normally first is marked ended, so the next start stays on Metal instead of falling back to OpenGL |
 | `indra/newview/llappviewer.cpp` | no crash at exit after a disconnect and a camera reset |
 | `indra/newview/llenvironment.cpp` | no crash showing the region's sky before the region has sent one |
 | `indra/newview/skins/default/html/en-us/lumen/login.html` | the start page repaints after the window is resized |
@@ -184,11 +208,17 @@ What Luminous adds that talks to the network, besides Second Life itself:
 | `app_settings/shaders/class3/deferred/reflectionProbeF.glsl`, `indra/newview/llviewershadermgr.cpp`, `llviewercontrol.cpp` | a legacy surface that reads no reflection probe (a classic sky, no glossiness, no environment intensity) skips the search for the probes round it; the picture is the same |
 | `indra/llimage/llimagepng.cpp` | room in PNG's encoding buffer for a picture that hardly compresses |
 | `indra/newview/luminousenvironmentlistener.cpp` | an event API for the personal environment's sun, sky and water, of the same kind as Linden Lab's own, for test scripts started with `--leap`; values out of Linden Lab's ranges are refused |
+| `indra/newview/llfilepicker.cpp`, `llfilepicker_mac.mm` | on macOS a save panel for any type no longer asks for a name ending in "."; a JPEG save panel keeps a .jpg name instead of making it .jpg.jpeg |
+| `indra/newview/llfilepicker_mac.mm` | a macOS save panel given a full path opens in its folder with the file's name, and a proposed name with letters beyond ASCII keeps them |
+| `indra/newview/llvoavatar.{h,cpp}`, `app_settings/settings.xml` | avatars near Max. # animated avatars no longer flicker between impostor and full: one drawn in full keeps its place until another covers 1.5 times its size on screen (`LuminousImpostorHysteresis`), a change waits until the ranking has asked for it for a second (`LuminousImpostorHoldSeconds`), and an impostor that goes out of view comes back as one (while its impostor is complete); `LuminousImpostorLog` logs each avatar's changes and render time |
 
 ## Other fixes
 
 | Where | Change |
 |---|---|
 | `indra/newview/llviewermedia_streamingaudio.{h,cpp}` | streaming music reports why it failed and survives a wrong URL scheme |
+| `indra/media_plugins/libvlc/media_plugin_libvlc.cpp`, `indra/newview/llviewermedia_streamingaudio.{h,cpp}` | a music stream's "now playing" reaches the toasts, nearby chat and the Stream Title window as the FMOD viewers show it: an internet radio's ICY title, or the artist and title an Ogg stream carries; a stream without one stays quiet; the title is kept through a reconnect and cleared when the stream stops, changes or gives up (the upstream VLC plugin reported a title only on VLC's title-change event, which a radio never sends) |
 | `indra/llwebrtc/*` | the microphone is prepared only when the app starts recording, not when webrtc.lib connects a stream, so macOS does not ask for it before anybody speaks |
 | `indra/llrender/llrhimetaldevice-objc.mm`, `llrhimetalencoder-objc.mm`, `llrhimetalsurface-objc.mm`, `llrhimetal-objc.h`, `indra/newview/llappviewer.cpp`, `app_settings/settings.xml` | with MetalFX upscaling, an open or save panel (bulk upload, model upload) no longer stops the graphics processor: after the frame had stood while the panel showed, the scaler's command buffer ran until the watchdog ended it and the device was lost; MetalFX's work now begins a command buffer of its own. A GPU error's line says what the command buffer waited for and when the GPU began it, the VSync-off present reports its own errors, `LL_METAL_SPLIT_PASSES=1` sends each encoder in its own command buffer to name a pass that hangs, and the developer settings LuminousTestPauseDisplay and LuminousTestStallMainThread stand the frame or the main thread for a test |
+| `indra/llrender/llrhimetalsurface-objc.mm`, `llrhimetal-objc.h`, `llrhimetal.h`, `llrhimetaldevice-objc.mm` | with VSync off, the picture no longer freezes for about 4 s after an open or save panel (Download, upload, bulk upload), and with MetalFX upscaling on the viewer no longer closes afterwards ("The graphics processor stopped responding"): after a pause of over 250 ms in presenting, the first frames go to the screen once the graphics processor has finished them; MetalFX's command buffer of its own (the row above) stays |
+| `indra/newview/luminousmetaltone.cpp`, `app_settings/shaders/metal/luminous/tone/temporal.metal`, `toneshared.h`, `programs.json` | with MetalFX upscaling, a paused, still scene no longer runs slower than a moving one: the check that keeps the held picture steady compares the frames in two passes and takes well under a millisecond of the graphics processor instead of several |

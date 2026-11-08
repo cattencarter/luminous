@@ -41,6 +41,10 @@ class FSViewerManifest:
 
     def fs_is_opensim(self):
         return self.args['viewer_flavor'] == 'oss' #Havok would be hvk
+    # <Luminous> Vivox's voice client is shipped only when the build asks for it.
+    def luminous_ships_vivox(self):
+        return self.fs_is_opensim() and self.args.get('vivox', 'OFF') == 'ON'
+    # </Luminous>
     def fs_is_avx2(self):
         return self.args['avx2'] == 'ON' 
 

@@ -156,6 +156,68 @@ void LLSlider::setValueAndCommit(F32 value)
     }
 }
 
+// <Luminous>
+void LLSlider::setDetent(F32 value, S32 pixels)
+{
+    mDetentValue = value;
+    mDetentPixels = llmax(pixels, 0);
+}
+
+void LLSlider::setResetValue(F32 value)
+{
+    mHasResetValue = true;
+    mResetValue = value;
+}
+
+bool LLSlider::resetValue()
+{
+    if (!mHasResetValue)
+    {
+        return false;
+    }
+    // A bound control's value the slider cannot show goes to the control as
+    // it is; the slider follows the control, shown at the nearer end.
+    if ((mResetValue < mMinValue || mResetValue > mMaxValue) && setControlValue(mResetValue))
+    {
+        return true;
+    }
+    commitExactValue(mResetValue);
+    return true;
+}
+
+void LLSlider::commitExactValue(F32 value)
+{
+    value = llclamp(value, mMinValue, mMaxValue);
+    if (getValueF32() == value)
+    {
+        return;
+    }
+    // As setValue does, without rounding to the increment: a reset gives
+    // the setting its default's own value, a detent its value exactly.
+    setControlValue(value);
+    LLF32UICtrl::setValue(value);
+    updateThumbRect();
+    onCommit();
+}
+
+void LLSlider::dragTo(S32 pos, S32 low_edge, S32 high_edge)
+{
+    if (mDetentPixels > 0 && high_edge > low_edge && mDetentValue >= mMinValue && mDetentValue <= mMaxValue)
+    {
+        // where updateThumbRect draws the thumb at the detent's value
+        const F32 detent_t = (mDetentValue - mMinValue) / (mMaxValue - mMinValue);
+        const S32 detent_pos = low_edge + S32(detent_t * (high_edge - low_edge));
+        if (detentHolds(pos - detent_pos, mDetentPixels, mDetentSide, mDetentHeld))
+        {
+            commitExactValue(mDetentValue);
+            return;
+        }
+    }
+    F32 t = F32(pos - low_edge) / (high_edge - low_edge);
+    setValueAndCommit(t * (mMaxValue - mMinValue) + mMinValue );
+}
+// </Luminous>
+
 
 bool LLSlider::handleHover(S32 x, S32 y, MASK mask)
 {
@@ -170,8 +232,7 @@ bool LLSlider::handleHover(S32 x, S32 y, MASK mask)
             x += mMouseOffset;
             x = llclamp( x, left_edge, right_edge );
 
-            F32 t = F32(x - left_edge) / (right_edge - left_edge);
-            setValueAndCommit(t * (mMaxValue - mMinValue) + mMinValue );
+            dragTo(x, left_edge, right_edge); // <Luminous/> with the detent, if any
         }
         else // mOrientation == VERTICAL
         {
@@ -182,8 +243,7 @@ bool LLSlider::handleHover(S32 x, S32 y, MASK mask)
             y += mMouseOffset;
             y = llclamp(y, top_edge, bottom_edge);
 
-            F32 t = F32(y - top_edge) / (bottom_edge - top_edge);
-            setValueAndCommit(t * (mMaxValue - mMinValue) + mMinValue );
+            dragTo(y, top_edge, bottom_edge); // <Luminous/> with the detent, if any
         }
         getWindow()->setCursor(UI_CURSOR_ARROW);
         LL_DEBUGS("UserInput") << "hover handled by " << getName() << " (active)" << LL_ENDL;
@@ -230,7 +290,12 @@ bool LLSlider::handleMouseDown(S32 x, S32 y, MASK mask)
 
     if (MASK_CONTROL & mask) // if CTRL is modifying
     {
-        setValueAndCommit(mInitialValue);
+        // <Luminous> the reset value, as a double click, where one is set
+        if (!resetValue())
+        {
+            setValueAndCommit(mInitialValue);
+        }
+        // </Luminous>
     }
     else
     {
@@ -250,11 +315,29 @@ bool LLSlider::handleMouseDown(S32 x, S32 y, MASK mask)
         // No handler needed for focus lost since this class has no state that depends on it.
         gFocusMgr.setMouseCapture( this );
         mDragStartThumbRect = mThumbRect;
+        // <Luminous> the drag begins on the value's side of the detent, not held
+        const F32 value = getValueF32();
+        mDetentSide = (value > mDetentValue) - (value < mDetentValue);
+        mDetentHeld = false;
+        // </Luminous>
     }
     make_ui_sound("UISndClick");
 
     return true;
 }
+
+// <Luminous> Unhandled, the window takes a double click as a second click,
+// which starts a drag.
+bool LLSlider::handleDoubleClick(S32 x, S32 y, MASK mask)
+{
+    if (resetValue())
+    {
+        make_ui_sound("UISndClick");
+        return true;
+    }
+    return LLF32UICtrl::handleDoubleClick(x, y, mask);
+}
+// </Luminous>
 
 bool LLSlider::handleKeyHere(KEY key, MASK mask)
 {

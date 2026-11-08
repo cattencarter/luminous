@@ -264,8 +264,10 @@ the frames averaged, in the shape and size the Render tab is set to.
 
 | Setting | |
 |---|---|
-| `LuminousSnapshotAspect`, `LuminousSnapshotPortrait` | The shape: 0 the window's, 1 square, 2 5:4, 3 4:3, 4 3:2, 5 16:9, 6 21:9; standing when Portrait is true. |
-| `LuminousSnapshotScale` | 1 the window's size, 2 double. |
+| `LuminousSnapshotAspect`, `LuminousSnapshotPortrait` | The shape: 0 the window's, 1 square, 2 5:4, 3 4:3, 4 3:2, 5 16:9, 6 21:9, 7 Free (the shape of Width by Height); standing when Portrait is true. |
+| `LuminousSnapshotScale` | 1 the window's size, 2 double, 0 Custom. |
+| `LuminousSnapshotLongSide` | Custom's longer side in pixels, the other following the shape; 256 up to the GPU's largest texture (16384 on Apple silicon). |
+| `LuminousSnapshotWidth`, `LuminousSnapshotHeight` | Free's width and height in pixels: Custom's size with Free, and Free's shape at the other sizes; 64 up to the GPU's largest texture, neither more than 20 times the other. Set the shape (7) first: choosing Free sets them from the size before it. |
 | `LuminousSnapshotFormat` | 0 PNG, 1 16-bit TIFF, 2 OpenEXR, 3 JPEG, 4 BMP. |
 | `LuminousSnapshotFrames` | Frames averaged in a render. |
 

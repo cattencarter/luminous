@@ -43,26 +43,6 @@
 
 namespace
 {
-    // "1.2.3" as numbers; a part that is not a number counts as 0
-    std::vector<S32> versionParts(const std::string& version)
-    {
-        std::vector<S32> parts;
-        std::string part;
-        for (char c : version + ".")
-        {
-            if (c == '.')
-            {
-                parts.push_back(part.empty() ? 0 : atoi(part.c_str()));
-                part.clear();
-            }
-            else if (isdigit((unsigned char)c))
-            {
-                part += c;
-            }
-        }
-        return parts;
-    }
-
     // Today on the Mac's own calendar, as "YYYY-MM-DD"
     std::string today()
     {
@@ -100,17 +80,25 @@ namespace
         boost::system::error_code ec;
         boost::json::value json = boost::json::parse(answer, ec);
         const LLSD newest = ec ? LLSD() : LlsdFromJson(json);
-        const std::string version = newest["version"].asString();
-        if (version.empty())
+        const std::string release = newest["version"].asString();
+        if (release.empty())
         {
             LL_WARNS("LuminousUpdate") << "The answer names no version" << LL_ENDL;
             return;
         }
-        if (!LuminousUpdateCheck::isNewer(version, LUMEN_VERSION))
+        const LLSD pre = newest["prerelease"];
+        const std::string pre_version = pre.isMap() ? pre["version"].asString() : std::string();
+        const LuminousUpdateCheck::Offer offer = LuminousUpdateCheck::offerFor(LUMEN_VERSION, release, pre_version);
+        if (offer == LuminousUpdateCheck::Offer::None)
         {
-            LL_INFOS("LuminousUpdate") << "Up to date: " << LUMEN_VERSION << ", the newest " << version << LL_ENDL;
+            LL_INFOS("LuminousUpdate") << "Up to date: " << LUMEN_VERSION << ", the newest " << release
+                                       << (pre_version.empty() ? std::string() : ", the newest pre-release " + pre_version) << LL_ENDL;
             return;
         }
+        // The version told of, with its own link and notes
+        const bool prerelease = offer == LuminousUpdateCheck::Offer::Prerelease;
+        const LLSD offered = prerelease ? pre : newest;
+        const std::string version = prerelease ? pre_version : release;
         // Once a day while this one is older, whichever button -- Download
         // too, so the message still comes the next day to a viewer that was
         // not updated; a newer version at once.
@@ -121,23 +109,24 @@ namespace
             return;
         }
         // Only a web page of https, in the browser, when Download is clicked
-        std::string link = newest["url"].asString();
+        std::string link = offered["url"].asString();
         if (link.rfind("https://", 0) != 0)
         {
             link = "https://needfulsl.com/luminous/";
         }
-        std::string notes = newest["notes"].asString();
+        std::string notes = offered["notes"].asString();
         LLStringUtil::trim(notes);
         if (notes.size() > 600)
         {
             notes = notes.substr(0, 600) + "...";
         }
-        std::string message = "Luminous " + version + " is out (this is " + LUMEN_VERSION + ").";
+        std::string message = "Luminous " + version + (prerelease ? " is out as a pre-release" : " is out")
+                              + " (this is " + LUMEN_VERSION + ").";
         if (!notes.empty())
         {
             message += "\n\n" + notes;
         }
-        LL_INFOS("LuminousUpdate") << "Luminous " << version << " is out: telling" << LL_ENDL;
+        LL_INFOS("LuminousUpdate") << "Luminous " << version << (prerelease ? " (pre-release)" : "") << " is out: telling" << LL_ENDL;
         gSavedSettings.setString("LuminousUpdateSeen", version);
         gSavedSettings.setString("LuminousUpdateToldDay", today());
         LLNotificationsUtil::add("LuminousUpdateAvailable", LLSD().with("MESSAGE", message), LLSD(),
@@ -157,16 +146,6 @@ namespace
 
 namespace LuminousUpdateCheck
 {
-    bool isNewer(const std::string& offered, const std::string& own)
-    {
-        std::vector<S32> a = versionParts(offered);
-        std::vector<S32> b = versionParts(own);
-        const size_t n = llmax(a.size(), b.size());
-        a.resize(n, 0);
-        b.resize(n, 0);
-        return a > b;
-    }
-
     void check()
     {
         static bool asked = false;

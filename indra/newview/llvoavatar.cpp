@@ -834,6 +834,14 @@ LLVOAvatar::LLVOAvatar(const LLUUID& id,
 S32 LLVOAvatar::getNumBakes() const
 {
 #ifdef OPENSIM
+    // <Luminous> Second Life always has Bakes on Mesh: all bakes, also in the
+    // moments after a login, teleport or crossing before the region's
+    // features have arrived.
+    if (LLGridManager::instance().isInSecondLife())
+    {
+        return BAKED_NUM_INDICES;
+    }
+    // </Luminous>
     // BAKED_LEFT_ARM is equal to the pre-BOM BAKED_NUM_INDICES
     if(getRegion())
     {
@@ -5258,6 +5266,7 @@ void LLVOAvatar::computeUpdatePeriod()
         && (sLimitNonImpostors || visually_muted || slow) // <FS:Beq/> imposter slow avatars irrespective of nonimposter setting.
         && !mNeedsAnimUpdate)
     {
+        mImpostorOutOfView = false; // <Luminous/>
         const LLVector4a* ext = mDrawable->getSpatialExtents();
         LLVector4a size;
         size.setSub(ext[1], ext[0]);
@@ -5274,7 +5283,7 @@ void LLVOAvatar::computeUpdatePeriod()
         {   // visually muted avatars update at lowest rate
             mUpdatePeriod = UPDATE_RATE_SLOW;
         }
-        else if (!shouldImpostor()
+        else if (!shouldImpostorHeld() // <Luminous/> was shouldImpostor()
             || mDrawable->mDistanceWRTCamera < 1.f + mag)
         {   // first 25% of max visible avatars are not impostored
             // also, don't impostor avatars whose bounding box may be penetrating the
@@ -5302,6 +5311,16 @@ void LLVOAvatar::computeUpdatePeriod()
     }
     else
     {
+        // <Luminous> With the impostor hold on, an impostor that is only out of view stays one (isImpostor) until an
+        // update in view decides again. Otherwise, updated as a full avatar while out of view, it is drawn in full on
+        // the frame it comes back into view and as an impostor after: a flash at every return, many a second for an
+        // avatar half hidden behind others. A mirror, drawn before the main cull, shows such an avatar as the
+        // impostor it had when it left the main view.
+        static LLCachedControl<F32> hold_seconds(gSavedSettings, "LuminousImpostorHoldSeconds", 1.f);
+        const bool only_out_of_view = mDrawable.notNull() && (!isSelf() || visually_muted) && !isUIAvatar()
+            && (sLimitNonImpostors || visually_muted || slow) && !mNeedsAnimUpdate;
+        mImpostorOutOfView = only_out_of_view && hold_seconds > 0.f && (mImpostorOutOfView || mUpdatePeriod > 1);
+        // </Luminous>
         mUpdatePeriod = 1;
     }
 }
@@ -12007,10 +12026,24 @@ S32 LLVOAvatar::getUnbakedPixelAreaRank()
 // static
 void LLVOAvatar::cullAvatarsByPixelArea()
 {
+    // <Luminous> Hysteresis on the impostor limit. An avatar the last ranking put within RenderAvatarMaxNonImpostors
+    // is ranked as if it covered LuminousImpostorHysteresis times its pixel area, so an impostor takes its place only
+    // once it is that much larger on screen, and they swap back only when the sizes have moved as far the other way.
+    // Ranked by pixel area alone, avatars at about the same distance near the limit swap places whenever their sizes
+    // cross (a dance step, a turn) and change between impostor and full several times a second. 1 ranks by pixel
+    // area alone.
+    static LLCachedControl<F32> impostor_hysteresis(gSavedSettings, "LuminousImpostorHysteresis", 1.5f);
+    const F32 full_factor = llclamp((F32)impostor_hysteresis, 1.f, 10.f);
+    for (LLCharacter* character : LLCharacter::sInstances)
+    {
+        LLVOAvatar* inst = (LLVOAvatar*)character;
+        inst->mRankPreference = inst->mVisibilityPreference * (inst->mRankedFull ? full_factor : 1.f);
+    }
     LLCharacter::sInstances.sort([](LLCharacter* lhs, LLCharacter* rhs)
         {
-            return ((LLVOAvatar*)lhs)->mVisibilityPreference > ((LLVOAvatar*)rhs)->mVisibilityPreference;
+            return ((LLVOAvatar*)lhs)->mRankPreference > ((LLVOAvatar*)rhs)->mRankPreference;
         });
+    // </Luminous>
 
     // Update the avatars that have changed status
     U32 rank = 2; // Rank 1 is reserved for self.
@@ -12038,6 +12071,7 @@ void LLVOAvatar::cullAvatarsByPixelArea()
         {
             inst->setVisibilityRank(sMaxNonImpostors * 5);
         }
+        inst->mRankedFull = !inst->isSelf() && sLimitNonImpostors && inst->mVisibilityRank <= sMaxNonImpostors; // <Luminous/>
     }
 
     // runway - this doesn't really detect gray/grey state.
@@ -12296,6 +12330,8 @@ void LLVOAvatar::updateImpostors()
 {
     LLViewerCamera::sCurCameraID = LLViewerCamera::CAMERA_WORLD;
 
+    logImpostorStates(); // <Luminous/>
+
     for (LLCharacter* character : LLCharacter::sInstances)
     {
         LLVOAvatar* avatar = (LLVOAvatar*)character;
@@ -12311,6 +12347,223 @@ void LLVOAvatar::updateImpostors()
 
     LLCharacter::sAllowInstancesChange = true;
 }
+
+// <Luminous> LuminousImpostorLog: how often each avatar in view changes between impostor and full, why it is an
+// impostor, its rank and pixel area, and its measured render time, logged every few seconds under the tag
+// LuminousImpostors. Avatars are numbered in the order they are first seen and carry a short hash of their id, so the
+// same avatar can be found in another session's log; no names. While it is on, one avatar in view is profiled every
+// few frames, round the avatars in turn, as the Performance window's auto-tune profiles them (LLPipeline::profileAvatar,
+// which sets the times the render time limit reads).
+namespace
+{
+    struct LuminousImpostorTrack
+    {
+        U32 number = 0;
+        bool known = false;          // seen in an earlier frame
+        bool impostor = false;       // drawn as an impostor in the last frame
+        bool in_view = false;        // in view in the last frame
+        U32 in_run = 0;              // frames in view without a break, up to the last frame
+        U32 out_run = 0;             // frames out of view without a break, up to the last frame
+        U32 frames = 0;              // frames in view in this window
+        U32 impostor_frames = 0;     // of them, as an impostor
+        U32 rank_frames = 0;         // ... by rank alone (RenderAvatarMaxNonImpostors)
+        U32 muted_frames = 0;        // ... visually muted (complexity, the mute list, render settings)
+        U32 slow_frames = 0;         // ... too slow (the render time limit)
+        U32 switches = 0;            // changes between impostor and full while in view
+        U32 view_changes = 0;        // changes into and out of view
+        U32 entry_switches = 0;      // of the switches, on the frame after the avatar came into view
+        U32 short_gaps = 0;          // back in view after 1 to 3 frames out of it
+        U32 rank_min = U32_MAX;
+        U32 rank_max = 0;
+        F32 area_min = F32_MAX;      // pixel area, as ranked
+        F32 area_max = 0.f;
+        U32 profiles = 0;            // profiles asked for in this window
+        bool present = false;        // still among the avatars this frame
+    };
+
+    constexpr F32 IMPOSTOR_LOG_SECONDS = 5.f;
+    constexpr U32 IMPOSTOR_PROFILE_FRAMES = 10;
+
+    std::map<LLUUID, LuminousImpostorTrack> sImpostorTracks;
+    U32 sImpostorNumbers = 0;
+    U32 sImpostorWindowFrames = 0;
+    U32 sImpostorProfileTurn = 0;
+    LLFrameTimer sImpostorWindow;
+}
+
+// static
+void LLVOAvatar::logImpostorStates()
+{
+    static LLCachedControl<bool> impostor_log(gSavedSettings, "LuminousImpostorLog", false);
+    if (!impostor_log)
+    {
+        if (!sImpostorTracks.empty())
+        {
+            sImpostorTracks.clear();
+            sImpostorNumbers = 0;
+            sImpostorWindowFrames = 0;
+        }
+        return;
+    }
+    if (sImpostorWindowFrames == 0)
+    {
+        sImpostorWindow.reset();
+    }
+    ++sImpostorWindowFrames;
+
+    for (auto& entry : sImpostorTracks)
+    {
+        entry.second.present = false;
+    }
+
+    std::vector<LLUUID> profile_candidates;
+    for (LLCharacter* character : LLCharacter::sInstances)
+    {
+        LLVOAvatar* avatar = (LLVOAvatar*)character;
+        if (avatar->isSelf() || avatar->isUIAvatar() || avatar->isDead())
+        {
+            continue;
+        }
+        LuminousImpostorTrack& track = sImpostorTracks[avatar->getID()];
+        if (!track.number)
+        {
+            track.number = ++sImpostorNumbers;
+        }
+        track.present = true;
+        const bool in_view = avatar->mDrawable.notNull() && avatar->mDrawable->isVisible();
+        const bool impostor = avatar->isImpostor();
+        if (track.known)
+        {
+            if (in_view != track.in_view)
+            {
+                ++track.view_changes;
+            }
+            if (in_view && !track.in_view && track.out_run <= 3)
+            {
+                ++track.short_gaps;
+            }
+            if (in_view && track.in_view && impostor != track.impostor)
+            {
+                ++track.switches;
+                track.entry_switches += track.in_run == 1 ? 1 : 0;
+            }
+        }
+        track.known = true;
+        track.in_run = in_view ? track.in_run + 1 : 0;
+        track.out_run = in_view ? 0 : track.out_run + 1;
+        track.in_view = in_view;
+        track.impostor = impostor;
+        if (!in_view)
+        {
+            continue;
+        }
+        ++track.frames;
+        if (impostor)
+        {
+            ++track.impostor_frames;
+            const bool muted = avatar->isVisuallyMuted();
+            const bool slow = avatar->isTooSlowWithoutShadows();
+            track.muted_frames += muted ? 1 : 0;
+            track.slow_frames += slow ? 1 : 0;
+            track.rank_frames += (!muted && !slow) ? 1 : 0;
+        }
+        track.rank_min = llmin(track.rank_min, avatar->mVisibilityRank);
+        track.rank_max = llmax(track.rank_max, avatar->mVisibilityRank);
+        track.area_min = llmin(track.area_min, avatar->mVisibilityPreference);
+        track.area_max = llmax(track.area_max, avatar->mVisibilityPreference);
+        if (!avatar->isVisuallyMuted() && !avatar->isTooSlow() && avatar->isFullyLoaded() && !avatar->mGPUProfilePending)
+        {
+            profile_candidates.push_back(avatar->getID());
+        }
+    }
+
+    if (!profile_candidates.empty() && sImpostorWindowFrames % IMPOSTOR_PROFILE_FRAMES == 0)
+    {
+        const LLUUID id = profile_candidates[sImpostorProfileTurn++ % profile_candidates.size()];
+        ++sImpostorTracks[id].profiles;
+        LL::WorkQueue::getInstance("mainloop")->post([id]()
+        {
+            LLViewerObject* obj = gObjectList.findObject(id);
+            if (obj && !obj->isDead() && obj->isAvatar() && obj->mDrawable)
+            {
+                gPipeline.profileAvatar((LLVOAvatar*)obj);
+            }
+        });
+    }
+
+    const F32 seconds = sImpostorWindow.getElapsedTimeF32();
+    if (seconds < IMPOSTOR_LOG_SECONDS)
+    {
+        return;
+    }
+
+    U32 avatars = 0;
+    U32 in_view = 0;
+    U32 switches = 0;
+    U32 switching = 0; // avatars changing at least once a second
+    F32 most = 0.f;
+    U32 most_number = 0;
+    F64 impostor_frames = 0.0;
+    std::vector<std::pair<U32, std::string>> lines;
+    for (auto it = sImpostorTracks.begin(); it != sImpostorTracks.end();)
+    {
+        LuminousImpostorTrack& track = it->second;
+        if (!track.present)
+        {
+            it = sImpostorTracks.erase(it);
+            continue;
+        }
+        ++avatars;
+        if (track.frames > 0)
+        {
+            ++in_view;
+            switches += track.switches;
+            impostor_frames += track.impostor_frames;
+            const F32 rate = track.switches / seconds;
+            switching += rate >= 1.f ? 1 : 0;
+            if (rate > most)
+            {
+                most = rate;
+                most_number = track.number;
+            }
+            LLVOAvatar* avatar = (LLVOAvatar*)gObjectList.findObject(it->first);
+            const F32 distance = avatar && avatar->mDrawable.notNull() ? avatar->mDrawable->mDistanceWRTCamera : 0.f;
+            const F32 gpu_ms = avatar ? avatar->mGPURenderTime : 0.f;
+            const F32 cpu_ms = avatar ? avatar->mCPURenderTime : 0.f;
+            const U32 complexity = avatar ? avatar->mVisualComplexity : 0;
+            lines.emplace_back(track.number, llformat(
+                "#%u %04x %s in view %3.0f%% impostor %3.0f%% (rank %u, muted %u, slow %u) switches %u (%.1f/s) "
+                "view changes %u (entry switches %u, short gaps %u) rank %u-%u area %.0f-%.0f dist %.1f m gpu %.3f ms cpu %.3f ms profiles %u complexity %u",
+                track.number, it->first.getCRC32() & 0xffff, avatar && avatar->isControlAvatar() ? "animesh" : "avatar",
+                100.f * track.frames / sImpostorWindowFrames, 100.f * track.impostor_frames / track.frames,
+                track.rank_frames, track.muted_frames, track.slow_frames, track.switches, rate, track.view_changes,
+                track.entry_switches, track.short_gaps, track.rank_min, track.rank_max, track.area_min, track.area_max, distance, gpu_ms, cpu_ms,
+                track.profiles, complexity));
+        }
+        track = LuminousImpostorTrack{ track.number, track.known, track.impostor, track.in_view, track.in_run,
+                                       track.out_run };
+        ++it;
+    }
+
+    const F32 art_ms = (F32)(LLPerfStats::renderAvatarMaxART_ns / 1000000.0);
+    LL_INFOS("LuminousImpostors") << llformat(
+        "%.1f s, %u frames (%.1f fps); avatars %u, in view %u, impostors %.1f; switches %u (%.1f/s), "
+        "%u avatars at 1/s or more, most %.1f/s (#%u); limit %u%s, hysteresis %.2f, hold %.2f s, render time limit %s, auto-tune %s",
+        seconds, sImpostorWindowFrames, sImpostorWindowFrames / seconds, avatars, in_view,
+        impostor_frames / sImpostorWindowFrames, switches, switches / seconds, switching, most, most_number,
+        sMaxNonImpostors, sLimitNonImpostors ? "" : " (off)",
+        llclamp(gSavedSettings.getF32("LuminousImpostorHysteresis"), 1.f, 10.f),
+        llmax(gSavedSettings.getF32("LuminousImpostorHoldSeconds"), 0.f),
+        art_ms > 0.f ? llformat("%.3f ms", art_ms).c_str() : "none",
+        LLPerfStats::tunables.userAutoTuneEnabled ? "on" : "off") << LL_ENDL;
+    std::sort(lines.begin(), lines.end());
+    for (const auto& line : lines)
+    {
+        LL_INFOS("LuminousImpostors") << line.second << LL_ENDL;
+    }
+    sImpostorWindowFrames = 0;
+}
+// </Luminous>
 
 // virtual
 bool LLVOAvatar::isImpostor()
@@ -12342,7 +12595,10 @@ bool LLVOAvatar::isImpostor()
             is_visual_muted || // Save from calling isVisuallyMuted a second time
             // </FS:minerjr> [FIRE-35735]
             isTooSlowWithoutShadows() ||
-            (sLimitNonImpostors && (mUpdatePeriod > 1) )
+            // <Luminous> The out-of-view hold counts only while the impostor is complete: a released one
+            // (resetImpostors) draws nothing, and the avatar is drawn in full instead of not at all.
+            (sLimitNonImpostors && (mUpdatePeriod > 1 || (mImpostorOutOfView && mImpostor.isComplete())))
+            // </Luminous>
     );
 // </FS:Beq>
 }
@@ -12377,6 +12633,29 @@ bool LLVOAvatar::shouldImpostor(const F32 rank_factor)
 // </FS:Beq>
     return sLimitNonImpostors && (mVisibilityRank > sMaxNonImpostors * rank_factor);
 }
+
+// <Luminous> shouldImpostor() with a hold on changes that come from the rank alone: the avatar keeps its state until
+// the rank has asked for the other one for LuminousImpostorHoldSeconds without a break. An avatar near the limit can
+// otherwise change between impostor and full whenever the ranking moves for a moment -- another avatar going out of
+// view and back, or two avatars' sizes crossing as the camera moves. A visually muted or too slow avatar changes at
+// once, and so does one coming back into view after the hold. 0 holds nothing.
+bool LLVOAvatar::shouldImpostorHeld()
+{
+    static LLCachedControl<F32> hold_seconds(gSavedSettings, "LuminousImpostorHoldSeconds", 1.f);
+    const bool wanted = shouldImpostor();
+    if (wanted == mImpostorHeld || hold_seconds <= 0.f || isVisuallyMuted() || isTooSlowWithoutShadows())
+    {
+        mImpostorHeld = wanted;
+        mImpostorHoldTimer.reset();
+    }
+    else if (mImpostorHoldTimer.getElapsedTimeF32() >= hold_seconds)
+    {
+        mImpostorHeld = wanted;
+        mImpostorHoldTimer.reset();
+    }
+    return mImpostorHeld;
+}
+// </Luminous>
 
 bool LLVOAvatar::needsImpostorUpdate() const
 {

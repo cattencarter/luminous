@@ -483,6 +483,14 @@ NSWindowRef getMainAppWindow()
     return winRef;
 }
 
+// <Luminous> Whether macOS has the app active now, which the focus
+// callbacks follow.
+bool appIsActive()
+{
+    return [NSApp isActive];
+}
+// </Luminous>
+
 void makeFirstResponder(NSWindowRef window, GLViewRef view)
 {
     [(LLNSWindow*)window makeFirstResponder:(LLOpenGLView*)view];

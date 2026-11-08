@@ -2410,8 +2410,8 @@ namespace LuminousPhotoMode
 
     namespace
     {
-        // The scale a preview resolution setting comes to, FXAA aside: automatic is one over the display's backing
-        // scale.
+        // The scale a preview resolution setting comes to, FXAA aside: Standard (0) is one pixel per point, one over
+        // the backing scale of the screen the window is on.
         F32 liveScaleOf(F32 scale)
         {
             if (scale <= 0.f)
@@ -2452,7 +2452,7 @@ namespace LuminousPhotoMode
 
     F32 settingLiveScale()
     {
-        static LLCachedControl<F32> setting(gSavedSettings, "LuminousPhotoLiveScale", 1.f);
+        static LLCachedControl<F32> setting(gSavedSettings, "LuminousPhotoLiveScale", 0.f);
         return liveScaleOf(setting());
     }
 
@@ -2487,7 +2487,7 @@ namespace LuminousPhotoMode
         switch (temporal())
         {
         case Temporal::RestsAtFull:
-            return "Rests at Full: nothing to scale.";
+            return "Rests at full size: nothing to scale.";
         case Temporal::RestsBeyondRange:
             return "Rests at " + scaleName(settingLiveScale()) + ": beyond its range.";
         case Temporal::Scales:
@@ -2560,8 +2560,8 @@ namespace LuminousPhotoMode
             {
                 if (usersOwnChange() && temporal() == Temporal::RestsAtFull)
                 {
-                    temporalTip("At Full there is nothing for MetalFX upscaling to scale, so it rests. Choose a smaller "
-                                "Preview resolution to use it.");
+                    temporalTip("At full size there is nothing for MetalFX upscaling to scale, so it rests. Choose a "
+                                "smaller Preview resolution to use it.");
                 }
             });
     }
@@ -4343,6 +4343,10 @@ namespace LuminousPhotoMode
             return keys.back().second->buildClone();
         }
 
+        // the grid's "Setting updated" alerts still to come for the items made, and until when
+        S32 sOwnSettingAlerts = 0;
+        F64 sOwnSettingAlertsUntil = 0.0;
+
         void fillEnvironments(const LLUUID& folder, S32 tries)
         {
             LLViewerInventoryCategory* cat = gInventory.getCategory(folder);
@@ -4446,9 +4450,22 @@ namespace LuminousPhotoMode
                 ++made;
             }
             gSavedPerAccountSettings.setS32("LuminousEnvironmentsInInventory", ENVIRONMENTS_VERSION);
+            sOwnSettingAlerts = made;
+            sOwnSettingAlertsUntil = LLFrameTimer::getElapsedSeconds() + 120.0;
             LL_INFOS("LuminousPhotoMode") << "Environments put in #Luminous/" << ENVIRONMENTS_FOLDER << ": " << made
                                           << " made, " << have.size() << " there already." << LL_ENDL;
         }
+    }
+
+    bool takeOwnSettingAlert()
+    {
+        if (sOwnSettingAlerts <= 0 || LLFrameTimer::getElapsedSeconds() > sOwnSettingAlertsUntil)
+        {
+            sOwnSettingAlerts = 0;
+            return false;
+        }
+        --sOwnSettingAlerts;
+        return true;
     }
 
     void addEnvironmentsToInventory()

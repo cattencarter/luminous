@@ -35,15 +35,17 @@
 
 /**
  * At the very first start (no earlier run in the settings), setUpForThisMac()
- * chooses the live view's resolution and which costly effects start live,
- * from the number of graphics cores and whether the display is Retina or
- * scaled, and says in a message what it chose. Nothing changes for a Mac
- * that has run Luminous before.
+ * chooses the live view's resolution (Standard, one pixel per point, unless
+ * the display has more pixels than the chip draws well even so) and which
+ * costly effects start live, from the number of graphics cores and the
+ * display's pixels, and says in a message what it chose. Nothing else
+ * changes for a Mac that has run Luminous before (checkStandardLiveScale).
  *
  * The Optimise window measures, where the user stands, what each live effect
  * costs and what a lower preview resolution gives, and proposes the fewest
  * changes that reach LuminousOptimiseTargetFPS; nothing changes until Apply,
- * and Put back undoes it. On Metal with MetalFX upscaling off, it measures
+ * and Put back undoes it. On Metal with MetalFX upscaling off, where MetalFX
+ * at Half would draw fewer pixels than the live view does, it measures
  * that first: where it reaches the aim it is proposed alone, where it helps
  * but does not the rest is measured with it on, and where it does not help
  * it is left out. It opens by itself once a session when the live
@@ -57,6 +59,10 @@ namespace LuminousOptimise
     /// At start-up, after the window is made: on the very first start, the
     /// settings for this Mac, and a message saying what they are.
     void setUpForThisMac();
+    /// Once, on a Mac that ran Luminous before (from setUpForThisMac): a Preview resolution the first start's set-up
+    /// chose there becomes what the set-up chooses now, Standard unless the Mac needs fewer pixels; the user's own
+    /// choice stays.
+    void checkStandardLiveScale();
     /// Measuring: llappviewer.cpp then leaves out the frame cap and the
     /// background yield, as for the benchmark.
     bool running();

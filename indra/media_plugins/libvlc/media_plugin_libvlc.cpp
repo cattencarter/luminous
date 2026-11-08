@@ -42,6 +42,11 @@ typedef SSIZE_T ssize_t;
 #include "vlc/vlc.h"
 #include "vlc/libvlc_version.h"
 
+// <Luminous> stream metadata
+#include <atomic>
+#include <chrono>
+// </Luminous>
+
 #if LL_WINDOWS
 // needed for waveOut call - see below for description
 #include <mmsystem.h>
@@ -76,6 +81,20 @@ private:
     void setDurationDirty();
 
     static void eventCallbacks(const libvlc_event_t* event, void* ptr);
+
+    // <Luminous> An internet radio's "now playing" (ICY StreamTitle) and a
+    // stream's artist and title, sent to the viewer as ndMediadata_change.
+    static void mediaEventCallbacks(const libvlc_event_t* event, void* ptr);
+    void releaseMedia();
+    void updateStreamMetadata();
+    void sendStreamMetadata(const std::string& artist, const std::string& title);
+
+    std::atomic<bool> mMetadataChanged;
+    std::chrono::steady_clock::time_point mNextMetadataCheck;
+    std::string mMetadataURL;
+    std::string mSentArtist;
+    std::string mSentTitle;
+    // </Luminous>
 
     libvlc_instance_t* mLibVLC;
     libvlc_media_t* mLibVLCMedia;
@@ -123,6 +142,8 @@ MediaPluginBase(host_send_func, host_user_data)
     mDuration = 0.0;
 
     mURL = std::string();
+
+    mMetadataChanged = false;   // <Luminous>
 
     mVlcStatus = STATUS_NONE;
     setStatus(STATUS_NONE);
@@ -193,6 +214,7 @@ void MediaPluginLibVLC::resetVLC()
 {
     libvlc_media_player_stop(mLibVLCMediaPlayer);
     libvlc_media_player_release(mLibVLCMediaPlayer);
+    releaseMedia();   // <Luminous>
     libvlc_release(mLibVLC);
 }
 
@@ -297,6 +319,113 @@ void MediaPluginLibVLC::eventCallbacks(const libvlc_event_t* event, void* ptr)
     }
 }
 
+// <Luminous>
+////////////////////////////////////////////////////////////////////////////////
+// VLC calls this on its own thread, with its event lock held: only note the
+// change here, the metadata is read and sent on the plugin's idle.
+void MediaPluginLibVLC::mediaEventCallbacks(const libvlc_event_t* event, void* ptr)
+{
+    MediaPluginLibVLC* parent = (MediaPluginLibVLC*)ptr;
+    if (parent && event->type == libvlc_MediaMetaChanged)
+    {
+        parent->mMetadataChanged = true;
+    }
+}
+
+////////////////////////////////////////////////////////////////////////////////
+// Detaches from the current media and drops this plugin's reference to it; a
+// player made from it keeps its own.
+void MediaPluginLibVLC::releaseMedia()
+{
+    if (mLibVLCMedia)
+    {
+        libvlc_event_manager_t* em = libvlc_media_event_manager(mLibVLCMedia);
+        if (em)
+        {
+            libvlc_event_detach(em, libvlc_MediaMetaChanged, mediaEventCallbacks, this);
+        }
+        libvlc_media_release(mLibVLCMedia);
+        mLibVLCMedia = 0;
+    }
+    mMetadataChanged = false;
+}
+
+namespace
+{
+    // A metadata string from VLC, trimmed; empty when VLC has none.
+    std::string vlc_meta(libvlc_media_t* media, libvlc_meta_t which)
+    {
+        std::string text;
+        char* value = libvlc_media_get_meta(media, which);
+        if (value)
+        {
+            text = value;
+            libvlc_free(value);
+        }
+        const size_t first = text.find_first_not_of(" \t\r\n");
+        if (first == std::string::npos)
+        {
+            return std::string();
+        }
+        const size_t last = text.find_last_not_of(" \t\r\n");
+        return text.substr(first, last - first + 1);
+    }
+}
+
+////////////////////////////////////////////////////////////////////////////////
+// What the viewer shows as the stream's title. An internet radio's "now
+// playing" (ICY StreamTitle, usually "Artist - Song") goes alone, as the
+// title. Otherwise the artist and title the stream carries (Ogg comments, ID3
+// tags), but only with an artist: without one VLC's title is the station's
+// name (icy-name) or the address's last part, not a song. Nothing found keeps
+// what was sent: a reconnect starts empty, and some stations send an empty
+// title between songs.
+void MediaPluginLibVLC::updateStreamMetadata()
+{
+    if (!mLibVLCMedia)
+    {
+        return;
+    }
+
+    std::string artist;
+    std::string title = vlc_meta(mLibVLCMedia, libvlc_meta_NowPlaying);
+    if (title == "-")
+    {
+        title.clear();   // some servers send " - " between songs
+    }
+    if (title.empty())
+    {
+        artist = vlc_meta(mLibVLCMedia, libvlc_meta_Artist);
+        if (!artist.empty())
+        {
+            title = vlc_meta(mLibVLCMedia, libvlc_meta_Title);
+        }
+    }
+
+    if (!artist.empty() || !title.empty())
+    {
+        sendStreamMetadata(artist, title);
+    }
+}
+
+////////////////////////////////////////////////////////////////////////////////
+// Sends only a change, so a server that repeats its title stays quiet.
+void MediaPluginLibVLC::sendStreamMetadata(const std::string& artist, const std::string& title)
+{
+    if (artist == mSentArtist && title == mSentTitle)
+    {
+        return;
+    }
+    mSentArtist = artist;
+    mSentTitle = title;
+
+    LLPluginMessage message(LLPLUGIN_MESSAGE_CLASS_MEDIA, "ndMediadata_change");
+    message.setValue("artist", artist);
+    message.setValue("title", title);
+    sendMessage(message);
+}
+// </Luminous>
+
 ////////////////////////////////////////////////////////////////////////////////
 //
 void MediaPluginLibVLC::playMedia()
@@ -318,6 +447,17 @@ void MediaPluginLibVLC::playMedia()
         libvlc_media_player_stop(mLibVLCMediaPlayer);
     }
 
+    // <Luminous> A new stream starts without the last one's title. The same
+    // address played again (a resize restarts it) keeps it: the title comes
+    // again and, unchanged, is not sent twice.
+    releaseMedia();
+    if (mURL != mMetadataURL)
+    {
+        mMetadataURL = mURL;
+        sendStreamMetadata(std::string(), std::string());
+    }
+    // </Luminous>
+
     mLibVLCMedia = libvlc_media_new_location(mLibVLC, mURL.c_str());
     if (!mLibVLCMedia)
     {
@@ -325,6 +465,14 @@ void MediaPluginLibVLC::playMedia()
         setStatus(STATUS_ERROR);
         return;
     }
+
+    // <Luminous> metadata changes: an internet radio's "now playing"
+    libvlc_event_manager_t* media_em = libvlc_media_event_manager(mLibVLCMedia);
+    if (media_em)
+    {
+        libvlc_event_attach(media_em, libvlc_MediaMetaChanged, mediaEventCallbacks, this);
+    }
+    // </Luminous>
 
     mLibVLCMediaPlayer = libvlc_media_player_new_from_media(mLibVLCMedia);
     if (!mLibVLCMediaPlayer)
@@ -499,6 +647,18 @@ void MediaPluginLibVLC::receiveMessage(const char* message_string)
             else if (message_name == "idle")
             {
                 setStatus(mVlcStatus);
+
+                // <Luminous> At once when VLC reports a change (an ICY
+                // title does), and once a second besides: a demuxer's tags
+                // (Ogg comments, a new song in a chained Ogg stream) reach
+                // the media without that event.
+                const std::chrono::steady_clock::time_point now = std::chrono::steady_clock::now();
+                if (mMetadataChanged.exchange(false) || now >= mNextMetadataCheck)
+                {
+                    mNextMetadataCheck = now + std::chrono::seconds(1);
+                    updateStreamMetadata();
+                }
+                // </Luminous>
             }
             else if (message_name == "cleanup")
             {

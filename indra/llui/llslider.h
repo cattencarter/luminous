@@ -72,9 +72,58 @@ public:
     boost::signals2::connection setMouseDownCallback( const commit_signal_t::slot_type& cb );
     boost::signals2::connection setMouseUpCallback( const commit_signal_t::slot_type& cb );
 
+    // <Luminous> Both off unless set, so other sliders behave as before.
+    // A detent: a drag that crosses value, coming within pixels of it, holds
+    // there exactly until the thumb is pulled more than pixels away, so a
+    // neutral value is easy to find by dragging; a drag that comes from one
+    // side without crossing gives the values next to it as any slider does.
+    // Keys, the scroll wheel and typed values are not caught.
+    void            setDetent(F32 value, S32 pixels);
+    // The detent's decision for one drag position: offset, the thumb's
+    // pixels from the detent; side, the side it was last on (-1, 1; 0
+    // none yet) and held, whether it holds there, both kept between calls.
+    // True: the value is the detent's.
+    static bool     detentHolds(S32 offset, S32 pixels, S32& side, bool& held)
+    {
+        const S32 now_side = (offset > 0) - (offset < 0);
+        const bool near = offset <= pixels && offset >= -pixels;
+        bool holds = false;
+        if (held && near)
+        {
+            holds = true; // still within reach: held
+        }
+        else if (held)
+        {
+            held = false; // pulled away: free again
+        }
+        else if (now_side == 0)
+        {
+            holds = true; // on the detent's own pixel
+        }
+        else if (near && side != 0 && now_side != side)
+        {
+            held = true; // crossed it within reach: caught
+            holds = true;
+        }
+        if (now_side != 0)
+        {
+            side = now_side;
+        }
+        return holds;
+    }
+    // The value a double click (or a Ctrl-click, which otherwise goes to the
+    // initial value) puts back, committed as a drag to it is. A value
+    // outside the range is a bound control's own (such as one meaning "not
+    // set"): it is written to the control as it is.
+    void            setResetValue(F32 value);
+    // Puts back the reset value; false if there is none.
+    bool            resetValue();
+    // </Luminous>
+
     virtual bool    handleHover(S32 x, S32 y, MASK mask);
     virtual bool    handleMouseUp(S32 x, S32 y, MASK mask);
     virtual bool    handleMouseDown(S32 x, S32 y, MASK mask);
+    virtual bool    handleDoubleClick(S32 x, S32 y, MASK mask); // <Luminous/>
     virtual bool    handleKeyHere(KEY key, MASK mask);
     virtual bool    handleScrollWheel(S32 x, S32 y, S32 clicks);
     virtual void    draw();
@@ -82,6 +131,17 @@ public:
 private:
     void            setValueAndCommit(F32 value);
     void            updateThumbRect();
+    // <Luminous>
+    void            dragTo(S32 pos, S32 low_edge, S32 high_edge); // the thumb's centre along the track
+    void            commitExactValue(F32 value); // not rounded to the increment: a detent's, a reset's
+
+    F32             mDetentValue = 0.f;
+    S32             mDetentPixels = 0;
+    S32             mDetentSide = 0;      // the drag's side of the detent (detentHolds)
+    bool            mDetentHeld = false;  // the drag holds at the detent
+    bool            mHasResetValue = false;
+    F32             mResetValue = 0.f;
+    // </Luminous>
 
     bool            mVolumeSlider;
     S32             mMouseOffset;

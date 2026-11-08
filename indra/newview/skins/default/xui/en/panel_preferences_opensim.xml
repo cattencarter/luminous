@@ -7,10 +7,10 @@
  left="1"
  top="1"
  width="540"
- label="Opensim"
+ label="OpenSim"
  name="opensim_panel">
 <tab_container
- label="Opensim"
+ label="OpenSim"
  layout="topleft"
  follows="all"
  top="5"

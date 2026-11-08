@@ -158,6 +158,7 @@
 #include "tea.h" // <FS:AW opensim currency support>
 #include "NACLantispam.h"
 #include "chatbar_as_cmdline.h"
+#include "luminousphotomode.h" // <Luminous/>
 
 extern void on_new_message(const LLSD& msg);
 
@@ -6750,6 +6751,13 @@ bool handle_special_alerts(const std::string &pAlertName)
 
 void process_alert_core(const std::string& message, bool modal)
 {
+    // <Luminous> OpenSim confirms each settings item made; the environments
+    // Luminous puts in inventory at a first login do not fill the chat.
+    if (!modal && message == "Setting updated" && LuminousPhotoMode::takeOwnSettingAlert())
+    {
+        return;
+    }
+    // </Luminous>
     const std::string ALERT_PREFIX("ALERT: ");
     const std::string NOTIFY_PREFIX("NOTIFY: ");
     if (message.find(ALERT_PREFIX) == 0)

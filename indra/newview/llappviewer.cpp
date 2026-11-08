@@ -2182,6 +2182,26 @@ bool LLAppViewer::doFrame()
             saveFinalSnapshot();
         }
 
+        // <Luminous> The main loop ends with this frame, so a Metal session
+        // whose device is still well has ended normally here: the marker
+        // goes, and the settings are saved, before voice's shutdown below,
+        // which can hang until the process ends itself. The next start then
+        // stays on Metal instead of falling back to OpenGL as after a Metal
+        // failure. A device already lost keeps the marker (frame() stops the
+        // viewer for it). Cleanup saves the settings again as usual; a quit
+        // that must not save them (a restored settings backup) saves nothing
+        // here either.
+        LL::RHI::Device* quit_device = LL::RHI::viewerDevice();
+        if (mSaveSettingsOnExit
+            && LL::RHI::clearsMetalSessionAtQuit(sMetalSessionMarked, LL::RHI::viewerBackend())
+            && !(quit_device && quit_device->deviceLost())
+            && gSavedSettings.getBOOL("MetalSessionOpen"))
+        {
+            gSavedSettings.setBOOL("MetalSessionOpen", false);
+            save_user_settings();
+        }
+        // </Luminous>
+
         // <Luminous> From here a quit never hangs for good: if the process
         // still runs 45 s on -- settings are saved within the first few --
         // it ends itself. A quit can wait for ever in the audio shutdown

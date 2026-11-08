@@ -1282,7 +1282,48 @@ If you do not understand the distinction then leave this control alone."
          width="250">
             (takes effect at the next start)
         </text>
-        <!-- <Luminous> MetalFX upscaling (MetalFX temporal) under the backend switch, shown with it, greyed unless Metal runs
+        <!-- <Luminous> Preview resolution (LuminousPhotoLiveScale), the menu of the Luminous sidebar's Settings tab; greyed
+             while FXAA keeps the live view at full size (LLPanelPreferenceGraphics::draw) -->
+        <text
+         type="string"
+         length="1"
+         follows="left|top"
+         height="16"
+         layout="topleft"
+         left="10"
+         name="luminous_live_view_label"
+         top_pad="12"
+         width="115">
+            Preview resolution:
+        </text>
+        <combo_box
+         control_name="LuminousPhotoLiveScale"
+         follows="left|top"
+         height="23"
+         layout="topleft"
+         left_pad="5"
+         name="luminous_live_view"
+         tool_tip="The 3D view's resolution while you look round and set up a shot. Standard draws one pixel per point: on a Retina screen half its pixels each way, on other screens all of them. Full draws every pixel of a Retina screen: sharper, but the Mac works harder. Renders always use all of them."
+         top_delta="-4"
+         width="130">
+            <combo_box.item
+             label="Standard"
+             name="live_view_standard"
+             value="0" />
+            <combo_box.item
+             label="Full"
+             name="live_view_full"
+             value="1" />
+            <combo_box.item
+             label="Three quarters"
+             name="live_view_three_quarters"
+             value="0.75" />
+            <combo_box.item
+             label="Half"
+             name="live_view_half"
+             value="0.5" />
+        </combo_box>
+        <!-- MetalFX upscaling (MetalFX temporal) under the backend switch, shown with it, greyed unless Metal runs
              (LLPanelPreferenceGraphics::refreshBackendSwitch) -->
         <check_box
          control_name="LuminousMetalFXTemporal"
@@ -1292,7 +1333,7 @@ If you do not understand the distinction then leave this control alone."
          layout="topleft"
          left="130"
          name="luminous_metalfx_temporal"
-         tool_tip="Draws the live view smaller and builds a sharp picture from several frames with Apple's MetalFX, for a faster view. Anti-aliasing is left out while it runs. Finished pictures are not affected."
+         tool_tip="Builds the 3D view up to every pixel of the screen from a smaller picture and several frames, with Apple's MetalFX: sharper than Standard on a Retina screen, and faster where the view would otherwise draw every pixel. Anti-aliasing is left out while it runs. Finished pictures are not affected."
          top_pad="8"
          visible="false"
          width="250" />

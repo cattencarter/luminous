@@ -1656,6 +1656,9 @@ bool idle_startup()
         {
             gSavedPerAccountSettings.setString("SnapshotBaseDir", gSavedPerAccountSettings.getControl("SnapshotBaseDir")->getDefault().asString());
             gSavedPerAccountSettings.setString("SnapshotBaseName", gSavedPerAccountSettings.getControl("SnapshotBaseName")->getDefault().asString());
+            // <Luminous> and the name Luminous's renders are saved under
+            gSavedPerAccountSettings.setString("LuminousRenderName", std::string());
+            // </Luminous>
         }
         // </FS:LO>
 // <FS:CR> Seperate user directories per grid
@@ -4479,7 +4482,15 @@ void LLStartUp::setStartSLURL(const LLSLURL& slurl)
 #endif
     // </FS:Ansariel>
     default:
+#ifdef OPENSIM
+            // <Luminous> A start location may come from a link (hop://,
+            // x-grid-location-info://, a location clicked in a browser): it
+            // selects a grid the user already has, never adds or fetches one.
+            LLGridManager::getInstance()->setGridChoiceIfKnown(slurl.getGrid());
+            // </Luminous>
+#else
             LLGridManager::getInstance()->setGridChoice(slurl.getGrid());
+#endif
             break;
     }
 
