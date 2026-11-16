@@ -38,6 +38,7 @@ uniform vec3 specular;
 uniform float lightExp;
 uniform vec2 fbScale;
 uniform float refScale;
+uniform vec2 luminous_piece_scale; // <Luminous/> a render's piece: its screen coordinates per the whole frame's
 uniform float znear;
 uniform float zfar;
 uniform float kd;
@@ -73,7 +74,10 @@ void main()
 
     //figure out distortion vector (ripply)
     vec2 distort = screen_tc;
-    distort = mix(distort, distort+wavef.xy*refScale, water_mask);
+    // <Luminous> in a render's piece, the offset the whole frame's (unset, 0: 1)
+    vec2 luminous_scale = luminous_piece_scale.x > 0.0 ? luminous_piece_scale : vec2(1.0);
+    distort = mix(distort, distort+wavef.xy*refScale*luminous_scale, water_mask);
+    // </Luminous>
 
 #ifdef TRANSPARENT_WATER
     vec4 fb = texture(screenTex, distort);

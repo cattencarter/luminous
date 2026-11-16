@@ -1118,6 +1118,13 @@ bool LLWindowMacOSX::getMinimized()
     return mMinimized;
 }
 
+// <Luminous> No part of the window shows (display() draws nothing then, behind, while the background yields).
+bool LLWindowMacOSX::getOccluded()
+{
+    return mWindow && windowOccluded(mWindow);
+}
+// </Luminous>
+
 bool LLWindowMacOSX::getMaximized()
 {
     return mMaximized;

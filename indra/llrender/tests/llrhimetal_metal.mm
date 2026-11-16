@@ -6221,6 +6221,86 @@ void main() { frag_color = vertex_color * texture(unbound, vec4(vary_texcoord0 *
         endCleanly(device, log);
     }
 
+    /// t240: drawIndexed with 16-bit indices from an odd first index, whose address is 2 bytes past a multiple of 4,
+    /// draws what the same list draws from a 4-byte boundary: a grid of small triangles over the target, one color per
+    /// vertex, the triangles in a shuffled order so that one index read wrong draws a long triangle of other colors.
+    /// A list of 29400 indices (a pool block, as LLVertexBuffer's) and one of 86400 (a buffer of its own), each from a
+    /// static and a dynamic buffer; every odd list is drawn from its copy in the ring.
+    API_AVAILABLE(macos(26.0)) void oddIndexStartTest(MetalDevice& device)
+    {
+        CaptureLog log(LLError::LEVEL_WARN);
+        DrawTarget target = drawTarget(device);
+        for (const U32 cells : { 70u, 120u })
+        {
+            DrawVertices grid;
+            U32 seed = 12345;
+            const auto next = [&seed]() { seed = seed * 1664525u + 1013904223u; return seed >> 8; };
+            for (U32 y = 0; y <= cells; ++y)
+            {
+                for (U32 x = 0; x <= cells; ++x)
+                {
+                    grid.positions.push_back({ -1.f + 2.f * F32(x) / F32(cells), -1.f + 2.f * F32(y) / F32(cells), 0.f, 1.f });
+                    const U32 c = next();
+                    grid.colors.push_back({ U8(c), U8(c >> 8), U8(c >> 16), 255 });
+                }
+            }
+            std::vector<std::array<U16, 3>> triangles;
+            for (U32 y = 0; y < cells; ++y)
+            {
+                for (U32 x = 0; x < cells; ++x)
+                {
+                    const U16 a = U16(y * (cells + 1) + x);
+                    const U16 b = U16(a + 1);
+                    const U16 c = U16(a + cells + 1);
+                    const U16 d = U16(c + 1);
+                    triangles.push_back({ a, b, d });
+                    triangles.push_back({ a, d, c });
+                }
+            }
+            for (size_t i = triangles.size() - 1; i > 0; --i)
+            {
+                std::swap(triangles[i], triangles[next() % (i + 1)]);
+            }
+            std::vector<U16> list;
+            for (const auto& triangle : triangles)
+            {
+                list.insert(list.end(), triangle.begin(), triangle.end());
+            }
+            std::vector<U16> shifted{ U16(cells * (cells + 1)) };
+            shifted.insert(shifted.end(), list.begin(), list.end());
+            VertexStreams streams;
+            Ref<Buffer> vertices = vertexBuffer(device, grid, streams);
+            const U32 count = U32(list.size());
+            const auto drawn = [&](const Ref<Buffer>& indices, U32 first)
+            {
+                return drawnPass(device, target, vertices, streams, [&](Encoder& encoder)
+                {
+                    encoder.setIndexBuffer(indices.get(), IndexType::U16);
+                    encoder.drawIndexed(PrimitiveType::Triangles, first, count);
+                });
+            };
+            const Ref<Readback> reference = drawn(indexBufferOf(device, list, "aligned list"), 0);
+            const std::span<const std::byte> expected = reference->data();
+            const U64 copies = device.metalEncoder().alignedIndexCopies();
+            for (const bool dynamic : { false, true })
+            {
+                const Ref<Readback> odd = drawn(indexBufferOf(device, shifted, "odd start", dynamic), 1);
+                const std::span<const std::byte> actual = odd->data();
+                U32 differ = 0;
+                for (size_t i = 0; i + 3 < expected.size() && i + 3 < actual.size(); i += 4)
+                {
+                    differ += std::memcmp(expected.data() + i, actual.data() + i, 4) != 0 ? 1 : 0;
+                }
+                ensureEqual(std::to_string(count) + " indices from index 1, " + (dynamic ? "dynamic" : "static") +
+                                ": pixels unlike the aligned list's",
+                            differ, 0u);
+            }
+            ensureEqual(std::to_string(count) + " indices: lists drawn from the ring",
+                        device.metalEncoder().alignedIndexCopies() - copies, U64(2));
+        }
+        endCleanly(device, log);
+    }
+
     /// t88 (P2-01b): draw(Triangles, 3, 3) draws the second triangle only.
     API_AVAILABLE(macos(26.0)) void firstCountTest(MetalDevice& device)
     {
@@ -14096,6 +14176,18 @@ void main()
         desc.name = std::string(METAL_SAFE_MATH_PROGRAMS.front());
         Ref<Program> program = ready(device.createProgram(desc));
         tut::ensure("a listed program is Ready", program.notNull() && program->status() == CompileStatus::Ready);
+
+        // Skinned variants have an invariant position, compiled alone with preserveInvariance; other programs do not
+        tut::ensure("invariant: a skinned variant", metalInvariantPosition("Skinned Deferred Alpha Shader"));
+        tut::ensure("invariant: a skinned material", metalInvariantPosition("Skinned Material Shader 16"));
+        tut::ensure("not invariant: its unskinned program", !metalInvariantPosition("Deferred Alpha Shader"));
+        tut::ensure("not invariant: the clouds' program", !metalInvariantPosition("Deferred Windlight Cloud Program"));
+        tut::ensure("not invariant: the UI program", !metalInvariantPosition(uiProgramDesc().name));
+        tut::ensure("invariant options: preserveInvariance", metalCompileOptions(false, true).preserveInvariance);
+        tut::ensure("other options: no preserveInvariance", !metalCompileOptions(false, false).preserveInvariance);
+        desc.name = "Skinned " + uiProgramDesc().name;
+        Ref<Program> skinned = ready(device.createProgram(desc));
+        tut::ensure("an invariant program is Ready alone", skinned.notNull() && skinned->status() == CompileStatus::Ready);
     }
 
     // P3-08: sample queries on the visibility result buffer ----------------------------------------------------------
@@ -17410,6 +17502,7 @@ void main() { frag_color = vertex_color * texture(lut, vec3(0.5, 0.5, vary_texco
             case 229: upscalerTest(device); break;
             case 230: carriedDepthClearTest(device); break;
             case 231: finishedPresentTest(); break;
+            case 240: oddIndexStartTest(device); break;
             default: tut::fail("no Metal test " + std::to_string(test));
             }
             return true;

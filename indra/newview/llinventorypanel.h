@@ -423,6 +423,13 @@ protected:
     F64                         mBuildViewsEndTime; // Stop building views past this timestamp
     std::deque<LLUUID>          mBuildViewsQueue;
     std::deque<LLUUID>          mBuildRootQueue;
+    // <Luminous> The inventory's changes while the views are being built,
+    // with their masks, made into views once they are built (idle()).
+    // Recent and Worn are built when first shown, after login: an item that
+    // arrived meanwhile in a folder already built was otherwise missing from
+    // the panel until the next login.
+    std::map<LLUUID, U32>       mChangesWhileBuilding;
+    // </Luminous>
 
 };
 

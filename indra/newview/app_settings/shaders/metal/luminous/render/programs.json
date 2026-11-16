@@ -37,6 +37,13 @@
           "colorFormats": ["RGBA32Float", "RGBA16Float"],
           "depthFormat": "",
           "blend": "none"
+        },
+        {
+          "vertex": "luminous_fullscreen_vs",
+          "fragment": "luminous_piece_store_fs",
+          "colorFormats": ["RGBA16Float"],
+          "depthFormat": "Depth32Float",
+          "blend": "none"
         }
       ]
     }

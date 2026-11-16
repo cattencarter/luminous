@@ -42,6 +42,7 @@
 #include "llviewerregion.h"
 #include "llworld.h"
 #include "llvoavatar.h"
+#include "luminousobjectmotion.h" // <Luminous/>
 
 static const F32 SEC_PER_FLEXI_FRAME = 1.f / 60.f; // 60 flexi updates per second
 /*static*/ F32 LLVolumeImplFlexible::sUpdateFactor = 1.0f;
@@ -810,6 +811,7 @@ bool LLVolumeImplFlexible::doUpdateGeometry(LLDrawable *drawable)
             doFlexibleRebuild(volume->mVolumeChanged);
         }
         volume->genBBoxes(isVolumeGlobal());
+        LuminousObjectMotion::reshaped(volume->mDrawable); // <Luminous/> MetalFX temporal: its faces reactive this frame
     }
     else if (!mUpdated || rotated)
     {
@@ -820,6 +822,7 @@ bool LLVolumeImplFlexible::doUpdateGeometry(LLDrawable *drawable)
             group->dirtyMesh();
         }
         volume->genBBoxes(isVolumeGlobal());
+        LuminousObjectMotion::reshaped(volume->mDrawable); // <Luminous/> MetalFX temporal: its faces reactive this frame
     }
 
     volume->mVolumeChanged = false;

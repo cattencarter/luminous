@@ -6806,6 +6806,13 @@ bool LLViewerWindow::rawSnapshot(LLImageRaw *raw, S32 image_width, S32 image_hei
 
                     F32 window_aspect = (F32)window_rect.getWidth() / (F32)window_rect.getHeight();
                     F32 image_aspect  = (F32)image_width / (F32)image_height;
+                    // <Luminous> a render's piece keeps the whole frame's shape: its view and aspect
+                    const LuminousHDRSnapshot::Piece& luminous_piece = LuminousHDRSnapshot::piece();
+                    if (luminous_piece.active)
+                    {
+                        image_aspect = luminous_piece.frameAspect;
+                    }
+                    // </Luminous>
                     if (image_aspect > window_aspect)
                     {
                         F32 crop = window_aspect / image_aspect;
@@ -6813,7 +6820,7 @@ bool LLViewerWindow::rawSnapshot(LLImageRaw *raw, S32 image_width, S32 image_hei
                     }
                     mWorldViewRectRaw.set(0, image_height, image_width, 0);
                     LLViewerCamera::getInstance()->setViewHeightInPixels( mWorldViewRectRaw.getHeight() );
-                    LLViewerCamera::getInstance()->setAspect( getWorldViewAspectRatio() );
+                    LLViewerCamera::getInstance()->setAspect( luminous_piece.active ? luminous_piece.frameAspect : getWorldViewAspectRatio() ); // <Luminous/>
                     scratch_space.bindTarget();
                 }
                 else
@@ -6891,8 +6898,11 @@ bool LLViewerWindow::rawSnapshot(LLImageRaw *raw, S32 image_width, S32 image_hei
 
     // <Luminous> in photo mode, targets reallocated for this snapshot -- back
     // to full resolution, or for its size -- get one frame first, unread, so
-    // that screen-space reflections have a frame to read
-    if (LuminousPhotoMode::takeWarmUp(luminous_reallocated && !sLuminousThumbnail))
+    // that screen-space reflections have a frame to read; so does a scene map
+    // the live view left without one, Firestorm's reflections kept for
+    // pictures (LuminousPhotoMode::screenReflectionsWantWarmUp)
+    if (LuminousPhotoMode::takeWarmUp((luminous_reallocated || LuminousPhotoMode::screenReflectionsWantWarmUp())
+                                      && !sLuminousThumbnail))
     {
         struct WarmingUp
         {

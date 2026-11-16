@@ -538,6 +538,8 @@ void LLProgressView::initLogos()
     texture_start_x += icon_width + default_pad;
 #endif //LL_HAVOK
 
+    // <Luminous> Vivox's logo only in a build that ships Vivox's voice client
+#ifdef LUMINOUS_VIVOX
     // 108x41
     icon_width = 74;
     icon_height = default_height;
@@ -546,6 +548,8 @@ void LLProgressView::initLogos()
         LLRect(texture_start_x, texture_start_y + icon_height, texture_start_x + icon_width, texture_start_y),
         default_clip,
         default_clip);
+#endif // LUMINOUS_VIVOX
+    // </Luminous>
 }
 
 void LLProgressView::initStartTexture(S32 location_id, bool is_in_production)

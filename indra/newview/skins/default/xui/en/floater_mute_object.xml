@@ -42,7 +42,7 @@
      layout="topleft"
      left="30"
      name="note">
-      * Only blocks object text, not sounds
+      * Also hides these objects and their sounds
     </text>
     <button
      follows="bottom|left"

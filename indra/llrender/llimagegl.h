@@ -354,6 +354,7 @@ public:
     // is not a 2D texture, or no device: the raw name from the pool (true, getRHITexture() null), as
     // createOwnTexture's fallback. Off GL the image owns its texture without a GL name, and that counts as made. False
     // when neither a name nor an owned texture results. Main thread.
+    // <Luminous/> The texture has TEXTURE_SCENE_LOD_BIAS besides the caller's usage, as createGLTexture's.
     bool createEmptyOwnTexture(U8 usage, U32 mip_levels, bool allow_compression);
     // [Viewer Lab] One level of the image createEmptyOwnTexture made, on the image the caller has bound on the active
     // unit: specifyTexture on its own texture of the viewer's render device (with pixels a tracked upload first), else

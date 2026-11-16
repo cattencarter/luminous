@@ -124,6 +124,7 @@ void setWindowSize(NSWindowRef window, int width, int height);
 void getCursorPos(NSWindowRef window, float* pos);
 int takeHeldClicks(GLViewRef view, float* positions, int max_clicks, bool* escape); // <Luminous/>
 bool appIsActive(); // <Luminous/> whether macOS has the app active now
+bool windowOccluded(NSWindowRef window); // <Luminous/> whether no part of the window shows
 void makeWindowOrderFront(NSWindowRef window);
 void convertScreenToWindow(NSWindowRef window, float *coord);
 void convertWindowToScreen(NSWindowRef window, float *coord);

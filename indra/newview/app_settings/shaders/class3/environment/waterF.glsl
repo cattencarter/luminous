@@ -95,6 +95,7 @@ uniform vec3 lightDir;
 uniform vec3 specular;
 uniform float blurMultiplier;
 uniform float refScale;
+uniform vec2 luminous_piece_scale; // <Luminous/> a render's piece: its screen coordinates per the whole frame's
 uniform float kd;
 uniform vec3 normScale;
 uniform float fresnelScale;
@@ -241,7 +242,10 @@ void main()
     dist = max(dist, 5.0);
 
     //figure out distortion vector (ripply)
-    vec2 distort2 = distort + waver.xy * refScale / max(dmod, 1.0) * 2;
+    // <Luminous> unset (0) outside a render's piece: 1
+    vec2 luminous_scale = luminous_piece_scale.x > 0.0 ? luminous_piece_scale : vec2(1.0);
+    vec2 distort2 = distort + waver.xy * refScale / max(dmod, 1.0) * 2 * luminous_scale;
+    // </Luminous>
 
     distort2 = clamp(distort2, vec2(0), vec2(0.999));
 

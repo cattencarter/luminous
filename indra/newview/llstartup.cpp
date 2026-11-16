@@ -242,6 +242,7 @@
 #include "growlmanager.h"
 
 #include "fsassetblacklist.h"
+#include "luminousnameblock.h"
 #include "fsavatarrenderpersistence.h"
 #include "fscommon.h"
 #include "fscorehttputil.h"
@@ -1677,6 +1678,7 @@ bool idle_startup()
 
         // <FS:WS> Initalize Account based asset_blacklist
         FSAssetBlacklist::getInstance()->init();
+        LuminousNameBlock::getInstance()->refreshNames(); // <Luminous> blocked object names
 
         // <FS:Techwolf Lupindo> load per grid data
         FSData::instance().downloadAgents();

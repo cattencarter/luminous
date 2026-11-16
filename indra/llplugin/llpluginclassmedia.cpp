@@ -1001,6 +1001,22 @@ void LLPluginClassMedia::setJavascriptEnabled(const bool enabled)
     sendMessage(message);
 }
 
+// <Luminous>
+void LLPluginClassMedia::setGPUDisabled(const bool disabled)
+{
+    LLPluginMessage message(LLPLUGIN_MESSAGE_CLASS_MEDIA_BROWSER, "gpu_disabled");
+    message.setValueBoolean("disable", disabled);
+    sendMessage(message);
+}
+
+void LLPluginClassMedia::setWebGLEnabled(const bool enabled)
+{
+    LLPluginMessage message(LLPLUGIN_MESSAGE_CLASS_MEDIA_BROWSER, "webgl_enabled");
+    message.setValueBoolean("enable", enabled);
+    sendMessage(message);
+}
+// </Luminous>
+
 void LLPluginClassMedia::setWebSecurityDisabled(const bool disabled)
 {
     LLPluginMessage message(LLPLUGIN_MESSAGE_CLASS_MEDIA_BROWSER, "web_security_disabled");

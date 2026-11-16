@@ -583,6 +583,11 @@ public:
     U32         renderSkinned();
     F32         getLastSkinTime() { return mLastSkinTime; }
     U32         renderTransparent(bool first_pass);
+    // <Luminous> MetalFX temporal's object motion (luminousobjectmotion.cpp): the parts renderSkinned (opaque and
+    // transparent) and renderRigid draw in the world's view, picked as they pick them, into parts; returns the pixel
+    // area the parts' levels of detail go by
+    F32         luminousMotionParts(std::vector<LLViewerJoint*>& parts);
+    // </Luminous>
     void        renderCollisionVolumes();
     void        renderBones(const std::string &selected_joint = std::string());
     virtual void renderJoints();
@@ -968,6 +973,14 @@ public:
 
         // Float array ready to be sent to GL
         std::vector<F32> mGLMp;
+
+        // <Luminous> For MetalFX temporal's object motion, kept only in frames it may be drawn in
+        // (LuminousMetal::objectMotionOn): the palette of the frame before mFrame (mGLMp's layout), valid when this
+        // entry was built in that frame too with as many joints and kept in mFrame, and whether it differs from mGLMp
+        std::vector<F32> mLastGLMp;
+        bool mLastValid = false;
+        bool mMoved = false;
+        // </Luminous>
 
         MatrixPaletteCache() :
             mFrame(gFrameCount - 1)

@@ -124,6 +124,7 @@ private:
     void onLoadPreset();
     void onDeletePreset();
     void onShowTab(const LLSD& tab);
+    void onResetAll();
     void onEffectMode(size_t index);
     void refreshCapture();
     void fitTabs();
@@ -256,6 +257,7 @@ private:
     void requestStop();        // Stop and Esc while rendering
     void discard();            // closes, the temporary file removed
     void onShare(const std::string& what);
+    void sharePrimfeed();      // saved and on the clipboard; then, on its message's button, Finder and Primfeed in the browser
     void fitToWindow();        // to the floaters' snap rect, the buttons placed
     void placeButtons(const LLRect& safe); // the part inside the toolbars, then placeOnPicture
     void placeOnPicture();     // Share, Close, Stop and the menu over the picture's bottom right
@@ -282,6 +284,7 @@ private:
     bool mTemporary = false;
     bool mKept = false;        // downloaded or sent on
     bool mLightOnly = false;
+    std::string mPlace;        // where the render was taken: region name and SLurl, for Copy the place
     bool mPreview = false;     // a preview: Render instead of Share, and closed without asking
     bool mStopAsked = false;
 

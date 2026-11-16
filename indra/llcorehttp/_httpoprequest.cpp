@@ -501,7 +501,11 @@ HttpStatus HttpOpRequest::prepareRequest(HttpService * service)
     HttpPolicyGlobal & gpolicy(service->getPolicy().getGlobalOptions());
     HttpPolicyClass & cpolicy(service->getPolicy().getClassOptions(mReqPolicy));
 
-    mCurlHandle = service->getTransport().getHandle();
+    // <Luminous> a request without cookies gets a new handle, closed when it is done: a handle from the cache keeps
+    // the cookies of the requests it served before
+    mCurlNoCookies = mReqOptions && mReqOptions->getNoCookies();
+    mCurlHandle = mCurlNoCookies ? curl_easy_init() : service->getTransport().getHandle();
+    // </Luminous>
     if (! mCurlHandle)
     {
         // We're in trouble.  We'll continue but it won't go well.
@@ -531,7 +535,10 @@ HttpStatus HttpOpRequest::prepareRequest(HttpService * service)
     check_curl_easy_setopt(mCurlHandle, CURLOPT_SEEKFUNCTION, seekCallback);
     check_curl_easy_setopt(mCurlHandle, CURLOPT_SEEKDATA, getHandle());
 
-    check_curl_easy_setopt(mCurlHandle, CURLOPT_COOKIEFILE, "");
+    if (!mCurlNoCookies) // <Luminous> the cookie engine stays off for a request without cookies
+    {
+        check_curl_easy_setopt(mCurlHandle, CURLOPT_COOKIEFILE, "");
+    }
     check_curl_easy_setopt(mCurlHandle, CURLOPT_USERAGENT, APP_NAME.c_str()); // <FS> Clownflare changes
 
     if (gpolicy.mSslCtxCallback)

@@ -47,6 +47,7 @@ public:
     /*virtual*/ void reset();
 
     S32 animateTextures(F32 &off_s, F32 &off_t, F32 &scale_s, F32 &scale_t, F32 &rotate);
+    F32 getLastFrame() const { return mLastFrame; } // <Luminous/> the counter animateTextures last stepped to
     enum
     {
         TRANSLATE = 0x01 // Result code JUST for animateTextures

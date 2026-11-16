@@ -113,6 +113,7 @@
 #include "rlvlocks.h"
 // [/RLVa:KB]
 #include "fsassetblacklist.h"
+#include "luminousnameblock.h"
 
 // <FS:Ansariel> [Legacy Bake]
 #ifdef OPENSIM
@@ -6652,6 +6653,13 @@ void LLViewerObject::setAttachedSound(const LLUUID &audio_uuid, const LLUUID& ow
         return;
     }
     // </FS:Ansariel>
+
+    // <Luminous> name block
+    if (LuminousNameBlock::instanceExists() && LuminousNameBlock::instance().blockSound(getID(), owner_id, audio_uuid, LLUUID::null, true))
+    {
+        return;
+    }
+    // </Luminous>
 
     if (flags & LL_SOUND_FLAG_LOOP
         && mAudioSourcep && mAudioSourcep->isLoop() && mAudioSourcep->getCurrentData()

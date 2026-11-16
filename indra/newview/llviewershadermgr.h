@@ -342,6 +342,10 @@ extern LLGLSLShader         gLuminousFlareCompositeProgram;  // <Luminous/> Phot
 extern LLGLSLShader         gLuminousDistortionProgram;      // <Luminous/> Photo mode
 extern LLGLSLShader         gLuminousGlitchProgram;          // <Luminous/> Photo mode
 extern LLGLSLShader         gLuminousFrameProgram;           // <Luminous/> Photo mode
+extern LLGLSLShader         gLuminousMotionProgram;          // <Luminous/> MetalFX temporal's object motion (Metal)
+extern LLGLSLShader         gLuminousSkinnedMotionProgram;   // <Luminous/> its rigged variant
+extern LLGLSLShader         gLuminousAvatarMotionProgram;    // <Luminous/> its system avatar variant
+extern LLGLSLShader         gLuminousTextureMotionProgram;   // <Luminous/> its texture animation variant
 extern LLGLSLShader         gDeferredPostGammaCorrectProgram;
 extern LLGLSLShader         gLegacyPostGammaCorrectProgram;
 extern LLGLSLShader         gDeferredPostTonemapProgram;

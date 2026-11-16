@@ -54,6 +54,8 @@
 //   render made larger), and that texture read back asynchronously; the reads are summed on the CPU as they come
 //   in, and waited for once, after the frames. The light for OpenEXR comes back as half float at the render's
 //   exposure; the finished picture for TIFF as 32-bit float.
+// - storePiece (called directly, not a Pass): a render drawn in pieces stores each piece's core -- light and depth --
+//   at its place in the whole frame, on the GPU.
 namespace
 {
     namespace RHI = LL::RHI;
@@ -65,6 +67,7 @@ namespace
     const char* const ADD_FS = "luminous_average_add_fs";
     const char* const LAST_FS = "luminous_average_last_fs";
     const char* const RESOLVE = "luminous_render_resolve";
+    const char* const STORE_FS = "luminous_piece_store_fs";
 
     // One frame read, not yet added to the sum.
     struct PendingRead
@@ -103,6 +106,9 @@ namespace
         S32 summed = 0;
         F32 metered = 1.f;
         std::string error;
+        // the pieces' store pipeline, apart from the rest
+        bool storeReady = false;
+        bool storeFailed = false;
 
         void releaseRender()
         {
@@ -133,6 +139,16 @@ namespace
         return desc;
     }
 
+    // A piece's store: the whole frame's light and depth.
+    RHI::PipelineDesc storeDesc(RHI::Format light, RHI::Format depth)
+    {
+        RHI::PipelineDesc desc;
+        desc.colorCount = 1;
+        desc.colorFormats[0] = light;
+        desc.depthFormat = depth;
+        return desc;
+    }
+
     // The last frame's pass writes colour only, in both: the frame's alpha is read further on.
     RHI::PipelineDesc lastDesc(RHI::Format sum, RHI::Format frame)
     {
@@ -150,6 +166,7 @@ namespace
         s.releaseRender();
         s.program.release();
         s.loaded = s.failed = s.ready = false;
+        s.storeReady = s.storeFailed = false;
         LuminousMetal::setReady(Pass::AverageFrames, false);
         LuminousMetal::setReady(Pass::HDRCapture, false);
     }
@@ -208,6 +225,17 @@ namespace
             s.program.render(FULLSCREEN_VS, LAST_FS, lastDesc(RHI::Format::RGBA16Float, RHI::Format::RGBA16Float)),
             s.program.render(FULLSCREEN_VS, LAST_FS, lastDesc(RHI::Format::RGBA32Float, RHI::Format::RGBA16Float)),
         };
+        // A piece's store is ready on its own: without it, renders are drawn in one piece only.
+        RHI::Pipeline* store = s.program.render(FULLSCREEN_VS, STORE_FS, storeDesc(RHI::Format::RGBA16Float, RHI::Format::Depth32Float));
+        if (!store || store->status() == RHI::CompileStatus::Failed)
+        {
+            if (!s.storeFailed)
+            {
+                LL_WARNS("Luminous") << "Renders on Metal: the pieces' store pipeline did not compile; renders are drawn in one piece" << LL_ENDL;
+            }
+            s.storeFailed = true;
+        }
+        s.storeReady = store && store->status() == RHI::CompileStatus::Ready;
         for (RHI::Pipeline* pipeline : pipelines)
         {
             if (!pipeline || pipeline->status() == RHI::CompileStatus::Failed)
@@ -218,6 +246,7 @@ namespace
             }
             all = all && pipeline->status() == RHI::CompileStatus::Ready;
         }
+        all = all && (s.storeReady || s.storeFailed); // the store settled too, ready or not
         if (all)
         {
             s.ready = true;
@@ -599,6 +628,77 @@ namespace LuminousMetalRender
     S32 framesRead()
     {
         return state().recorded;
+    }
+
+    bool storePiece(LLRenderTarget* frame, LLRenderTarget* depth, LLRenderTarget* whole, LLRenderTarget* wholeDepth,
+                    U32 fromX, U32 fromY, U32 toX, U32 toY, U32 width, U32 height)
+    {
+        State& s = state();
+        RHI::Device* device = RHI::viewerDevice();
+        if (!s.ready || !s.storeReady || !device || !frame || !depth || !whole || !wholeDepth || width == 0 || height == 0)
+        {
+            return false;
+        }
+        RHI::Texture* light = frame->getRHITexture(0);
+        RHI::Texture* piece_depth = depth->getRHIDepth();
+        RHI::Texture* whole_light = whole->getRHITexture(0);
+        RHI::Texture* whole_depth = wholeDepth->getRHIDepth();
+        if (!light || !piece_depth || !whole_light || !whole_depth
+            || (U64)fromX + width > light->desc().width || (U64)fromY + height > light->desc().height
+            || (U64)fromX + width > piece_depth->desc().width || (U64)fromY + height > piece_depth->desc().height
+            || (U64)toX + width > whole_light->desc().width || (U64)toY + height > whole_light->desc().height
+            || whole_depth->desc().width != whole_light->desc().width || whole_depth->desc().height != whole_light->desc().height)
+        {
+            return false;
+        }
+        RHI::Pipeline* pipeline = s.program.render(FULLSCREEN_VS, STORE_FS, storeDesc(whole_light->desc().format,
+                                                                                      whole_depth->desc().format));
+        if (!pipeline || pipeline->status() == RHI::CompileStatus::Failed)
+        {
+            return false;
+        }
+
+        RHI::RenderPassDesc pass;
+        pass.name = "luminous store piece";
+        pass.native = true;
+        pass.colorCount = 1;
+        // The rest of the whole frame is the other pieces': kept.
+        pass.color[0].texture = whole_light;
+        pass.color[0].load = RHI::LoadAction::Load;
+        pass.color[0].store = RHI::StoreAction::Store;
+        pass.depth.texture = whole_depth;
+        pass.depth.load = RHI::LoadAction::Load;
+        pass.depth.store = RHI::StoreAction::Store;
+        RHI::Encoder& encoder = device->encoder();
+        if (!encoder.beginRenderPass(pass))
+        {
+            return false;
+        }
+        const RHI::NativeStage fs = RHI::NativeStage::Fragment;
+        encoder.setPipeline(pipeline);
+        RHI::DepthStencilDesc depth_state;
+        depth_state.depthTest = true;
+        depth_state.depthWrite = true;
+        depth_state.depthFunc = RHI::CompareFunc::AlwaysPass;
+        encoder.setDepthStencilState(device->getDepthStencilState(depth_state).get());
+        encoder.setViewport((S32)toX, (S32)toY, (S32)width, (S32)height);
+        encoder.setScissor(true, (S32)toX, (S32)toY, (S32)width, (S32)height);
+        encoder.setCullMode(RHI::CullMode::Off);
+        LuminousRenderPieceStore constants{};
+        constants.from = simd_make_uint2(fromX, fromY);
+        constants.to = simd_make_uint2(toX, toY);
+        RHI::setNativeConstants(encoder, fs, LUMINOUS_RENDER_BUFFER_PARAMS, constants);
+        encoder.setNativeTexture(fs, LUMINOUS_RENDER_TEXTURE_FRAME, light, RHI::Access::Read, { 0, 1 });
+        encoder.setNativeTexture(fs, LUMINOUS_RENDER_TEXTURE_DEPTH, piece_depth, RHI::Access::Read, { 0, 1 });
+        encoder.draw(RHI::PrimitiveType::Triangles, 0, 3);
+        encoder.endRenderPass();
+        return true;
+    }
+
+    bool piecesReady()
+    {
+        const State& s = state();
+        return s.ready && s.storeReady;
     }
 
     U64 readBytes(U32 width, U32 height, bool eight_bit, bool light)

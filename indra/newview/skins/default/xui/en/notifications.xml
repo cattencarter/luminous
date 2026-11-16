@@ -7505,6 +7505,36 @@ URL: [MEDIAURL]
   </notification>
 
   <notification
+   icon="alert.tga"
+   name="LuminousPrimMediaAlert"
+   type="alert">
+An object wants to show a web page from:
+
+Domain: [MEDIADOMAIN]
+URL: [MEDIAURL]
+
+The site can see your IP address and learn about your computer. Allow and Deny count for this session; Blacklist and Whitelist are kept.
+   <form name="form">
+    <button
+     index="0"
+     name="Allow"
+     text="Allow"/>
+    <button
+     index="1"
+     name="Deny"
+     text="Deny"/>
+    <button
+     index="2"
+     name="BlacklistDomain"
+     text="Blacklist"/>
+    <button
+     index="3"
+     name="WhitelistDomain"
+     text="Whitelist"/>
+   </form>
+  </notification>
+
+  <notification
    icon="alert.tga"  
    name="MediaAlertSingle"
    type="alert"> 
@@ -15587,6 +15617,29 @@ This build has no help pages of its own.
   </notification>
   <!-- </FS:Amy> Favorite Wearables folders -->
 
+  <!-- <Luminous> Asset Blacklist > Add name... (luminousnameblock.cpp). -->
+  <notification
+   icon="alertmodal.tga"
+   label="Derender by name"
+   name="LuminousNameBlockAdd"
+   type="alertmodal">
+    <unique/>
+Hide and silence every rezzed object with this name, whoever owns it and wherever it is rezzed. The whole name must match; capitals do not matter. Your own objects are never hidden. To hide one owner's objects only, right-click one of them and choose Derender All With This Name and Owner.
+    <tag>confirm</tag>
+    <form name="form">
+      <input name="message" type="text">
+      </input>
+      <button
+       default="true"
+       index="0"
+       name="OK"
+       text="OK"/>
+      <button
+       index="1"
+       name="Cancel"
+       text="Cancel"/>
+    </form>
+  </notification>
   <!-- <Luminous> The update message: Needful has a newer Luminous
        (luminousupdatecheck.cpp). -->
   <notification
@@ -15623,6 +15676,21 @@ For the full picture, use Render in the Luminous sidebar.
      ignoretext="Tell me that the snapshot window does not show all of Luminous's effects"
      name="okignore"
      yestext="OK"/>
+  </notification>
+  <!-- Share > Primfeed on a render (LuminousPictureView::sharePrimfeed):
+       how to paste the picture there; Open Primfeed shows the file in
+       Finder and opens Primfeed in the browser. -->
+  <notification
+   icon="alertmodal.tga"
+   label="Primfeed"
+   name="LuminousPrimfeedReady"
+   type="alertmodal">
+[MESSAGE]
+    <usetemplate
+     ignoretext="Open Primfeed at once when a picture is ready for it"
+     name="okcancelignore"
+     notext="Cancel"
+     yestext="Open Primfeed"/>
   </notification>
   <notification
    icon="notifytip.tga"

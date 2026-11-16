@@ -27,6 +27,7 @@
 #include "llviewerprecompiledheaders.h"
 
 #include "llviewermedia.h"
+#include "luminousmediaprivacy.h" // <Luminous>
 
 #include "llagent.h"
 #include "llagentcamera.h"
@@ -1829,7 +1830,8 @@ LLPluginClassMedia* LLViewerMediaImpl::newSourceFromMediaType(std::string media_
     // If a spare was already created before PluginAttachDebuggerToPlugins was set, don't use it.
     // Do not use a spare if launching with full viewer control (e.g. Twitter and few others)
     if ((plugin_basename == "media_plugin_cef") &&
-        !gSavedSettings.getBOOL("PluginAttachDebuggerToPlugins") && !clean_browser)
+        !gSavedSettings.getBOOL("PluginAttachDebuggerToPlugins") && !clean_browser &&
+        !LuminousMediaPrivacy::privateFor(owner)) // <Luminous> private media in the world gets a browser of its own
     {
         media_source = LLViewerMedia::getInstance()->getSpareBrowserMediaSource();
         if(media_source)
@@ -1902,6 +1904,13 @@ LLPluginClassMedia* LLViewerMediaImpl::newSourceFromMediaType(std::string media_
             // configure and pass proxy setup based on debug settings that are
             // configured by UI in prefs -> setup
             media_source->proxy_setup(gSavedSettings.getBOOL("BrowserProxyEnabled"), gSavedSettings.getString("BrowserProxyAddress"), gSavedSettings.getS32("BrowserProxyPort"));
+
+            // <Luminous> private media: media in the world gets the private browser (LuminousPrivateMedia)
+            if (LuminousMediaPrivacy::privateFor(owner))
+            {
+                LuminousMediaPrivacy::applyPrivate(media_source);
+            }
+            // </Luminous>
 
             media_source->setTarget(target);
 
@@ -2009,6 +2018,12 @@ bool LLViewerMediaImpl::initializePlugin(const std::string& media_type)
 //////////////////////////////////////////////////////////////////////////////////////////
 void LLViewerMediaImpl::loadURI()
 {
+    // <Luminous> as navigateInternal: media on a prim waits for its domain to be allowed
+    if (LuminousMediaPrivacy::holdPrimMedia(this, mMediaURL))
+    {
+        return;
+    }
+    // </Luminous>
     if(mMediaSource)
     {
         // trim whitespace from front and back of URL - fixes EXT-5363
@@ -2677,6 +2692,16 @@ void LLViewerMediaImpl::navigateInternal(bool should_log)
         }
     }
 
+    // <Luminous> media on a prim from a domain the media filter has not allowed waits, before any request is made
+    mHeldGeneration = LuminousMediaPrivacy::filterGeneration();
+    mHeldByMediaFilter = LuminousMediaPrivacy::holdPrimMedia(this, mMediaURL);
+    mHeldURL = mHeldByMediaFilter ? mMediaURL : std::string();
+    if (mHeldByMediaFilter)
+    {
+        return;
+    }
+    // </Luminous>
+
     if(mNavigateSuspended)
     {
         if (should_log || !mNavigateSuspendedDeferred)
@@ -2783,6 +2808,13 @@ void LLViewerMediaImpl::mimeDiscoveryCoro(std::string url)
 
     httpOpts->setFollowRedirects(true);
     httpOpts->setHeadersOnly(true);
+    // <Luminous> private media in the world: the probe neither sends nor keeps cookies (the empty Cookie header below
+    // does not stop libcurl's cookie engine, which sent cookies kept from earlier probes of the same site)
+    if (LuminousMediaPrivacy::privateFor(this))
+    {
+        httpOpts->setNoCookies(true);
+    }
+    // </Luminous>
 
     httpHeaders->append(HTTP_OUT_HEADER_ACCEPT, "*/*");
     httpHeaders->append(HTTP_OUT_HEADER_COOKIE, "");
@@ -2972,6 +3004,12 @@ void LLViewerMediaImpl::update()
         {
             // this media source is doing a MIME type probe -- don't try loading it again.
         }
+        // <Luminous>
+        else if (isHeldByMediaFilter())
+        {
+            // the page waits for the media filter's answer; the answer, a new address or a filter change asks again
+        }
+        // </Luminous>
         else
         {
             // This media may need to be loaded.
@@ -3431,12 +3469,26 @@ void LLViewerMediaImpl::setDisabled(bool disabled, bool forcePlayOnEnable)
 
 //////////////////////////////////////////////////////////////////////////////////////////
 //
+// <Luminous>
+bool LLViewerMediaImpl::isHeldByMediaFilter() const
+{
+    return mHeldByMediaFilter && mHeldURL == mMediaURL && mHeldGeneration == LuminousMediaPrivacy::filterGeneration();
+}
+// </Luminous>
+
 bool LLViewerMediaImpl::isForcedUnloaded() const
 {
     if(mIsMuted || mMediaSourceFailed || mIsDisabled)
     {
         return true;
     }
+
+    // <Luminous> a page that waits for the media filter runs nothing, so it takes none of the plugin slots
+    if (isHeldByMediaFilter())
+    {
+        return true;
+    }
+    // </Luminous>
 
     // If this media's class is not supposed to be shown, unload
     if (!shouldShowBasedOnClass() || isObscured())

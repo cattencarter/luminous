@@ -162,6 +162,7 @@
 // Firestorm includes
 #include "fsfloateravataralign.h" // <FS:Chanayane> Compass floater
 #include "fsassetblacklist.h"
+#include "luminousnameblock.h"
 #include "fsdata.h"
 #include "fslslbridge.h"
 #include "fscommon.h"
@@ -3465,6 +3466,61 @@ bool enable_derender_object()
     return (!rlv_handler_t::isEnabled());
 }
 // </FS:CR>
+
+// <Luminous> Derender every rezzed object with the selected object's name: of
+// its owner (parameter "owner") or of anyone.
+static LLSelectNode* derender_by_name_node()
+{
+    LLSelectNode* nodep = LLSelectMgr::getInstance()->getSelection()->getFirstRootNode();
+    LLViewerObject* objp = nodep ? nodep->getObject() : nullptr;
+    if (!objp || objp->isAvatar() || objp->isAttachment() || objp->permYouOwner() || !nodep->mValid || nodep->mName.empty())
+    {
+        return nullptr;
+    }
+    return nodep;
+}
+
+bool enable_derender_by_name()
+{
+    return derender_by_name_node() != nullptr;
+}
+
+class LuminousObjectDerenderByName : public view_listener_t
+{
+    bool handleEvent(const LLSD& userdata)
+    {
+        LLSelectNode* nodep = derender_by_name_node();
+        if (!nodep)
+        {
+            return true;
+        }
+        LLViewerObject* objp = nodep->getObject();
+        const LLUUID id = objp->getID();
+        const std::string name = nodep->mName;
+        const std::string region = objp->getRegion() ? objp->getRegion()->getName() : std::string();
+
+        const LLUUID owner = nodep->mPermissions->getSafeOwner();
+        std::string owner_name;
+        if (nodep->mPermissions->isGroupOwned())
+        {
+            gCacheName->getGroupName(owner, owner_name);
+        }
+        else
+        {
+            LLAvatarName av_name;
+            if (LLAvatarNameCache::get(owner, &av_name))
+            {
+                owner_name = av_name.getUserName();
+            }
+        }
+
+        const bool by_owner = userdata.asString() == "owner" && owner.notNull();
+        LuminousNameBlock::getInstance()->addName(name, by_owner ? owner : LLUUID::null, by_owner ? owner_name : std::string(), region);
+        LuminousNameBlock::getInstance()->noteName(id, name, owner);
+        return true;
+    }
+};
+// </Luminous>
 
 class LLEnableEditParticleSource : public view_listener_t
 {
@@ -13358,6 +13414,8 @@ void initialize_menus()
     view_listener_t::addMenu(new LLObjectDerender(), "Object.Derender");
     view_listener_t::addMenu(new LLObjectDerenderPermanent(), "Object.DerenderPermanent"); // <FS:Ansariel> Optional derender & blacklist
     enable.add("Object.EnableDerender", boost::bind(&enable_derender_object));  // <FS:CR> FIRE-10082 - Don't enable derendering own attachments when RLVa is enabled as well
+    view_listener_t::addMenu(new LuminousObjectDerenderByName(), "Object.DerenderByName"); // <Luminous>
+    enable.add("Object.EnableDerenderByName", boost::bind(&enable_derender_by_name)); // <Luminous>
     view_listener_t::addMenu(new LLObjectTexRefresh(), "Object.TexRefresh");    // ## Zi: Texture Refresh
     view_listener_t::addMenu(new LLEditParticleSource(), "Object.EditParticles");
     view_listener_t::addMenu(new LLEnableEditParticleSource(), "Object.EnableEditParticles");

@@ -39,7 +39,8 @@
  * the display has more pixels than the chip draws well even so) and which
  * costly effects start live, from the number of graphics cores and the
  * display's pixels, and says in a message what it chose. Nothing else
- * changes for a Mac that has run Luminous before (checkStandardLiveScale).
+ * changes for a Mac that has run Luminous before (checkStandardLiveScale,
+ * checkLiveShadowMaps).
  *
  * The Optimise window measures, where the user stands, what each live effect
  * costs and what a lower preview resolution gives, and proposes the fewest
@@ -63,6 +64,13 @@ namespace LuminousOptimise
     /// chose there becomes what the set-up chooses now, Standard unless the Mac needs fewer pixels; the user's own
     /// choice stays.
     void checkStandardLiveScale();
+    /// Once, on a Mac that ran Luminous before (from setUpForThisMac): with the live view's full-size shadow maps the
+    /// default, a base chip that never changed LuminousPhotoLowQualityLiveShadows keeps the smaller maps.
+    void checkLiveShadowMaps();
+    /// The Luminous settings that follow the Mac, as the set-up chooses them (the live view's resolution, the live
+    /// shadow maps, and on a base chip volumetric light and projector beams in renders only), set again without a
+    /// message and without Second Life's graphics settings: after the window's Reset all.
+    void applyForThisMac();
     /// Measuring: llappviewer.cpp then leaves out the frame cap and the
     /// background yield, as for the benchmark.
     bool running();

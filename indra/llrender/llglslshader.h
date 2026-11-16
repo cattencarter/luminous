@@ -372,6 +372,7 @@ public:
     void uniform4uiv(const LLStaticHashedString& uniform, U32 count, const GLuint* v);
     void uniformMatrix4fv(const LLStaticHashedString& uniform, U32 count, GLboolean transpose, const GLfloat* v);
     void uniformMatrix3fv(const LLStaticHashedString& uniform, U32 count, GLboolean transpose, const GLfloat* v); // <Luminous/>
+    void uniformMatrix3x4fv(const LLStaticHashedString& uniform, U32 count, GLboolean transpose, const GLfloat* v); // <Luminous/>
 
     void setMinimumAlpha(F32 minimum);
 

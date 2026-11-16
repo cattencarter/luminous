@@ -305,6 +305,12 @@ public:
 
     void setIsParcelMedia(bool is_parcel_media) { mIsParcelMedia = is_parcel_media; }
     bool isParcelMedia() const { return mIsParcelMedia; }
+    // <Luminous> media on a face of an object: it has a media entry (updateMediaImpl sets the entry's URL before the
+    // first navigate, while the object is added after), or an object shows it
+    bool isMediaOnPrim() const { return !mMediaEntryURL.empty() || !mObjectList.empty(); }
+    // <Luminous> its page waits for the media filter: held at its last navigate, for the address it has now, and the
+    // filter unchanged since (LuminousMediaPrivacy::filterGeneration)
+    bool isHeldByMediaFilter() const;
 
     ECursorType getLastSetCursor() { return mLastSetCursor; }
 
@@ -518,6 +524,12 @@ private:
     LLColor4 mBackgroundColor;
     bool mNavigateSuspended;
     bool mNavigateSuspendedDeferred;
+    // <Luminous> the page waits for the media filter: update() does not try to create the media source again (each try
+    // took the shared create timer from other media and wrote a log line), and it takes no plugin slot; a new address,
+    // a navigate or a change of the filter asks again
+    bool mHeldByMediaFilter = false;
+    std::string mHeldURL;
+    unsigned mHeldGeneration = 0;
     bool mTrustedBrowser;
     std::string mTarget;
     LLNotificationPtr mNotification;

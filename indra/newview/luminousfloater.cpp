@@ -60,6 +60,7 @@
 #include "llviewercamera.h"
 #include "luminousphotomode.h"
 #include "luminousmetal.h"
+#include "luminousoptimise.h"
 #include "llagent.h"
 #include "llagentbenefits.h"
 #include "llagentui.h"
@@ -92,6 +93,10 @@
 #include "llmodaldialog.h"
 #include "llvertexbuffer.h"
 #include "pipeline.h"
+#include "llclipboard.h"
+#if LL_DARWIN
+#include "llappviewermacosx-objc.h"
+#endif
 
 
 #include <map>
@@ -641,6 +646,15 @@ LuminousFloater::LuminousFloater(const LLSD& key)
     mCommitCallbackRegistrar.add("Luminous.Preset.Load", boost::bind(&LuminousFloater::onLoadPreset, this));
     mCommitCallbackRegistrar.add("Luminous.Preset.Delete", boost::bind(&LuminousFloater::onDeletePreset, this));
     mCommitCallbackRegistrar.add("Luminous.ShowTab", boost::bind(&LuminousFloater::onShowTab, this, _2));
+    mCommitCallbackRegistrar.add("Luminous.ResetAll", boost::bind(&LuminousFloater::onResetAll, this));
+    // The Settings tab's Reset: its settings back to their defaults, then the ones that follow the Mac as the set-up
+    // chooses them (a base chip keeps its smaller live shadow maps)
+    mCommitCallbackRegistrar.add("Luminous.ResetSettingsForMac",
+        [](LLUICtrl*, const LLSD& names)
+        {
+            LuminousPhotoMode::resetSettings(names.asString());
+            LuminousOptimise::applyForThisMac();
+        });
     mCommitCallbackRegistrar.add("Luminous.SidebarClose", boost::bind(&LuminousFloater::setFolded, this, true));
 }
 
@@ -2069,6 +2083,43 @@ bool LuminousFloater::handleToolTip(S32 x, S32 y, MASK mask)
     return LLFloater::handleToolTip(x, y, mask);
 }
 
+// The Settings tab's Reset all: after a yes, every tab's own Reset button as if clicked, then the settings that follow
+// the Mac as the set-up chooses them. Saved presets, camera positions and styles are files and stay.
+void LuminousFloater::onResetAll()
+{
+    LLHandle<LuminousFloater> handle = getDerivedHandle<LuminousFloater>();
+    LLNotificationsUtil::add("GenericAlertYesCancel",
+        LLSD().with("MESSAGE", "Put every setting in the Luminous sidebar back as Luminous ships it, set for this Mac?\n\n"
+                               "Your saved presets, camera positions and styles stay."),
+        LLSD(),
+        [handle](const LLSD& notification, const LLSD& response)
+        {
+            LuminousFloater* self = handle.get();
+            if (!self || LLNotificationsUtil::getSelectedOption(notification, response) != 0)
+            {
+                return;
+            }
+            static const char* const RESETS[] = { "light_defaults", "look_reset", "colour_defaults", "lens_defaults",
+                                                  "snapshot_defaults", "graphics_reset" };
+            LuminousPhotoMode::HoldShaderRebuilds hold; // one shader rebuild for all of it
+            for (const char* name : RESETS)
+            {
+                if (LLButton* reset = self->findChild<LLButton>(name))
+                {
+                    reset->onCommit();
+                }
+                else
+                {
+                    LL_WARNS("Luminous") << "Reset all: no " << name << " button" << LL_ENDL;
+                }
+            }
+            LuminousOptimise::applyForThisMac();
+            LL_INFOS("Luminous") << "Reset all: every tab back as Luminous ships it, set for this Mac" << LL_ENDL;
+            LLNotificationsUtil::add("SystemMessageTip",
+                LLSD().with("MESSAGE", "Luminous's settings are back as Luminous ships them, set for this Mac."));
+        });
+}
+
 void LuminousFloater::onShowTab(const LLSD& tab)
 {
     if (mTabs && mTabs->selectTabByName("luminous_" + tab.asString()))
@@ -3070,7 +3121,7 @@ bool LuminousPictureView::postBuild()
         }
         menu->setVisible(!menu->getVisible());
     });
-    for (const char* what : { "download", "save_as", "preview", "inventory", "profile", "flickr", "email" })
+    for (const char* what : { "download", "save_as", "preview", "inventory", "profile", "flickr", "primfeed", "place", "email" })
     {
         const std::string name = std::string("share_") + what;
         getChild<LLButton>(name)->setCommitCallback([this, what](LLUICtrl*, const LLSD&) { onShare(what); });
@@ -3152,6 +3203,14 @@ void LuminousPictureView::showResult(const LLPointer<LLImageRaw>& picture, const
     view->mPath = path;
     view->mTemporary = temporary;
     view->mLightOnly = light_only;
+    // where it was taken, for Copy the place: the region's name and its SLurl
+    view->mPlace.clear();
+    if (LLViewerRegion* region = gAgent.getRegion())
+    {
+        LLSLURL slurl;
+        LLAgentUI::buildSLURL(slurl);
+        view->mPlace = region->getName() + " " + slurl.getSLURLString();
+    }
     view->mPreview = LuminousHDRSnapshot::previewing();
     view->mKept = !temporary || view->mPreview; // a preview closes without asking: it is not to keep
     view->mPicture = picture;
@@ -3421,9 +3480,10 @@ void LuminousPictureView::showButtons()
     getChild<LLUICtrl>("share_save_as")->setEnabled(done);
     showDownload(getChild<LLButton>("share_download"));
     getChild<LLUICtrl>("share_preview")->setEnabled(done && !mPath.empty());
+    getChild<LLUICtrl>("share_place")->setEnabled(done && !mPlace.empty());
     // An EXR's picture here is the light without the Look's tone: not one to
     // send on (render a PNG or JPEG for that).
-    for (const char* name : { "share_inventory", "share_profile", "share_flickr", "share_email" })
+    for (const char* name : { "share_inventory", "share_profile", "share_flickr", "share_primfeed", "share_email" })
     {
         getChild<LLUICtrl>(name)->setEnabled(done && !mLightOnly);
     }
@@ -3508,6 +3568,23 @@ void LuminousPictureView::onShare(const std::string& what)
         }
         return;
     }
+    if (what == "primfeed")
+    {
+        sharePrimfeed();
+        return;
+    }
+    if (what == "place")
+    {
+        if (!mPlace.empty())
+        {
+            const LLWString text = utf8str_to_wstring(mPlace);
+            LLClipboard::instance().copyToClipboard(text, 0, (S32)text.size());
+            mSaved = "The place is on the clipboard";
+            mSaveFailed = false;
+            mSavedTimer.reset();
+        }
+        return;
+    }
     // On to one of Second Life's places, in the render window, which keeps
     // its own copy of the picture: these need the picture itself.
     if (mPicture.isNull() || mPicture->isBufferInvalid())
@@ -3519,6 +3596,114 @@ void LuminousPictureView::onShare(const std::string& what)
     const U32 destination = what == "inventory" ? 1 : what == "profile" ? 2 : what == "flickr" ? 3 : what == "primfeed" ? 4 : 5;
     mKept = true;
     LuminousRenderFloater::showPicture(mPicture, destination);
+}
+
+// Primfeed, without signing in: the picture saved whole and put on the
+// clipboard, and a message saying how to paste it into a new post there;
+// its Open Primfeed shows the file in Finder and opens Primfeed in the
+// browser. Primfeed takes JPEG, PNG and
+// WebP and scales a picture down to what the account allows, so it gets
+// the render's own file when that is a JPEG, else a JPEG of the picture
+// (a PNG render's own file when there was no memory for the picture).
+void LuminousPictureView::sharePrimfeed()
+{
+    if (mState != State::Done || mLightOnly)
+    {
+        return;
+    }
+    const std::string extension = gDirUtilp->getExtension(mPath);
+    const bool picture = mPicture.notNull() && !mPicture->isBufferInvalid();
+    const bool copy = !mPath.empty() && (extension == "jpg" || extension == "jpeg" || (!picture && extension == "png"));
+    if (!copy && !picture)
+    {
+        LLNotificationsUtil::add("SystemMessageTip", LLSD().with("MESSAGE",
+            "There was not enough memory to keep this render's picture, so it cannot be made ready for Primfeed. Download keeps the render's file."));
+        return;
+    }
+    // In the folder renders are saved to, else Pictures/Luminous.
+    std::string dir = gSavedPerAccountSettings.getString("SnapshotBaseDir");
+    if (dir.empty() || !LLFile::isdir(dir))
+    {
+#if LL_DARWIN
+        const std::string pictures = luminousPicturesFolder();
+#else
+        const std::string pictures;
+#endif
+        dir = pictures.empty() ? std::string() : gDirUtilp->add(pictures, "Luminous");
+        if (!dir.empty() && !LLFile::isdir(dir))
+        {
+            LLFile::mkdir(dir);
+        }
+    }
+    const std::string name = LuminousHDRSnapshot::chosenName();
+    const std::string to = dir.empty() ? std::string()
+        : LuminousHDRSnapshot::nextNumbered(dir, (name.empty() ? std::string("Luminous") : name) + "_Primfeed", copy ? extension : "jpg");
+    bool saved = false;
+    if (!to.empty())
+    {
+        if (copy)
+        {
+            saved = LLFile::copy(mPath, to);
+        }
+        else
+        {
+            // a JPEG of a very large picture can pass an image's 256 MB limit
+            LLPointer<LLImageJPEG> jpeg = new LLImageJPEG(95);
+            jpeg->enableOverSize();
+            saved = jpeg->encode(mPicture, 0.f) && jpeg->getDataSize() > 0 && jpeg->save(to);
+        }
+        if (!saved && LLFile::isfile(to))
+        {
+            LLFile::remove(to); // not a part of a picture left behind
+        }
+    }
+    const std::string file = to.empty() ? std::string("the picture") : gDirUtilp->getBaseFileName(to);
+    mSaved = (saved ? "Saved " : "Could not save ") + file;
+    mSaveFailed = !saved;
+    mSavedTimer.reset();
+    if (!saved)
+    {
+        LL_WARNS("LuminousHDRSnapshot") << "Could not save " << to << " for Primfeed" << LL_ENDL;
+        LLNotificationsUtil::add("SystemMessageTip", LLSD().with("MESSAGE", "Could not save " + file + " for Primfeed."));
+        return;
+    }
+    LL_INFOS("LuminousHDRSnapshot") << "Saved " << to << " for Primfeed" << LL_ENDL;
+    mKept = true;
+    bool on_clipboard = false;
+#if LL_DARWIN
+    on_clipboard = luminousCopyPictureFileToClipboard(to);
+#endif
+    // What to do on Primfeed, said here over the picture first: Finder and
+    // the browser come in front of the viewer once Open Primfeed is
+    // clicked (at once when the message is set not to show).
+    std::string message = on_clipboard
+        ? "The picture is on the clipboard, saved as " + file + ".\n\n"
+          "On Primfeed, click the pen at the top right (Create a new post), click in the text box, and press Cmd+V. "
+          "Finder shows the file too, to drag in instead."
+        : "The picture is saved as " + file + ".\n\n"
+          "On Primfeed, click the pen at the top right (Create a new post) and drag the file from Finder into the post.";
+    if (!mPlace.empty())
+    {
+        message += "\n\nFor where it was taken, choose Share > Copy the place afterwards and paste it into the post.";
+    }
+    message += "\n\nUntil Luminous is listed in Second Life's Third Party Viewer Directory, posting to Primfeed "
+               "takes this short detour; we have made it as easy as we can.";
+    LLNotificationsUtil::add("LuminousPrimfeedReady", LLSD().with("MESSAGE", message), LLSD(),
+        [to](const LLSD& notification, const LLSD& response)
+        {
+            if (LLNotificationsUtil::getSelectedOption(notification, response) != 0)
+            {
+                return;
+            }
+#if LL_DARWIN
+            luminousRevealInFinder(to);
+#endif
+            // the browser last, so that it is in front
+            if (!gSavedSettings.getBOOL("DisableExternalBrowser") && gViewerWindow && gViewerWindow->getWindow())
+            {
+                gViewerWindow->getWindow()->spawnWebBrowser("https://www.primfeed.com/", true);
+            }
+        });
 }
 
 void LuminousPictureView::requestClose()

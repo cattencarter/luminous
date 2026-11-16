@@ -817,12 +817,90 @@ void LLToolDragAndDrop::dragOrDrop3D( S32 x, S32 y, MASK mask, bool drop, EAccep
     }
     else
     {
-        // don't allow drag and drop onto transparent objects
-        gViewerWindow->pickAsync(x, y, mask, pickCallback, false, false);
+        // <Luminous> Over open water the pick is made at once: an asynchronous pick whose land lies beyond the draw
+        // distance never reaches pickCallback.
+        LLVector3d water_pos;
+        if (waterSurfaceUnderMouse(x, y, water_pos))
+        {
+            pick(gViewerWindow->pickImmediate(x, y, false, false));
+        }
+        else
+        // </Luminous>
+        {
+            // don't allow drag and drop onto transparent objects
+            gViewerWindow->pickAsync(x, y, mask, pickCallback, false, false);
+        }
     }
 
     *acceptance = mLastAccept;
 }
+
+// <Luminous>
+// static
+bool LLToolDragAndDrop::waterSurfaceUnderMouse(S32 x, S32 y, LLVector3d& water_pos_global)
+{
+    static LLCachedControl<bool> rez_on_water(gSavedSettings, "LuminousRezOnWater", true);
+    if (!rez_on_water)
+    {
+        return false;
+    }
+
+    const LLVector3d camera_pos = gAgentCamera.getCameraPositionGlobal();
+    const LLVector3d direction(gViewerWindow->mouseDirectionGlobal(x, y));
+    if (direction.mdV[VZ] > -0.001)
+    {
+        return false; // the ray does not come down to the water
+    }
+
+    LLWorld* world = LLWorld::getInstance();
+    LLViewerRegion* camera_regionp = world->getRegionFromPosGlobal(camera_pos);
+    if (!camera_regionp)
+    {
+        camera_regionp = gAgent.getRegion();
+    }
+    if (!camera_regionp || camera_pos.mdV[VZ] <= camera_regionp->getWaterHeight())
+    {
+        return false; // camera at or under the water
+    }
+
+    // Each region's water lies at its own height: the ray meets the water first at the nearest point where it comes
+    // down to a region's water height inside that region.
+    const F64 draw_distance = gAgentCamera.mDrawDistance;
+    F64 water_distance = -1.0;
+    for (LLViewerRegion* regionp : world->getRegionList())
+    {
+        const F64 height_above = camera_pos.mdV[VZ] - regionp->getWaterHeight();
+        if (height_above <= 0.0)
+        {
+            continue;
+        }
+        const F64 distance = height_above / -direction.mdV[VZ];
+        if (distance > draw_distance || (water_distance >= 0.0 && distance >= water_distance))
+        {
+            continue;
+        }
+        if (regionp->pointInRegionGlobal(camera_pos + direction * distance))
+        {
+            water_distance = distance;
+        }
+    }
+    if (water_distance < 0.0)
+    {
+        return false;
+    }
+
+    LLVector3d land_pos;
+    if (gViewerWindow->mousePointOnLandGlobal(x, y, &land_pos, false)
+        && (land_pos - camera_pos).length() <= water_distance)
+    {
+        return false; // land comes first
+    }
+
+    // A little above the water, as land picks are a little above the ground.
+    water_pos_global = camera_pos + direction * water_distance + LLVector3d::z_axis * 0.1;
+    return true;
+}
+// </Luminous>
 
 void LLToolDragAndDrop::pickCallback(const LLPickInfo& pick_info)
 {
@@ -890,6 +968,34 @@ void LLToolDragAndDrop::pick(const LLPickInfo& pick_info)
         hit_face = -1;
     }
 
+    // <Luminous>
+    // A land pick without a position: LLPickInfo::fetchResults found the land beyond the draw distance.
+    LLVector3d hit_pos = pick_info.mPosGlobal;
+    if (target == DT_LAND && hit_pos.isExactlyZero())
+    {
+        target = DT_NONE;
+    }
+
+    // With only land or nothing under the mouse, a drop over open water lands on the water surface. An empty pick
+    // can also be an RLVa overlay that blocks touch, so it counts only while no overlay is set.
+    if (!hit_obj
+        && (pick_info.mPickType == LLPickInfo::PICK_LAND
+            || (pick_info.mPickType == LLPickInfo::PICK_INVALID && !RlvActions::hasBehaviour(RLV_BHVR_SETOVERLAY))))
+    {
+        LLVector3d water_pos;
+        if (waterSurfaceUnderMouse(pick_info.mMousePt.mX, pick_info.mMousePt.mY, water_pos))
+        {
+            target = DT_LAND;
+            hit_face = -1;
+            hit_pos = water_pos;
+        }
+    }
+
+    // The drop functions below rez at mLastHitPos, seen from mLastCameraPos: this pick's, not the one before.
+    mLastHitPos = hit_pos;
+    mLastCameraPos = gAgentCamera.getCameraPositionGlobal();
+    // </Luminous>
+
     mLastAccept = ACCEPT_YES_MULTI;
 
     for (mCurItemIndex = 0; mCurItemIndex < (S32)mCargoIDs.size(); mCurItemIndex++)
@@ -941,9 +1047,7 @@ void LLToolDragAndDrop::pick(const LLPickInfo& pick_info)
     }
     ECursorType cursor = acceptanceToCursor( mLastAccept );
     gViewerWindow->getWindow()->setCursor( cursor );
-
-    mLastHitPos = pick_info.mPosGlobal;
-    mLastCameraPos = gAgentCamera.getCameraPositionGlobal();
+    // <Luminous/> mLastHitPos and mLastCameraPos are set before the drop functions run.
 }
 
 // static

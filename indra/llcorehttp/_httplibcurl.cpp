@@ -296,7 +296,7 @@ void HttpLibcurl::cancelRequest(const HttpOpRequest::ptr_t &op)
 
     // Detach from multi and recycle handle
     curl_multi_remove_handle(mMultiHandles[op->mReqPolicy], op->mCurlHandle);
-    mHandleCache.freeHandle(op->mCurlHandle);
+    freeOpHandle(op); // <Luminous>
     op->mCurlHandle = NULL;
 
     // Tracing
@@ -468,7 +468,7 @@ bool HttpLibcurl::completeRequest(CURLM * multi_handle, CURL * handle, CURLcode 
     {
         // Detach from multi and recycle handle
         curl_multi_remove_handle(multi_handle, handle);
-        mHandleCache.freeHandle(op->mCurlHandle);
+        freeOpHandle(op); // <Luminous>
     }
     else
     {
@@ -582,6 +582,21 @@ void HttpLibcurl::policyUpdated(unsigned int policy_class)
         policy.stallPolicy(policy_class, true);
     }
 }
+
+// <Luminous>
+void HttpLibcurl::freeOpHandle(const opReqPtr_t & op)
+{
+    if (op->mCurlNoCookies)
+    {
+        // the request's own handle (HttpOptions::setNoCookies): closed, never given to another request
+        curl_easy_cleanup(op->mCurlHandle);
+    }
+    else
+    {
+        mHandleCache.freeHandle(op->mCurlHandle);
+    }
+}
+// </Luminous>
 
 // ---------------------------------------
 // HttpLibcurl::HandleCache

@@ -90,6 +90,8 @@
 #include <iterator>
 #include <tuple> // <FS:Beq/> FIRE-30694 DeadObject Spamming cleanup
 #include "fsassetblacklist.h"
+#include "luminousnameblock.h"
+#include "luminousobjectmotion.h" // <Luminous/>
 #include "fsfloaterimport.h"
 #include "fscommon.h"
 #include "llfloaterreg.h"
@@ -1120,6 +1122,10 @@ void LLViewerObjectList::update(LLAgent &agent)
     }
 
     std::vector<LLViewerObject*>::iterator idle_end = idle_list.begin()+idle_count;
+
+    // <Luminous> MetalFX temporal: the texture animations' steps of the last update go, also where none step below
+    LuminousObjectMotion::beginTextureSteps();
+    // </Luminous>
 
     // <FS:Ansariel> Speed up debug settings
     //if (gSavedSettings.getBOOL("FreezeTime"))
@@ -2274,6 +2280,13 @@ LLViewerObject *LLViewerObjectList::createObjectFromCache(const LLPCode pcode, L
 
     updateActive(objectp);
 
+    // <Luminous> name block
+    if (LuminousNameBlock::instanceExists())
+    {
+        LuminousNameBlock::instance().onObjectCreated(uuid, true);
+    }
+    // </Luminous>
+
     return objectp;
 }
 
@@ -2327,6 +2340,13 @@ LLViewerObject *LLViewerObjectList::createObject(const LLPCode pcode, LLViewerRe
     mObjects.push_back(objectp);
 
     updateActive(objectp);
+
+    // <Luminous> name block
+    if (LuminousNameBlock::instanceExists())
+    {
+        LuminousNameBlock::instance().onObjectCreated(fullid, false);
+    }
+    // </Luminous>
 
     return objectp;
 }

@@ -38,6 +38,12 @@
     <floater.string name="blacklist_flag_mute_avatar_gestures_sounds">
         Avatar gestures sounds
     </floater.string>
+    <floater.string name="blacklist_flag_object_name">
+        Every object with this name
+    </floater.string>
+    <floater.string name="blacklist_flag_object_name_owner">
+        This name, owned by [OWNER]
+    </floater.string>
     <floater.string name="blacklist_flag_unknown">
         Unknown flag
     </floater.string>
@@ -165,6 +171,16 @@
 	 height="24"
 	 width="90"
 	 left_delta="0"
+	 bottom="-6"
+	 follows="left|bottom"/>
+	<button
+	 name="add_name_btn"
+	 label="Add name..."
+	 tool_tip="Hide and silence every rezzed object with a name you type."
+	 font="SansSerif"
+	 height="24"
+	 width="110"
+	 left_pad="10"
 	 bottom="-6"
 	 follows="left|bottom"/>
 	<button

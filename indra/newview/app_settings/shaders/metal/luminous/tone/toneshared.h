@@ -20,13 +20,20 @@ enum LuminousToneSlots : unsigned int
     LUMINOUS_TONE_BUFFER_FRAME = 0,     ///< LuminousPictureFrameConstants (the picture frame's program)
     LUMINOUS_TONE_BUFFER_TEMPORAL = 0,  ///< LuminousTemporalConstants (MetalFX temporal's programs)
     LUMINOUS_TONE_TEXTURE_BEFORE = 5,   ///< the HDR frame before the alpha drawn since (the reactive mask)
-    LUMINOUS_TONE_TEXTURE_MASK = 6,     ///< the reactive mask so far this frame
+    LUMINOUS_TONE_TEXTURE_MASK = 6,     ///< the reactive mask so far this frame (the motion view: the scaler's)
     LUMINOUS_TONE_TEXTURE_BEFORE_DEPTH = 7, ///< the depth before the alpha drawn since (the reactive mask)
     LUMINOUS_TONE_BUFFER_OVERLAY = 1,   ///< LuminousOverlayConstants (the overlays after the present)
     LUMINOUS_TONE_TEXTURE_OVERLAY = 8,  ///< a copy of the world view as the present drew it (the capture frame's margin)
+    LUMINOUS_TONE_TEXTURE_OBJECT_MOTION = 9, ///< MetalFX temporal's object motion, RGBA16F at the live view's size
+                                             ///< (luminousobjectmotion.cpp, luminousMotionF.glsl): the motion in red
+                                             ///< and green for the motion texture and the settles, the reactive output
+                                             ///< in blue for a stage of the reactive mask
+    LUMINOUS_TONE_TEXTURE_MOTION = 10,  ///< MetalFX temporal's motion texture of this frame, for the motion view
     LUMINOUS_TONE_BUFFER_SCREEN = 15,   ///< LuminousTemporalScreenConstants (MetalFX temporal's presents)
     LUMINOUS_TONE_HOLD_BLOCK = 32,      ///< texels per side of a block the hold compares
     LUMINOUS_TONE_HOLD_TILE = 8,        ///< texels per side of a tile the hold's first pass compares (a block's part)
+    LUMINOUS_TONE_OBJECT_MOTION_LIMIT = 8192, ///< texels each way an object's motion is clamped to
+    LUMINOUS_TONE_OBJECT_MOTION_NONE = 32768, ///< both channels of a texel no object's motion was drawn into
 };
 
 /// The reactive mask's stages: how strongly the light alpha added marks a texel, and where it does.
@@ -45,7 +52,8 @@ struct LuminousTemporalMaskConstants
 static_assert(sizeof(LuminousTemporalMaskConstants) == 32, "LuminousTemporalMaskConstants must be 32 bytes in C++ and MSL");
 
 /// A blurred layer of a frame drawn for the temporal scaler (Second Life's depth of field, the glow map), made where
-/// the camera without the jitter saw the frame, averaged with the layers of the frames before, moved by the camera.
+/// the camera without the jitter saw the frame, averaged with the layers of the frames before, moved by the camera, or
+/// by the object motion where it was drawn (luminous_temporal_settle_object_fs).
 struct LuminousTemporalSettleConstants
 {
     simd_float4x4 toLast;    ///< this frame's clip space, without the jitter, to the last frame's
@@ -54,7 +62,8 @@ struct LuminousTemporalSettleConstants
     simd_float2 depthJitter; ///< this frame's jitter in texture coordinates: a place's depth is read that far on
     simd_float2 frameSize;   ///< the live view's size in texels, for the camera's motion
     float share;             ///< this frame's share where the camera is still and the layer unchanged: 1 / frames
-    float motionFull;        ///< texels of the live view the camera moved a place by, for this frame taken whole
+    float motionFull;        ///< texels of the live view a place moved by, for this frame taken whole: the camera's
+                             ///< motion, or a surface's own where the object motion was drawn and that is smaller
     float reset;             ///< 1: no last average, this frame's layer as it is
     float react;             ///< 1: this frame also taken whole where the layer changed much; 2: where the last weight
                              ///< (alpha) lies outside this frame's round the place; 0: by the camera alone
@@ -72,12 +81,18 @@ struct LuminousTemporalConstants
     float grain;                  ///< film grain on the scaled frame, 0 to 1 (0 without)
     float grainSize;              ///< pixels of a 1080-line frame
     float outputHeight;           ///< the scaled frame's height in texels
+    float motionView;             ///< the present's motion view (LuminousMetalFXMotionView): 0 off, 1 the motion, 2 the
+                                  ///< object motion's texels over a grey picture, 3 the reactive mask the scaler was
+                                  ///< given
+    float objectMotion;           ///< 1: the motion took the object motion this frame (its texture is bound)
+    float motionDilate;           ///< 1: the motion pass dilates the motion by closest depth (LuminousMetalFXMotionDilate)
+    float reactiveMask;           ///< 1: the motion view binds the reactive mask the scaler was given this frame
     float pad0;
     float pad1;
     float pad2;
 };
 
-static_assert(sizeof(LuminousTemporalConstants) == 112, "LuminousTemporalConstants must be 112 bytes in C++ and MSL");
+static_assert(sizeof(LuminousTemporalConstants) == 128, "LuminousTemporalConstants must be 128 bytes in C++ and MSL");
 
 /// What a frame drawn for MetalFX temporal leaves out because it is fixed to the screen, drawn by the present on the
 /// scaled frame at the world view's size, or on the Catmull-Rom scaled one when the scaler gives no frame: live lens

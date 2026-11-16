@@ -16,6 +16,7 @@ enum LuminousRenderSlots : unsigned int
     LUMINOUS_RENDER_TEXTURE_EXPOSURE = 1,  ///< reading: the metered exposure, one texel
     LUMINOUS_RENDER_TEXTURE_PICTURE = 2,   ///< reading: the picture at its size, top row first
     LUMINOUS_RENDER_GROUP = 16,            ///< threads per threadgroup on each axis of the read
+    LUMINOUS_RENDER_TEXTURE_DEPTH = 1,     ///< a piece's store: the piece's depth
 };
 
 struct LuminousRenderParams
@@ -44,5 +45,16 @@ struct LuminousRenderResolve
 };
 
 static_assert(sizeof(LuminousRenderResolve) == 48, "LuminousRenderResolve must be 48 bytes in C++ and MSL");
+
+/// A render drawn in pieces: one piece's core -- its light, alpha included, and its depth -- stored at its place in
+/// the whole frame. The pass draws over the core's place only (its viewport), each fragment reading the piece at
+/// the same offset into the core.
+struct LuminousRenderPieceStore
+{
+    simd_uint2 from;  ///< the core's lower left in the piece (rows bottom first)
+    simd_uint2 to;    ///< its lower left in the whole frame
+};
+
+static_assert(sizeof(LuminousRenderPieceStore) == 16, "LuminousRenderPieceStore must be 16 bytes in C++ and MSL");
 
 #endif // LUMINOUS_RENDER_SHARED_H

@@ -5886,8 +5886,9 @@ void main() { frag_color = vec4(1.0); }
                 ensure_equals(at + "height", desc.height, U32(image->getHeight(0)));
                 ensure_equals(at + "mip levels", desc.mipLevels,
                               image->getUseMipMaps() ? U32(image->getMaxDiscardLevel() + 1) : 1u);
-                // createGLTexture's textures are sampled and read back (P2-08).
-                ensure_equals(at + "usage", U32(desc.usage), U32(TEXTURE_SAMPLED | TEXTURE_READBACK));
+                // createGLTexture's textures are sampled and read back (P2-08), and images of the scene.
+                ensure_equals(at + "usage", U32(desc.usage),
+                              U32(TEXTURE_SAMPLED | TEXTURE_READBACK | TEXTURE_SCENE_LOD_BIAS));
                 ensure_equals(at + "format", U32(desc.format), U32(described.format));
                 ensure_equals(at + "glFormat", desc.glFormat, described.glFormat);
                 ensure(at + "swizzle", desc.swizzle == described.swizzle);
@@ -12211,9 +12212,9 @@ void main()
             {
                 TextureDesc desc;
                 // A re-specification keeps the texture's usage, which createGLTexture's is (P2-08).
-                ensure("(d) described", LLImageGL::describeTexture(desc, LLTexUnit::TT_TEXTURE,
-                                                                   TEXTURE_SAMPLED | TEXTURE_READBACK, internal, primary,
-                                                                   type, true, width, height, levels));
+                constexpr U8 usage = TEXTURE_SAMPLED | TEXTURE_READBACK | TEXTURE_SCENE_LOD_BIAS;
+                ensure("(d) described", LLImageGL::describeTexture(desc, LLTexUnit::TT_TEXTURE, usage, internal,
+                                                                   primary, type, true, width, height, levels));
                 return desc;
             };
             const std::map<std::string, TextureDesc> respecified = {
@@ -40260,8 +40261,8 @@ namespace tut
             ensure("the colour attachment", (target.getRHITexture(0)->desc().usage & TEXTURE_READBACK) != 0);
             ensure("the depth attachment", (target.getRHIDepth()->desc().usage & TEXTURE_READBACK) != 0);
             LLPointer<LLImageGL> image = makeImage(8, 8, 4, false);
-            ensure("LLImageGL's 2D texture",
-                   image->getRHITexture()->desc().usage == (TEXTURE_SAMPLED | TEXTURE_READBACK));
+            ensure("LLImageGL's 2D texture", image->getRHITexture()->desc().usage
+                                                 == (TEXTURE_SAMPLED | TEXTURE_READBACK | TEXTURE_SCENE_LOD_BIAS));
             image = nullptr;
             target.release();
         }
@@ -41743,8 +41744,8 @@ namespace
                     ensure(at + "RGBA8Unorm", texture->desc().format == Format::RGBA8Unorm);
                     ensure_equals(at + "9 levels", texture->desc().mipLevels, 9u);
                     ensure_equals(at + "described with GL_RGBA", texture->desc().glFormat, U32(GL_RGBA));
-                    ensure_equals(at + "SAMPLED | RENDER_TARGET", U32(texture->desc().usage),
-                                  U32(TEXTURE_SAMPLED | TEXTURE_RENDER_TARGET));
+                    ensure_equals(at + "SAMPLED | RENDER_TARGET | SCENE_LOD_BIAS", U32(texture->desc().usage),
+                                  U32(TEXTURE_SAMPLED | TEXTURE_RENDER_TARGET | TEXTURE_SCENE_LOD_BIAS));
                     ensure_equals(at + "the key is its id", image->getTextureKey(), texture->id());
                 }
                 else

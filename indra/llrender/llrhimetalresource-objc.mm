@@ -612,6 +612,8 @@ MTLSamplerDescriptor* metalSamplerDescriptor(const SamplerDesc& desc, bool aniso
     // GL's whole mip chain (MTLSampler.h:178-190).
     metal.lodMinClamp = 0.f;
     metal.lodMaxClamp = FLT_MAX;
+    // The bias added to the level the sampling computes (MTLSampler.h:200-204); 0, Metal's default, unless a draw set it.
+    metal.lodBias = desc.lodBias;
     // Argument tables bind it by its gpuResourceID (MTLSampler.h:213-216, 246-249).
     metal.supportArgumentBuffers = YES;
     return metal;

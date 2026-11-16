@@ -37,6 +37,7 @@ class LLDrawable;
 class LLFace;
 class LLCharacter;
 class LLViewerTexLayerSet;
+class LLVertexBuffer; // <Luminous/>
 
 //-----------------------------------------------------------------------------
 // class LLViewerJointMesh
@@ -52,6 +53,26 @@ public:
 
     // Render time method to upload batches of joint matrices
     void uploadJointMatrices();
+
+    // <Luminous> MetalFX temporal's object motion (luminousobjectmotion.cpp)
+    // The floats of the joint matrices uploadJointMatrices gives the avatar programs: 45 vec4,
+    // LL_CHARACTER_MAX_JOINTS_PER_MESH to each of the three rows
+    static constexpr U32 LUMINOUS_JOINT_FLOATS = LL_CHARACTER_MAX_JOINTS_PER_MESH * 3 * 4;
+    struct LuminousMotionDraw
+    {
+        LLVertexBuffer* buffer = nullptr;
+        U32 start = 0;
+        U32 end = 0;
+        U32 count = 0;
+        U32 offset = 0;
+        bool skinned = false; // placed by its joints (uploadJointMatrices), else by its own world matrix
+    };
+    // Whether drawShape draws this mesh (its own checks), and what it draws: its face's buffer and range
+    bool luminousMotionDraw(LuminousMotionDraw& draw);
+    // The joint matrices uploadJointMatrices gives the avatar programs, without the view: to the agent frame, in the
+    // same layout (the rows of joint n at n, n + 15 and n + 30), zero past the mesh's joints
+    void luminousJointMatrices(F32 matrices[LUMINOUS_JOINT_FLOATS]);
+    // </Luminous>
 
     // overloaded from base class
     U32 drawShape( F32 pixelArea, bool first_pass, bool is_dummy ) override;

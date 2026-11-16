@@ -64,7 +64,7 @@ namespace tut
     // 190-192 (P3-08b, a block of its own to 194); t195-t198 are tests 195-198 (P3-08 lane B); t200-t206 are tests
     // 200-206 (P3-04b, from 200 likewise); t210-t212 are tests 210-212 (P3-09b, from 210 likewise); t213 and t214 are tests
     // 213 and 214 (P3-R4); t215-t217 are tests 215-217; t231 is test 231 (vsync-present2)
-    typedef test_group<rhimetal_data, 231> rhimetal_group;
+    typedef test_group<rhimetal_data, 240> rhimetal_group;
     typedef rhimetal_group::object object;
     rhimetal_group rhimetal_test_group("Metal backend");
 
@@ -1732,5 +1732,13 @@ namespace tut
                       "a present flips into a finished frame, endFrame copies it into a drawable once the GPU has "
                       "finished it, held frames wait and only the newest goes, a readback and VSync on present directly");
         runMetalTest(231);
+    }
+
+    template<> template<>
+    void object::test<240>()
+    {
+        set_test_name("t240: drawIndexed with 16-bit indices from an odd first index (an address 2 bytes past a multiple "
+                      "of 4) draws its list as written, from a static and a dynamic buffer");
+        runMetalTest(240);
     }
 }

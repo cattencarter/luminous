@@ -2072,7 +2072,7 @@ bool LLAppViewer::doFrame()
                     || !gFocusMgr.getAppHasFocus()))
             {
                 // Sleep if we're not rendering, or the window is minimized.
-                static LLCachedControl<S32> s_background_yield_time(gSavedSettings, "BackgroundYieldTime", 40);
+                static LLCachedControl<S32> s_background_yield_time(gSavedSettings, "BackgroundYieldTime", 100); // <Luminous/> 100, Firestorm 40
                 // <FS:Ansariel> FIRE-32722: Make sure to idle if actually minimized
                 //S32 milliseconds_to_sleep = llclamp((S32)s_background_yield_time, 0, 1000);
                 S32 milliseconds_to_sleep = llclamp((S32)s_background_yield_time, (gViewerWindow && gViewerWindow->getWindow()->getMinimized()) ? 1 : 0, 1000);

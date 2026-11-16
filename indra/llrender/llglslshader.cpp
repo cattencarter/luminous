@@ -3088,6 +3088,18 @@ void LLGLSLShader::uniformMatrix3fv(const LLStaticHashedString& uniform, U32 cou
         sendUniform(GLUniformCall::Matrix3fv, location, count, transpose, v);
     }
 }
+
+// by name, as uniformMatrix3x4fv by index: an array of count mat3x4, 12 floats each
+void LLGLSLShader::uniformMatrix3x4fv(const LLStaticHashedString& uniform, U32 count, GLboolean transpose, const GLfloat* v)
+{
+    LL_PROFILE_ZONE_SCOPED_CATEGORY_SHADER;
+    GLint location = getUniformLocation(uniform);
+
+    if (location >= 0)
+    {
+        sendUniform(GLUniformCall::Matrix3x4fv, location, count, transpose, v);
+    }
+}
 // </Luminous>
 
 void LLGLSLShader::setMinimumAlpha(F32 minimum)

@@ -836,12 +836,33 @@ std::unique_ptr<std::vector<std::string>> LLFilePicker::navOpenFilterProc(ELoadF
     return allowedv;
 }
 
+// <Luminous> Test tool: LuminousTestOpenFile, when not empty, is the file the next open dialog
+// picks without showing its panel; the setting empties itself. Not in any panel.
+static bool luminous_test_open_file(std::vector<std::string>& files)
+{
+    const std::string path = gSavedSettings.getString("LuminousTestOpenFile");
+    if (path.empty())
+    {
+        return false;
+    }
+    gSavedSettings.setString("LuminousTestOpenFile", "");
+    files.push_back(path);
+    LL_INFOS("LuminousTest") << "Open dialog answered by LuminousTestOpenFile: " << path << LL_ENDL;
+    return true;
+}
+// </Luminous>
+
 bool LLFilePicker::doNavChooseDialog(ELoadFilter filter)
 {
     // if local file browsing is turned off, return without opening dialog
     if (!check_local_file_access_enabled())
     {
         return false;
+    }
+
+    if (luminous_test_open_file(mFiles)) // <Luminous/>
+    {
+        return true;
     }
 
     gViewerWindow->getWindow()->beforeDialog();
@@ -871,6 +892,12 @@ bool LLFilePicker::doNavChooseDialogModeless(ELoadFilter filter,
     if (!check_local_file_access_enabled())
     {
         return false;
+    }
+
+    if (luminous_test_open_file(mFiles)) // <Luminous/>
+    {
+        callback(true, mFiles, userdata);
+        return true;
     }
 
     std::unique_ptr<std::vector<std::string>> allowed_types=navOpenFilterProc(filter);

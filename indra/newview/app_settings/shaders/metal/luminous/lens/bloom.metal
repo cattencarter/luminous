@@ -163,12 +163,15 @@ fragment float4 luminous_lens_tone_fs(
 
     if ((k.mode & LUMINOUS_LENS_TONE_CLARITY) != 0)
     {
-        // how far the pixel's luminance stands from its surroundings', in stops, limited to two either way
+        // how far the pixel's luminance stands from its surroundings', in stops, limited to two either way and
+        // weighed down as it grows (exp(-d^2), as luminousClarityF.glsl), so bright points and hard edges leave
+        // next to no ring
         const float3 around = mix(blur.sample(lensLinearClamp, uv, level(0.0)).rgb,
                                   lensTent9(clarityUp, uv, k.clarityTexel), k.clarityWeight);
         const float l = max(dot(c, LENS_LUMA), 1e-5);
         const float a = max(dot(around, LENS_LUMA), 1e-5);
-        const float detail = clamp(log2(l / a), -2.0, 2.0);
+        const float stops = clamp(log2(l / a), -2.0, 2.0);
+        const float detail = stops * exp(-stops * stops);
         c *= exp2(p.clarity * 0.6 * detail);
     }
 

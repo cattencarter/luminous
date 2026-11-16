@@ -10,7 +10,7 @@
 	<check_box label="Disabilita ricerca VRAM attraverso test WMI sui sistemi Windows" name="FSDisableWMIProbing"/>
 	<check_box tool_tip="Questa impostazione può ridurre il carico di resa per gli avatar lontani, ma può anche causare un rallentamento nelle loro animazioni" label="Abilita animation timesteps (sperimentale)" name="UseAnimationTimeSteps"/>
 	<text name="BackgroundYieldTimeText">
-		Quantità di tempo in millisecondi da lasciare in ogni frame alle altre applicazioni quando [APP_NAME] non è in primo piano (predefinito 40; 1 secondo = 1000 millisecondi):
+		Quantità di tempo in millisecondi da lasciare in ogni frame alle altre applicazioni quando [APP_NAME] non è in primo piano (predefinito 100; 1 secondo = 1000 millisecondi):
 	</text>
 	<button label="Ripristina tutte le impostazioni" label_selected="Ripristina tutte le impostazioni" name="clear_settings"/>
 </panel>

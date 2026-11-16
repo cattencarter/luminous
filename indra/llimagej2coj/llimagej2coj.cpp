@@ -866,6 +866,14 @@ bool LLImageJ2COJ::decodeImpl(LLImageJ2C &base, LLImageRaw &raw_image, F32 decod
         // reset the channel count if necessary
         if (raw_image.getComponents() != channels)
         {
+            // <Luminous> an image without pixels only takes the channel count, so a failed decode is not counted as
+            // a failed allocation ("textures discarded due to insufficient memory")
+            if (raw_image.getWidth() <= 0 || raw_image.getHeight() <= 0 || channels <= 0)
+            {
+                raw_image.setSize(raw_image.getWidth(), raw_image.getHeight(), channels);
+            }
+            else
+            // </Luminous>
             raw_image.resize(raw_image.getWidth(), raw_image.getHeight(), S8(channels));
         }
 

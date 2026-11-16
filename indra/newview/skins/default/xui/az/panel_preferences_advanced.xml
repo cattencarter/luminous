@@ -10,7 +10,7 @@
 	<check_box label="Windows sistemlərində WMI ilə VRAM aşkarlamasını söndür" name="FSDisableWMIProbing"/>
 	<check_box label="Menyu axtarışını göstər" name="show_search_menu_check"/>
 	<text name="BackgroundYieldTimeText">
-		[APP_NAME] ön planda olmadıqda, hər bir kadrı digər tətbiqlərə qəbul etmək üçün millisaniyələrlə vaxtın miqdarı (defolt: 40; 1 saniyə = 1000 millisaniyə):
+		[APP_NAME] ön planda olmadıqda, hər bir kadrı digər tətbiqlərə qəbul etmək üçün millisaniyələrlə vaxtın miqdarı (defolt: 100; 1 saniyə = 1000 millisaniyə):
 	</text>
 	<button label="Yaradılma icazələrinin standart dəyərlərini təyin et" name="default_creation_permissions" />
 	<button label="Bütün seçimlərin sıfırlanması" label_selected="Bütün seçimlərin sıfırlanması..." name="clear_settings"/>

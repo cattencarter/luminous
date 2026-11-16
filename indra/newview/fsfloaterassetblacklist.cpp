@@ -37,6 +37,7 @@
 #include "llfiltereditor.h"
 #include "llfloaterreg.h"
 #include "llviewerobjectlist.h"
+#include "luminousnameblock.h"
 
 
 FSFloaterAssetBlacklist::FSFloaterAssetBlacklist(const LLSD& key)
@@ -70,6 +71,7 @@ bool FSFloaterAssetBlacklist::postBuild()
     childSetAction("play_btn", boost::bind(&FSFloaterAssetBlacklist::onPlayBtn, this));
     childSetAction("stop_btn", boost::bind(&FSFloaterAssetBlacklist::onStopBtn, this));
     childSetAction("close_btn", boost::bind(&FSFloaterAssetBlacklist::onCloseBtn, this));
+    childSetAction("add_name_btn", [](LLUICtrl*, const LLSD&) { LuminousNameBlock::showAddNameDialog(); }); // <Luminous>
 
     getChild<LLFilterEditor>("filter_input")->setCommitCallback(boost::bind(&FSFloaterAssetBlacklist::onFilterEdit, this, _2));
 
@@ -129,6 +131,8 @@ std::string FSFloaterAssetBlacklist::getFlagString(FSAssetBlacklist::eBlacklistF
             return getString("blacklist_flag_mute_avatar_rezzed_objects_sounds");
         case FSAssetBlacklist::eBlacklistFlag::GESTURE:
             return getString("blacklist_flag_mute_avatar_gestures_sounds");
+        case FSAssetBlacklist::eBlacklistFlag::NAME:
+            return getString("blacklist_flag_object_name");
         default:
             return getString("blacklist_flag_unknown");
     }
@@ -183,6 +187,14 @@ void FSFloaterAssetBlacklist::addElementToList(const LLUUID& id, const FSAssetBl
             element["columns"][3]["column"] = "flags";
             element["columns"][3]["type"]   = "text";
             element["columns"][3]["value"]  = getFlagString(flag);
+            // <Luminous> a name entry for one owner's objects
+            if (flag == FSAssetBlacklist::eBlacklistFlag::NAME && data.owner.notNull())
+            {
+                LLStringUtil::format_map_t args;
+                args["[OWNER]"] = !data.owner_name.empty() ? data.owner_name : data.owner.asString();
+                element["columns"][3]["value"] = getString("blacklist_flag_object_name_owner", args);
+            }
+            // </Luminous>
 
             element["columns"][4]["column"] = "date";
             element["columns"][4]["type"] = "text";

@@ -659,6 +659,11 @@ enum TextureUsage : U8
     /// programs, and its contents lost at every pass break (a segment's end and resume). On Metal memoryless storage,
     /// in tile memory, taking no memory of its own; with RENDER_TARGET only; Capabilities::computePasses (Metal).
     TEXTURE_MEMORYLESS = 1 << 4,
+    /// An image of the scene: a translated program's mipmapped, not comparing sampling of it takes the encoder's scene
+    /// LOD bias (Encoder::setSceneLodBias) when it is 2D with more than one mip level. LLImageGL sets it on the 2D
+    /// textures an image owns; LLRenderTarget's attachments and the pipeline's own textures (noise, lookup tables) have
+    /// it not. It changes nothing in how a backend makes, writes or binds the texture.
+    TEXTURE_SCENE_LOD_BIAS = 1 << 5,
 };
 
 struct TextureDesc
@@ -718,6 +723,10 @@ struct SamplerDesc
     AddressMode addressW = AddressMode::Repeat;
     bool compare = false; ///< sampler2DShadow gets a comparing sampler
     CompareFunc compareFunc = CompareFunc::LessEqual;
+    /// Added to the mip level a sampling computes from its derivatives (Metal's lodBias, in steps of 1/64; validate
+    /// refuses one that is not finite or not from -16 to under 16). 0 from the facades; on Metal a draw sets it from
+    /// Encoder::setSceneLodBias. GL never reads it.
+    F32 lodBias = 0.f;
 
     bool operator==(const SamplerDesc&) const = default;
 };
@@ -1410,6 +1419,12 @@ public:
     /// nothing is bound to reads a default texture of the sampler's type that returns
     /// (0, 0, 0, 1), as on GL. Null unbinds the channel.
     virtual void setTexture(U32 channel, Texture* texture, const SamplerDesc& sampling) = 0;
+    /// A LOD bias for the following draws, until set again (0: none): a translated program's sampling of a 2D texture
+    /// made with TEXTURE_SCENE_LOD_BIAS, with more than one mip level and a mipmapped, not comparing sampling, gets a
+    /// sampler with this lodBias (SamplerDesc). Native bindings (setNativeSampler) keep theirs. The
+    /// bias is rounded to Metal's steps of 1/64 and kept from -16 to under 16; anything not finite is 0. Nothing by
+    /// default (GL).
+    virtual void setSceneLodBias(F32 /*bias*/) {}
     /// blockIndex is a slot shared by every program, like GL's binding points. For LLGLSLShader's
     /// named blocks the slot is their UniformBlock, read by every program with the block of that
     /// name whatever its index in the program's reflection. On GL that is binding point

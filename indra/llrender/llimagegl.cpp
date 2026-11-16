@@ -358,6 +358,12 @@ static LLPointer<LL::RHI::Texture> create_rhi_texture(const LL::RHI::TextureDesc
     return device->createTexture(desc);
 }
 
+// <Luminous> createGLTexture's textures: sampled, read back, and images of the scene, whose mipmapped sampling takes
+// the encoder's scene LOD bias (TEXTURE_SCENE_LOD_BIAS)
+static constexpr U8 IMAGE_TEXTURE_USAGE =
+    LL::RHI::TEXTURE_SAMPLED | LL::RHI::TEXTURE_READBACK | LL::RHI::TEXTURE_SCENE_LOD_BIAS;
+// </Luminous>
+
 // [Viewer Lab] The GL name LLImageGL keeps in mTexName for LLTexUnit, getTexName and the uploads, 0 off GL; the
 // GL backend's state in llrender
 static U32 gl_name(const LLPointer<LL::RHI::Texture>& texture)
@@ -3034,6 +3040,9 @@ bool LLImageGL::createEmptyOwnTexture(U8 usage, U32 mip_levels, bool allow_compr
 
     // Described as createGLTexture's data path describes a 2D image (the image's formats at its full size), with the
     // caller's usage, levels and compression; specifyOwnLevel uploads to a 2D texture only
+    // <Luminous> An image of the scene too, as createGLTexture's (TEXTURE_SCENE_LOD_BIAS)
+    usage = U8(usage | LL::RHI::TEXTURE_SCENE_LOD_BIAS);
+    // </Luminous>
     LL::RHI::TextureDesc desc;
     LLPointer<LL::RHI::Texture> texture;
     if (mTarget == GL_TEXTURE_2D && mBindTarget == LLTexUnit::TT_TEXTURE)
@@ -3261,7 +3270,7 @@ bool LLImageGL::createGLTexture(S32 discard_level, const U8* data_in, bool data_
         && has_no_gl_name(mRHITexture, mTexName) && mTarget == GL_TEXTURE_2D && mBindTarget == LLTexUnit::TT_TEXTURE)
     {
         LL::RHI::TextureDesc wanted;
-        if (describeTexture(wanted, LLTexUnit::TT_TEXTURE, LL::RHI::TEXTURE_SAMPLED | LL::RHI::TEXTURE_READBACK,
+        if (describeTexture(wanted, LLTexUnit::TT_TEXTURE, IMAGE_TEXTURE_USAGE, // <Luminous/> the new texture's usage
                             mFormatInternal, mFormatPrimary, mFormatType, mAllowCompression, getWidth(discard_level),
                             getHeight(discard_level), mUseMipMaps ? U32(mMaxDiscardLevel - discard_level + 1) : 1u)
             && wanted == mRHITexture->desc())
@@ -3316,7 +3325,7 @@ bool LLImageGL::createGLTexture(S32 discard_level, const U8* data_in, bool data_
         if (mTarget == GL_TEXTURE_2D && mBindTarget == LLTexUnit::TT_TEXTURE)
         {
             LL::RHI::TextureDesc desc;
-            if (describeTexture(desc, LLTexUnit::TT_TEXTURE, LL::RHI::TEXTURE_SAMPLED | LL::RHI::TEXTURE_READBACK,
+            if (describeTexture(desc, LLTexUnit::TT_TEXTURE, IMAGE_TEXTURE_USAGE, // <Luminous/> a scene image too
                                 mFormatInternal, mFormatPrimary,
                                 mFormatType, mAllowCompression, getWidth(discard_level), getHeight(discard_level),
                                 mUseMipMaps ? U32(mMaxDiscardLevel - discard_level + 1) : 1u))

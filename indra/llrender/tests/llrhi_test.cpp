@@ -4858,6 +4858,7 @@ namespace tut
                                            && base.addressW == AddressMode::Repeat);
         ensure("not comparing", !base.compare);
         ensure("LessEqual, as pipeline.cpp sets GL_LEQUAL", base.compareFunc == CompareFunc::LessEqual);
+        ensure_equals("no LOD bias", base.lodBias, 0.f);
 
         std::vector<std::pair<std::string, SamplerDesc>> fields;
         auto field = [&](const std::string& name, const std::function<void(SamplerDesc&)>& change)
@@ -4874,6 +4875,7 @@ namespace tut
         field("addressW", [](SamplerDesc& desc) { desc.addressW = AddressMode::MirroredRepeat; });
         field("compare", [](SamplerDesc& desc) { desc.compare = true; });
         field("compareFunc", [](SamplerDesc& desc) { desc.compareFunc = CompareFunc::Greater; });
+        field("lodBias", [](SamplerDesc& desc) { desc.lodBias = -1.f; });
         SamplerDescHash hash;
         std::set<size_t> hashes{ hash(base) };
         for (const auto& [name, desc] : fields)
@@ -4917,7 +4919,8 @@ namespace tut
     {
         set_test_name("validate(SamplerDesc, Capabilities) (P2-05b): the maximum anisotropy is refused when it is not finite, "
                       "below 1, above 1 without anisotropic filtering or above the device's maximum, and accepted otherwise, "
-                      "1 also on a device without the capability, whose maximum GL reports as 0");
+                      "1 also on a device without the capability, whose maximum GL reports as 0; the LOD bias is "
+                      "refused when it is not finite or not from -16 to under 16");
         Capabilities with = testCapabilities();
         with.anisotropicFiltering = true;
         with.maxAnisotropy = 16.f;
@@ -4956,7 +4959,21 @@ namespace tut
         other.mipmapped = false;
         other.compare = true;
         other.addressU = AddressMode::ClampToEdge;
-        ensure_equals("only the anisotropy is checked", validate(other, without), std::string());
+        ensure_equals("the filter, mips, comparison and address modes are not checked", validate(other, without),
+                      std::string());
+        auto bias = [&](F32 lodBias)
+        {
+            SamplerDesc desc;
+            desc.lodBias = lodBias;
+            return validate(desc, without);
+        };
+        ensure_equals("the LOD bias -16", bias(-16.f), std::string());
+        ensure_equals("the LOD bias -1", bias(-1.f), std::string());
+        ensure_equals("the LOD bias 15.984375", bias(15.984375f), std::string());
+        ensure_contains("the LOD bias 16", bias(16.f), "not from -16 to under 16");
+        ensure_contains("the LOD bias -16.5", bias(-16.5f), "not from -16 to under 16");
+        ensure_contains("a NaN LOD bias", bias(std::numeric_limits<F32>::quiet_NaN()), "is not finite");
+        ensure_contains("an infinite LOD bias", bias(-std::numeric_limits<F32>::infinity()), "is not finite");
     }
 
     template<> template<>

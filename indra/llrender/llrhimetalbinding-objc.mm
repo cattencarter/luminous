@@ -912,6 +912,13 @@ bool MetalEncoder::bindForDraw(const char* call, U32 first, U32 count, bool inde
             // (llrhigl.cpp:2244-2252): samplerForDraw, and mips only for a texture that has them.
             desc = samplerForDraw(desc, type, texture->desc().format);
             desc.mipmapped = desc.mipmapped && texture->desc().mipLevels > 1;
+            // The scene's LOD bias (setSceneLodBias) on a 2D texture made with TEXTURE_SCENE_LOD_BIAS (an image's own
+            // texture, which LLImageGL makes) and sampled through its mips.
+            if (mSceneLodBias != 0.f && desc.mipmapped && !desc.compare && !unbound &&
+                texture->desc().type == TextureType::Tex2D && (texture->desc().usage & TEXTURE_SCENE_LOD_BIAS))
+            {
+                desc.lodBias = mSceneLodBias;
+            }
             if (unbound && desc.compare)
             {
                 // GL 4.1 gives 0 for a shadow sampler on an incomplete texture. Never never passes

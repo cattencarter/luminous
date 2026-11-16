@@ -31,8 +31,11 @@
 // chain's wide blur -- in stops, scaled by clarity: positive pulls detail
 // apart (texture, pores, weave), negative pulls it together (soft skin). The
 // frame times that factor is drawn anew into the other target; colour keeps
-// its hue. The detail is limited to two stops either way so edges against the
-// sky do not halo hard.
+// its hue. The detail is limited to two stops either way and weighed down as
+// it grows, as an edge-preserving filter's range weight does (exp(-d^2): 94 %
+// kept at a quarter stop, 37 % at one stop, 2 % at two), so fine texture keeps
+// its share while a bright point (a star, a lamp) or a hard edge against the
+// sky leaves next to no dark or light ring around it.
 
 out vec4 frag_color;
 
@@ -49,6 +52,7 @@ void main()
     float l = max(dot(frame.rgb, LUMA), 1e-5);
     float around = max(dot(texture(bloomMap, vary_fragcoord).rgb, LUMA), 1e-5);
     float detail = clamp(log2(l / around), -2.0, 2.0);
+    detail *= exp(-detail * detail);
     // the alpha is Firestorm's glow mask: carried over
     frag_color = vec4(frame.rgb * exp2(luminous_clarity * 0.6 * detail), frame.a);
 }

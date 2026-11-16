@@ -50,6 +50,7 @@
 #include "llviewercontrol.h"
 #include "llviewermenufile.h"
 #include "llviewercamera.h"
+#include "llviewerdisplay.h"
 #include "llviewershadermgr.h"
 #include "llviewerwindow.h"
 #include "luminousphotomode.h"
@@ -61,6 +62,7 @@
 #include "llheadrotmotion.h"
 #include "llwindow.h"
 #include "pipeline.h"
+#include "rlvactions.h"
 #include "fsfloaterprimfeed.h"
 #include "llfloaterflickr.h"
 #include "llfloaterreg.h"
@@ -79,6 +81,7 @@
 #include <ctime>
 #include <filesystem>
 #include <functional>
+#include <glm/gtc/type_ptr.hpp>
 #include <new>
 #include <system_error>
 #if LL_DARWIN
@@ -87,6 +90,8 @@
 #endif
 
 extern bool gHiDPISupport;
+
+extern bool gSnapshot; // llviewerdisplay.cpp: a snapshot's frame
 
 namespace LuminousHDRSnapshot
 {
@@ -532,6 +537,40 @@ namespace LuminousHDRSnapshot
             U32 margin_y = 0;
         };
         PictureSizes sPictureSizes;
+        // A render in pieces: the piece being drawn, and the whole frame's
+        // culling frustum noted for it (piece(), pieceFrustum()).
+        Piece sPiece;
+        LLVector3 sPieceFrustum[8];
+        bool sPieceFrustumNoted = false;
+        // The whole frame's projection and modelview, without jitter or lens
+        // shift, as setPerspective noted them in the pieces (column-major).
+        F32 sWholeProjection[16] = {};
+        F32 sWholeModelview[16] = {};
+        bool sWholeViewNoted = false;
+        // The whole frame's light and depth, each piece's core stored at its
+        // place (takePiece), and where the piece being drawn stores its core:
+        // from (from_x, from_y) in the piece, rows bottom first, to (to_x,
+        // to_y) in the whole frame.
+        // screen: the light, with the depth of deferredScreen (R8, its colour
+        // unused) shared; deferredLight: the lens's second target, made only
+        // for the finish.
+        LLPipeline::RenderTargetPack sWhole;
+        bool sFinishing = false;
+        // From the exposure's metering to the finish: rawSnapshot reads no frame (frameReadSkipped).
+        bool sPiecesDrawing = false;
+        struct PieceStore
+        {
+            U32 piece_w = 0; // the piece's frame
+            U32 piece_h = 0;
+            U32 from_x = 0;
+            U32 from_y = 0;
+            U32 to_x = 0;
+            U32 to_y = 0;
+            U32 width = 0;
+            U32 height = 0;
+        };
+        PieceStore sPieceStore;
+        S32 sPiecesStored = 0;
         // Metal: the exposure's part the CPU knows -- RenderExposure and the
         // Look's -- which the metered exposure, read with the frame, multiplies.
         F32 sExposureScale = 1.f;
@@ -680,7 +719,11 @@ namespace LuminousHDRSnapshot
         // the Render tab's size (or at a scale given) takes above the scene
         // (below).
         U64 memoryLimitFor(U64 footprint, U64 available);
-        U64 roomNeededBytes(U32 scale = 0);
+        U64 roomNeededBytes(U32 scale = 0, bool pieces = false);
+        // A render in pieces (below): whether it can be, and the most it takes.
+        bool piecesPossible(EFormat format, S32 frames);
+        U64 piecesNeedBytes(U32 render_w, U32 render_h, U32 picture_h, U32 out_w, U32 out_h, U32 tiles, F64 bytes_a_pixel,
+                            S64 shadow_bytes, EFormat format);
         bool lacksRoom(U64 footprint);
         // What a memory message suggests besides the Render tab.
         const char* const QUIT_OTHER_APPS =
@@ -1345,7 +1388,7 @@ namespace LuminousHDRSnapshot
         // without the margin and with the smaller shadow maps -- the last way
         // it tries before a smaller size, so what must stay free for the
         // picture to keep its size.
-        U64 roomNeededBytes(U32 scale)
+        U64 roomNeededBytes(U32 scale, bool pieces)
         {
             static LLCachedControl<F32> bytes_setting(gSavedSettings, "LuminousRenderBytesPerPixel", 140.f);
             static LLCachedControl<U32> format_setting(gSavedSettings, "LuminousSnapshotFormat", 0);
@@ -1367,11 +1410,23 @@ namespace LuminousHDRSnapshot
             const F64 bytes_a_pixel = llclamp((F64)bytes_setting(), 60.0, 300.0) + (eight_bit || LuminousMetal::metal() ? 0.0 : 20.0);
             S64 need = (S64)((F64)w * h * bytes_a_pixel) + (256LL << 20)
                      + (S64)LuminousMetalRender::readBytes(w, h, eight_bit, format_setting() == 2);
+            S64 shadow_need = 0;
             if (shadow_detail() > 0 && LuminousPhotoMode::isOn()) // the sun's four, less the live view's they replace
             {
                 const S64 shadow = llmin((S64)shadow_setting(), 4096LL);
                 const LLRenderTarget& live = gPipeline.mRT->shadow[0];
-                need += llmax(4LL * shadow * shadow * 4 - 4LL * live.getWidth() * live.getHeight() * 4, 0LL);
+                shadow_need = llmax(4LL * shadow * shadow * 4 - 4LL * live.getWidth() * live.getHeight() * 4, 0LL);
+                need += shadow_need;
+            }
+            // With pieces: drawn in 4 x 4 pieces, when a render can be, if that takes less (LuminousRenderPieces 0 or
+            // above 1). The room kept and made for a render is one piece's; whether the size fits counts pieces.
+            static LLCachedControl<U32> frames_setting(gSavedSettings, "LuminousSnapshotFrames", 16);
+            static LLCachedControl<U32> pieces_setting(gSavedSettings, "LuminousRenderPieces", 0);
+            const EFormat format = format_setting() == 1 ? TIFF16 : format_setting() == 2 ? EXR : PNG8;
+            if (pieces && pieces_setting() != 1 && piecesPossible(format, (S32)llclamp((U32)frames_setting(), 1U, 256U)))
+            {
+                const U32 n = pieces_setting() >= 2 ? llmin((U32)pieces_setting(), 8U) : 4U;
+                need = llmin(need, (S64)piecesNeedBytes(w, h, h, w, h, n, bytes_a_pixel, shadow_need, format));
             }
             return (U64)llmax(need, (S64)(256LL << 20));
         }
@@ -1387,7 +1442,7 @@ namespace LuminousHDRSnapshot
     {
         const U64 footprint = footprintBytes();
         const U64 limit = footprint > 0 ? memoryLimitFor(footprint, availableBytes()) : 0;
-        need = roomNeededBytes();
+        need = roomNeededBytes(0, true);
         room = limit > footprint ? limit - footprint : 0;
         return footprint == 0 || need <= room;
     }
@@ -1537,6 +1592,196 @@ namespace LuminousHDRSnapshot
         return ok && picture.notNull();
     }
 
+    namespace
+    {
+        // Whether a render can be drawn in pieces: on Metal, in photo mode; its frames averaged as light; neither
+        // Firestorm's own depth of field nor an RLVa sphere, which take the whole frame's depth on the finished
+        // picture; no SMAA for a single frame.
+        bool piecesPossible(EFormat format, S32 frames)
+        {
+            static LLCachedControl<U32> fsaa(gSavedSettings, "RenderFSAAType", 0);
+            static LLCachedControl<bool> as_light(gSavedSettings, "LuminousSnapshotAverageAsLight", true);
+            return LuminousMetal::metal() && LuminousPhotoMode::isOn() && !sPreview && LuminousMetalRender::piecesReady()
+                && (frames < 2 || (as_light && LuminousMetal::on(LuminousMetal::Effect::Accumulation)))
+                && !(LLPipeline::RenderDepthOfField && !LuminousPhotoMode::depthOfField())
+                && !RlvActions::hasBehaviour(RLV_BHVR_SETSPHERE)
+                && !(frames < 2 && fsaa() == 2);
+        }
+
+        // Bytes a frame pixel the whole frame holds through the pieces and the finish: the light (RGBA16F), the
+        // depth (32-bit) and deferredScreen's unused R8 colour.
+        constexpr F64 WHOLE_BYTES_A_PIXEL = 13.0;
+        // Bytes a frame pixel the finish makes above that: the lens's second target, the post maps, the frame the
+        // picture is presented to, the lens's chains with every effect on. An eight-bit picture adds the frame read
+        // back (3) and its read (4); a TIFF the 32-bit float frame it is tonemapped into (16).
+        constexpr F64 FINISH_BYTES_A_PIXEL = 32.0;
+
+        // The most a render in tiles x tiles pieces takes above the scene: the larger of the pieces' part (a piece's
+        // targets at the scene's bytes a pixel, the shadow maps, the whole frame) and the finish's (the whole frame,
+        // the finish's own targets, the main targets at the window's size, the reads).
+        U64 piecesNeedBytes(U32 render_w, U32 render_h, U32 picture_h, U32 out_w, U32 out_h, U32 tiles, F64 bytes_a_pixel,
+                            S64 shadow_bytes, EFormat format)
+        {
+            static LLCachedControl<F32> overlap_setting(gSavedSettings, "LuminousRenderPiecesOverlap", 0.1f);
+            const U64 ov = (U64)ll_round(llclamp((F32)overlap_setting(), 0.f, 0.5f) * (F32)picture_h);
+            const U64 n = llmax(tiles, 1U);
+            const U64 piece = ((render_w + n - 1) / n + 2 * ov) * ((render_h + n - 1) / n + 2 * ov);
+            const F64 frame = (F64)render_w * (F64)render_h;
+            const F64 window = (F64)gViewerWindow->getWindowWidthRaw() * (F64)gViewerWindow->getWindowHeightRaw();
+            const F64 whole = frame * WHOLE_BYTES_A_PIXEL;
+            const F64 pieces = (F64)piece * bytes_a_pixel + (F64)(256LL << 20) + (F64)llmax(shadow_bytes, 0LL) + whole;
+            const F64 extra = eightBit(format) ? 7.0 : (format == TIFF16 ? 16.0 : 0.0);
+            const F64 finish = whole + frame * (FINISH_BYTES_A_PIXEL + extra) + window * bytes_a_pixel + (F64)(256LL << 20)
+                             + (F64)LuminousMetalRender::readBytes(out_w, out_h, eightBit(format), format == EXR);
+            return (U64)llmax(pieces, finish);
+        }
+
+        // The whole picture of a render drawn in pieces, finished once: what the pieces drew with let go (the
+        // averaging target, the effects' targets at the piece's size, the main targets back to the window's size
+        // with the live view's shadow maps), the finish's own targets made at the frame's size (the lens's second
+        // target, the post maps, FXAA's for a single frame, and one the picture is presented to), and
+        // LLPipeline::renderFinalize drawn on the pieces' light as a snapshot's frame of the whole picture: its
+        // area, its view without jitter or lens shift, its light and depth. A TIFF or EXR is read in it, as in the
+        // last frame of a render in one piece.
+        bool finishPieces(U32 width, U32 height, S32 frames, EFormat format, LLImageRaw* raw, LLTimer& timer, U64& peak,
+                          U64 finish_need, U64 frame_limit, bool& too_big, std::string& error)
+        {
+            if (!sWholeViewNoted)
+            {
+                error = "the whole frame's view was not noted";
+                return false;
+            }
+            const U64 before = footprintBytes();
+            peak = llmax(peak, before);
+            // However the finish ends: the main targets and the live view's state back, and the post maps made at
+            // the live view's size by the next frame.
+            struct PutBack
+            {
+                LLPipeline::RenderTargetPack* main = gPipeline.mRT;
+                LLRect view = gViewerWindow->getWorldViewRectRaw();
+                bool snapshot = gSnapshot;
+                bool ui = gPipeline.hasRenderDebugFeatureMask(LLPipeline::RENDER_DEBUG_FEATURE_UI);
+                ~PutBack()
+                {
+                    sFinishing = false;
+                    gSnapshot = snapshot;
+                    gPipeline.mRT = main;
+                    gViewerWindow->setWorldViewRectRawForRender(view);
+                    gResizeScreenTexture = true;
+                    if (ui && !gPipeline.hasRenderDebugFeatureMask(LLPipeline::RENDER_DEBUG_FEATURE_UI))
+                    {
+                        LLPipeline::toggleRenderDebugFeature(LLPipeline::RENDER_DEBUG_FEATURE_UI);
+                    }
+                }
+            } put_back;
+            // The picture without the interface's marks that LLPipeline::renderFinalize draws over a frame (the depth
+            // of field's focus cross, the capture frame and guides), as rawSnapshot leaves them out of every picture.
+            if (put_back.ui)
+            {
+                LLPipeline::toggleRenderDebugFeature(LLPipeline::RENDER_DEBUG_FEATURE_UI);
+            }
+            sAverageTarget.release();
+            LuminousPhotoMode::releaseRenderSizedTargets();
+            LuminousPhotoMode::setSnapshotShadows(false);
+            gPipeline.allocateScreenBuffer(gViewerWindow->getWindowWidthRaw(), gViewerWindow->getWindowHeightRaw());
+            LL::RHI::Device* device = LL::RHI::viewerDevice();
+            if (device)
+            {
+                device->submitAndWait(); // what was let go is freed before the finish's targets are made
+            }
+            // The limit checked first, as before each frame: the choice of pieces counted what the finish makes
+            // (finish_need), and what was let go above reaches macOS's figures only gradually.
+            {
+                const U64 footprint = footprintBytes();
+                const S32 pressure = memoryPressure();
+                if (footprint > frame_limit || pressure >= 4)
+                {
+                    LL_WARNS("LuminousHDRSnapshot") << "Render stopped before the finish: the viewer uses " << footprint / (1024 * 1024)
+                        << " MB, the finish needs about " << finish_need / (1024 * 1024) << " MB more, " << frame_limit / (1024 * 1024)
+                        << " MB allowed, macOS's memory pressure " << pressure << LL_ENDL;
+                    too_big = true;
+                    return false;
+                }
+            }
+            // A TIFF or EXR is read before tonemapping (capture()): no post maps and nothing presented.
+            static LLCachedControl<U32> fsaa(gSavedSettings, "RenderFSAAType", 0);
+            const bool eight_bit = eightBit(format);
+            LLRenderTarget presented;
+            const bool made = sWhole.deferredLight.allocate(width, height, GL_RGBA16F)
+                && (!eight_bit
+                    || (gPipeline.mPostPingMap.allocate(width, height, GL_RGBA) && gPipeline.mPostPongMap.allocate(width, height, GL_RGBA)
+                        && (frames > 1 || fsaa() != 1 || gPipeline.mFXAAMap.allocate(width, height, GL_RGBA))
+                        && presented.allocate(width, height, GL_RGBA)));
+            if (!made)
+            {
+                error = llformat("no %u x %u targets to finish the picture", width, height);
+                return false;
+            }
+            gViewerWindow->setWorldViewRectRawForRender(LLRect(0, height, width, 0));
+            gGL.matrixMode(LLRender::MM_PROJECTION);
+            gGL.loadMatrix(sWholeProjection);
+            set_current_projection(glm::make_mat4(sWholeProjection));
+            gGL.matrixMode(LLRender::MM_MODELVIEW);
+            gGL.loadMatrix(sWholeModelview);
+            set_current_modelview(glm::make_mat4(sWholeModelview));
+            gPipeline.mRT = &sWhole;
+            gSnapshot = true;
+            sAverage = false;
+            sFinishing = true;
+            LuminousMetal::beginFrame();
+            // volumetric light and beams are in the pieces' light
+            LuminousMetal::context().drawnThisFrame |= (U64(1) << U64(LuminousMetal::Pass::VolumetricLight))
+                                                     | (U64(1) << U64(LuminousMetal::Pass::ProjectorBeams));
+            if (eight_bit)
+            {
+                presented.bindTarget();
+            }
+            gPipeline.renderFinalize();
+            if (eight_bit)
+            {
+                presented.flush();
+            }
+            // An eight-bit picture: the presented frame read into raw, as rawSnapshot reads a frame (the margin is
+            // cut and the picture scaled after, as for one piece).
+            bool read = true;
+            if (eightBit(format))
+            {
+                read = raw->resize((U16)width, (U16)height, 3);
+                if (read)
+                {
+                    LLGPUReadback::OwnReads own_reads;
+                    presented.bindTarget();
+                    read = LLGPUReadback::readFramebufferRows(0, 0, (S32)width, (S32)height, GL_RGB, GL_UNSIGNED_BYTE, raw->getData(),
+                                                              (size_t)width * 3, (size_t)width * 3);
+                    presented.flush();
+                }
+            }
+            sFinishing = false;
+            if (device)
+            {
+                device->submitAndWait();
+            }
+            const U64 finished = footprintBytes(); // the finish's targets still held
+            peak = llmax(peak, finished);
+            LL_INFOS("LuminousHDRSnapshot") << "Finish at " << width << "x" << height << ": the viewer at " << before / (1024 * 1024)
+                << " MB after the pieces, " << finished / (1024 * 1024) << " MB with the finish's targets" << LL_ENDL;
+            presented.release();
+            if (!read)
+            {
+                error = "the finished picture could not be read";
+                return false;
+            }
+            LL_INFOS("LuminousHDRSnapshot") << "Pieces drawn and the picture finished in " << timer.getElapsedTimeF64().value()
+                                            << " s" << LL_ENDL;
+            if (!sCaptureError.empty())
+            {
+                error = sCaptureError;
+                return false;
+            }
+            return true;
+        }
+    }
+
     bool takeAndSave(EFormat format, const std::string& path, std::string& error)
     {
         if (!LuminousPhotoMode::rendersAvailable())
@@ -1561,7 +1806,7 @@ namespace LuminousHDRSnapshot
             return false;
         }
 
-        // One render, never tiles: the frame is read once, before tonemapping.
+        // In one piece, or in pieces finished on the whole frame (render_pieces below).
         // As large as the GPU's largest texture (16384 on Apple silicon).
         const U32 most = (U32)gGLManager.mGLMaxTextureSize;
         static LLCachedControl<bool> margin_setting(gSavedSettings, "LuminousSnapshotMargin", true);
@@ -1573,6 +1818,15 @@ namespace LuminousHDRSnapshot
             U32 render_w, render_h;
         };
         const bool margin_wanted = margin_setting() && LuminousPhotoMode::isOn() && !sPreview;
+        // In pieces (render_pieces below): when the size asked does not fit in one piece (LuminousRenderPieces 0,
+        // the choice further down), or as many a side as LuminousRenderPieces asks (2 to 8; 1 never in pieces), or
+        // one piece the same way with LuminousRenderPiecesAlways.
+        static LLCachedControl<U32> pieces_setting(gSavedSettings, "LuminousRenderPieces", 0);
+        static LLCachedControl<bool> pieces_always(gSavedSettings, "LuminousRenderPiecesAlways", false);
+        const U32 pieces_asked = llmin((U32)pieces_setting(), 8U);
+        const bool pieces_possible = piecesPossible(format, frames);
+        bool pieces_way = (pieces_asked >= 2 || pieces_always) && pieces_possible;
+        U32 tiles = pieces_way ? llmax(pieces_asked, 1U) : 1U;
         auto sizes_for = [&](F32 scale, bool margin)
         {
             Sizes z;
@@ -1671,6 +1925,12 @@ namespace LuminousHDRSnapshot
                            + (S64)LuminousMetalRender::readBytes(z.out_w, z.out_h, eightBit(format), format == EXR);
             return (U64)llmax(need, (S64)(256LL << 20));
         };
+        // In pieces: the larger of the pieces' need and the finish's (piecesNeedBytes).
+        auto pieces_need_bytes = [&](const Sizes& z, U32 shadow, U32 n) -> U64
+        {
+            return piecesNeedBytes(z.render_w, z.render_h, z.picture_h, z.out_w, z.out_h, n, bytes_a_pixel, shadow_bytes(z, shadow),
+                                   format);
+        };
         struct Option
         {
             F32 scale;
@@ -1715,12 +1975,35 @@ namespace LuminousHDRSnapshot
         {
             chosen = options.back(); // none fits: the smallest, and the limit between frames decides
             fits = false;
+            // Each way in turn, in one piece and then (LuminousRenderPieces 0) in the fewest pieces, 2 to 4 a side,
+            // that fit: pieces before smaller shadow maps, no margin or a smaller size.
+            const bool auto_pieces = !pieces_way && pieces_asked == 0 && pieces_possible;
             for (const Option& option : options)
             {
-                if (footprint_now + need_bytes(sizes_for(option.scale, option.margin), option.shadow) <= memory_limit)
+                const Sizes z = sizes_for(option.scale, option.margin);
+                if (footprint_now + need_bytes(z, option.shadow) <= memory_limit)
                 {
                     chosen = option;
                     fits = true;
+                    break;
+                }
+                for (U32 n = 2; auto_pieces && n <= 4 && !fits; ++n)
+                {
+                    const U64 need = pieces_need_bytes(z, option.shadow, n);
+                    if (footprint_now + need <= memory_limit)
+                    {
+                        chosen = option;
+                        fits = true;
+                        pieces_way = true;
+                        tiles = n;
+                        LL_INFOS("LuminousHDRSnapshot") << "Not in one piece: in " << n << " x " << n << " pieces at "
+                            << option.scale << " times the window's size with " << option.shadow << " shadow maps"
+                            << (option.margin ? "" : ", without the margin") << ", about " << need / (1024 * 1024)
+                            << " MB more" << LL_ENDL;
+                    }
+                }
+                if (fits)
+                {
                     break;
                 }
             }
@@ -1747,14 +2030,36 @@ namespace LuminousHDRSnapshot
                 << (margin_wanted && !chosen.margin ? ", without the margin" : "") << "; projectors casting shadows: "
                 << (gPipeline.mShadowSpotLight[0].notNull() ? 1 : 0) + (gPipeline.mShadowSpotLight[1].notNull() ? 1 : 0) << LL_ENDL;
         }
+        if (pieces_way && (pieces_asked >= 2 || pieces_always))
+        {
+            chosen = options.front(); // asked for: the size, margin and shadow maps as asked; the limit between frames holds
+            fits = true;
+        }
+        if (pieces_way)
+        {
+            LL_INFOS("LuminousHDRSnapshot") << "In " << tiles << " x " << tiles << " pieces" << LL_ENDL;
+        }
+        // In pieces to fit (not asked for): what is said of them, with the note below or on its own. Screen-space
+        // reflections reach only as far as a piece and its overlap: in smaller pieces, what a mirror or water would
+        // show from further off may be missing. What the size asked needs is then the most pieces' need.
+        const bool pieces_to_fit = pieces_way && pieces_asked == 0 && !pieces_always;
+        const std::string pieces_said = pieces_to_fit && tiles > 2 && LuminousPhotoMode::reflections()
+            ? llformat("It is drawn in %u x %u pieces to fit, so reflections in mirrors and water of things further off may be missing.", tiles, tiles)
+            : std::string();
+        auto asked_need = [&](const Sizes& z, U32 shadow) -> U64
+        {
+            return pieces_to_fit ? pieces_need_bytes(z, shadow, 4) : need_bytes(z, shadow);
+        };
+        bool noted = false;
         const U64 free_bytes = memory_limit > footprint_now ? memory_limit - footprint_now : 0;
         const F64 free_gb = (F64)free_bytes / (1024.0 * 1024.0 * 1024.0);
         if (chosen.scale >= (F32)asked_scale && margin_wanted && !chosen.margin && fits)
         {
             // The size asked, without the margin: said as a smaller size is
-            const F64 need_gb = (F64)need_bytes(sizes_for((F32)asked_scale, true), mid_shadow) / (1024.0 * 1024.0 * 1024.0);
+            noted = true;
+            const F64 need_gb = (F64)asked_need(sizes_for((F32)asked_scale, true), mid_shadow) / (1024.0 * 1024.0 * 1024.0);
             const std::string what = llformat("This render is drawn without the margin round the picture, to fit: with it, it needs about %.1f GB, and this Mac has %.1f GB free for it with this region loaded. Reflections, blur and glow at the picture's very edges see less beyond them.",
-                                              need_gb, free_gb);
+                                              need_gb, free_gb) + (pieces_said.empty() ? std::string() : " " + pieces_said);
             LL_INFOS("LuminousHDRSnapshot") << "Rendering without the margin: with it needs about " << need_gb << " GB, " << free_gb << " GB free" << LL_ENDL;
             if (sProgress)
             {
@@ -1770,10 +2075,12 @@ namespace LuminousHDRSnapshot
         if (chosen.scale < (F32)asked_scale && fits) // not fitting at all, the render's own message says so
         {
             // what it would take at the size asked: without the margin, with the smaller maps
+            noted = true;
             const Sizes asked = sizes_for((F32)asked_scale, false);
             const Sizes taken = sizes_for(chosen.scale, false);
             const std::string how = chosen.scale > 1.01f ? llformat("%g times the window's size", chosen.scale) : std::string("the window's size");
-            const F64 need_gb = (F64)need_bytes(asked, small_shadow) / (1024.0 * 1024.0 * 1024.0);
+            const F64 need_gb = (F64)asked_need(asked, small_shadow) / (1024.0 * 1024.0 * 1024.0);
+            const std::string and_pieces = pieces_said.empty() ? std::string() : " " + pieces_said;
             if (sProgress)
             {
                 // On the render itself, while it renders and on the
@@ -1787,7 +2094,7 @@ namespace LuminousHDRSnapshot
                                taken.out_w, taken.out_h, asked.out_w, asked.out_h, need_gb, free_gb)
                     : llformat("This render is %s (%u x %u), not twice it (%u x %u): twice it needs about %.1f GB, and this Mac has %.1f GB free for it with this region loaded.",
                                how.c_str(), taken.out_w, taken.out_h, asked.out_w, asked.out_h, need_gb, free_gb);
-                LuminousPictureView::setNote(said
+                LuminousPictureView::setNote(said + and_pieces
                     + "\nFor the full size, quit apps you are not using -- right-click each in the Dock and choose Quit (Preview with large pictures open can hold a lot) -- and render again."
                     + (sFullTextures ? " Turning off Full detail on the Render tab helps too." : ""));
             }
@@ -1798,7 +2105,19 @@ namespace LuminousHDRSnapshot
                                        taken.out_w, taken.out_h, asked.out_w, asked.out_h, need_gb, free_gb)
                             : llformat("Rendering at %s (%u x %u): twice it (%u x %u) needs about %.1f GB, and this Mac has %.1f GB free for it with this region loaded.",
                                        how.c_str(), taken.out_w, taken.out_h, asked.out_w, asked.out_h, need_gb, free_gb))
-                       + QUIT_OTHER_APPS);
+                       + and_pieces + QUIT_OTHER_APPS);
+            }
+        }
+        if (!noted && !pieces_said.empty())
+        {
+            const std::string what = llformat("This render is drawn in %u x %u pieces to fit in memory. Reflections in mirrors and water of things further off may be missing.", tiles, tiles);
+            if (sProgress)
+            {
+                LuminousPictureView::setNote(what + "\nFor fewer pieces, quit apps you are not using -- right-click each in the Dock and choose Quit -- and render again.");
+            }
+            else
+            {
+                report(what + QUIT_OTHER_APPS);
             }
         }
         // Not even the window's size fits beside the scene: with
@@ -1980,8 +2299,183 @@ namespace LuminousHDRSnapshot
                 sShapedRender = true;
             }
         }
+        if (pieces_way)
+        {
+            sShapedRender = true; // each piece's targets are its own size
+        }
         U64 peak_footprint = 0; // before each frame and after the last, for the log
-        for (S32 f = 0; f < frames && rendered; ++f)
+
+        // ---- In pieces.
+        // The exposure is metered first on the whole view at about the window's size. Then the frame is cut into
+        // tiles x tiles cores, each drawn with an overlap round it (LuminousRenderPiecesOverlap, a share of the
+        // picture's height on each side) as a part of the same camera's view (piece()), all its frames before the
+        // next; each piece's frames end with their light (LLPipeline::renderFinalize), averaged, and the core stored
+        // at its place in the whole frame (takePiece). Then the targets the pieces used are let go and the whole
+        // picture is finished once at the frame's size: LLPipeline::renderFinalize on the pieces' light, with the
+        // sun shafts, the vignette, the lens, the read of a TIFF or EXR, tonemapping and glow.
+        auto render_pieces = [&]() -> bool
+        {
+            static LLCachedControl<F32> overlap_setting(gSavedSettings, "LuminousRenderPiecesOverlap", 0.1f);
+            const U32 ov = (U32)ll_round(llclamp((F32)overlap_setting(), 0.f, 0.5f) * (F32)picture_h);
+            const U32 core_w = (render_w + tiles - 1) / tiles;
+            const U32 core_h = (render_h + tiles - 1) / tiles;
+            const U32 piece_w = core_w + 2 * ov;
+            const U32 piece_h = core_h + 2 * ov;
+            if (piece_w > most || piece_h > most)
+            {
+                error = llformat("a piece of %u x %u is larger than the GPU's largest texture", piece_w, piece_h);
+                return false;
+            }
+            struct LetGo
+            {
+                ~LetGo()
+                {
+                    sPiece = Piece();
+                    sFinishing = false;
+                    sPiecesDrawing = false;
+                    sWhole.screen.release();
+                    sWhole.deferredScreen.release();
+                    sWhole.deferredLight.release();
+                }
+            } let_go;
+            // The whole frame: the light, and the depth it shares with deferredScreen (whose colour is unused).
+            if (!sWhole.deferredScreen.allocate(render_w, render_h, GL_R8, true) || !sWhole.screen.allocate(render_w, render_h, GL_RGBA16F))
+            {
+                error = llformat("no %u x %u targets for the whole picture", render_w, render_h);
+                return false;
+            }
+            sWhole.deferredScreen.shareDepthBuffer(sWhole.screen);
+            sWhole.width = render_w;
+            sWhole.height = render_h;
+            LL_INFOS("LuminousHDRSnapshot") << "Pieces: " << tiles << " x " << tiles << " of " << piece_w << "x" << piece_h
+                << " (core " << core_w << "x" << core_h << ", overlap " << ov << ") for a frame of " << render_w << "x"
+                << render_h << ", the picture " << picture_w << "x" << picture_h << LL_ENDL;
+
+            sPiecesDrawing = true;
+            // The exposure, metered on the whole view at about the window's size, in the frame's shape.
+            {
+                const F32 fit = llmin(1.f, llmin((F32)gViewerWindow->getWindowWidthRaw() / (F32)render_w,
+                                                 (F32)gViewerWindow->getWindowHeightRaw() / (F32)render_h));
+                const U32 meter_w = llmax((U32)ll_round(render_w * fit), 16U);
+                const U32 meter_h = llmax((U32)ll_round(render_h * fit), 16U);
+                const bool armed = sArmed;
+                const bool average = sAverage;
+                sArmed = false;
+                sAverage = false;
+                LuminousPhotoMode::setAccumulationFrame(0);
+                LuminousPhotoMode::askWarmUp();
+                const bool metered = gViewerWindow->rawSnapshot(raw, meter_w, meter_h, false, false, false, false, false, false,
+                                                                false, LLSnapshotModel::SNAPSHOT_TYPE_COLOR, S32_MAX);
+                sArmed = armed;
+                sAverage = average;
+                if (!metered)
+                {
+                    error = "the exposure could not be metered";
+                    return false;
+                }
+            }
+
+            LLTimer all_timer;
+            S32 index = 0;
+            const S32 count = (S32)(tiles * tiles);
+            sPiecesStored = 0;
+            sWholeViewNoted = false;
+            for (U32 j = 0; j < tiles; ++j) // rows, bottom first
+            {
+                for (U32 i = 0; i < tiles; ++i)
+                {
+                    const U32 x0 = i * core_w;
+                    const U32 y0 = j * core_h;
+                    if (x0 >= render_w || y0 >= render_h)
+                    {
+                        continue;
+                    }
+                    const U32 cw = llmin(core_w, render_w - x0);
+                    const U32 ch = llmin(core_h, render_h - y0);
+                    sPiece = Piece();
+                    sPiece.active = true;
+                    sPiece.frameWidth = render_w;
+                    sPiece.frameHeight = render_h;
+                    sPiece.frameAspect = (F32)render_w / (F32)render_h;
+                    sPiece.scaleX = (F32)render_w / (F32)piece_w;
+                    sPiece.scaleY = (F32)render_h / (F32)piece_h;
+                    sPiece.centreX = (2.f * ((F32)x0 - (F32)ov) + (F32)piece_w) / (F32)render_w - 1.f;
+                    sPiece.centreY = (2.f * ((F32)y0 - (F32)ov) + (F32)piece_h) / (F32)render_h - 1.f;
+                    sPieceStore = { piece_w, piece_h, ov, ov, x0, y0, cw, ch };
+                    LuminousPhotoMode::askWarmUp();
+                    LLTimer timer;
+                    const S32 stored = sPiecesStored;
+                    for (S32 f = 0; f < frames && rendered; ++f)
+                    {
+                        if (sProgress && LuminousPictureView::pollStop())
+                        {
+                            LL_INFOS("LuminousHDRSnapshot") << "Render stopped in piece " << index + 1 << " of " << count << LL_ENDL;
+                            stopped = true;
+                            return false;
+                        }
+                        const U64 footprint = footprintBytes();
+                        peak_footprint = llmax(peak_footprint, footprint);
+                        const S32 pressure = memoryPressure();
+                        if (footprint > frame_limit || pressure >= 4)
+                        {
+                            LL_WARNS("LuminousHDRSnapshot") << "Render stopped in piece " << index + 1 << " of " << count << ", frame "
+                                << f << ": the viewer uses " << footprint / (1024 * 1024) << " MB of " << frame_limit / (1024 * 1024)
+                                << " MB allowed, macOS's memory pressure " << pressure << LL_ENDL;
+                            too_big = true;
+                            return false;
+                        }
+                        LuminousPhotoMode::setAccumulationFrame(frames > 1 ? f : -1);
+                        sAverageFrame = f;
+                        rendered = gViewerWindow->rawSnapshot(raw, piece_w, piece_h, false, false, false, false, false, false, false,
+                                                              LLSnapshotModel::SNAPSHOT_TYPE_COLOR, S32_MAX);
+                        if (sProgress && rendered)
+                        {
+                            LuminousPictureView::setProgress((F32)(index * frames + f + 1) / (F32)(count * frames + 1),
+                                                             llformat("Piece %d of %d, frame %d of %d", index + 1, count, f + 1, frames), true);
+                        }
+                        for (U32 unit = 0; unit < LL_NUM_TEXTURE_LAYERS; ++unit)
+                        {
+                            gGL.getTexUnit(unit)->unbind(LLTexUnit::TT_TEXTURE);
+                        }
+                        gGL.getTexUnit(0)->activate();
+                        LLAppViewer::instance()->pingMainloopTimeout("LuminousHDRSnapshot");
+                    }
+                    if (!rendered || !sCaptureError.empty() || sPiecesStored != stored + 1)
+                    {
+                        error = !sCaptureError.empty() ? sCaptureError : std::string("a piece was not drawn");
+                        return false;
+                    }
+                    ++index;
+                    LL_INFOS("LuminousHDRSnapshot") << "Piece " << index << " of " << count << " in "
+                                                    << timer.getElapsedTimeF64().value() << " s" << LL_ENDL;
+                }
+            }
+            sPiece = Piece();
+            peak_footprint = llmax(peak_footprint, footprintBytes());
+            if (sProgress)
+            {
+                LuminousPictureView::setProgress((F32)(count * frames) / (F32)(count * frames + 1), "Finishing", true);
+            }
+            const F64 extra = eightBit(format) ? 7.0 : (format == TIFF16 ? 16.0 : 0.0);
+            const U64 finish_need = (U64)((F64)render_w * render_h * (FINISH_BYTES_A_PIXEL + extra))
+                                  + LuminousMetalRender::readBytes(out_w, out_h, eightBit(format), format == EXR);
+            return finishPieces(render_w, render_h, frames, format, raw.get(), all_timer, peak_footprint, finish_need, frame_limit,
+                                too_big, error);
+        };
+        if (pieces_way)
+        {
+            rendered = render_pieces();
+            if (!rendered && !stopped && !too_big)
+            {
+                put_back.now();
+                if (error.empty())
+                {
+                    error = "the pieces were not drawn";
+                }
+                return false;
+            }
+        }
+        for (S32 f = 0; !pieces_way && f < frames && rendered; ++f)
         {
             // Stop, or Esc, on the overlay: taken from the queue here, as the
             // main loop that would handle them waits for the render
@@ -2090,7 +2584,7 @@ namespace LuminousHDRSnapshot
         {
             const U64 pixels = (U64)render_w * render_h;
             if (!stopped && !too_big && rendered && footprint_now > 0 && peak_footprint > footprint_now && pixels >= 2000000
-                && chosen.scale > 1.01f)
+                && chosen.scale > 1.01f && !pieces_way)
             {
                 const F64 cost = ((F64)(peak_footprint - footprint_now) - (F64)render_shadow_bytes) / (F64)pixels
                                  - (LuminousMetal::metal()
@@ -2410,6 +2904,11 @@ namespace LuminousHDRSnapshot
         return scale;
     }
 
+    bool fullDetailWaiting()
+    {
+        return sWaiting;
+    }
+
     bool forgetOutOfView()
     {
         static LLFrameTimer timer;
@@ -2439,6 +2938,83 @@ namespace LuminousHDRSnapshot
     namespace
     {
         void customSizeFor(S32 shape, bool portrait, U32& width, U32& height); // below
+    }
+
+    const Piece& piece()
+    {
+        return sPiece;
+    }
+
+    void notePieceView(const LLVector3* frust, const F32* projection, const F32* modelview)
+    {
+        for (S32 i = 0; i < 8; ++i)
+        {
+            sPieceFrustum[i] = frust[i];
+        }
+        sPieceFrustumNoted = true;
+        memcpy(sWholeProjection, projection, sizeof(sWholeProjection));
+        memcpy(sWholeModelview, modelview, sizeof(sWholeModelview));
+        sWholeViewNoted = true;
+    }
+
+    bool pieceFrustum(LLVector3* frust)
+    {
+        if (!sPiece.active || !sPieceFrustumNoted)
+        {
+            return false;
+        }
+        for (S32 i = 0; i < 8; ++i)
+        {
+            frust[i] = sPieceFrustum[i];
+        }
+        return true;
+    }
+
+    bool finishingPieces()
+    {
+        return sFinishing;
+    }
+
+    bool finishingEightBit()
+    {
+        return sFinishing && eightBit(sFormat);
+    }
+
+    void takePiece(LLRenderTarget* hdr_screen, LLRenderTarget* depth)
+    {
+        if (!sPiece.active || LuminousPhotoMode::warmingUp() || !sCaptureError.empty())
+        {
+            return;
+        }
+        if (sAverage)
+        {
+            if (!averageFrame(hdr_screen))
+            {
+                sCaptureError = llformat("no %u x %u float target to average a piece's frames", hdr_screen->getWidth(),
+                                         hdr_screen->getHeight());
+                return;
+            }
+            if (sAverageFrame < sAverageFrames - 1)
+            {
+                return; // only the last frame, the average, is stored
+            }
+        }
+        const PieceStore& p = sPieceStore;
+        if (hdr_screen->getWidth() != p.piece_w || hdr_screen->getHeight() != p.piece_h)
+        {
+            sCaptureError = llformat("a piece came out %u x %u, not %u x %u", hdr_screen->getWidth(), hdr_screen->getHeight(),
+                                     p.piece_w, p.piece_h);
+            return;
+        }
+        if (LuminousMetalRender::storePiece(hdr_screen, depth, &sWhole.screen, &sWhole.deferredScreen, p.from_x, p.from_y,
+                                            p.to_x, p.to_y, p.width, p.height))
+        {
+            ++sPiecesStored;
+        }
+        else
+        {
+            sCaptureError = "could not store a piece of the render";
+        }
     }
 
     void init()
@@ -2665,7 +3241,8 @@ namespace LuminousHDRSnapshot
         {
             return false;
         }
-        return !eightBit(sFormat) || (sAverage && sAverageFrame < sAverageFrames - 1);
+        // a render in pieces reads its picture once, after the pieces (finishPieces)
+        return !eightBit(sFormat) || (sAverage && sAverageFrame < sAverageFrames - 1) || sPiecesDrawing;
     }
 
     F32 pictureAspect()

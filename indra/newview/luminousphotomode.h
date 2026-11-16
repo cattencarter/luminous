@@ -250,6 +250,11 @@ namespace LuminousPhotoMode
     /// picture (any of Firestorm's snapshots too), live unless its low
     /// quality is ticked.
     bool fullQuality(LiveQuality effect);
+    /// The size the volumetric light is marched at this frame, for a width x height frame: the frame's own in a
+    /// picture, or live at full quality; live at low quality, half of the window above half its size, and never
+    /// more than LuminousPhotoVolumetricLiveMegapixels million pixels (the same share of the frame each way). True
+    /// when smaller than the frame: it is drawn into a sum of that size and added to the frame through bloom's tent.
+    bool volumetricLiveSize(U32 width, U32 height, U32& size_w, U32& size_h);
 
     /// Photo mode's live view (LuminousPhotoLiveScale): while a shot is set
     /// up, the 3D frame renders at this fraction of the window's pixels each
@@ -334,6 +339,9 @@ namespace LuminousPhotoMode
     bool takeWarmUp(bool reallocated);
     void setWarmingUp(bool on);
     bool warmingUp();
+    /// The next takeWarmUp is true: a render's piece starts with a frame of
+    /// its own for the reflections to read, not the piece before's.
+    void askWarmUp();
 
     /// Held round all the frames of one of Luminous's renders. A render
     /// larger than the window makes rawSnapshot size the targets up to the
@@ -427,6 +435,26 @@ namespace LuminousPhotoMode
     /// under LUMINOUS_SSR, a mipmapped scene map, and their uniforms.
     bool reflections();
     void bindSSRUniforms(LLGLSLShader& shader);
+    /// Firestorm's screen-space reflections (RenderScreenSpaceReflections, on at Ultra) kept for pictures: with
+    /// photo mode on, unless LuminousScreenSpaceReflectionsLive. The live view then copies no scene map and marches
+    /// no reflections; it has the probes' reflections, as Firestorm's Ultra on a Mac.
+    bool screenReflectionsKept();
+    /// Whether this frame copies itself into the scene map for the next frame's march: always unless kept, and in
+    /// every picture's frame.
+    bool screenReflectionsCopyNow();
+    /// Whether this frame's march is skipped (reflectionProbeF.glsl's luminous_ssr_skip): kept, and a live frame or
+    /// a picture's first, whose scene map holds no frame before it (its warm-up frame: screenReflectionsWantWarmUp).
+    bool screenReflectionsSkippedNow();
+    /// Kept, and the scene map holds no frame: a snapshot draws one warm-up frame first (takeWarmUp).
+    bool screenReflectionsWantWarmUp();
+    /// The scene map is made at the main targets' size, not 1x1: the reflections are not kept, or a picture is
+    /// being taken (a picture's frame, or a render holding its targets, KeepSnapshotTargets).
+    bool sceneMapAtFrameSize();
+    /// LLPipeline's scene map: copied this frame; not copied this frame (kept, live; it goes back to 1x1);
+    /// made anew, empty.
+    void sceneMapCopied();
+    void sceneMapSkipped();
+    void sceneMapEmptied();
     /// Called from LLPipeline::bindDeferredShader, beside the shadow bias.
     void bindAOUniforms(LLGLSLShader& shader);
     /// The share of GTAO the deferred lamps and projectors take
@@ -447,6 +475,8 @@ namespace LuminousPhotoMode
     void bindLookUniforms(LLGLSLShader& shader);
     /// The settings the Look tab's Reset button puts back.
     void resetLook();
+    /// The settings named, comma-separated, back to their defaults (a tab's Reset button, Luminous.ResetSettings).
+    void resetSettings(const std::string& names);
 
     /// Colour lookup tables (.cube) for the Look's last step
     /// (LuminousPhotoLUT, by name; LuminousPhotoLUTStrength). Luminous's own

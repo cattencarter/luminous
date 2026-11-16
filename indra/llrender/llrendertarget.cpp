@@ -1154,6 +1154,16 @@ void LLRenderTarget::setClearColor(F32 red, F32 green, F32 blue, F32 alpha)
     gl_clear_color(red, green, blue, alpha);
 }
 
+// <Luminous>
+void LLRenderTarget::getClearColor(F32& red, F32& green, F32& blue, F32& alpha)
+{
+    red = sClearColor[0];
+    green = sClearColor[1];
+    blue = sClearColor[2];
+    alpha = sClearColor[3];
+}
+// </Luminous>
+
 // [Viewer Lab] clear_stack_pass begins the current level's pass when none is open, the back buffer's when no target is
 // bound; no GPU zone, as the raw glClear has none
 void LLRenderTarget::clearCurrent(U32 mask)

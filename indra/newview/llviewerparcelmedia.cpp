@@ -51,6 +51,7 @@
 #include "lltrans.h"
 #include "llvieweraudio.h"
 #include "fscommon.h"   // <FS:CR> For media filter report_to_nearby_chat
+#include "luminousmediaprivacy.h" // <Luminous>
 
 // Local functions
 bool callback_play_media(const LLSD& notification, const LLSD& response, LLParcel* parcel);
@@ -1606,6 +1607,7 @@ void LLViewerParcelMedia::saveDomainFilterList()
     medialist.open(medialist_filename.c_str());
     LLSDSerialize::toPrettyXML(mMediaFilterList, medialist);
     medialist.close();
+    LuminousMediaPrivacy::filterChanged(); // <Luminous> media on prims held under the old list are asked about again
 }
 
 void LLViewerParcelMedia::loadDomainFilterList()

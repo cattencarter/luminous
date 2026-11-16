@@ -74,6 +74,18 @@
          width="270"
          control_name="RezUnderLandGroup"
          tool_tip="Attempts to rez objects under the land group if you're in the land group regardless of which current group tag you're wearing."/>
+        <!-- <Luminous> -->
+        <check_box
+         top_pad="3"
+         left="10"
+         follows="left|top"
+         height="16"
+         label="Rez objects dropped on open water on the water surface"
+         name="LuminousRezOnWater"
+         width="350"
+         control_name="LuminousRezOnWater"
+         tool_tip="An object dragged from your inventory onto open water is rezzed on the water surface. Off: it goes to the sea floor."/>
+        <!-- </Luminous> -->
         <check_box
          control_name="EffectScriptChatParticles"
          height="16"

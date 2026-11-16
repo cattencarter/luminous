@@ -65,6 +65,7 @@ public:
     virtual void close() = 0;
     virtual bool getVisible() = 0;
     virtual bool getMinimized() = 0;
+    virtual bool getOccluded() { return false; } // <Luminous/> no part of the window shows on any screen (macOS)
     virtual bool getMaximized() = 0;
     virtual bool maximize() = 0;
     virtual void minimize() = 0;

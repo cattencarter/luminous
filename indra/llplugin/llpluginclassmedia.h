@@ -229,6 +229,8 @@ public:
     void    setPluginsEnabled(const bool enabled);
     void    setJavascriptEnabled(const bool enabled);
     void    setWebSecurityDisabled(const bool disabled);
+    void    setGPUDisabled(const bool disabled); // <Luminous> before init: the browser draws without the graphics card
+    void    setWebGLEnabled(const bool enabled); // <Luminous> before init: WebGL in the browser
     void    setFileAccessFromFileUrlsEnabled(const bool enabled);
     void    setTarget(const std::string &target);
 

@@ -398,39 +398,23 @@ bool LLTexLayerSet::render( S32 x, S32 y, S32 width, S32 height, LLRenderTarget*
         gAlphaMaskProgram.setMinimumAlpha(0.004f);
     }
 
-    if (mIsVisible)
+    // <Luminous> the colours are composited for an invisible region too;
+    // renderAlphaMaskTextures gives it alpha 0
+    // composite color layers
+    for(LLTexLayerInterface* layer : mLayerList)
     {
-        // composite color layers
-        for(LLTexLayerInterface* layer : mLayerList)
+        if (layer->getRenderPass() == LLTexLayer::RP_COLOR)
         {
-            if (layer->getRenderPass() == LLTexLayer::RP_COLOR)
-            {
-                gGL.flush();
-                success &= layer->render(x, y, width, height, bound_target);
-                gGL.flush();
-            }
+            gGL.flush();
+            success &= layer->render(x, y, width, height, bound_target);
+            gGL.flush();
         }
-
-        renderAlphaMaskTextures(x, y, width, height, bound_target, false);
-
-        stop_glerror();
     }
-    else
-    {
-        gGL.flush();
 
-        gGL.setSceneBlendType(LLRender::BT_REPLACE);
-        gAlphaMaskProgram.setMinimumAlpha(0.f);
+    renderAlphaMaskTextures(x, y, width, height, bound_target, false);
 
-        gGL.getTexUnit(0)->unbind(LLTexUnit::TT_TEXTURE);
-        gGL.color4f( 0.f, 0.f, 0.f, 0.f );
-
-        gl_rect_2d_simple( width, height );
-        gGL.setSceneBlendType(LLRender::BT_ALPHA);
-
-        gGL.flush();
-        gAlphaMaskProgram.setMinimumAlpha(0.004f);
-    }
+    stop_glerror();
+    // </Luminous>
 
     return success;
 }
@@ -521,6 +505,22 @@ void LLTexLayerSet::renderAlphaMaskTextures(S32 x, S32 y, S32 width, S32 height,
 
     // (Optional) Mask out part of the baked texture with alpha masks
     // will still have an effect even if mClearAlpha is set or the alpha component was replaced
+    // <Luminous> an invisible alpha mask: the colours stay, alpha 0 over the whole
+    // region, as Second Life's bake service makes it
+    if (!mIsVisible)
+    {
+        gGL.flush();
+        gAlphaMaskProgram.setMinimumAlpha(0.f);
+        gGL.getTexUnit(0)->unbind(LLTexUnit::TT_TEXTURE);
+        gGL.color4f( 0.f, 0.f, 0.f, 0.f );
+
+        gl_rect_2d_simple( width, height );
+
+        gGL.flush();
+        gAlphaMaskProgram.setMinimumAlpha(0.004f);
+    }
+    else
+    // </Luminous>
     if (mMaskLayerList.size() > 0)
     {
         gGL.setSceneBlendType(LLRender::BT_MULT_ALPHA);

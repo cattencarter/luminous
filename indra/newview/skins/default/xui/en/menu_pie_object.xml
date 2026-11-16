@@ -387,6 +387,24 @@
                 <pie_slice.on_click
                     function="Object.Derender" />
             </pie_slice>
+            <pie_slice
+                label="Name + Owner"
+                name="DerenderByNameAndOwner">
+                <pie_slice.on_click
+                    function="Object.DerenderByName"
+                    parameter="owner" />
+                <pie_slice.on_enable
+                    function="Object.EnableDerenderByName" />
+            </pie_slice>
+            <pie_slice
+                label="All By Name"
+                name="DerenderByName">
+                <pie_slice.on_click
+                    function="Object.DerenderByName"
+                    parameter="anyone" />
+                <pie_slice.on_enable
+                    function="Object.EnableDerenderByName" />
+            </pie_slice>
         </pie_menu>
         <pie_slice
             enabled="false"

@@ -279,6 +279,24 @@
     <menu_item_call.on_click
       function="Object.DerenderPermanent" />
    </menu_item_call>
+   <menu_item_call
+      label="Derender All With This Name and Owner"
+      name="DerenderByNameAndOwner">
+    <menu_item_call.on_click
+      function="Object.DerenderByName"
+      parameter="owner" />
+    <menu_item_call.on_enable
+      function="Object.EnableDerenderByName" />
+   </menu_item_call>
+   <menu_item_call
+      label="Derender All With This Name"
+      name="DerenderByName">
+    <menu_item_call.on_click
+      function="Object.DerenderByName"
+      parameter="anyone" />
+    <menu_item_call.on_enable
+      function="Object.EnableDerenderByName" />
+   </menu_item_call>
    <!-- /Derender -->
    
     <menu_item_call

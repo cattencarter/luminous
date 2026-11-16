@@ -867,7 +867,23 @@ void LLInventoryPanel::modelChanged(U32 mask)
 {
     LL_PROFILE_ZONE_SCOPED;
 
-    if (mViewsInitialized != VIEWS_INITIALIZED) return; // todo: Store changes if building?
+    // <Luminous> Kept while the views are being built and made into views
+    // once they are (idle()), Linden's "todo: Store changes if building?".
+    // Before the build starts nothing is kept: it reads the model as it is.
+    //if (mViewsInitialized != VIEWS_INITIALIZED) return; // todo: Store changes if building?
+    if (mViewsInitialized == VIEWS_BUILDING)
+    {
+        if (const LLInventoryModel* model = getModel())
+        {
+            for (const LLUUID& item_id : model->getChangedIDs())
+            {
+                mChangesWhileBuilding[item_id] |= mask;
+            }
+        }
+        return;
+    }
+    if (mViewsInitialized != VIEWS_INITIALIZED) return;
+    // </Luminous>
 
     const LLInventoryModel* model = getModel();
     if (!model) return;
@@ -1035,6 +1051,21 @@ void LLInventoryPanel::idle(void* user_data)
     {
         panel->mViewsInitialized = VIEWS_INITIALIZED;
     }
+
+    // <Luminous> The views are built: the changes kept meanwhile
+    // (modelChanged()), each against the model as it is now, so an item the
+    // build already made is left as it is and a removed one goes.
+    if (panel->mViewsInitialized == VIEWS_INITIALIZED && !panel->mChangesWhileBuilding.empty()
+        && panel->mFolderRoot.get())
+    {
+        std::map<LLUUID, U32> changes;
+        changes.swap(panel->mChangesWhileBuilding);
+        for (const auto& [item_id, mask] : changes)
+        {
+            panel->itemChanged(item_id, mask, panel->mInventory->getObject(item_id));
+        }
+    }
+    // </Luminous>
 
     // Take into account the fact that the root folder might be invalidated
     if (panel->mFolderRoot.get())

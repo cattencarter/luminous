@@ -29,6 +29,7 @@
 #if LL_RHI_METAL
 
 #include <algorithm>
+#include <cmath>
 #include <cstring>
 #include <numeric>
 #include <optional>
@@ -556,6 +557,7 @@ void MetalEncoder::reset()
     mTypeSlots.clear();
     mLastSamplers.clear();
     mLastChannelSamplers = {};
+    mSceneLodBias = 0.f;
     mChannelVersions.fill(++mNextVersion);
     forgetResolves();
     mSamplerIDs.clear();
@@ -1571,6 +1573,20 @@ void MetalEncoder::setTexture(U32 channel, Texture* texture, const SamplerDesc& 
     }
 }
 
+void MetalEncoder::setSceneLodBias(F32 bias)
+{
+    onRecordingThread("setSceneLodBias");
+    // Metal's S4.6 bias (MTLSampler.h: steps of 1/64, -16 to 15.999), so biases Metal samples alike share a sampler.
+    const F32 kept = std::isfinite(bias) ? std::round(std::clamp(bias, -16.f, 15.984375f) * 64.f) / 64.f : 0.f;
+    if (kept == mSceneLodBias)
+    {
+        return;
+    }
+    mSceneLodBias = kept == 0.f ? 0.f : kept;
+    // Every place resolves again at its next draw, with the new bias.
+    mChannelVersions.fill(++mNextVersion);
+}
+
 bool MetalEncoder::samplerID(const SamplerDesc& desc, MTLResourceID& id)
 {
     if (const auto found = mSamplerIDs.find(desc); found != mSamplerIDs.end())
@@ -1800,7 +1816,8 @@ void MetalEncoder::drawIndexed(PrimitiveType type, U32 firstIndex, U32 indexCoun
     // The tracker's checks, always on here, refused a draw without an index buffer or past its end
     // (llrhi.cpp, EncoderTracker::drawIndexed). The address is the memory current at the draw, a
     // dynamic buffer's too, and the length a whole number of indices from the first; both keep
-    // Metal's alignment to the index size (MTL4RenderCommandEncoder.h:322-345).
+    // Metal's alignment to the index size (MTL4RenderCommandEncoder.h:322-345). A 16-bit list whose address is not a
+    // multiple of 4 is drawn from a copy in the ring below.
     Buffer* indices = mTracker.indexBuffer();
     const IndexType indexType = mTracker.indexType();
     const U64 size = indexSize(indexType);
@@ -1822,6 +1839,32 @@ void MetalEncoder::drawIndexed(PrimitiveType type, U32 firstIndex, U32 indexCoun
     // The TriangleStrip arm does not hold today, as a TriangleStrip is always drawn as a generated list
     // (metalListPrimitive); it keeps a future native strip right.
     const U64 drawnSize = widen ? 4 : size;
+    // Apple GPUs misread a long 16-bit index list whose address is 2 bytes past a multiple of 4, although
+    // MTL4RenderCommandEncoder.h asks only for 2-byte alignment: t240's list of 29400 indices from index 1 draws pixels
+    // unlike the same list from a 4-byte boundary (a list of 6 draws right), and a mesh face that starts at an odd index
+    // in a shared buffer draws one triangle to a far vertex. Such a list is drawn from a copy of its indices in the ring,
+    // which is 256-aligned; a fan, strip or loop goes through the ring below anyway.
+    if (primitive && !widen && indexType == IndexType::U16 && (address & 3) != 0)
+    {
+        const std::span<const std::byte> bytes = metalIndexBytes(indices);
+        if (bytes.size() < skip + U64(indexCount) * size)
+        {
+            LL_WARNS_ONCE("RHI") << "drawIndexed: index buffer '" << indices->debugName()
+                                 << "' has no CPU copy of its indices for a 16-bit list off a 4-byte boundary" << LL_ENDL;
+        }
+        else
+        {
+            const MetalAllocation list = mDevice.frameAllocation(U64(indexCount) * size);
+            if (!list.buffer)
+            {
+                return; // the ring wrote the WARN line
+            }
+            std::memcpy(list.cpu, bytes.data() + skip, size_t(indexCount) * size);
+            address = list.buffer.gpuAddress + list.offset;
+            length = U64(indexCount) * size;
+            ++mAlignedIndexCopies;
+        }
+    }
     if (!primitive || widen)
     {
         // The indices as GL has them at the draw (metalIndexBytes: a static buffer's CPU copy, kept

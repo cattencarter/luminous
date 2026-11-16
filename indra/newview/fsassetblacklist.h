@@ -43,6 +43,10 @@ struct FSAssetBlacklistData
     S32 flags{ 0 };
     LLDate date;
     bool permanent{ false };
+    // <Luminous> a NAME entry's owner: only that owner's objects (null: anyone's)
+    LLUUID owner;
+    std::string owner_name;
+    // </Luminous>
 
     LLSD toLLSD() const;
     static FSAssetBlacklistData fromLLSD(const LLSD& data);
@@ -63,8 +67,9 @@ public:
         WORN = 1 << 0,
         REZZED = 1 << 1,
         GESTURE = 1 << 2,
+        NAME = 1 << 16, // <Luminous> an object name: every rezzed object so named is hidden
 
-        LAST_FLAG = 1 << 2
+        LAST_FLAG = 1 << 16
     };
 
     void init();

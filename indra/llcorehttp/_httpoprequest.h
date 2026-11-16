@@ -203,6 +203,7 @@ public:
     // Transport data
     bool                mCurlActive;
     CURL *              mCurlHandle;
+    bool                mCurlNoCookies = false; // <Luminous> mCurlHandle is the request's own, not the cache's
     HttpService *       mCurlService;
     curl_slist *        mCurlHeaders;
     size_t              mCurlBodyPos;

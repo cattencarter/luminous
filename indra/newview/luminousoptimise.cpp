@@ -323,6 +323,25 @@ namespace
         return budget < standardScaleOfDisplay() - 0.01f ? budget : 0.f;
     }
 
+    // The Luminous settings that follow the Mac, as the set-up chooses them: the live view's resolution, the live
+    // shadow maps (full size, as in renders, except on a base chip: they cost the same whatever the display and take
+    // about 1 GB more memory), and on a base chip volumetric light and projector beams in renders only. Nothing of
+    // Second Life's graphics settings. Returns the live view's scale (0: Standard).
+    F32 applyForTier(Tier tier, F64 pixels)
+    {
+        const F32 live_scale = setUpLiveScale(tier, pixels);
+        gSavedSettings.setF32("LuminousPhotoLiveScale", live_scale);
+        gSavedSettings.setBOOL("LuminousPhotoLiveScaleStandardChecked", true);
+        gSavedSettings.setBOOL("LuminousPhotoLowQualityLiveShadows", tier == Tier::Base);
+        gSavedSettings.setBOOL("LuminousLiveShadowMapsChecked", true);
+        if (tier == Tier::Base)
+        {
+            gSavedSettings.setBOOL("LuminousPhotoVolumetricLightRenderOnly", true);
+            gSavedSettings.setBOOL("LuminousPhotoProjectorBeamsRenderOnly", true);
+        }
+        return live_scale;
+    }
+
     // tell: the message that says what was set; without it the settings are
     // only written (photo mode off, where none of them shows yet).
     void setUp(bool tell = true)
@@ -351,8 +370,8 @@ namespace
                          + ": shadows, transparent water and ambient occlusion on, with SMAA anti-aliasing");
 
         // The live view at Standard, one pixel per point, or smaller where the display has more pixels than the
-        // tier's budget even so. It pays for the level.
-        const F32 live_scale = setUpLiveScale(tier, pixels);
+        // tier's budget even so. It pays for the level. With it the other settings that follow the Mac.
+        const F32 live_scale = applyForTier(tier, pixels);
         if (live_scale > 0.f)
         {
             chosen.push_back(std::string("the live view at ") + (live_scale > 0.7f ? "three quarters" : "half")
@@ -362,22 +381,22 @@ namespace
         {
             chosen.push_back("the live view at Standard resolution, one pixel per point");
         }
-        gSavedSettings.setF32("LuminousPhotoLiveScale", live_scale);
-        gSavedSettings.setBOOL("LuminousPhotoLiveScaleStandardChecked", true);
+        // Projector beams are named only when they are on (they ship off).
+        const std::string lights = gSavedSettings.getBOOL("LuminousPhotoProjectorBeams")
+                                       ? "volumetric light and projector beams" : "volumetric light";
         if (tier == Tier::Base)
         {
-            gSavedSettings.setBOOL("LuminousPhotoVolumetricLightRenderOnly", true);
-            gSavedSettings.setBOOL("LuminousPhotoProjectorBeamsRenderOnly", true);
-            chosen.push_back("volumetric light and projector beams in renders only: they show in every render, "
-                             "not while you set up the shot");
+            chosen.push_back(lights + " in renders only: they show in every render, not while you set up the shot");
+            chosen.push_back("smaller shadow maps in the live view: close-up shadows are sharper in renders");
         }
         else
         {
             // As the settings have it, which first start leaves as Luminous ships them.
             const bool gtao_live = !gSavedSettings.getBOOL("LuminousPhotoAORenderOnly");
-            chosen.push_back(gtao_live ? "volumetric light, projector beams and GTAO live, at low quality"
-                                       : "volumetric light and projector beams live, at low quality; GTAO in renders "
-                                         "only: it shows in every render, not while you set up the shot");
+            chosen.push_back(gtao_live ? lights + " and GTAO live, at low quality"
+                                       : lights + " live, at low quality; GTAO in renders only: it shows in every "
+                                                  "render, not while you set up the shot");
+            chosen.push_back("full-size shadow maps in the live view, as in renders");
         }
 
         std::string mac = chip.empty() ? std::string("this Mac") : chip;
@@ -392,7 +411,8 @@ namespace
         gSavedSettings.setString("LuminousSetUpFor", mac);
         LL_INFOS("LuminousOptimise") << "Set up for " << mac << ": graphics level " << level << " ("
             << (metal ? "Metal" : "OpenGL") << "), live scale " << live_scale
-            << (tier == Tier::Base ? ", volumetric light and projector beams in renders only" : "") << LL_ENDL;
+            << (tier == Tier::Base ? ", volumetric light and projector beams in renders only, smaller live shadow maps"
+                                   : ", full live shadow maps") << LL_ENDL;
 
         std::string message = "Luminous has set itself up for this Mac (" + mac + "):\n";
         for (const std::string& line : chosen)
@@ -512,6 +532,7 @@ namespace LuminousOptimise
         if (!gLastRunVersion.empty() && gLastRunVersion != "0.0.0")
         {
             checkStandardLiveScale();
+            checkLiveShadowMaps();
             return;
         }
         setUp(LuminousPhotoMode::isOn());
@@ -545,6 +566,38 @@ namespace LuminousOptimise
                                      << (now > 0.f ? llformat("%g", now) : std::string("Standard")) << LL_ENDL;
         LuminousPhotoMode::HoldSettingTips quiet;
         gSavedSettings.setF32("LuminousPhotoLiveScale", now);
+    }
+
+    void applyForThisMac()
+    {
+        S32 display_x = 0;
+        S32 display_y = 0;
+        const F64 pixels = displayPixelCount(display_x, display_y);
+        const Tier tier = tierOf(graphicsCores(), chipName());
+        LuminousPhotoMode::HoldSettingTips quiet;
+        const F32 live_scale = applyForTier(tier, pixels);
+        LL_INFOS("LuminousOptimise") << "Settings for this Mac again: live scale " << live_scale
+            << (tier == Tier::Base ? ", volumetric light and projector beams in renders only, smaller live shadow maps"
+                                   : ", full live shadow maps") << LL_ENDL;
+    }
+
+    void checkLiveShadowMaps()
+    {
+        if (gSavedSettings.getBOOL("LuminousLiveShadowMapsChecked"))
+        {
+            return;
+        }
+        gSavedSettings.setBOOL("LuminousLiveShadowMapsChecked", true);
+        // The live view's full-size shadow maps are the default now. A base chip that never changed the setting keeps
+        // the smaller maps it had; a value the user chose stays, and any other chip gets the full maps.
+        LLControlVariable* control = gSavedSettings.getControl("LuminousPhotoLowQualityLiveShadows").get();
+        if (!control || !control->isDefault() || tierOf(graphicsCores(), chipName()) != Tier::Base)
+        {
+            return;
+        }
+        LL_INFOS("LuminousOptimise") << "Live shadow maps: kept small on this base chip" << LL_ENDL;
+        LuminousPhotoMode::HoldSettingTips quiet;
+        gSavedSettings.setBOOL("LuminousPhotoLowQualityLiveShadows", true);
     }
 
     void init()

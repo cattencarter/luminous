@@ -101,6 +101,7 @@ private:
     std::string mProxyHost;
     int mProxyPort;
     bool mDisableGPU;
+    bool mWebGLEnabled; // <Luminous>
     bool mDisableNetworkService;
     bool mUseMockKeyChain;
     bool mDisableWebSecurity;
@@ -145,6 +146,7 @@ MediaPluginBase(host_send_func, host_user_data)
     mProxyHost = "";
     mProxyPort = 0;
     mDisableGPU = false;
+    mWebGLEnabled = true; // <Luminous>
     mDisableNetworkService = true;
     mUseMockKeyChain = true;
     mDisableWebSecurity = false;
@@ -715,7 +717,7 @@ void MediaPluginCEF::receiveMessage(const char* message_string)
                 settings.media_stream_enabled = false; // MAINT-6060 - WebRTC media removed until we can add granularity/query UI
 
                 settings.user_agent_substring = mCEFLib->makeCompatibleUserAgentString(mUserAgentSubtring);
-                settings.webgl_enabled = true;
+                settings.webgl_enabled = mWebGLEnabled; // <Luminous> was true
                 settings.log_file = mCefLogFile;
                 settings.log_verbose = mCefLogVerbose;
                 settings.autoplay_without_gesture = true;
@@ -1047,6 +1049,12 @@ void MediaPluginCEF::receiveMessage(const char* message_string)
             {
                 mDisableGPU = message_in.getValueBoolean("disable");
             }
+            // <Luminous>
+            else if (message_name == "webgl_enabled")
+            {
+                mWebGLEnabled = message_in.getValueBoolean("enable");
+            }
+            // </Luminous>
             else if (message_name == "proxy_setup")
             {
                 mProxyEnabled = message_in.getValueBoolean("enable");

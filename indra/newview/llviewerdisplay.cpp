@@ -89,6 +89,10 @@
 #include "llworld.h"
 #include "pipeline.h"
 #include "luminousmetal.h" // <Luminous/>
+#include "luminousobjectmotion.h" // <Luminous/>
+#include "luminousbenchmark.h" // <Luminous/>
+#include "luminousoptimise.h" // <Luminous/>
+#include "luminoushdrsnapshot.h" // <Luminous/>
 
 #include <boost/json.hpp>
 // [RLVa:KB] - Checked: 2011-05-22 (RLVa-1.3.1a)
@@ -519,6 +523,20 @@ static void update_tp_display(bool minimized)
     }
 }
 
+// <Luminous> Behind and covered: a frame drawn while the viewer is behind (no focus) and no part of its window shows
+// is seen by no one, so display() goes the minimised window's way and draws nothing. The main loop still runs, under
+// BackgroundYieldTime: the network, sound, texture fetches and a teleport's progress go on. Only while the background
+// yields at all: BackgroundYieldTime 0 asks for full speed behind (a screen capture of a covered window, the tests).
+// A render or snapshot (gSnapshot), the benchmark and Optimise draw as before.
+static bool covered_behind()
+{
+    static LLCachedControl<S32> yield_time(gSavedSettings, "BackgroundYieldTime", 100);
+    return !gSnapshot && yield_time > 0 && !gFocusMgr.getAppHasFocus()
+        && !LuminousBenchmark::running() && !LuminousOptimise::running() && !LuminousHDRSnapshot::fullDetailWaiting()
+        && gViewerWindow->getWindow()->getOccluded();
+}
+// </Luminous>
+
 // Paint the display!
 void display(bool rebuild, F32 zoom_factor, int subfield, bool for_snapshot)
 {
@@ -560,6 +578,7 @@ void display(bool rebuild, F32 zoom_factor, int subfield, bool for_snapshot)
 
     gSnapshot = for_snapshot;
     LuminousMetal::beginFrame(); // <Luminous/> photo mode's native passes: a new frame (nothing on OpenGL)
+    LuminousObjectMotion::beginFrame(); // <Luminous/> MetalFX temporal: the last frame's reshaped prims and impostors go
 
     if (LLPipeline::sRenderDeferred)
     { //hack to make sky show up in deferred snapshots
@@ -581,7 +600,8 @@ void display(bool rebuild, F32 zoom_factor, int subfield, bool for_snapshot)
     if (   !gViewerWindow->getActive()
         || !gViewerWindow->getWindow()->getVisible()
         || gViewerWindow->getWindow()->getMinimized()
-        || gNonInteractive)
+        || gNonInteractive
+        || covered_behind()) // <Luminous/> behind and covered
     {
         // Clean up memory the pools may have allocated
         if (rebuild)

@@ -711,6 +711,14 @@ size_t SamplerDescHash::operator()(const SamplerDesc& desc) const
     packed = (packed << 4) | static_cast<size_t>(desc.compareFunc);
     packed = (packed << 1) | (desc.mipmapped ? 1 : 0); // [Viewer Lab]
     packed |= static_cast<size_t>(desc.magFilter) << 20; // [Viewer Lab] FromFilter is 0, so every earlier value stays
+    // The LOD bias in Metal's steps of 1/64, ten bits from bit 22: perfect from -8 to under 8, and a bias of 0 adds
+    // nothing, so a description without one hashes as by the fields above alone. Biases outside that range share
+    // hashes with ones inside it.
+    const F32 bias_steps = desc.lodBias * 64.f;
+    if (bias_steps >= -512.f && bias_steps < 512.f)
+    {
+        packed |= static_cast<size_t>(static_cast<U32>(static_cast<S32>(std::lround(bias_steps))) & 0x3ffu) << 22;
+    }
     U32 anisotropy = std::bit_cast<U32>(desc.maxAnisotropy);
     if ((anisotropy & 0x7fffffffu) == 0)
     {
@@ -848,7 +856,8 @@ std::string validate(const BufferDesc& desc, U64 initialBytes, const Capabilitie
 
 std::string validate(const TextureDesc& desc, const Capabilities& caps)
 {
-    constexpr U8 knownUsage = TEXTURE_SAMPLED | TEXTURE_RENDER_TARGET | TEXTURE_READBACK | TEXTURE_STORAGE | TEXTURE_MEMORYLESS;
+    constexpr U8 knownUsage = TEXTURE_SAMPLED | TEXTURE_RENDER_TARGET | TEXTURE_READBACK | TEXTURE_STORAGE
+                            | TEXTURE_MEMORYLESS | TEXTURE_SCENE_LOD_BIAS;
     const bool cube = desc.type == TextureType::Cube || desc.type == TextureType::CubeArray;
     const bool volume = desc.type == TextureType::Tex3D;
 
@@ -1285,6 +1294,17 @@ std::string validate(const SamplerDesc& desc, const Capabilities& caps)
     if (U8(desc.magFilter) > U8(MagFilter::Linear)) // [Viewer Lab]
     {
         return reason("the mag filter ", U32(desc.magFilter), " is not a MagFilter");
+    }
+    // The LOD bias: finite, tested on the bits as the anisotropy is, and in Metal's range (MTLSampler.h:200-204: -16 to
+    // 15.999)
+    const F32 bias = desc.lodBias;
+    if ((std::bit_cast<U32>(bias) & 0x7f800000u) == 0x7f800000u)
+    {
+        return reason("the LOD bias ", bias, " is not finite");
+    }
+    if (bias < -16.f || bias >= 16.f)
+    {
+        return reason("the LOD bias ", bias, " is not from -16 to under 16");
     }
     return {};
 }

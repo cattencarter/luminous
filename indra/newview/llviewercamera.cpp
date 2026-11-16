@@ -55,6 +55,7 @@
 #include "lltracerecording.h"
 #include "llenvironment.h"
 #include "luminousphotomode.h" // <Luminous/>
+#include "luminoushdrsnapshot.h" // <Luminous/>
 
 // System includes
 #include <iomanip> // for setprecision
@@ -310,6 +311,19 @@ void LLViewerCamera::setPerspective(bool for_selection,
         z_near = getNear();
     }
     aspect = getAspect();
+    // <Luminous> A render's piece: the whole frame's projection, its shape, then
+    // scaled and moved onto the piece (below)
+    // the world view's camera only (LLViewerWindow::setup3DRender): not a preview's, which draws at its own size
+    const LuminousHDRSnapshot::Piece& luminous_piece = LuminousHDRSnapshot::piece();
+    const LLRect& luminous_world = gViewerWindow->getWorldViewRectRaw();
+    const bool in_piece = luminous_piece.active && !for_selection && this == LLViewerCamera::getInstance()
+        && x == luminous_world.mLeft && y_from_bot == luminous_world.mBottom && width == luminous_world.getWidth()
+        && height == luminous_world.getHeight();
+    if (in_piece)
+    {
+        aspect = luminous_piece.frameAspect;
+    }
+    // </Luminous>
 
     // Load camera view matrix
     gGL.matrixMode(LLRender::MM_PROJECTION);
@@ -372,6 +386,14 @@ void LLViewerCamera::setPerspective(bool for_selection,
         proj_mat = scale * proj_mat;
         proj_mat = translate * proj_mat;
     }
+    // <Luminous> a render's piece: the whole frame's NDC onto the piece's, x' = sx (x - cx)
+    else if (in_piece)
+    {
+        proj_mat = glm::translate(glm::vec3(-luminous_piece.scaleX * luminous_piece.centreX,
+                                            -luminous_piece.scaleY * luminous_piece.centreY, 0.f))
+                 * glm::scale(glm::vec3(luminous_piece.scaleX, luminous_piece.scaleY, 1.f)) * proj_mat;
+    }
+    // </Luminous>
 
     // <Luminous> an accumulated snapshot's frame: the picture moved by a
     // fraction of a pixel, so that the frames' average smooths every edge
@@ -404,6 +426,12 @@ void LLViewerCamera::setPerspective(bool for_selection,
     {
         const F32 cot = 1.f / tanf(fov_y * 0.5f);
         lens_shift = glm::translate(glm::vec3(cot / aspect * lens_x / lens_focus, cot * lens_y / lens_focus, 0.f));
+        // in a piece, the shift is the whole frame's, after the piece's scale
+        if (in_piece)
+        {
+            lens_shift = glm::translate(glm::vec3(luminous_piece.scaleX * cot / aspect * lens_x / lens_focus,
+                                                  luminous_piece.scaleY * cot * lens_y / lens_focus, 0.f));
+        }
     }
     // </Luminous>
 
@@ -468,6 +496,24 @@ void LLViewerCamera::setPerspective(bool for_selection,
     // of degrees, and whole objects would go missing from some of a render's
     // frames. Both, and a live view moved by MetalFX's jitter, cull from the
     // projection without the jitter (proj_still).
+    // In a render's piece, the whole frame's culling frustum is noted first
+    // (the piece's scale and move undone): the sun's cascades are fitted to
+    // it (LLPipeline::generateSunShadow), so every piece has the same maps.
+    // The whole frame's view without the jitter or the lens is noted too, for
+    // the passes drawn once on the whole picture after the last piece.
+    if (in_piece)
+    {
+        const glm::mat4 to_whole = glm::scale(glm::mat4(1.f), glm::vec3(1.f / luminous_piece.scaleX, 1.f / luminous_piece.scaleY, 1.f))
+                                 * glm::translate(glm::mat4(1.f), glm::vec3(luminous_piece.scaleX * luminous_piece.centreX,
+                                                                            luminous_piece.scaleY * luminous_piece.centreY, 0.f));
+        set_current_projection(to_whole * proj_still);
+        set_current_modelview(modelview_centre);
+        updateFrustumPlanes(*this);
+        const glm::mat4 whole_view = glm::perspective(fov_y, aspect, z_near, z_far);
+        LuminousHDRSnapshot::notePieceView(mAgentFrustum, glm::value_ptr(whole_view), glm::value_ptr(modelview_centre));
+        set_current_projection(proj_mat);
+        set_current_modelview(modelview);
+    }
     if (lens)
     {
         set_current_projection(proj_still);

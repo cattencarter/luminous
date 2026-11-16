@@ -32,7 +32,9 @@
 #include "stdtypes.h"
 
 #include <array>
+#include <string>
 
+class LLCamera;
 class LLRenderTarget;
 
 namespace LL::RHI
@@ -230,9 +232,10 @@ bool overlayCaptureFrame(F32 x0, F32 y0, F32 x1, F32 y1, const F32* colour, F32 
 void drawOverlays();
 /// Second Life's depth of field and the glow map in a frame drawn for the temporal scaler are settled: made where the
 /// camera without the jitter saw the frame (the glow from four reads across each of its texels' part of the frame) and
-/// averaged with the frames before, moved by the camera (LuminousMetalFXTemporalSettleDoF / ...SettleGlow: about how
-/// many frames; 0 off). Settles: true with this frame's jitter in the live view's texture coordinates (GL's rows, up),
-/// added where the pass reads the frame and taken off where its result is read back; false, and 0, otherwise.
+/// averaged with the frames before, moved by the camera, or by a surface's own motion where the object motion was drawn
+/// this frame (LuminousMetalFXTemporalSettleDoF / ...SettleGlow: about how many frames; 0 off). Settles: true with
+/// this frame's jitter in the live view's texture coordinates (GL's rows, up), added where the pass reads the frame and
+/// taken off where its result is read back; false, and 0, otherwise.
 bool temporalSettlesGlow(F32& u, F32& v);
 bool temporalSettlesDoF(F32& u, F32& v);
 /// The average, before the layer is read back: the target holding it, or the one given when the layer is not settled.
@@ -247,7 +250,8 @@ LLRenderTarget* temporalSettleGlow(LLRenderTarget* glow);
 /// (...SettleEnhance). What the jitter changes in them, a gap in the leaves opening and closing, is as large as a real
 /// change, so they are taken whole only where the camera moved; a change reaches them over the frames averaged.
 /// Enhance is also taken whole where its weight leaves what the frame holds round a place, as where something in focus
-/// moves over the blur.
+/// moves over the blur, and its average moves with a surface's own motion where the object motion was drawn this frame;
+/// the others' move with the camera alone.
 enum class SettledLayer : U8
 {
     Air,
@@ -267,6 +271,41 @@ LL::RHI::Texture* temporalSettle(SettledLayer layer, LL::RHI::Texture* texture, 
 void releaseSettledTargets();
 /// The next temporal frame drops the scaler's history (a style's or Frame me's camera, a saved shot).
 void resetTemporalHistory();
+/// MetalFX temporal's object motion, drawn by luminousobjectmotion.cpp: what the pass needs of this frame.
+struct ObjectMotionFrame
+{
+    F32 viewProjection[16] = {};     ///< this frame's view-projection without the jitter, column-major
+    F32 lastViewProjection[16] = {}; ///< the last frame fed to the scaler's, without its jitter
+    U32 width = 0;                   ///< the scaler's input size: the live view's
+    U32 height = 0;
+    bool scalerView = false;         ///< the main view of a frame drawn for the scaler and not held, wanted or not
+    const char* refusal = nullptr;   ///< in such a frame when not wanted: which condition failed (a constant phrase)
+};
+/// Main thread, in the main view's deferred lighting once its depth is final: whether this frame's object motion can be
+/// used, and what the pass needs for it. True only on Metal, in a frame drawn for the temporal scaler and not held, in the
+/// main view at the scaler's input size (not a snapshot's, a probe's, an impostor's or the HUD's), whose present will
+/// follow on from the last frame fed to the scaler: no reset asked, and that frame the one just before this one with no
+/// snapshot's frame between them. In the main view of a frame drawn for the scaler (scalerView) a false names the
+/// condition that failed (refusal).
+bool objectMotionWanted(ObjectMotionFrame& frame);
+/// For the object motion pass's log line: the sizes and frame counts objectMotionWanted compares, as they are now.
+std::string objectMotionState();
+/// Main thread: the object motion may be drawn in this frame, a frame drawn for the temporal scaler (on Metal only) with
+/// LuminousMetalFXObjectMotion on. What it is drawn from is kept only then: LLVOAvatar's palettes of the last frame,
+/// and the flexible prims reshaped in the frame (LuminousObjectMotion::reshaped).
+bool objectMotionOn();
+/// The object motion was drawn this frame: its present and the settles of depth of field, the glow and Enhance read it
+/// (LuminousObjectMotion::texture).
+void objectMotionDrawn();
+/// Main thread, in the object motion pass: whether a stage of the reactive mask can be drawn in this frame (the main
+/// view of a frame drawn for the temporal scaler, not held, at its input size, the scaler made with a reactive mask).
+bool objectReactiveWanted();
+/// Main thread, after the object motion pass drew draws it marked reactive: one stage of this frame's reactive mask from
+/// its target's blue channel, at most 1, times strength (0 to 1), faded with distance as the alpha's stages are
+/// (LuminousMetalFXTemporalMaskFade), the largest of it and the stage before where there is one; the present takes it
+/// as the last stage. False when it was not drawn (nothing to draw it into, strength 0, or its pipeline still
+/// compiling).
+bool temporalObjectReactive(F32 strength);
 /// Main thread, as the main view's frame is copied into the scene map that screen-space reflections read in the
 /// next frame: the jitter it was drawn with is kept.
 void temporalSceneMapCopied();
@@ -274,6 +313,23 @@ void temporalSceneMapCopied();
 /// scene map's jitter minus this frame's, in clip units (luminous_ssr_jitter). 0 on OpenGL, outside the main view,
 /// and while neither frame was drawn with the jitter.
 void ssrJitterOffset(F32& ndc_x, F32& ndc_y);
+/// Main thread, round the main view's geometry passes (LLPipeline::renderGeomDeferred, renderGeomPostDeferred): while
+/// it lives, the scene's textures these passes sample through their mips get a LOD bias (LuminousMetalFXMipBias;
+/// Encoder::setSceneLodBias says which textures), so the scaler's smaller input reads the mip levels of the output's
+/// size. Only on Metal, in a frame drawn for the temporal scaler with this frame's jitter in the main camera (not held),
+/// for the main camera at the scaler's input size: not in a snapshot's, a probe's or mirror's, an impostor's or the
+/// HUD's render. Anything drawn through LLRender before it and before its end is drawn first.
+class SceneMipBias
+{
+public:
+    explicit SceneMipBias(const LLCamera& camera);
+    ~SceneMipBias();
+    SceneMipBias(const SceneMipBias&) = delete;
+    SceneMipBias& operator=(const SceneMipBias&) = delete;
+
+private:
+    bool mSet = false;
+};
 
 /// Main thread, Metal, after the scene map that screen-space reflections read was drawn: with wanted (photo mode's
 /// reflections are drawn), its mip chain is made from it, level 0 a copy and the levels below by compute; without,

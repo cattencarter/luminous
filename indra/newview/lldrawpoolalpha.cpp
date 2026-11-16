@@ -48,6 +48,7 @@
 #include "lldrawpoolwater.h"
 #include "llspatialpartition.h"
 #include "luminousphotomode.h" // <Luminous/>
+#include "luminousmetal.h" // <Luminous/>
 #include "llrhi.h" // <Luminous/>
 #include "llglcommonfunc.h"
 #include "llvoavatar.h"
@@ -282,6 +283,12 @@ void LLDrawPoolAlpha::renderPostDeferred(S32 pass)
     // final pass, render to depth for depth of field effects
     if (!LLPipeline::sImpostorRender && LLPipeline::RenderDepthOfField && !gCubeSnapshot && !LLPipeline::sRenderingHUDs && getType() == LLDrawPool::POOL_ALPHA_POST_WATER)
     {
+        // <Luminous> MetalFX temporal's mask stage of the alpha drawn since the last copy of the frame, drawn before
+        // this pass writes the depth of the alpha that covers at least a third, where the stage would find the depth
+        // changed and leave the alpha out (nothing on OpenGL, nor outside the main view of a frame drawn for the
+        // scaler)
+        LuminousMetal::temporalAlphaAfter(&gPipeline.mRT->screen);
+        // </Luminous>
         //update depth buffer sampler
         simple_shader = fullbright_shader = &gDeferredFullbrightAlphaMaskProgram;
 

@@ -1801,7 +1801,7 @@
 			 width="118">
 				<button.commit_callback
 				 function="Luminous.ResetSettings"
-				 parameter="LuminousPhotoTonemapper,LuminousPhotoTonemapMix,LuminousPhotoExposure,LuminousPhotoContrast,LuminousPhotoHighlights,LuminousPhotoShadows,LuminousPhotoWhites,LuminousPhotoBlacks,LuminousPhotoClarity,LuminousPhotoClarityRenderOnly,RenderCASSharpness" />
+				 parameter="LuminousPhotoTonemapper,LuminousPhotoTonemapMix,LuminousPhotoExposure,LuminousPhotoContrast,LuminousPhotoHighlights,LuminousPhotoShadows,LuminousPhotoWhites,LuminousPhotoBlacks,LuminousPhotoClarity,LuminousPhotoClarityRenderOnly,RenderCASSharpness,RenderSkyAutoAdjustLegacy" />
 			</button>
 			<button
 			 control_name="LuminousScenePaused"
@@ -2866,7 +2866,7 @@
 						<layout_panel
 						 auto_resize="false"
 						 follows="left|top|right"
-						 height="150"
+						 height="174"
 						 layout="topleft"
 						 name="dof_options_lp"
 						 user_resize="false"
@@ -2968,6 +2968,18 @@
 							 name="dof_follows_mouse"
 							 tool_tip="Focus where the mouse rests, instead of where you Alt-click."
 							 top="122"
+							 width="270" />
+							<check_box
+							 control_name="FSFocusPointRender"
+							 enabled_control="RenderDepthOfField"
+							 follows="left|top"
+							 height="16"
+							 label="Draw DoF crosshair"
+							 layout="topleft"
+							 left="36"
+							 name="dof_crosshair"
+							 tool_tip="Shows a small cross where the picture is in focus: yellow while it follows, red when Alt-Shift-X has locked it."
+							 top="146"
 							 width="270" />
 						</layout_panel>
 						<layout_panel
@@ -4461,7 +4473,7 @@
 			 width="118">
 				<button.commit_callback
 				 function="Luminous.ResetSettings"
-				 parameter="LuminousPhotoDoF,LuminousPhotoDoFFront,CameraFNumber,CameraMaxCoF,LuminousPhotoDoFBlades,LuminousPhotoVignette,LuminousPhotoVignetteAmount,LuminousPhotoVignetteSize,LuminousPhotoVignetteSoftness,LuminousPhotoVignetteRoundness,LuminousPhotoBloom,LuminousPhotoBloomStrength,LuminousPhotoBloomSize,LuminousPhotoChromaticAberration,LuminousPhotoChromaticAberrationAmount,LuminousPhotoHalation,LuminousPhotoAnamorphic,LuminousPhotoAnamorphicTint,LuminousPhotoLensFlare,LuminousPhotoLensFlareGhosts,LuminousPhotoLensFlareHalo,LuminousPhotoLensFlareStarburst,LuminousPhotoLensFlareStarBlur,LuminousPhotoLensFlareDirt,LuminousPhotoLensFlareVariation,LuminousPhotoLensFlareAmplify,LuminousPhotoLensFlareRenderOnly,LuminousPhotoDistortion,LuminousPhotoDoFBlur,LuminousPhotoGrain,LuminousPhotoGrainSize,LuminousPhotoDoFRenderOnly,LuminousPhotoDepthOfFieldRenderOnly,LuminousPhotoVignetteRenderOnly,LuminousPhotoBloomRenderOnly,LuminousPhotoChromaticAberrationRenderOnly,LuminousPhotoHalationRenderOnly,LuminousPhotoAnamorphicRenderOnly,LuminousPhotoDistortionRenderOnly,LuminousPhotoGrainRenderOnly,LuminousPhotoWorn,LuminousPhotoWornDust,LuminousPhotoWornScratches,LuminousPhotoWornStains,LuminousPhotoWornEdges,LuminousPhotoWornPaper,LuminousPhotoWornVariation,LuminousPhotoWornRenderOnly,LuminousPhotoLightLeak,LuminousPhotoLightLeakColour,LuminousPhotoLightLeakPlace,LuminousPhotoLightLeakSize,LuminousPhotoLightLeakVariation,LuminousPhotoLightLeakHardness,LuminousPhotoLightLeakRainbow,LuminousPhotoLightLeakRenderOnly,LuminousPhotoGlitch,LuminousPhotoGlitchSplit,LuminousPhotoGlitchVHS,LuminousPhotoGlitchWaves,LuminousPhotoGlitchLines,LuminousPhotoGlitchLineSize,LuminousPhotoGlitchVariation,LuminousPhotoGlitchRenderOnly,RenderGlow,RenderGlowStrength,RenderGlowWidth" />
+				 parameter="LuminousPhotoDoF,LuminousPhotoDoFFront,CameraFNumber,CameraMaxCoF,LuminousPhotoDoFBlades,LuminousPhotoVignette,LuminousPhotoVignetteAmount,LuminousPhotoVignetteSize,LuminousPhotoVignetteSoftness,LuminousPhotoVignetteRoundness,LuminousPhotoBloom,LuminousPhotoBloomStrength,LuminousPhotoBloomSize,LuminousPhotoChromaticAberration,LuminousPhotoChromaticAberrationAmount,LuminousPhotoHalation,LuminousPhotoAnamorphic,LuminousPhotoAnamorphicTint,LuminousPhotoLensFlare,LuminousPhotoLensFlareGhosts,LuminousPhotoLensFlareHalo,LuminousPhotoLensFlareStarburst,LuminousPhotoLensFlareStarBlur,LuminousPhotoLensFlareDirt,LuminousPhotoLensFlareVariation,LuminousPhotoLensFlareAmplify,LuminousPhotoLensFlareRenderOnly,LuminousPhotoDistortion,LuminousPhotoDoFBlur,LuminousPhotoGrain,LuminousPhotoGrainSize,LuminousPhotoDoFRenderOnly,LuminousPhotoDepthOfFieldRenderOnly,LuminousPhotoVignetteRenderOnly,LuminousPhotoBloomRenderOnly,LuminousPhotoChromaticAberrationRenderOnly,LuminousPhotoHalationRenderOnly,LuminousPhotoAnamorphicRenderOnly,LuminousPhotoDistortionRenderOnly,LuminousPhotoGrainRenderOnly,LuminousPhotoWorn,LuminousPhotoWornDust,LuminousPhotoWornScratches,LuminousPhotoWornStains,LuminousPhotoWornEdges,LuminousPhotoWornPaper,LuminousPhotoWornVariation,LuminousPhotoWornRenderOnly,LuminousPhotoLightLeak,LuminousPhotoLightLeakColour,LuminousPhotoLightLeakPlace,LuminousPhotoLightLeakSize,LuminousPhotoLightLeakVariation,LuminousPhotoLightLeakHardness,LuminousPhotoLightLeakRainbow,LuminousPhotoLightLeakRenderOnly,LuminousPhotoGlitch,LuminousPhotoGlitchSplit,LuminousPhotoGlitchVHS,LuminousPhotoGlitchWaves,LuminousPhotoGlitchLines,LuminousPhotoGlitchLineSize,LuminousPhotoGlitchVariation,LuminousPhotoGlitchRenderOnly,RenderGlow,RenderGlowStrength,RenderGlowWidth,RenderDepthOfField,FSFocusPointFollowsPointer,FSFocusPointRender" />
 			</button>
 			<button
 			 control_name="LuminousScenePaused"
@@ -5152,7 +5164,7 @@
 			 width="118">
 				<button.commit_callback
 				 function="Luminous.ResetSettings"
-				 parameter="LuminousSnapshotScale,LuminousSnapshotLongSide,LuminousSnapshotWidth,LuminousSnapshotHeight,LuminousHDRSnapshotSmooth,LuminousSnapshotFrames,LuminousSnapshotMargin,LuminousSnapshotSampledDoF,LuminousSnapshotSampledShadows,LuminousSnapshotFullTextures,LuminousSnapshotOpen,LuminousAnimationSpeed,LuminousSnapshotFormat,LuminousRenderToDisk" />
+				 parameter="LuminousSnapshotScale,LuminousSnapshotLongSide,LuminousSnapshotWidth,LuminousSnapshotHeight,LuminousHDRSnapshotSmooth,LuminousSnapshotFrames,LuminousSnapshotMargin,LuminousSnapshotSampledDoF,LuminousSnapshotSampledShadows,LuminousSnapshotFullTextures,LuminousSnapshotOpen,LuminousAnimationSpeed,LuminousSnapshotFormat,LuminousRenderToDisk,LuminousSnapshotAspect,LuminousSnapshotPortrait" />
 			</button>
 			<button
 			 control_name="LuminousScenePaused"
@@ -6013,7 +6025,7 @@
 							 layout="topleft"
 							 left="138"
 							 name="low_quality_volumetric"
-							 tool_tip="Volumetric light at half size in the live view."
+							 tool_tip="Volumetric light at a lower resolution in the live view: at most about a million pixels."
 							 top="26"
 							 width="165" />
 							<check_box
@@ -6198,6 +6210,57 @@
 							 top="4"
 							 width="284" />
 						</layout_panel>
+						<layout_panel
+						 auto_resize="false"
+						 follows="left|top|right"
+						 height="34"
+						 layout="topleft"
+						 name="reset_all_title_lp"
+						 user_resize="false"
+						 width="316">
+							<text
+							 follows="left|top"
+							 font="SansSerifBold"
+							 height="16"
+							 layout="topleft"
+							 left="10"
+							 mouse_opaque="true"
+							 name="reset_all_title"
+							 tool_tip="Every tab of the sidebar at once."
+							 top="8"
+							 width="216">All settings</text>
+							<view_border
+							 bevel_style="in"
+							 follows="left|top|right"
+							 height="0"
+							 layout="topleft"
+							 left="10"
+							 name="reset_all_line"
+							 top="28"
+							 width="296" />
+						</layout_panel>
+						<layout_panel
+						 auto_resize="false"
+						 follows="left|top|right"
+						 height="32"
+						 layout="topleft"
+						 name="reset_all_lp"
+						 user_resize="false"
+						 width="316">
+							<button
+							 follows="left|top"
+							 height="22"
+							 label="Reset all Luminous settings..."
+							 layout="topleft"
+							 left="22"
+							 name="reset_all"
+							 tool_tip="Puts every tab back as Luminous ships it, set for this Mac. Your saved presets, camera positions and styles stay."
+							 top="4"
+							 width="210">
+								<button.commit_callback
+								 function="Luminous.ResetAll" />
+							</button>
+						</layout_panel>
 					</layout_stack>
 				</panel>
 			</scroll_container>
@@ -6212,7 +6275,7 @@
 			 top="655"
 			 width="118">
 				<button.commit_callback
-				 function="Luminous.ResetSettings"
+				 function="Luminous.ResetSettingsForMac"
 				 parameter="LuminousMetalFXTemporal,LuminousPhotoLiveScale,LuminousPhotoLowQualityLiveShadows,LuminousPhotoLowQualityLiveVolumetric,LuminousPhotoLowQualityLiveBeams,LuminousPhotoLowQualityLiveAO,LuminousPhotoVolumetricSamples,LuminousPhotoShadowMapSize,RenderShadowSplitExponent,RenderShadowBias" />
 			</button>
 			<button

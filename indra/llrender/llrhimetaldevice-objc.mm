@@ -1617,6 +1617,7 @@ IdMTL4Compiler MetalDevice::compiler()
         safe += (safe.empty() ? "'" : ", '") + std::string(name) + "'";
     }
     LL_INFOS("RHI") << "Metal safe math programs (P3-04a): " << safe << LL_ENDL;
+    LL_INFOS("RHI") << "Metal invariant position: every skinned program, each compiled alone" << LL_ENDL;
     if (metalMathKnobs().any())
     {
         LL_INFOS("RHI") << "Metal math knobs (development, P3-04a S4): " << metalMathKnobs().describe() << LL_ENDL;

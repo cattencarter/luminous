@@ -336,8 +336,21 @@ bool metalSafeMath(const std::string& program)
            || metalMathKnobs().safe(program);
 }
 
+bool metalInvariantPosition(const std::string& program)
+{
+    return std::string_view(program).starts_with("Skinned ") || metalMathKnobs().invariant;
+}
+
 namespace
 {
+    /// [Viewer Lab] Whether the program's libraries are compiled alone rather than in a group: its math or its
+    /// preserveInvariance differs from a group's (metalSafeMath, metalInvariantPosition).
+    bool metalCompiledAlone(const std::string& program)
+    {
+        return (metalSafeMath(program) && !metalMathKnobs().safeAll)
+               || (metalInvariantPosition(program) && !metalMathKnobs().invariant);
+    }
+
     /// [Viewer Lab] Golden level 2's fault list on Metal, kept as llrhi.cpp keeps the shared fault: each entry with
     /// its hits and the creations of its program taken since one built. A function's static, so nothing runs for it
     /// at load. Main thread.
@@ -400,7 +413,7 @@ bool takeMetalProgramFault(const std::string& program, bool& deferred)
     return false;
 }
 
-MTLCompileOptions* metalCompileOptions(bool safe)
+MTLCompileOptions* metalCompileOptions(bool safe, bool invariant)
 {
     // Metal 3's options: MTLLibrary.h:344 with MTLLanguageVersion4_0 (222), and the math
     // set explicitly (329-338) instead of the deprecated fastMathEnabled (323-326).
@@ -409,8 +422,8 @@ MTLCompileOptions* metalCompileOptions(bool safe)
     options.mathMode = safe ? MTLMathModeSafe : METAL_MATH_MODE;
     options.mathFloatingPointFunctions =
         safe && metalMathKnobs().precise ? MTLMathFloatingPointFunctionsPrecise : METAL_MATH_FUNCTIONS;
-    // The invariant position of LL_METAL_INVARIANT holds only with this (MTLLibrary.h:383-386).
-    options.preserveInvariance = metalMathKnobs().invariant;
+    // An invariant position (metalInvariantPosition) holds only with this (MTLLibrary.h:383-386).
+    options.preserveInvariance = invariant || metalMathKnobs().invariant;
     return options;
 }
 
@@ -766,8 +779,10 @@ namespace
             // MTL4LibraryDescriptor.h:26-32.
             MTL4LibraryDescriptor* source = [MTL4LibraryDescriptor new];
             source.source = metalString(job->msl[index]);
-            // The Safe-math list and knob, by the program's name (a point variant's is its program's)
-            source.options = metalCompileOptions(metalSafeMath(job->source().name));
+            // The Safe-math list and knob and the invariant position, by the program's name (a point variant's is
+            // its program's)
+            source.options = metalCompileOptions(metalSafeMath(job->source().name),
+                                                 metalInvariantPosition(job->source().name));
             source.name = metalString(job->name() + (vertex ? " vertex" : " fragment"));
             const std::shared_ptr<MetalCompileState> state = job->state;
             if (!counted)
@@ -869,7 +884,8 @@ namespace
             }
             MTL4LibraryDescriptor* source = [MTL4LibraryDescriptor new];
             source.source = metalString(text);
-            source.options = metalCompileOptions(metalMathKnobs().safeAll); // a listed program is never in a group
+            // a program compiled alone (metalCompiledAlone) is never in a group
+            source.options = metalCompileOptions(metalMathKnobs().safeAll, metalMathKnobs().invariant);
             source.name = metalString("program group " + std::to_string(number));
             const std::shared_ptr<MetalCompileState> state = members.front()->state;
             {
@@ -924,7 +940,7 @@ namespace
             const MSL::Program& source = job->source();
             const MSL::Result result =
                 job->translator(source, MSL::Options{ .pointSize = job->parent != nullptr,
-                                                      .invariantPosition = metalMathKnobs().invariant });
+                                                      .invariantPosition = metalInvariantPosition(source.name) });
             std::vector<const char*> blocks;
             for (const std::string& block : source.blocks)
             {
@@ -1515,9 +1531,9 @@ Ref<Program> createMetalProgram(MetalDevice& device, const ProgramDesc& desc)
         addTimeSince(job->state->callerTranslationNs, start);
         return program;
     }
-    if (!metalSafeMath(job->name()) || metalMathKnobs().safeAll)
+    if (!metalCompiledAlone(job->name()))
     {
-        device.programGroups().add(job); // before a pool thread can see the job; a Safe-math one alone
+        device.programGroups().add(job); // before a pool thread can see the job; a Safe-math or invariant one alone
     }
     device.programPool().start();
     device.programPool().push(job);

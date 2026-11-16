@@ -139,6 +139,7 @@
 #include "luminousfloater.h" // <Luminous/> the render overlay's still
 #include "luminoushdrsnapshot.h" // <Luminous/>
 #include "luminousmetal.h" // <Luminous/>
+#include "luminousobjectmotion.h" // <Luminous/>
 #ifndef LL_WINDOWS
 #define A_GCC 1
 #pragma GCC diagnostic ignored "-Wunused-function"
@@ -938,6 +939,33 @@ LLPipeline::eFBOStatus LLPipeline::doAllocateScreenBuffer(U32 resX, U32 resY)
     return ret;
 }
 
+// <Luminous> The scene map Firestorm's screen-space reflections read, at a size: last frame's colour and depth.
+// Mip levels for photo mode's reflections: on OpenGL made as it is flushed; on Metal the reflections read a chain
+// made by compute (LuminousMetal::sceneMipChain), into its own levels (TMG_MANUAL: no copy of level 0). At the same
+// size it is kept as it is, with the frame it holds; a new one holds none (LuminousPhotoMode::sceneMapEmptied).
+namespace
+{
+    U32 sLuminousSceneMapFormat = GL_RGBA16F; // the main targets' (allocateScreenBufferInternal's screenFormat)
+
+    void luminous_allocate_scene_map(LLRenderTarget& map, U32 width, U32 height)
+    {
+        const U32 width_before = map.getWidth();
+        const U32 height_before = map.getHeight();
+        const LL::RHI::Texture* rhi_before = map.getRHITexture(0);
+        const U32 name_before = map.getTexture(0);
+        map.allocate(width, height, sLuminousSceneMapFormat, true, LLTexUnit::TT_TEXTURE,
+                     !LuminousPhotoMode::reflections() ? LLTexUnit::TMG_NONE
+                     : LuminousMetal::metal()          ? LLTexUnit::TMG_MANUAL
+                                                       : LLTexUnit::TMG_AUTO);
+        if (map.getWidth() != width_before || map.getHeight() != height_before || map.getRHITexture(0) != rhi_before
+            || map.getTexture(0) != name_before)
+        {
+            LuminousPhotoMode::sceneMapEmptied();
+        }
+    }
+}
+// </Luminous>
+
 bool LLPipeline::allocateScreenBufferInternal(U32 resX, U32 resY)
 {
     LL_PROFILE_ZONE_SCOPED_CATEGORY_DISPLAY;
@@ -1109,13 +1137,14 @@ bool LLPipeline::allocateScreenBufferInternal(U32 resX, U32 resY)
         if(RenderScreenSpaceReflections)
         {
             LL_PROFILE_ZONE_NAMED_CATEGORY_DISPLAY("SSRBuffer"); // <FS:Beq/> improve Tracy scoping 
-            // <Luminous> mip levels for photo mode's reflections: on OpenGL made as it is flushed; on Metal the
-            // reflections read a chain made by compute (LuminousMetal::sceneMipChain).
-            // On Metal with its own levels too, which that chain is made into (TMG_MANUAL: no copy of level 0).
-            mSceneMap.allocate(resX, resY, screenFormat, true, LLTexUnit::TT_TEXTURE,
-                               !LuminousPhotoMode::reflections() ? LLTexUnit::TMG_NONE
-                               : LuminousMetal::metal()          ? LLTexUnit::TMG_MANUAL
-                                                                 : LLTexUnit::TMG_AUTO);
+            // <Luminous> kept for pictures in photo mode (LuminousPhotoMode::screenReflectionsKept): 1x1 until a
+            // picture's frame draws into it at the frame's size (copyScreenSpaceReflections), and at the frame's
+            // size while a picture is taken, so that a render whose frames make their targets again at the same
+            // size keeps each frame for the next (LuminousPhotoMode::sceneMapAtFrameSize)
+            sLuminousSceneMapFormat = screenFormat;
+            const bool luminous_full = LuminousPhotoMode::sceneMapAtFrameSize();
+            luminous_allocate_scene_map(mSceneMap, luminous_full ? resX : 1, luminous_full ? resY : 1);
+            // </Luminous>
         }
         else
         {
@@ -1195,6 +1224,13 @@ bool LLPipeline::allocateShadowBuffer(U32 resX, U32 resY)
 {
     LL_PROFILE_ZONE_SCOPED_CATEGORY_DISPLAY;
     S32 shadow_detail = RenderShadowDetail;
+    // <Luminous> a render's piece has the whole frame's maps
+    if (LuminousHDRSnapshot::piece().active && !gCubeSnapshot)
+    {
+        resX = LuminousHDRSnapshot::piece().frameWidth;
+        resY = LuminousHDRSnapshot::piece().frameHeight;
+    }
+    // </Luminous>
 
     F32 scale = gCubeSnapshot ? 1.0f : llmax(0.f, RenderShadowResolutionScale); // Don't scale probe shadow maps
     U32 sun_shadow_map_width = BlurHappySize(resX, scale);
@@ -1496,6 +1532,7 @@ void LLPipeline::releaseGLBuffers()
     mPostPongMap.release();
     LuminousPhotoMode::releaseBuffers(); // <Luminous/> Photo mode
     LuminousMetal::releaseSettledTargets(); // <Luminous/> MetalFX temporal's averaged blur and glow
+    LuminousObjectMotion::release(); // <Luminous/> MetalFX temporal's object motion
 
     mFXAAMap.release();
 
@@ -4376,6 +4413,7 @@ void LLPipeline::renderGeomDeferred(LLCamera& camera, bool do_occlusion)
     LLAppViewer::instance()->pingMainloopTimeout("Pipeline:RenderGeomDeferred");
     LL_PROFILE_ZONE_SCOPED_CATEGORY_DRAWPOOL; //LL_RECORD_BLOCK_TIME(FTM_RENDER_GEOMETRY);
     LL_PROFILE_GPU_ZONE("renderGeomDeferred");
+    LuminousMetal::SceneMipBias luminous_mip_bias(camera); // <Luminous/> MetalFX temporal: the scaled frame's texture LOD bias
 
     llassert(!sRenderingHUDs);
 
@@ -4514,6 +4552,7 @@ void LLPipeline::renderGeomPostDeferred(LLCamera& camera)
 {
     LL_PROFILE_ZONE_SCOPED_CATEGORY_DRAWPOOL;
     LL_PROFILE_GPU_ZONE("renderGeomPostDeferred");
+    LuminousMetal::SceneMipBias luminous_mip_bias(camera); // <Luminous/> MetalFX temporal: the scaled frame's texture LOD bias
 
     if (gUseWireframe)
     {
@@ -8125,6 +8164,34 @@ void LLPipeline::copyScreenSpaceReflections(LLRenderTarget* src, LLRenderTarget*
 
     if (RenderScreenSpaceReflections && !gCubeSnapshot)
     {
+        // <Luminous> In photo mode Firestorm's reflections are kept for pictures: a live frame copies nothing (its
+        // march is skipped, LuminousPhotoMode::screenReflectionsSkippedNow), and the scene map goes back to 1x1 at
+        // the first live frame after a picture; a picture's frame draws into it at the frame's size.
+        if (dst == &mSceneMap)
+        {
+            const bool kept = LuminousPhotoMode::screenReflectionsKept();
+            if (kept && !LuminousPhotoMode::screenReflectionsCopyNow())
+            {
+                LuminousPhotoMode::sceneMapSkipped();
+                if (mSceneMap.getWidth() > 1 || mSceneMap.getHeight() > 1)
+                {
+                    luminous_allocate_scene_map(mSceneMap, 1, 1);
+                }
+                return;
+            }
+            // A picture's frame at the frame's size; live again (photo mode off, or LuminousScreenSpaceReflectionsLive
+            // on) while it waits at 1x1, back to the main targets' size, as allocateScreenBufferInternal makes it.
+            if (kept && (mSceneMap.getWidth() != src->getWidth() || mSceneMap.getHeight() != src->getHeight()))
+            {
+                luminous_allocate_scene_map(mSceneMap, src->getWidth(), src->getHeight());
+            }
+            else if (!kept && mSceneMap.getWidth() == 1 && mSceneMap.getHeight() == 1 && mRT == &mMainRT
+                     && mRT->screen.getWidth() > 1)
+            {
+                luminous_allocate_scene_map(mSceneMap, mRT->screen.getWidth(), mRT->screen.getHeight());
+            }
+        }
+        // </Luminous>
         LL_PROFILE_GPU_ZONE("ssr copy");
         LLGLDepthTest depth(GL_TRUE, GL_TRUE, GL_ALWAYS);
 
@@ -8150,6 +8217,7 @@ void LLPipeline::copyScreenSpaceReflections(LLRenderTarget* src, LLRenderTarget*
         if (dst == &mSceneMap)
         {
             LuminousMetal::sceneMapDrawn(dst, LuminousPhotoMode::reflectionsNow());
+            LuminousPhotoMode::sceneMapCopied(); // the next frame's march has this frame to read
         }
         // </Luminous>
     }
@@ -9047,6 +9115,12 @@ void LLPipeline::renderDoF(LLRenderTarget* src, LLRenderTarget* dst, bool lumino
             F32 magnification = focal_length / (subject_distance - focal_length);
             // <FS:Beq> FIRE-13989 DOF should be equivalent in all resolutions of the same rendered image
             F32 screen_to_target_scale_factor = (F32)gViewerWindow->getWindowHeightRaw()/dst->getHeight();
+            // <Luminous> a render's piece blurs as the whole frame does, in pixels
+            if (LuminousHDRSnapshot::piece().active)
+            {
+                screen_to_target_scale_factor = (F32)gViewerWindow->getWindowHeightRaw() / (F32)LuminousHDRSnapshot::piece().frameHeight;
+            }
+            // </Luminous>
             F32 adj_COF = CameraMaxCoF / screen_to_target_scale_factor;
             // </FS:Beq>
             // <Luminous> The aperture this blur implies, for a render that
@@ -9238,9 +9312,16 @@ void LLPipeline::renderFinalize()
         !gCubeSnapshot;
     bool luminous_dof = false;
     // </Luminous>
+    // <Luminous> the whole picture of a render drawn in pieces, finished once: its light is the pieces' (their
+    // reflections, volumetric light, beams and depth of field drawn), at the exposure metered before them
+    const bool luminous_finishing = LuminousHDRSnapshot::finishingPieces();
+    // </Luminous>
     if (hdr)
     {
-        copyScreenSpaceReflections(&mRT->screen, &mSceneMap);
+        if (!luminous_finishing) // <Luminous/>
+        {
+            copyScreenSpaceReflections(&mRT->screen, &mSceneMap);
+        }
 
         // <Luminous> Photo mode: volumetric light and sun shafts, added to the
         // HDR frame before exposure and tonemapping, so they are light like any
@@ -9250,9 +9331,31 @@ void LLPipeline::renderFinalize()
         {
             LuminousPhotoMode::render(&mRT->screen);
         }
+
+        // One of a render's pieces ends with its light: photo mode's depth of
+        // field drawn, the frames averaged and the piece's core stored in the
+        // whole frame (LuminousHDRSnapshot::takePiece). Sun shafts, the
+        // vignette, the lens, tonemapping and glow are the whole frame's,
+        // drawn once after the last piece, at the exposure metered before.
+        if (LuminousHDRSnapshot::piece().active)
+        {
+            if (dof_wanted && LuminousPhotoMode::drawsDepthOfField())
+            {
+                renderDoF(&mRT->screen, &mRT->screen, true);
+            }
+            LuminousHDRSnapshot::takePiece(&mRT->screen, &mRT->deferredScreen);
+            LuminousMetal::temporalAfterPresent();
+            LLVertexBuffer::unbind();
+            LLGLState::checkStates();
+            recordTrianglesDrawn();
+            return;
+        }
         // </Luminous>
 
-        generateLuminance(&mRT->screen, &mLuminanceMap);
+        if (!luminous_finishing) // <Luminous/>
+        {
+            generateLuminance(&mRT->screen, &mLuminanceMap);
+        }
 
         // <Luminous> a picture with light the live preview did not have (an
         // effect kept for renders) meters afresh, and an accumulated render
@@ -9280,7 +9383,10 @@ void LLPipeline::renderFinalize()
         // and lens settings, unchanged.
         if (dof_wanted && LuminousPhotoMode::drawsDepthOfField())
         {
-            renderDoF(&mRT->screen, &mRT->screen, true);
+            if (!luminous_finishing)
+            {
+                renderDoF(&mRT->screen, &mRT->screen, true);
+            }
             luminous_dof = true;
         }
 
@@ -9299,6 +9405,13 @@ void LLPipeline::renderFinalize()
 
         // <Luminous> an EXR or 16-bit snapshot reads the frame here, as light
         LuminousHDRSnapshot::capture(hdr_frame, &mExposureMap);
+        // the whole picture of a TIFF or EXR in pieces is read there: the rest is the eight-bit picture's
+        if (luminous_finishing && !LuminousHDRSnapshot::finishingEightBit())
+        {
+            LLVertexBuffer::unbind();
+            LLGLState::checkStates();
+            return;
+        }
         // </Luminous>
 
         static LLCachedControl<F32> cas_sharpness(gSavedSettings, "RenderCASSharpness", 0.4f);
@@ -9731,6 +9844,12 @@ void LLPipeline::bindDeferredShader(LLGLSLShader& shader, LLRenderTarget* light_
 
 // <FS:WW> Compute scale factor to match AO appearance between view and snapshot.
     F32 screen_to_target_scale_factor = (F32)gViewerWindow->getWindowHeightRaw() / deferred_target->getHeight();
+    // <Luminous> a render's piece takes the whole frame's height
+    if (LuminousHDRSnapshot::piece().active)
+    {
+        screen_to_target_scale_factor = (F32)gViewerWindow->getWindowHeightRaw() / (F32)LuminousHDRSnapshot::piece().frameHeight;
+    }
+    // </Luminous>
     //shader.uniform1f(LLShaderMgr::DEFERRED_SSAO_RADIUS, RenderSSAOScale);
     shader.uniform1f(LLShaderMgr::DEFERRED_SSAO_RADIUS, RenderSSAOScale / screen_to_target_scale_factor);
     //shader.uniform1f(LLShaderMgr::DEFERRED_SSAO_MAX_RADIUS, (GLfloat)RenderSSAOMaxScale);
@@ -10365,6 +10484,7 @@ void LLPipeline::renderDeferredLighting()
     }
 
     screen_target->flush();
+    LuminousObjectMotion::draw(); // <Luminous/> MetalFX temporal: the motion of what moves by itself, against the final depth
 
     if (!gCubeSnapshot)
     {
@@ -10907,6 +11027,16 @@ void LLPipeline::bindReflectionProbes(LLGLSLShader& shader)
     {
         LuminousPhotoMode::bindSSRUniforms(shader);
     }
+    // <Luminous> the march skipped while the scene map holds no frame to read: the live view in photo mode, which keeps
+    // Firestorm's reflections for pictures (reflectionProbeF.glsl's luminous_ssr_skip), and a map still at 1x1 (never
+    // drawn into: the GLTF material preview turns the reflections off for its own frame, a switch back to live
+    // reflections marches before the frame's copy makes it whole again)
+    {
+        static LLStaticHashedString s_ssr_skip("luminous_ssr_skip");
+        const bool unwritten = mSceneMap.getWidth() <= 1 && mSceneMap.getHeight() <= 1;
+        shader.uniform1i(s_ssr_skip, LuminousPhotoMode::screenReflectionsSkippedNow() || unwritten ? 1 : 0);
+    }
+    // </Luminous>
     // <Luminous> MetalFX temporal: the scene map holds last frame's picture, drawn with last frame's jitter, while the
     // reflections project into it with this frame's; the difference is added where they project (0 without)
     if (LuminousMetal::metal())
@@ -11547,6 +11677,14 @@ void LLPipeline::generateSunShadow(LLCamera& camera)
     {
         luminous_fit_proj = glm::translate(glm::mat4(1.f), glm::vec3(-luminous_jitter_x, -luminous_jitter_y, 0.f)) * saved_proj;
     }
+    // a render's piece: the cascades fitted to the whole frame (the piece's scale and move undone)
+    if (LuminousHDRSnapshot::piece().active && !gCubeSnapshot)
+    {
+        const LuminousHDRSnapshot::Piece& p = LuminousHDRSnapshot::piece();
+        luminous_fit_proj = glm::scale(glm::mat4(1.f), glm::vec3(1.f / p.scaleX, 1.f / p.scaleY, 1.f))
+                          * glm::translate(glm::mat4(1.f), glm::vec3(p.scaleX * p.centreX, p.scaleY * p.centreY, 0.f))
+                          * luminous_fit_proj;
+    }
     // </Luminous>
 
     glm::mat4 view[6];
@@ -11581,6 +11719,12 @@ void LLPipeline::generateSunShadow(LLCamera& camera)
 
 
     LLCamera main_camera = camera;
+    // <Luminous> a render's piece: the whole frame's frustum (LLViewerCamera::setPerspective notes it)
+    if (!gCubeSnapshot)
+    {
+        LuminousHDRSnapshot::pieceFrustum(main_camera.mAgentFrustum);
+    }
+    // </Luminous>
 
     F32 near_clip = 0.f;
     {
@@ -12051,7 +12195,10 @@ void LLPipeline::generateSunShadow(LLCamera& camera)
 
     if (gen_shadow)
     {
-        if (!gCubeSnapshot) //skip updating spot shadow maps during cubemap updates
+        // <Luminous> nor while a render's pieces are drawn: each piece sees only the projectors in its own part of
+        // the view, so the two that cast shadows stay those chosen for the whole view before the pieces
+        if (!gCubeSnapshot && !LuminousHDRSnapshot::piece().active) //skip updating spot shadow maps during cubemap updates
+        // </Luminous>
         {
             LLTrace::CountStatHandle<>* velocity_stat = LLViewerCamera::getVelocityStat();
             F32 fade_amt = gFrameIntervalSeconds.value()
@@ -12725,6 +12872,7 @@ void LLPipeline::generateImpostor(LLVOAvatar* avatar, bool preview_avatar, bool 
         avatar->mNeedsImpostorUpdate = false;
         avatar->cacheImpostorValues();
         avatar->mLastImpostorUpdateFrameTime = gFrameTimeSeconds;
+        LuminousObjectMotion::impostorRefreshed(avatar); // <Luminous/> MetalFX temporal: its quad reactive this frame
     }
 
     LLVertexBuffer::unbind();

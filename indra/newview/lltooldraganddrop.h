@@ -125,6 +125,11 @@ protected:
     static void pickCallback(const LLPickInfo& pick_info);
     void pick(const LLPickInfo& pick_info);
 
+    // <Luminous> Where the mouse ray from the camera meets open water, when that comes before any land and within the
+    // draw distance. False when LuminousRezOnWater is off, the camera is at or under the water, or land comes first.
+    static bool waterSurfaceUnderMouse(S32 x, S32 y, LLVector3d& water_pos_global);
+    // </Luminous>
+
 protected:
 
     U32             mCargoCount;

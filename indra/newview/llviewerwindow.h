@@ -264,6 +264,10 @@ public:
 
     // 3D world area, in raw unscaled pixels
     LLRect          getWorldViewRectRaw() const     { return mWorldViewRectRaw; }
+    // <Luminous> a render drawn in pieces sets the whole picture's area for the passes drawn on it once, and puts
+    // the window's back after, as rawSnapshot does for a picture of its own size
+    void            setWorldViewRectRawForRender(const LLRect& rect) { mWorldViewRectRaw = rect; }
+    // </Luminous>
     S32             getWorldViewHeightRaw() const;
     S32             getWorldViewWidthRaw() const;
 

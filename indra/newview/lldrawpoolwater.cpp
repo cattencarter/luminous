@@ -44,6 +44,7 @@
 #include "llvowater.h"
 #include "llworld.h"
 #include "pipeline.h"
+#include "luminoushdrsnapshot.h" // <Luminous/>
 #include "llviewershadermgr.h"
 #include "llenvironment.h"
 #include "llsettingssky.h"
@@ -308,6 +309,14 @@ void LLDrawPoolWater::renderPostDeferred(S32 pass)
     {
         shader->uniform1f(LLShaderMgr::WATER_REFSCALE, pwater->getScaleAbove());
     }
+    // <Luminous> the ripples' offset on the screen, in a render's piece as in the whole frame: the piece's screen
+    // coordinates are its scale times the frame's
+    {
+        static LLStaticHashedString s_piece_scale("luminous_piece_scale");
+        const LuminousHDRSnapshot::Piece& piece = LuminousHDRSnapshot::piece();
+        shader->uniform2f(s_piece_scale, piece.active ? piece.scaleX : 1.f, piece.active ? piece.scaleY : 1.f);
+    }
+    // </Luminous>
 
     LLGLDisable cullface(GL_CULL_FACE);
 

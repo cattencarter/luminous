@@ -34,6 +34,7 @@
 #include <string>
 
 class LLRenderTarget;
+class LLVector3;
 
 /**
  * Every Second Life viewer saves snapshots as eight-bit colour read back after
@@ -145,15 +146,17 @@ namespace LuminousHDRSnapshot
     /// macOS's figures are unknown, room is 0 and the render counts as
     /// fitting.
     bool chosenSizeFits(U64& need, U64& room);
-    /// During one of Luminous's renders in a shape other than the window's:
-    /// rawSnapshot then draws into targets of the picture's size, as for a
-    /// picture larger than the window.
+    /// During one of Luminous's renders in a shape other than the window's,
+    /// or drawn in pieces: rawSnapshot then draws into targets of the
+    /// picture's (or the piece's) size, as for a picture larger than the
+    /// window.
     bool shapedRender();
     /// Metal, during one of Luminous's renders: true for a frame whose eight
     /// bits rawSnapshot need not read -- every frame of a TIFF or EXR, which
-    /// capture() reads, and every frame but the last when the frames are
-    /// averaged as light. rawSnapshot then waits for the frame instead of
-    /// reading it. Always false on OpenGL.
+    /// capture() reads, every frame but the last when the frames are averaged
+    /// as light, and every frame of a render in pieces, the exposure's
+    /// included, whose picture is read once after them. rawSnapshot then
+    /// waits for the frame instead of reading it. Always false on OpenGL.
     bool frameReadSkipped();
 
     /// Registers the commit callbacks Luminous.SaveHDRSnapshot (EXR),
@@ -167,6 +170,9 @@ namespace LuminousHDRSnapshot
     /// and the like) ask here as they ask TextureLoadFullRes, which Luminous
     /// leaves alone -- Firestorm warns about it being on.
     bool wantsFullTextures();
+    /// A render waits for Full detail (or for its own textures) to load: frames must go on being drawn meanwhile,
+    /// also behind other apps, or the loading stops.
+    bool fullDetailWaiting();
 
     /// While a snapshot waits for full detail: how much larger an on-screen
     /// texture's screen area is taken to be (LLViewerTextureList), so that
@@ -210,6 +216,50 @@ namespace LuminousHDRSnapshot
     /// LLViewerTextureList biases textures on screen too, so only those out
     /// of view lose detail.
     constexpr F32 ROOM_BIAS = 1.85f;
+
+    /// A render too large for memory in one piece is drawn in pieces (Metal):
+    /// the frame -- the picture and its margin -- cut into N x N cores, each
+    /// drawn with an overlap round it, all its frames before the next. While
+    /// a piece is drawn, its place in the whole frame: the piece is a part of
+    /// the same camera's view, so LLViewerCamera::setPerspective builds the
+    /// whole frame's projection (its view and shape) and scales and moves it
+    /// onto the piece, rawSnapshot keeps the whole frame's shape, and the
+    /// shadow maps, the sun's cascades and depth of field are the whole
+    /// frame's.
+    struct Piece
+    {
+        bool active = false;
+        U32 frameWidth = 0; ///< the whole frame, margin included
+        U32 frameHeight = 0;
+        F32 frameAspect = 1.f;
+        F32 scaleX = 1.f;   ///< from the whole frame's NDC to the piece's: x' = scaleX (x - centreX)
+        F32 scaleY = 1.f;
+        F32 centreX = 0.f;  ///< the piece's centre in the whole frame's NDC
+        F32 centreY = 0.f;
+    };
+    const Piece& piece();
+    /// While a piece is drawn, LLViewerCamera::setPerspective notes the whole
+    /// frame's culling frustum (eight points, for the sun's cascades) and its
+    /// projection and modelview without the frame's jitter or the lens's
+    /// shift (16 floats each, column-major), for the passes drawn on the whole
+    /// picture after the last piece. pieceFrustum copies the frustum into
+    /// frust, and is true, only while a piece is drawn.
+    void notePieceView(const LLVector3* frust, const F32* projection, const F32* modelview);
+    bool pieceFrustum(LLVector3* frust);
+    /// Called from LLPipeline::renderFinalize at the end of each frame of a
+    /// piece, with the frame's light (after photo mode's depth of field) and
+    /// its depth: the frames averaged as light, and in the last the piece's
+    /// core stored at its place in the whole frame, on the GPU.
+    void takePiece(LLRenderTarget* hdr_screen, LLRenderTarget* depth);
+    /// While the whole picture of a render drawn in pieces is finished: one
+    /// LLPipeline::renderFinalize on the pieces' light at the frame's size,
+    /// which leaves out what the pieces drew (reflections' copy, volumetric
+    /// light, beams, depth of field) and meters no exposure.
+    bool finishingPieces();
+    /// While finishing: whether the picture is eight bits, read after the
+    /// whole chain; a TIFF or EXR is read at capture(), and the chain ends
+    /// there.
+    bool finishingEightBit();
 }
 
 #endif // LUMINOUS_HDR_SNAPSHOT_H

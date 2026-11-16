@@ -32,6 +32,7 @@
 #include "luminousmetalparams.h"
 
 #include "llagent.h"
+#include "llappviewer.h"
 #include "llcallbacklist.h"
 #include "llnativeprogram.h"
 #include "llrender.h"
@@ -45,6 +46,7 @@
 #include "llviewerwindow.h"
 #include "luminousbenchmark.h"
 #include "luminousfloater.h"
+#include "luminousobjectmotion.h"
 #include "luminousoptimise.h"
 #include "luminousphotomode.h"
 #include "pipeline.h"
@@ -68,7 +70,11 @@ extern bool gCubeSnapshot; // pipeline.cpp: a reflection probe's or mirror's fra
 //   buffer, with the frame's depth for the interface drawn over it: by MetalFX's temporal scaler
 //   (LuminousMetalFXTemporal) into a frame of the world view's size, copied texel for texel, or with Catmull-Rom.
 // - MetalFX temporal's inputs: the jitter of the main camera, the reactive mask drawn round the alpha in the
-//   deferred lighting, and the motion texture drawn at the present.
+//   deferred lighting and after the object motion pass where its draws marked the surface reactive, and the motion
+//   texture drawn at the present: the camera's motion, and where the object motion pass (luminousobjectmotion.cpp)
+//   drew a surface's own motion in the deferred lighting, that one; with LuminousMetalFXMotionDilate, dilated by
+//   closest depth. The motion view (LuminousMetalFXMotionView, a developer tool) presents that motion texture, where
+//   it took the object motion, or the reactive mask the scaler was given, in place of the scaled frame.
 // - The overlays: in a frame drawn for MetalFX's temporal scaler, the picture frame and Firestorm's capture frame are
 //   left out of the frame and drawn over the window's world view after the present, at the window's size
 //   (drawOverlays).
@@ -91,13 +97,19 @@ namespace LuminousMetal
         const char* const PRESENT_NO_DEPTH_FRAGMENT = "luminous_present_upscale_nodepth_fs";
         const char* const TEMPORAL_FRAGMENT = "luminous_present_temporal_fs";
         const char* const TEMPORAL_NO_DEPTH_FRAGMENT = "luminous_present_temporal_nodepth_fs";
+        const char* const MOTION_VIEW_FRAGMENT = "luminous_present_motion_view_fs";
+        const char* const MOTION_VIEW_NO_DEPTH_FRAGMENT = "luminous_present_motion_view_nodepth_fs";
         const char* const SCREEN_FRAGMENT = "luminous_present_screen_fs";
         const char* const SCREEN_NO_DEPTH_FRAGMENT = "luminous_present_screen_nodepth_fs";
         const char* const MOTION_FRAGMENT = "luminous_temporal_motion_fs";
+        const char* const MOTION_OBJECT_FRAGMENT = "luminous_temporal_motion_object_fs";
         const char* const REACTIVE_FIRST_FRAGMENT = "luminous_temporal_reactive_first_fs";
         const char* const REACTIVE_MORE_FRAGMENT = "luminous_temporal_reactive_more_fs";
         const char* const REACTIVE_NONE_FRAGMENT = "luminous_temporal_reactive_none_fs";
+        const char* const REACTIVE_OBJECT_FIRST_FRAGMENT = "luminous_temporal_reactive_object_first_fs";
+        const char* const REACTIVE_OBJECT_MORE_FRAGMENT = "luminous_temporal_reactive_object_more_fs";
         const char* const SETTLE_FRAGMENT = "luminous_temporal_settle_fs";
+        const char* const SETTLE_OBJECT_FRAGMENT = "luminous_temporal_settle_object_fs";
         const char* const HOLD_DIFF_FRAGMENT = "luminous_temporal_hold_diff_fs";
         const char* const HOLD_FOLD_FRAGMENT = "luminous_temporal_hold_fold_fs";
         const char* const OVERLAY_CAPTURE_FRAGMENT = "luminous_overlay_capture_frame_fs";
@@ -209,12 +221,16 @@ namespace LuminousMetal
                 sProgram.render(VERTEX, SCREEN_NO_DEPTH_FRAGMENT, pipelineDesc(back->desc().format, LL::RHI::Format::Unknown));
             }
             sProgram.render(VERTEX, MOTION_FRAGMENT, pipelineDesc(LL::RHI::Format::RG16Float, LL::RHI::Format::Unknown));
+            sProgram.render(VERTEX, MOTION_OBJECT_FRAGMENT, pipelineDesc(LL::RHI::Format::RG16Float, LL::RHI::Format::Unknown));
             sProgram.render(VERTEX, REACTIVE_FIRST_FRAGMENT, pipelineDesc(LL::RHI::Format::R8Unorm, LL::RHI::Format::Unknown));
             sProgram.render(VERTEX, REACTIVE_MORE_FRAGMENT, pipelineDesc(LL::RHI::Format::R8Unorm, LL::RHI::Format::Unknown));
             sProgram.render(VERTEX, REACTIVE_NONE_FRAGMENT, pipelineDesc(LL::RHI::Format::R8Unorm, LL::RHI::Format::Unknown));
+            sProgram.render(VERTEX, REACTIVE_OBJECT_FIRST_FRAGMENT, pipelineDesc(LL::RHI::Format::R8Unorm, LL::RHI::Format::Unknown));
+            sProgram.render(VERTEX, REACTIVE_OBJECT_MORE_FRAGMENT, pipelineDesc(LL::RHI::Format::R8Unorm, LL::RHI::Format::Unknown));
             sProgram.render(VERTEX, HOLD_DIFF_FRAGMENT, pipelineDesc(LL::RHI::Format::R32Float, LL::RHI::Format::Unknown));
             sProgram.render(VERTEX, HOLD_FOLD_FRAGMENT, pipelineDesc(LL::RHI::Format::R32Float, LL::RHI::Format::Unknown));
             sProgram.render(VERTEX, SETTLE_FRAGMENT, pipelineDesc(LL::RHI::Format::RGBA16Float, LL::RHI::Format::Unknown));
+            sProgram.render(VERTEX, SETTLE_OBJECT_FRAGMENT, pipelineDesc(LL::RHI::Format::RGBA16Float, LL::RHI::Format::Unknown));
         }
 
         // A new size or format is made only once it has held for this many frames (Catmull-Rom meanwhile), so a
@@ -394,12 +410,16 @@ namespace LuminousMetal
             U32 height = 0;
             U32 maskStages = 0;       // reactive mask stages drawn
             bool copied = false;      // a copy of the frame waits for its mask stage
+            bool objectMotion = false; // the object motion was drawn for this frame (objectMotionDrawn)
+            bool objectMotionTaken = false; // the motion texture took it (feedScaler)
+            LL::RHI::Texture* reactiveFed = nullptr; // the reactive mask the scaler was given (feedScaler); null none
         };
         TemporalFrame sNow;
         bool sTemporalNext = false;
         bool sUsable = true; // MetalFX temporal can scale the live view as it is now (temporalUsable), once a frame
         U32 sJitterIndex = 0;
         U64 sLastTemporalFrame = 0;
+        U32 sLastTemporalFrameCount = 0; // gFrameCount at that frame: a snapshot's frames between count there
         bool sResetAsked = true;
         bool sHaveLast = false;
         glm::dmat4 sLastViewProjection(1.0); // the last temporal frame's view-projection, without the jitter
@@ -444,7 +464,9 @@ namespace LuminousMetal
 
         // The settle: Second Life's depth of field and the glow map in a frame drawn for the scaler, made where the
         // camera without the jitter saw the frame, averaged with the frames before (LuminousMetalFXTemporalSettleDoF,
-        // ...SettleGlow), so what the jitter changes in them from frame to frame does not reach the scaler.
+        // ...SettleGlow), so what the jitter changes in them from frame to frame does not reach the scaler. The last
+        // average is read where the camera saw a place in the last frame, or, where the object motion pass drew a
+        // surface's own motion this frame, where that surface was.
         struct Settled
         {
             LLRenderTarget average[2]; // the average, the size of the layer's target, RGBA16F; ping-pong
@@ -457,8 +479,9 @@ namespace LuminousMetal
         Settled sSettledGlow;
         // Photo mode's light in the air and the lens flare's light (temporalSettle): what the jitter changes in them, a
         // gap in the leaves opening and closing, is as large as a change of the layer, so they are taken whole only
-        // where the camera moved, and a real change reaches them over the frames averaged. Enhance's blur is also taken
-        // whole where its weight left what the frame holds round a place (React::Weight).
+        // where the camera moved, and a real change reaches them over the frames averaged; their last average is read
+        // where the camera saw the place. Enhance's blur is also taken whole where its weight left what the frame holds
+        // round a place (React::Weight), and its last average follows the object motion as the depth of field's does.
         std::array<Settled, size_t(SettledLayer::Count)> sSettledLayers;
         // Where a settle also takes this frame whole, besides where the camera moved (the settle's react).
         enum class React : U8
@@ -467,14 +490,30 @@ namespace LuminousMetal
             Change,  // where the layer changed much
             Weight   // where the last average's weight (alpha) lies outside this frame's round the place
         };
-        constexpr F32 SETTLE_MOTION_FULL = 16.f; // texels of the live view the camera moves a place by, for the frame
-                                                 // taken whole
+        constexpr F32 SETTLE_MOTION_FULL = 16.f; // texels of the live view a place moves by, for the frame taken whole
         constexpr F32 SETTLE_FRAMES_LEAST = 1.5f; // fewer frames to average: no settle
 
         U32 probeBits()
         {
             static LLCachedControl<U32> probe(gSavedSettings, "LuminousMetalFXTemporalProbe", 0);
             return probe();
+        }
+
+        // The motion view (LuminousMetalFXMotionView): 0 off, 1 the motion texture, 2 the object motion's texels over a
+        // grey picture, 3 the reactive mask the scaler was given as grey, drawn by the present in place of the scaled
+        // frame.
+        U32 motionView()
+        {
+            static LLCachedControl<U32> view(gSavedSettings, "LuminousMetalFXMotionView", 0);
+            return llmin((U32)view(), 3U);
+        }
+
+        // Closest-depth dilation of the motion texture (LuminousMetalFXMotionDilate): a texel beside a nearer surface
+        // across a depth edge takes that surface's motion (temporal.metal, luminous_temporal::dilated).
+        bool motionDilate()
+        {
+            static LLCachedControl<bool> dilate(gSavedSettings, "LuminousMetalFXMotionDilate", true);
+            return dilate();
         }
 
         F32 halton(U32 index, U32 base)
@@ -541,6 +580,9 @@ namespace LuminousMetal
             sTemporalNext = false;
             sResetAsked = true;
             sHaveLast = false;
+            sNow.objectMotion = false;
+            sNow.reactiveFed = nullptr;
+            LuminousObjectMotion::release();
         }
 
         void resetTemporal()
@@ -818,18 +860,51 @@ namespace LuminousMetal
             constants.motionSign = simd_make_float2(motion_sign * ((probe & 256) ? -1.f : 1.f),
                                                     motion_sign * ((probe & 128) ? -1.f : 1.f));
             constants.outputHeight = (float)desc.outputHeight;
-            const bool motion = drawInto(device, sMotion.get(), MOTION_FRAGMENT, "luminous temporal motion",
-                [&](LL::RHI::Encoder& encoder)
+            // The object motion drawn for this frame, at the scaler's input size, once its variant has compiled; the
+            // camera's motion alone otherwise.
+            LL::RHI::Texture* object_motion = sNow.objectMotion ? LuminousObjectMotion::texture() : nullptr;
+            if (object_motion
+                && (object_motion->desc().width != desc.inputWidth || object_motion->desc().height != desc.inputHeight
+                    || !readyPipeline(MOTION_OBJECT_FRAGMENT, sMotion->desc().format, LL::RHI::Format::Unknown)))
+            {
+                object_motion = nullptr;
+            }
+            if (object_motion)
+            {
+                static bool said = false;
+                if (!said)
+                {
+                    said = true;
+                    LL_INFOS("LuminousMetal") << "MetalFX temporal: the motion texture takes the object motion" << LL_ENDL;
+                }
+            }
+            const bool dilate = motionDilate();
+            constants.motionDilate = dilate ? 1.f : 0.f;
+            static bool said_dilate = false;
+            if (dilate != said_dilate)
+            {
+                said_dilate = dilate;
+                LL_INFOS("LuminousMetal") << "MetalFX temporal: the motion texture is "
+                                          << (dilate ? "dilated by closest depth" : "no longer dilated") << LL_ENDL;
+            }
+            const bool motion = drawInto(device, sMotion.get(), object_motion ? MOTION_OBJECT_FRAGMENT : MOTION_FRAGMENT,
+                                         "luminous temporal motion", [&](LL::RHI::Encoder& encoder)
                 {
                     LL::RHI::setNativeConstants(encoder, LL::RHI::NativeStage::Fragment, LUMINOUS_TONE_BUFFER_TEMPORAL,
                                                 constants);
                     encoder.setNativeTexture(LL::RHI::NativeStage::Fragment, LUMINOUS_TONE_TEXTURE_DEPTH, frame_depth);
+                    if (object_motion)
+                    {
+                        encoder.setNativeTexture(LL::RHI::NativeStage::Fragment, LUMINOUS_TONE_TEXTURE_OBJECT_MOTION,
+                                                 object_motion);
+                    }
                 });
             if (!motion)
             {
                 sResetAsked = true;
                 return false; // the motion pipeline is still compiling
             }
+            sNow.objectMotionTaken = object_motion != nullptr;
             LL::RHI::TemporalUpscaleInputs inputs;
             inputs.color = source;
             inputs.depth = frame_depth;
@@ -850,7 +925,9 @@ namespace LuminousMetal
                 return false;
             }
             sLastTemporalFrame = context.frame;
+            sLastTemporalFrameCount = gFrameCount;
             sTemporalScaled = true;
+            sNow.reactiveFed = mask;
             return true;
         }
 
@@ -946,6 +1023,7 @@ namespace LuminousMetal
             }
             // The history stays this frame's: the camera has not moved, so the next fed frame follows on.
             sLastTemporalFrame = context.frame;
+            sLastTemporalFrameCount = gFrameCount;
             return true;
         }
 
@@ -1157,8 +1235,19 @@ namespace LuminousMetal
                 temporal_constants.outputHeight = (float)llmax(gGLViewport[3], 1);
                 screen_scaling = readyPipeline(write_depth ? SCREEN_FRAGMENT : SCREEN_NO_DEPTH_FRAGMENT, colour, depth);
             }
+            // The motion view (LuminousMetalFXMotionView) in place of the scaled frame, in a frame drawn for the scaler
+            // that it scaled: this frame's motion texture, the object motion where the motion took it, and the reactive
+            // mask the scaler was given.
+            const U32 view = temporal && sNow.on && sMotion.notNull() ? motionView() : 0;
+            LL::RHI::Pipeline* viewing =
+                view ? readyPipeline(write_depth ? MOTION_VIEW_FRAGMENT : MOTION_VIEW_NO_DEPTH_FRAGMENT, colour, depth) : nullptr;
+            LL::RHI::Texture* viewed_object_motion = viewing && sNow.objectMotionTaken ? LuminousObjectMotion::texture() : nullptr;
+            LL::RHI::Texture* viewed_mask = viewing ? sNow.reactiveFed : nullptr;
+            temporal_constants.motionView = viewing ? (float)view : 0.f;
+            temporal_constants.objectMotion = viewed_object_motion ? 1.f : 0.f;
+            temporal_constants.reactiveMask = viewed_mask ? 1.f : 0.f;
             const bool screen_present = temporal || screen_scaling != nullptr;
-            LL::RHI::Pipeline* pipeline = temporal ? temporal_copying : screen_scaling ? screen_scaling : scaling;
+            LL::RHI::Pipeline* pipeline = viewing ? viewing : temporal ? temporal_copying : screen_scaling ? screen_scaling : scaling;
             if (!pipeline)
             {
                 return false;
@@ -1199,6 +1288,14 @@ namespace LuminousMetal
             }
             encoder.setViewport(gGLViewport[0], gGLViewport[1], gGLViewport[2], gGLViewport[3]);
             encoder.setNativeTexture(LL::RHI::NativeStage::Fragment, LUMINOUS_TONE_TEXTURE_FRAME, scaled ? scaled : source);
+            if (viewing)
+            {
+                encoder.setNativeTexture(LL::RHI::NativeStage::Fragment, LUMINOUS_TONE_TEXTURE_MOTION, sMotion.get());
+                encoder.setNativeTexture(LL::RHI::NativeStage::Fragment, LUMINOUS_TONE_TEXTURE_OBJECT_MOTION,
+                                         viewed_object_motion ? viewed_object_motion : sMotion.get());
+                encoder.setNativeTexture(LL::RHI::NativeStage::Fragment, LUMINOUS_TONE_TEXTURE_MASK,
+                                         viewed_mask ? viewed_mask : sMotion.get());
+            }
             if (screen_present)
             {
                 LL::RHI::setNativeConstants(encoder, LL::RHI::NativeStage::Fragment, LUMINOUS_TONE_BUFFER_TEMPORAL,
@@ -1278,6 +1375,7 @@ namespace LuminousMetal
                            || (up - sHoldUp).length() > 1e-5f || std::fabs(view - sHoldView) > 1e-6f;
         const char* why = moved ? "the camera moved"
                           : changed ? changed
+                          : motionView() != 0 ? "the motion view is on"
                           : !hold() ? "switched off"
                           : LuminousOptimise::running() || LuminousBenchmark::running() ? "a measure runs"
                           : !LuminousPhotoMode::scenePaused() ? "the scene runs"
@@ -1485,6 +1583,61 @@ namespace LuminousMetal
             ++sNow.maskStages;
         }
         sNow.copied = false;
+    }
+
+    bool objectReactiveWanted()
+    {
+        return maskStagesWanted(&gPipeline.mMainRT.screen);
+    }
+
+    bool temporalObjectReactive(F32 strength)
+    {
+        strength = llclamp(strength, 0.f, 1.f);
+        LL::RHI::Texture* object_motion = LuminousObjectMotion::texture();
+        if (!(strength > 0.f) || !object_motion || !objectReactiveWanted())
+        {
+            return false;
+        }
+        const LL::RHI::TemporalUpscalerDesc& desc = sTemporal->desc();
+        LL::RHI::Device* device = LL::RHI::viewerDevice();
+        LL::RHI::Texture* depth = gPipeline.mMainRT.deferredScreen.getRHIDepth();
+        if (!device || !depth || object_motion->desc().width != desc.inputWidth
+            || object_motion->desc().height != desc.inputHeight || depth->desc().width != desc.inputWidth
+            || depth->desc().height != desc.inputHeight)
+        {
+            return false;
+        }
+        LL_PROFILE_GPU_ZONE("luminous temporal reactive objects");
+        static LLCachedControl<F32> fade(gSavedSettings, "LuminousMetalFXTemporalMaskFade", 30.f);
+        const glm::mat4 projection = get_current_projection();
+        LuminousTemporalMaskConstants constants{};
+        constants.strength = strength;
+        constants.fadeEnd = llmax((F32)fade(), 0.f);
+        constants.fadeStart = constants.fadeEnd * 0.5f;
+        constants.blendedOnly = 0.f;
+        constants.projA = projection[2][2];
+        constants.projB = projection[3][2];
+        const U32 stage = sNow.maskStages;
+        LL::RHI::Texture* mask = sMask[stage % 2].get();
+        LL::RHI::Texture* last = stage > 0 ? sMask[(stage - 1) % 2].get() : nullptr;
+        const bool drawn = drawInto(*device, mask, last ? REACTIVE_OBJECT_MORE_FRAGMENT : REACTIVE_OBJECT_FIRST_FRAGMENT,
+                                    "luminous temporal reactive objects", [&](LL::RHI::Encoder& encoder)
+            {
+                LL::RHI::setNativeConstants(encoder, LL::RHI::NativeStage::Fragment, LUMINOUS_TONE_BUFFER_TEMPORAL,
+                                            constants);
+                encoder.setNativeTexture(LL::RHI::NativeStage::Fragment, LUMINOUS_TONE_TEXTURE_DEPTH, depth);
+                encoder.setNativeTexture(LL::RHI::NativeStage::Fragment, LUMINOUS_TONE_TEXTURE_OBJECT_MOTION,
+                                         object_motion);
+                if (last)
+                {
+                    encoder.setNativeTexture(LL::RHI::NativeStage::Fragment, LUMINOUS_TONE_TEXTURE_MASK, last);
+                }
+            });
+        if (drawn)
+        {
+            ++sNow.maskStages;
+        }
+        return drawn;
     }
 
     void temporalAfterPresent()
@@ -1699,9 +1852,12 @@ namespace LuminousMetal
 
         // A layer (now, target_width x target_height texels, its texels width x height in the lower left) averaged with
         // the frames before: the texture holding the new average (s.average[s.last]), or now as it is when the settle is
-        // off or cannot draw. react: where else this frame is taken whole.
+        // off or cannot draw. react: where else this frame is taken whole. object: where the object motion was drawn
+        // this frame, the last average is read where the surface was in the last frame, and the share by motion is
+        // the smaller of the surface's motion and the camera's; elsewhere the last average is read where the camera saw
+        // the place, and the share by motion is the camera's.
         LL::RHI::Texture* settleTexture(Settled& s, LL::RHI::Texture* now, U32 target_width, U32 target_height, U32 width,
-                                        U32 height, F32 frames, React react, const char* name)
+                                        U32 height, F32 frames, React react, bool object, const char* name)
         {
             F32 u = 0.f;
             F32 v = 0.f;
@@ -1771,7 +1927,18 @@ namespace LuminousMetal
             {
                 return now;
             }
-            LL::RHI::Pipeline* pipeline = readyPipeline(SETTLE_FRAGMENT, colour->desc().format, LL::RHI::Format::Unknown);
+            // The object motion drawn for this frame, at the depth's size, once its variant has compiled; the camera's
+            // motion alone otherwise.
+            LL::RHI::Texture* object_motion = object && sNow.objectMotion ? LuminousObjectMotion::texture() : nullptr;
+            if (object_motion
+                && (object_motion->desc().width != depth->desc().width
+                    || object_motion->desc().height != depth->desc().height
+                    || !readyPipeline(SETTLE_OBJECT_FRAGMENT, colour->desc().format, LL::RHI::Format::Unknown)))
+            {
+                object_motion = nullptr;
+            }
+            LL::RHI::Pipeline* pipeline = readyPipeline(object_motion ? SETTLE_OBJECT_FRAGMENT : SETTLE_FRAGMENT,
+                                                        colour->desc().format, LL::RHI::Format::Unknown);
             if (!pipeline)
             {
                 return now;
@@ -1796,6 +1963,11 @@ namespace LuminousMetal
                 encoder.setNativeTexture(LL::RHI::NativeStage::Fragment, LUMINOUS_TONE_TEXTURE_FRAME, now);
                 encoder.setNativeTexture(LL::RHI::NativeStage::Fragment, LUMINOUS_TONE_TEXTURE_BEFORE, last);
                 encoder.setNativeTexture(LL::RHI::NativeStage::Fragment, LUMINOUS_TONE_TEXTURE_DEPTH, depth);
+                if (object_motion)
+                {
+                    encoder.setNativeTexture(LL::RHI::NativeStage::Fragment, LUMINOUS_TONE_TEXTURE_OBJECT_MOTION,
+                                             object_motion);
+                }
                 encoder.draw(LL::RHI::PrimitiveType::Triangles, 0, 3);
             }
             s.last = 1 - s.last;
@@ -1805,7 +1977,8 @@ namespace LuminousMetal
             return colour;
         }
 
-        // The same for a layer in one of Firestorm's targets: the target holding the new average, or layer as it is.
+        // The same for a layer in one of Firestorm's targets (depth of field, the glow), its history following the
+        // object motion: the target holding the new average, or layer as it is.
         LLRenderTarget* settle(Settled& s, LLRenderTarget* layer, U32 width, U32 height, F32 frames, const char* name)
         {
             LL::RHI::Texture* now = layer ? layer->getRHITexture(0) : nullptr;
@@ -1814,7 +1987,7 @@ namespace LuminousMetal
                 return layer;
             }
             LL::RHI::Texture* settled = settleTexture(s, now, layer->getWidth(), layer->getHeight(), width, height, frames,
-                                                      React::Change, name);
+                                                      React::Change, true, name);
             return settled == now ? layer : &s.average[s.last];
         }
 
@@ -1877,8 +2050,11 @@ namespace LuminousMetal
         {
             return texture;
         }
+        // Enhance's history follows the object motion; the air's and the flare's, which are not attached to a surface,
+        // the camera's alone.
+        const bool enhance = layer == SettledLayer::Enhance;
         return settleTexture(sSettledLayers[size_t(layer)], texture, texture->desc().width, texture->desc().height, width,
-                             height, settleFrames(layer), layer == SettledLayer::Enhance ? React::Weight : React::Camera,
+                             height, settleFrames(layer), enhance ? React::Weight : React::Camera, enhance,
                              NAMES[size_t(layer)]);
     }
 
@@ -1912,6 +2088,108 @@ namespace LuminousMetal
         sHoldBreak = "the history was reset";
     }
 
+    bool objectMotionWanted(ObjectMotionFrame& frame)
+    {
+        frame.scalerView = false;
+        frame.refusal = nullptr;
+        if (!metal() || !sNow.on || sNow.presented || sHolding || gSnapshot || gCubeSnapshot
+            || gPipeline.mRT != &gPipeline.mMainRT || LLPipeline::sRenderingHUDs || LLPipeline::sImpostorRender)
+        {
+            return false;
+        }
+        frame.scalerView = true;
+        auto refuse = [&frame](const char* why)
+        {
+            frame.refusal = why;
+            return false;
+        };
+        if (sTemporal.isNull())
+        {
+            return refuse("the scaler was let go in this frame");
+        }
+        if (!usable())
+        {
+            return refuse("the tone library is not ready");
+        }
+        const LL::RHI::TemporalUpscalerDesc& desc = sTemporal->desc();
+        const U32 width = desc.inputWidth;
+        const U32 height = desc.inputHeight;
+        if (width == 0 || height == 0 || gPipeline.mMainRT.screen.getWidth() != width
+            || gPipeline.mMainRT.screen.getHeight() != height || gPipeline.mMainRT.deferredScreen.getWidth() != width
+            || gPipeline.mMainRT.deferredScreen.getHeight() != height
+            || (sNow.jittered && (sNow.width != width || sNow.height != height)))
+        {
+            return refuse("the main view, its depth or its jitter is not at the scaler's input size");
+        }
+        // The present follows on from the last frame fed (historyGoes): otherwise its history goes, and the motion with it.
+        if (sResetAsked)
+        {
+            return refuse("the scaler's history goes at this frame's present (a reset was asked)");
+        }
+        if (!sHaveLast)
+        {
+            return refuse("the scaler has no last frame's view-projection");
+        }
+        if (sLastTemporalFrame + 1 != sNow.frame)
+        {
+            return refuse("the last frame fed to the scaler is not the frame before this one");
+        }
+        if (sLastTemporalFrameCount + 1 != gFrameCount)
+        {
+            return refuse("a frame not fed to the scaler (a snapshot's) came after the last one fed");
+        }
+        if (probeBits() & 16)
+        {
+            return refuse("LuminousMetalFXTemporalProbe 16 resets the history every frame");
+        }
+        // This frame's view-projection without the jitter, as clipToLastClip will make it at the present from the same
+        // matrices (kept as gGLLastModelView and gGLLastProjection at the end of the deferred lighting), so that it is
+        // the next frame's last one exactly.
+        const F32 jitter_x = sNow.jittered ? sNow.jitterX : 0.f;
+        const F32 jitter_y = sNow.jittered ? sNow.jitterY : 0.f;
+        const F32 jitter_ndc_x = 2.f * jitter_x / (F32)width;
+        const F32 jitter_ndc_y = 2.f * jitter_y / (F32)height;
+        const glm::dmat4 unjitter = glm::translate(glm::dmat4(1.0), glm::dvec3(-jitter_ndc_x, -jitter_ndc_y, 0.0));
+        const glm::dmat4 now = unjitter * glm::dmat4(get_current_projection()) * glm::dmat4(get_current_modelview());
+        for (int c = 0; c < 4; ++c)
+        {
+            for (int r = 0; r < 4; ++r)
+            {
+                frame.viewProjection[c * 4 + r] = (F32)now[c][r];
+                frame.lastViewProjection[c * 4 + r] = (F32)sLastViewProjection[c][r];
+            }
+        }
+        frame.width = width;
+        frame.height = height;
+        return true;
+    }
+
+    std::string objectMotionState()
+    {
+        const U32 input_width = sTemporal.notNull() ? sTemporal->desc().inputWidth : 0;
+        const U32 input_height = sTemporal.notNull() ? sTemporal->desc().inputHeight : 0;
+        const std::string jitter = sNow.jittered ? llformat("jittered for %ux%u", sNow.width, sNow.height)
+                                                 : std::string("not jittered");
+        return llformat("scaler input %ux%u, main view %ux%u, its depth %ux%u, %s; frame %llu, last fed %llu; "
+                        "gFrameCount %u, at the last fed %u; reset asked %s, last view-projection %s",
+                        input_width, input_height, gPipeline.mMainRT.screen.getWidth(),
+                        gPipeline.mMainRT.screen.getHeight(), gPipeline.mMainRT.deferredScreen.getWidth(),
+                        gPipeline.mMainRT.deferredScreen.getHeight(), jitter.c_str(), (unsigned long long)sNow.frame,
+                        (unsigned long long)sLastTemporalFrame, gFrameCount, sLastTemporalFrameCount,
+                        sResetAsked ? "yes" : "no", sHaveLast ? "yes" : "no");
+    }
+
+    bool objectMotionOn()
+    {
+        static LLCachedControl<bool> on(gSavedSettings, "LuminousMetalFXObjectMotion", true);
+        return sNow.on && on();
+    }
+
+    void objectMotionDrawn()
+    {
+        sNow.objectMotion = true;
+    }
+
     void temporalSceneMapCopied()
     {
         liveJitterApplied(sSceneMapJitterX, sSceneMapJitterY); // 0, 0 without
@@ -1930,6 +2208,57 @@ namespace LuminousMetal
         liveJitterApplied(now_x, now_y);
         ndc_x = sSceneMapJitterX - now_x;
         ndc_y = sSceneMapJitterY - now_y;
+    }
+
+    SceneMipBias::SceneMipBias(const LLCamera& camera)
+    {
+        // A frame drawn for the scaler whose main camera carries this frame's jitter (none while held or with the probe
+        // without jitter), in the main view at the scaler's input size.
+        if (!metal() || !sNow.on || !sNow.jittered || sNow.unjittered || sNow.presented || sHolding || sTemporal.isNull()
+            || sNow.width == 0 || gSnapshot || gCubeSnapshot || gPipeline.mRT != &gPipeline.mMainRT
+            || &camera != LLViewerCamera::getInstance() || LLPipeline::sRenderingHUDs || LLPipeline::sImpostorRender
+            || LLPipeline::sShadowRender || LLPipeline::sReflectionRender)
+        {
+            return;
+        }
+        // 0: none; below 0: that bias; above 0: log2 of the input's width over the output's (-1 at half each way).
+        static LLCachedControl<F32> setting(gSavedSettings, "LuminousMetalFXMipBias", 1.f);
+        const F32 wanted = setting();
+        const U32 output = sTemporal->desc().outputWidth;
+        F32 bias = wanted > 0.f && output > 0 ? std::log2((F32)sNow.width / (F32)output) : wanted;
+        // Steps of 1/16 from -4 to 0, at most 65 biases and so few samplers in the caches; 0 for anything not a number.
+        bias = std::isfinite(bias) ? std::round(llclamp(bias, -4.f, 0.f) * 16.f) / 16.f : 0.f;
+        static F32 logged = 0.f;
+        if (bias != logged)
+        {
+            LL_INFOS("LuminousMetal") << "MetalFX temporal: the scaled frame's scene textures are sampled with a LOD bias of "
+                                      << bias << " (LuminousMetalFXMipBias " << wanted << ", input " << sNow.width
+                                      << " wide, output " << output << ")" << LL_ENDL;
+            logged = bias;
+        }
+        LL::RHI::Device* device = LL::RHI::viewerDevice();
+        if (bias == 0.f || !device)
+        {
+            return;
+        }
+        // What LLRender holds is drawn first, without the bias.
+        gGL.flush();
+        device->encoder().setSceneLodBias(bias);
+        mSet = true;
+    }
+
+    SceneMipBias::~SceneMipBias()
+    {
+        if (!mSet)
+        {
+            return;
+        }
+        // What LLRender holds of the passes is drawn with the bias, then it ends.
+        gGL.flush();
+        if (LL::RHI::Device* device = LL::RHI::viewerDevice())
+        {
+            device->encoder().setSceneLodBias(0.f);
+        }
     }
 
     void liveViewNotScaled()

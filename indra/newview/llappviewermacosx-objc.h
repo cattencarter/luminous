@@ -32,4 +32,15 @@
 
 void force_ns_sxeption();
 
+// <Luminous> For sharing a picture through another app or a web page.
+// The user's Pictures folder.
+std::string luminousPicturesFolder();
+// Opens a Finder window with the file selected.
+void luminousRevealInFinder(const std::string& path);
+// Puts a JPEG or PNG file's picture on the clipboard: the file's own bytes,
+// and for a JPEG a PNG made from them when an app pastes it (web browsers
+// read that). False if the file cannot be read.
+bool luminousCopyPictureFileToClipboard(const std::string& path);
+// </Luminous>
+
 #endif // LL_LLAPPVIEWERMACOSX_OBJC_H

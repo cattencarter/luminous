@@ -106,6 +106,8 @@ set(viewer_SOURCE_FILES
     luminousenvironmentlistener.cpp
     luminousbenchmark.cpp
     luminousbugreport.cpp
+    luminousmediaprivacy.cpp
+    luminousnameblock.cpp
     luminousoptimise.cpp
     luminousfloater.cpp
     luminoushdrsnapshot.cpp
@@ -117,6 +119,7 @@ set(viewer_SOURCE_FILES
     luminousmetalscreen.cpp
     luminousmetalshadow.cpp
     luminousmetaltone.cpp
+    luminousobjectmotion.cpp
     luminousphotomode.cpp
     luminousupdatecheck.cpp
     fsassetblacklist.cpp
@@ -990,11 +993,15 @@ set(viewer_HEADER_FILES
     lumenfolders.h
     luminousbenchmark.h
     luminousbugreport.h
+    luminousmediaprivacy.h
+    luminousmediaurl.h
+    luminousnameblock.h
     luminousoptimise.h
     luminousfloater.h
     luminoushdrsnapshot.h
     luminousmetal.h
     luminousmetalparams.h
+    luminousobjectmotion.h
     luminousphotomode.h
     luminousupdatecheck.h
     fsassetblacklist.h
@@ -2901,7 +2908,7 @@ if (DARWIN)
 
   # These all get set with PROPERTIES. It's not that the property names are
   # magically known to CMake -- it's that these names are referenced in the
-  # Info-SecondLife.plist file in the configure_file() directive below.
+  # Info-Firestorm.plist file, the MACOSX_BUNDLE_INFO_PLIST below.
   #set(product "${VIEWER_CHANNEL}")
   set(product "Luminous")   # <Luminous> names Luminous.app and its executable
   # <Lumen> This viewer identifies as itself, not as Firestorm: the bundle
@@ -2942,12 +2949,11 @@ if (DARWIN)
   set(VIEWER_APP_DSYM "${VIEWER_APP_EXE}.dSYM")
   set(VIEWER_APP_XCARCHIVE "${VIEWER_APP_BUNDLE}/../${product}.xcarchive.zip")
 
-  configure_file(
-     # <FS:CR> Use Firestorm plist
-     #"${CMAKE_CURRENT_SOURCE_DIR}/Info-SecondLife.plist"
-     "${CMAKE_CURRENT_SOURCE_DIR}/Info-Firestorm.plist"
-     "${VIEWER_APP_BUNDLE}/Contents/Info.plist"
-    )
+  # <Luminous> The bundle's Info.plist comes from MACOSX_BUNDLE_INFO_PLIST
+  # above. A configure_file() into VIEWER_APP_BUNDLE wrote a second copy at
+  # configure time, when the generator expression in that path is not
+  # expanded: a stray Luminous.app with only an Info.plist in a folder named
+  # "$<IF:...>", which Spotlight and Launchpad list as an app that cannot open.
 
   add_custom_command(
     TARGET ${VIEWER_BINARY_NAME} POST_BUILD

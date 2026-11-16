@@ -148,6 +148,10 @@ protected:
     /// to completion and we need to move the request to a new state.
     bool completeRequest(CURLM * multi_handle, CURL * handle, CURLcode status);
 
+    // <Luminous> gives a finished request's handle back to the cache, or closes it when it was the request's own
+    // (HttpOptions::setNoCookies), so its cookies never reach another request
+    void freeOpHandle(const opReqPtr_t & op);
+
     /// Invoked to cancel an active request, mainly during shutdown
     /// and destroy.
     void cancelRequest(const opReqPtr_t &op);

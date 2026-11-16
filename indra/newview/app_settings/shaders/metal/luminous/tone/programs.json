@@ -85,6 +85,15 @@
         },
         {
           "vertex": "luminous_fullscreen_vs",
+          "fragment": "luminous_temporal_motion_object_fs",
+          "colorFormats": [
+            "RG16Float"
+          ],
+          "depthFormat": "",
+          "blend": "none"
+        },
+        {
+          "vertex": "luminous_fullscreen_vs",
           "fragment": "luminous_temporal_reactive_first_fs",
           "colorFormats": [
             "R8Unorm"
@@ -103,7 +112,34 @@
         },
         {
           "vertex": "luminous_fullscreen_vs",
+          "fragment": "luminous_temporal_reactive_object_first_fs",
+          "colorFormats": [
+            "R8Unorm"
+          ],
+          "depthFormat": "",
+          "blend": "none"
+        },
+        {
+          "vertex": "luminous_fullscreen_vs",
+          "fragment": "luminous_temporal_reactive_object_more_fs",
+          "colorFormats": [
+            "R8Unorm"
+          ],
+          "depthFormat": "",
+          "blend": "none"
+        },
+        {
+          "vertex": "luminous_fullscreen_vs",
           "fragment": "luminous_temporal_settle_fs",
+          "colorFormats": [
+            "RGBA16Float"
+          ],
+          "depthFormat": "",
+          "blend": "none"
+        },
+        {
+          "vertex": "luminous_fullscreen_vs",
+          "fragment": "luminous_temporal_settle_object_fs",
           "colorFormats": [
             "RGBA16Float"
           ],
@@ -149,6 +185,24 @@
         {
           "vertex": "luminous_fullscreen_vs",
           "fragment": "luminous_present_temporal_nodepth_fs",
+          "colorFormats": [
+            "RGBA8Unorm"
+          ],
+          "depthFormat": "",
+          "blend": "none"
+        },
+        {
+          "vertex": "luminous_fullscreen_vs",
+          "fragment": "luminous_present_motion_view_fs",
+          "colorFormats": [
+            "RGBA8Unorm"
+          ],
+          "depthFormat": "Depth32Float",
+          "blend": "none"
+        },
+        {
+          "vertex": "luminous_fullscreen_vs",
+          "fragment": "luminous_present_motion_view_nodepth_fs",
           "colorFormats": [
             "RGBA8Unorm"
           ],

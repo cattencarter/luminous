@@ -184,6 +184,20 @@ public:
         return mLastModified;
     }
 
+    // <Luminous>
+    /// A request that neither sends nor keeps cookies: it gets a libcurl handle of its own with the cookie engine
+    /// off, closed afterwards (a handle from the cache keeps the cookies of the requests it served before).
+    /// Default: false
+    void                setNoCookies(bool no_cookies)
+    {
+        mNoCookies = no_cookies;
+    }
+    bool                getNoCookies() const
+    {
+        return mNoCookies;
+    }
+    // </Luminous>
+
     /// Sets default behavior for verifying that the name in the
     /// security certificate matches the name of the host contacted.
     /// Defaults false if not set, but should be set according to
@@ -206,6 +220,7 @@ protected:
     int                 mDNSCacheTimeout;
     bool                mNoBody;
     time_t              mLastModified;
+    bool                mNoCookies = false; // <Luminous>
 
     static bool         sDefaultVerifyPeer;
 }; // end class HttpOptions

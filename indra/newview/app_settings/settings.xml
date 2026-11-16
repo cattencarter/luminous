@@ -164,17 +164,6 @@
     <key>Value</key>
     <string />
   </map>
-  <key>FSPrimfeedViewerApiKey</key>
-  <map>
-    <key>Comment</key>
-    <string>Viewer key for API login.</string>
-    <key>Persist</key>
-    <integer>1</integer>
-    <key>Type</key>
-    <string>String</string>
-    <key>Value</key>
-    <string>xAcXYt8SBius3Lor4wHle8L96PDHYlAZuWYXIYQUdW4b09mjhQUAwiqmWp5UNYXLpq5GSUtuKHuDYLwaueACPkew93l6MRY8jfBKSH09kv0zyGglpky07X7X7Sp4Rzin</string>
-  </map>
   <key>FSGridBuilderURL</key>
   <map>
     <key>Comment</key>
@@ -2384,13 +2373,13 @@
     <key>BackgroundYieldTime</key>
     <map>
       <key>Comment</key>
-      <string>Amount of time to yield every frame to other applications when SL is not the foreground window (milliseconds)</string>
+      <string>Amount of time to yield every frame to other applications when SL is not the foreground window (milliseconds). Luminous: 100 (Firestorm 40); above 0 a fully covered window is not drawn behind</string>
       <key>Persist</key>
       <integer>1</integer>
       <key>Type</key>
       <string>S32</string>
       <key>Value</key>
-      <integer>40</integer>
+      <integer>100</integer>
       <key>Backup</key>
       <integer>0</integer>
     </map>
@@ -15071,6 +15060,28 @@ Change of this parameter will affect the layout of buttons in notification toast
       <key>Value</key>
       <integer>0</integer>
   </map>
+  <key>LuminousNameBlockLog</key>
+    <map>
+      <key>Comment</key>
+      <string>Logs, under the tag LuminousNameBlock, each object hidden by name, each one hidden on its sound until its name comes, and each batch of names asked for. Not kept across a restart.</string>
+      <key>Persist</key>
+      <integer>0</integer>
+      <key>Type</key>
+      <string>Boolean</string>
+      <key>Value</key>
+      <integer>0</integer>
+  </map>
+  <key>LuminousNameBlockRate</key>
+    <map>
+      <key>Comment</key>
+      <string>While at least one object name is blocked (an Asset Blacklist name, or a by-name entry in the Block list other than a group chat mute), how many object names a second the viewer asks the regions for (1 to 100). With no name blocked it asks none.</string>
+      <key>Persist</key>
+      <integer>1</integer>
+      <key>Type</key>
+      <string>F32</string>
+      <key>Value</key>
+      <real>20</real>
+  </map>
   <key>LuminousMemoryStepDown</key>
     <map>
       <key>Comment</key>
@@ -15401,6 +15412,50 @@ Change of this parameter will affect the layout of buttons in notification toast
       <key>Value</key>
       <integer>1</integer>
   </map>
+  <key>LuminousMetalFXObjectMotion</key>
+    <map>
+      <key>Comment</key>
+      <string>Metal only, with MetalFX upscaling: what moves or changes by itself -- rigged meshes and animesh (breathing, dancing, walking), the system avatar, attachments that are not rigged, vehicles and other moving or turning objects, impostored avatars, texture animations and flexible prims -- gives MetalFX its own motion, or marks where its own motion does not carry the change (LuminousMetalFXObjectReactive), drawn in a pass of its own, so its detail does not trail behind it; depth of field, glow and Enhance follow that motion too. Off, MetalFX and those effects get the camera's motion only (the closest-depth dilation has its own switch, LuminousMetalFXMotionDilate). No effect on OpenGL.</string>
+      <key>Persist</key>
+      <integer>1</integer>
+      <key>Type</key>
+      <string>Boolean</string>
+      <key>Value</key>
+      <integer>1</integer>
+  </map>
+  <key>LuminousMetalFXObjectReactive</key>
+    <map>
+      <key>Comment</key>
+      <string>Developer tool for MetalFX temporal, with LuminousMetalFXObjectMotion on: how strongly a surface that changes in a way its motion does not give -- a flexible prim in the frames it bends, a texture animation's frame step (any step on a cut-out or alpha surface), an impostored avatar whose picture is made again -- marks a pixel as not to be taken from earlier frames, 0 to 1, faded with distance as the mark of alpha is (LuminousMetalFXTemporalMaskFade). 0 marks nothing. No effect on OpenGL.</string>
+      <key>Persist</key>
+      <integer>0</integer>
+      <key>Type</key>
+      <string>F32</string>
+      <key>Value</key>
+      <real>0.5</real>
+  </map>
+  <key>LuminousMetalFXMotionDilate</key>
+    <map>
+      <key>Comment</key>
+      <string>Metal only, with MetalFX upscaling: a pixel beside a nearer surface across a depth edge gives MetalFX the motion of that surface (the nearest of the 3 x 3 pixels round it, where it lies in front of the pixel's own surface by more than about 1 % of the distance well inside the draw distance, less toward its end: half of that at half the draw distance), so the thin outline round a moving avatar or object moves with it; flat and sloped surfaces keep their own motion. The motion view (LuminousMetalFXMotionView 1) shows the dilated motion. Off: each pixel gives its own motion. No effect on OpenGL.</string>
+      <key>Persist</key>
+      <integer>1</integer>
+      <key>Type</key>
+      <string>Boolean</string>
+      <key>Value</key>
+      <integer>1</integer>
+  </map>
+  <key>LuminousMetalFXMotionView</key>
+    <map>
+      <key>Comment</key>
+      <string>Developer tool for MetalFX temporal: what the live view shows in frames MetalFX scales. 0 the picture. 1 this frame's motion texture, nearest texel per pixel: red and green 0.5 plus 0.05 per texel of motion along x and y (where the point was in the last frame minus where it is now, in texels of the live view, y up; dilated with LuminousMetalFXMotionDilate), blue 1 where the object motion pass drew the texel and 0 where it did not. 2 that blue over a grey copy of the picture. 3 the reactive mask MetalFX was given in that frame, nearest texel per pixel, as grey from black (0, its history trusted) to white (1, not trusted); black where it was given none. The hold stays off while it is not 0. Not kept across a restart. No effect on OpenGL.</string>
+      <key>Persist</key>
+      <integer>0</integer>
+      <key>Type</key>
+      <string>U32</string>
+      <key>Value</key>
+      <integer>0</integer>
+  </map>
   <key>LuminousMetalFXTemporalJitterScale</key>
     <map>
       <key>Comment</key>
@@ -15422,6 +15477,17 @@ Change of this parameter will affect the layout of buttons in notification toast
       <string>U32</string>
       <key>Value</key>
       <integer>8</integer>
+  </map>
+  <key>LuminousMetalFXMipBias</key>
+    <map>
+      <key>Comment</key>
+      <string>Developer tool for MetalFX temporal (Metal only): a LOD bias for the mipmapped scene textures (diffuse, normal, specular, PBR, terrain, water) of the main view's geometry in frames drawn for the scaler with its jitter, so the smaller input samples the mip levels of the output's size. 0 is off; below 0 that bias, -4 at most, in steps of 1/16; above 0 automatic: log2 of the input's width over the output's (-1 at Standard, about -0.4 at Three quarters).</string>
+      <key>Persist</key>
+      <integer>0</integer>
+      <key>Type</key>
+      <string>F32</string>
+      <key>Value</key>
+      <real>1.0</real>
   </map>
   <key>LuminousMetalFXTemporalMaskStrength</key>
     <map>
@@ -15488,6 +15554,17 @@ Change of this parameter will affect the layout of buttons in notification toast
       <string>F32</string>
       <key>Value</key>
       <real>0.0</real>
+  </map>
+  <key>LuminousTestOpenFile</key>
+    <map>
+      <key>Comment</key>
+      <string>Test tool: when not empty, the file the next open dialog picks without showing its panel; then the setting empties itself.</string>
+      <key>Persist</key>
+      <integer>0</integer>
+      <key>Type</key>
+      <string>String</string>
+      <key>Value</key>
+      <string />
   </map>
   <key>LuminousTestPauseDisplay</key>
     <map>
@@ -15594,6 +15671,17 @@ Change of this parameter will affect the layout of buttons in notification toast
       <string>Developer tool, Metal only, VSync off: on, each frame presents its own drawable from the end of its own GPU work, behind the frames in flight, as earlier builds did. Off as Luminous ships: the window server gets the newest frame the GPU has finished, copied into a drawable on a second queue, so about the display's refresh reaches the screen. For a comparison run. Does nothing on OpenGL or with VSync on. Not kept across a restart.</string>
       <key>Persist</key>
       <integer>0</integer>
+      <key>Type</key>
+      <string>Boolean</string>
+      <key>Value</key>
+      <integer>0</integer>
+  </map>
+  <key>LuminousScreenSpaceReflectionsLive</key>
+    <map>
+      <key>Comment</key>
+      <string>Firestorm's screen-space reflections (RenderScreenSpaceReflections, on at Ultra) in the live view too. Off as Luminous ships: with photo mode they are drawn in pictures only, and the live view has the reflection probes' reflections, as Firestorm's Ultra on a Mac.</string>
+      <key>Persist</key>
+      <integer>1</integer>
       <key>Type</key>
       <string>Boolean</string>
       <key>Value</key>
@@ -15709,6 +15797,39 @@ Change of this parameter will affect the layout of buttons in notification toast
       <key>Value</key>
       <real>0.3</real>
   </map>
+  <key>LuminousRenderPieces</key>
+    <map>
+      <key>Comment</key>
+      <string>Luminous's renders on Metal drawn in pieces, each with an overlap round it, the effects that reach across the picture drawn once on the whole of it: 0 when the size asked does not fit in memory in one piece (2 to 4 a side, the fewest that fit); 1 never (LuminousRenderPiecesAlways aside); 2 to 8 always, this many a side.</string>
+      <key>Persist</key>
+      <integer>1</integer>
+      <key>Type</key>
+      <string>U32</string>
+      <key>Value</key>
+      <integer>0</integer>
+    </map>
+  <key>LuminousRenderPiecesAlways</key>
+    <map>
+      <key>Comment</key>
+      <string>A render in one piece drawn the way pieces are: its light first, the effects that reach across the picture on the whole of it after (whatever LuminousRenderPieces says).</string>
+      <key>Persist</key>
+      <integer>1</integer>
+      <key>Type</key>
+      <string>Boolean</string>
+      <key>Value</key>
+      <integer>0</integer>
+    </map>
+  <key>LuminousRenderPiecesOverlap</key>
+    <map>
+      <key>Comment</key>
+      <string>The overlap drawn round each piece of a render in pieces, as a share of the picture's height on each side, so that what looks at its neighbours finds them at a piece's edge.</string>
+      <key>Persist</key>
+      <integer>1</integer>
+      <key>Type</key>
+      <string>F32</string>
+      <key>Value</key>
+      <real>0.1</real>
+    </map>
   <key>LuminousSnapshotMargin</key>
     <map>
       <key>Comment</key>
@@ -15877,13 +15998,13 @@ Change of this parameter will affect the layout of buttons in notification toast
   <key>LuminousPhotoProjectorBeams</key>
     <map>
       <key>Comment</key>
-      <string>Photo mode: the light of projectors seen in the air, as beams. The two projectors that cast shadows are cut by what stands in their beam.</string>
+      <string>Photo mode: the light of projectors seen in the air, as beams. The two projectors that cast shadows are cut by what stands in their beam. Off as Luminous ships.</string>
       <key>Persist</key>
       <integer>1</integer>
       <key>Type</key>
       <string>Boolean</string>
       <key>Value</key>
-      <integer>1</integer>
+      <integer>0</integer>
   </map>
   <key>LuminousPhotoProjectorBeamsDensity</key>
     <map>
@@ -16373,6 +16494,17 @@ Change of this parameter will affect the layout of buttons in notification toast
       <string>Boolean</string>
       <key>Value</key>
       <integer>0</integer>
+  </map>
+  <key>LuminousRezOnWater</key>
+    <map>
+      <key>Comment</key>
+      <string>An object dragged onto open water (from inventory or a notecard) is rezzed on the water surface, not on the sea floor. Off: it goes to the sea floor, as in Second Life's own viewer.</string>
+      <key>Persist</key>
+      <integer>1</integer>
+      <key>Type</key>
+      <string>Boolean</string>
+      <key>Value</key>
+      <integer>1</integer>
   </map>
   <key>LuminousPhotoAO</key>
     <map>
@@ -17336,6 +17468,17 @@ Change of this parameter will affect the layout of buttons in notification toast
       <key>Value</key>
       <real>0.5</real>
   </map>
+  <key>LuminousPrivateMedia</key>
+    <map>
+      <key>Comment</key>
+      <string>Media in the world (on objects and the parcel's) starts in a private browser: no cookies, no WebGL, no graphics card and a common language list, so a web page learns less about the computer. Browsers of the interface (profiles, search, marketplace) are not affected. Applies to media that starts after the change.</string>
+      <key>Persist</key>
+      <integer>1</integer>
+      <key>Type</key>
+      <string>Boolean</string>
+      <key>Value</key>
+      <integer>0</integer>
+  </map>
   <key>LuminousUpdateCheck</key>
     <map>
       <key>Comment</key>
@@ -17438,13 +17581,24 @@ Change of this parameter will affect the layout of buttons in notification toast
   <key>LuminousPhotoLowQualityLiveShadows</key>
     <map>
       <key>Comment</key>
-      <string>Photo mode: Firestorm's shadow maps instead of LuminousPhotoShadowMapSize while the shot is set up; rendered pictures always get full quality. On as Luminous ships.</string>
+      <string>Photo mode: Firestorm's shadow maps instead of LuminousPhotoShadowMapSize while the shot is set up; rendered pictures always get full quality. Off as Luminous ships; the set-up for the Mac turns it on for a base chip (up to 10 graphics cores), where the full maps cost the most and take about 1 GB more memory.</string>
       <key>Persist</key>
       <integer>1</integer>
       <key>Type</key>
       <string>Boolean</string>
       <key>Value</key>
+      <integer>0</integer>
+  </map>
+  <key>LuminousLiveShadowMapsChecked</key>
+    <map>
+      <key>Comment</key>
+      <string>Set once LuminousPhotoLowQualityLiveShadows has been looked at for a Mac that ran Luminous before the live view's full shadow maps became the default: a base chip whose setting was never changed gets the low quality maps; any other keeps what it has.</string>
+      <key>Persist</key>
       <integer>1</integer>
+      <key>Type</key>
+      <string>Boolean</string>
+      <key>Value</key>
+      <integer>0</integer>
   </map>
   <key>LuminousPhotoLowQualityLiveAO</key>
     <map>
@@ -17471,13 +17625,24 @@ Change of this parameter will affect the layout of buttons in notification toast
   <key>LuminousPhotoLowQualityLiveVolumetric</key>
     <map>
       <key>Comment</key>
-      <string>Photo mode: volumetric light and the sun shafts' rays at half size while the shot is set up; rendered pictures always get full quality. On as Luminous ships.</string>
+      <string>Photo mode: volumetric light at a lower resolution (at most LuminousPhotoVolumetricLiveMegapixels million pixels) and the sun shafts' rays at half size while the shot is set up; rendered pictures always get full quality. On as Luminous ships.</string>
       <key>Persist</key>
       <integer>1</integer>
       <key>Type</key>
       <string>Boolean</string>
       <key>Value</key>
       <integer>1</integer>
+  </map>
+  <key>LuminousPhotoVolumetricLiveMegapixels</key>
+    <map>
+      <key>Comment</key>
+      <string>Photo mode: with low quality live for volumetric light (LuminousPhotoLowQualityLiveVolumetric), the live view marches it at most this many million pixels, in a smaller sum added to the frame through a soft filter, whatever the window's size; rendered pictures always march every pixel. 1 as Luminous ships; 0 for no limit (half of the window above half its size, else every pixel of the frame).</string>
+      <key>Persist</key>
+      <integer>1</integer>
+      <key>Type</key>
+      <string>F32</string>
+      <key>Value</key>
+      <real>1.0</real>
   </map>
   <key>LuminousPhotoVolumetricLightRenderOnly</key>
     <map>

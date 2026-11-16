@@ -94,6 +94,7 @@
 #include "rlvlocks.h"
 // [/RLVa:KB]
 #include "llviewernetwork.h"
+#include "luminousobjectmotion.h" // <Luminous/>
 
 const F32 FORCE_SIMPLE_RENDER_AREA = 512.f;
 const F32 FORCE_CULL_AREA = 8.f;
@@ -736,10 +737,14 @@ void LLVOVolume::animateTextures()
     {
         shrinkWrap();
         F32 off_s = 0.f, off_t = 0.f, scale_s = 1.f, scale_t = 1.f, rot = 0.f;
+        const F32 luminous_frame_before = mTextureAnimp->getLastFrame(); // <Luminous/>
         S32 result = mTextureAnimp->animateTextures(off_s, off_t, scale_s, scale_t, rot);
 
         if (result)
         {
+            // <Luminous> MetalFX temporal: whether this step moved the texture smoothly or by a frame
+            const bool luminous_smooth = LuminousObjectMotion::textureStepSmooth(*mTextureAnimp, luminous_frame_before);
+            // </Luminous>
             if (!mTexAnimMode)
             {
                 mFaceMappingChanged = true;
@@ -779,9 +784,11 @@ void LLVOVolume::animateTextures()
                     te->getScale(&scale_s, &scale_t);
                 }
 
+                bool luminous_made = false; // <Luminous/>
                 if (!facep->mTextureMatrix)
                 {
                     facep->mTextureMatrix = new LLMatrix4();
+                    luminous_made = true; // <Luminous/>
                     if (facep->getVirtualSize() > MIN_TEX_ANIM_SIZE)
                     {
                         // Fix the one edge case missed in
@@ -798,6 +805,9 @@ void LLVOVolume::animateTextures()
                 }
 
                 LLMatrix4& tex_mat = *facep->mTextureMatrix;
+                // <Luminous> MetalFX temporal: the matrix as it was before this step, for the frame drawn after it
+                LuminousObjectMotion::textureStepped(&tex_mat, luminous_made, luminous_smooth);
+                // </Luminous>
                 tex_mat.setIdentity();
                 LLVector3 trans ;
 

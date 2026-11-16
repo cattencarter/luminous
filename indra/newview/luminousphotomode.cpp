@@ -251,14 +251,15 @@ namespace LuminousPhotoMode
             // for it, it is drawn at half size outside pictures -- haze is
             // soft -- and added with bloom's tent filter: four times less
             // work.
-            // Half of the frame, that is: a live view already rendered at
-            // half or less draws it at its own size.
-            const F32 live_scale = liveRenderScale();
-            const bool half = !fullQuality(LiveQuality::Volumetric) && live_scale > 0.5f && gLuminousBloomUpProgram.isComplete();
+            // Half of the window, that is, and never more than a budget of
+            // pixels (volumetricLiveSize): a live view already rendered at
+            // half or less draws it at its own size unless that is larger.
+            U32 w = 0;
+            U32 h = 0;
+            const bool half = volumetricLiveSize(hdr_screen->getWidth(), hdr_screen->getHeight(), w, h)
+                && gLuminousBloomUpProgram.isComplete();
             if (half)
             {
-                const U32 w = llmax((U32)((F32)hdr_screen->getWidth() * 0.5f / live_scale), 1U);
-                const U32 h = llmax((U32)((F32)hdr_screen->getHeight() * 0.5f / live_scale), 1U);
                 if (sVolumetric.getWidth() != w || sVolumetric.getHeight() != h)
                 {
                     sVolumetric.allocate(w, h, GL_RGB16F);
@@ -889,7 +890,7 @@ namespace LuminousPhotoMode
         bool lowQualityLive(LiveQuality effect)
         {
             static LLCachedControl<bool> volumetric(gSavedSettings, "LuminousPhotoLowQualityLiveVolumetric", true);
-            static LLCachedControl<bool> shadows(gSavedSettings, "LuminousPhotoLowQualityLiveShadows", true);
+            static LLCachedControl<bool> shadows(gSavedSettings, "LuminousPhotoLowQualityLiveShadows", false);
             static LLCachedControl<bool> beams(gSavedSettings, "LuminousPhotoLowQualityLiveBeams", true);
             static LLCachedControl<bool> ao(gSavedSettings, "LuminousPhotoLowQualityLiveAO", true);
             switch (effect)
@@ -1040,7 +1041,7 @@ namespace LuminousPhotoMode
 
     bool projectorBeams()
     {
-        static LLCachedControl<bool> beams(gSavedSettings, "LuminousPhotoProjectorBeams", true);
+        static LLCachedControl<bool> beams(gSavedSettings, "LuminousPhotoProjectorBeams", false);
         return isOn() && LuminousMetal::on(LuminousMetal::Effect::ProjectorBeams) && beams;
     }
 
@@ -2282,6 +2283,36 @@ namespace LuminousPhotoMode
         return pictureFrame() || !lowQualityLive(effect);
     }
 
+    bool volumetricLiveSize(U32 width, U32 height, U32& size_w, U32& size_h)
+    {
+        size_w = width;
+        size_h = height;
+        if (fullQuality(LiveQuality::Volumetric))
+        {
+            return false;
+        }
+        // Half of the window while the live view renders more than half of it each way; a live view already at half
+        // or less marches at its own size.
+        const F32 scale = liveRenderScale();
+        if (scale > 0.5f)
+        {
+            size_w = llmax((U32)((F32)width * 0.5f / scale), 1U);
+            size_h = llmax((U32)((F32)height * 0.5f / scale), 1U);
+        }
+        // Its cost follows the pixels marched (64 shadow-map reads each), not the scene: at 5K about 3.3 million
+        // either way, 3.2 ms a frame live on an M4 Max at Standard. A budget holds every window at about one million,
+        // the same share of the frame each way.
+        static LLCachedControl<F32> megapixels(gSavedSettings, "LuminousPhotoVolumetricLiveMegapixels", 1.f);
+        const F32 budget = megapixels() * 1.0e6f;
+        if (budget > 0.f && (F32)size_w * (F32)size_h > budget)
+        {
+            const F32 share = sqrtf(budget / ((F32)width * (F32)height));
+            size_w = llmax((U32)((F32)width * share), 1U);
+            size_h = llmax((U32)((F32)height * share), 1U);
+        }
+        return size_w != width || size_h != height;
+    }
+
     void setSnapshotShadows(bool on, U32 size)
     {
         sSnapshotShadows = on;
@@ -2760,6 +2791,11 @@ namespace LuminousPhotoMode
         return sWarmingUp;
     }
 
+    void askWarmUp()
+    {
+        sWarmUpPending = true;
+    }
+
     void setAccumulationFrame(S32 frame)
     {
         if (frame == 0)
@@ -2780,7 +2816,9 @@ namespace LuminousPhotoMode
 
     bool holdExposure()
     {
-        return isOn() && sAccumulationFrame > 0;
+        // the pieces of a render are finished on the whole picture at the
+        // exposure metered before them
+        return isOn() && (sAccumulationFrame > 0 || LuminousHDRSnapshot::finishingPieces());
     }
 
     void setFrameMargin(F32 scale)
@@ -3789,6 +3827,21 @@ namespace LuminousPhotoMode
         shader.uniform3fv(s_bal_hi, 1, (const F32*)&params.balanceHighlights);
     }
 
+    void resetSettings(const std::string& names)
+    {
+        std::vector<std::string> list;
+        LLStringUtil::getTokens(names, list, ",");
+        HoldShaderRebuilds hold;
+        for (std::string name : list)
+        {
+            LLStringUtil::trim(name);
+            if (LLControlVariable* control = gSavedSettings.getControl(name))
+            {
+                control->resetToDefault(true);
+            }
+        }
+    }
+
     void resetLook()
     {
         HoldShaderRebuilds hold;
@@ -4046,7 +4099,7 @@ namespace LuminousPhotoMode
         // What a preset holds: the settings the Lighting, Tone, Colour and
         // Effects tabs' Reset buttons put back (floater_luminous.xml), in that
         // order, Firestorm's depth of field switch, which the Effects tab's
-        // button sets, the legacy-sky switch and focus following the mouse --
+        // button sets, the legacy-sky switch, focus following the mouse and its cross --
         // and, apart from these, the Lighting tab's sky and sun (savePreset).
         // A setting added to one of those tabs belongs here too.
         const char* const PRESET_SETTINGS[] = {
@@ -4084,7 +4137,7 @@ namespace LuminousPhotoMode
             "LuminousPhotoHSLPurplesLum", "LuminousPhotoHSLMagentasHue", "LuminousPhotoHSLMagentasSat",
             "LuminousPhotoHSLMagentasLum", "LuminousPhotoColourAmount", "LuminousPhotoSplitTone",
             // Lens
-            "RenderDepthOfField", "LuminousPhotoDepthOfFieldRenderOnly", "FSFocusPointFollowsPointer",
+            "RenderDepthOfField", "LuminousPhotoDepthOfFieldRenderOnly", "FSFocusPointFollowsPointer", "FSFocusPointRender",
             "LuminousPhotoDoF", "LuminousPhotoDoFFront", "CameraFNumber", "CameraMaxCoF", "LuminousPhotoDoFBlades",
             "LuminousPhotoVignette", "LuminousPhotoVignetteAmount", "LuminousPhotoVignetteSize",
             "LuminousPhotoVignetteSoftness", "LuminousPhotoVignetteRoundness", "LuminousPhotoBloom",
@@ -5637,6 +5690,54 @@ namespace LuminousPhotoMode
         return reflections() && drawnNow(Kept::Reflections);
     }
 
+    namespace
+    {
+        bool sSceneMapHeld = false; // the scene map holds the frame before this one
+    }
+
+    bool screenReflectionsKept()
+    {
+        static LLCachedControl<bool> live(gSavedSettings, "LuminousScreenSpaceReflectionsLive", false);
+        return isOn() && LLPipeline::RenderScreenSpaceReflections && !live;
+    }
+
+    bool screenReflectionsCopyNow()
+    {
+        return !screenReflectionsKept() || pictureFrame();
+    }
+
+    bool screenReflectionsSkippedNow()
+    {
+        return screenReflectionsKept() && (!pictureFrame() || !sSceneMapHeld);
+    }
+
+    bool screenReflectionsWantWarmUp()
+    {
+        return screenReflectionsKept() && !sSceneMapHeld;
+    }
+
+    bool sceneMapAtFrameSize()
+    {
+        // A render's frames make their targets again at the same size before each frame (rawSnapshot), and its
+        // accumulation frame is set first: the scene map keeps the frame before, as the march needs.
+        return !screenReflectionsKept() || pictureFrame() || keepingSnapshotTargets();
+    }
+
+    void sceneMapCopied()
+    {
+        sSceneMapHeld = true;
+    }
+
+    void sceneMapSkipped()
+    {
+        sSceneMapHeld = false;
+    }
+
+    void sceneMapEmptied()
+    {
+        sSceneMapHeld = false;
+    }
+
     void bindSSRUniforms(LLGLSLShader& shader)
     {
         static LLStaticHashedString s_steps("luminous_ssr_steps");
@@ -5941,7 +6042,9 @@ namespace LuminousPhotoMode
         p.liveScale = scale;
         p.sunShadows = shadow_detail() >= 1 ? 1 : 0;
         p.spotShadows = shadow_detail() >= 2 ? 1 : 0;
-        p.volHalf = (!fullQuality(LiveQuality::Volumetric) && scale > 0.5f) ? 1 : 0;
+        U32 vol_w = 0;
+        U32 vol_h = 0;
+        p.volHalf = volumetricLiveSize(width, height, vol_w, vol_h) ? 1 : 0; // its sum's size: volumetricLiveSize
         p.beamsHalf = (!fullQuality(LiveQuality::Beams) && scale > 0.5f) ? 1 : 0;
         p.shaftsHalf = !fullQuality(LiveQuality::Volumetric) ? 1 : 0;
         p.noPost = gSnapshotNoPost ? 1 : 0;
@@ -6086,17 +6189,23 @@ namespace LuminousPhotoMode
     {
         LLVector2 sun_uv;
         F32 fade = 0.f;
-        bool shafts = sunShafts() && drawnNow(Kept::SunShafts) && takeSunShaftMask(hdr_screen, sun_uv, fade);
+        // A render's piece has no sun shafts: they reach across the whole
+        // picture, and are drawn once on it after the last piece.
+        bool shafts = sunShafts() && drawnNow(Kept::SunShafts) && !LuminousHDRSnapshot::piece().active
+            && takeSunShaftMask(hdr_screen, sun_uv, fade);
         LLRenderTarget* shaft_mask = shafts ? softenSunShaftMask() : nullptr;
-        if ((volumetricLightNow() || projectorBeamsNow()) && LuminousMetal::translatedPasses())
+        // The whole picture of a render in pieces has its volumetric light
+        // and beams from the pieces already.
+        const bool finishing = LuminousHDRSnapshot::finishingPieces();
+        if ((volumetricLightNow() || projectorBeamsNow()) && !finishing && LuminousMetal::translatedPasses())
         {
             storeFrameDepth(); // OpenGL's tile memory; Metal's passes store their depth explicitly
         }
-        if (volumetricLightNow())
+        if (volumetricLightNow() && !finishing)
         {
             renderVolumetricLight(hdr_screen);
         }
-        if (projectorBeamsNow())
+        if (projectorBeamsNow() && !finishing)
         {
             renderProjectorBeams(hdr_screen);
         }
@@ -6228,20 +6337,7 @@ namespace LuminousPhotoMode
         // A tab's Defaults button: the settings named in its parameter,
         // comma-separated, back to their defaults.
         LLUICtrl::CommitCallbackRegistry::defaultRegistrar().add("Luminous.ResetSettings",
-            [](LLUICtrl*, const LLSD& names)
-            {
-                std::vector<std::string> list;
-                LLStringUtil::getTokens(names.asString(), list, ",");
-                HoldShaderRebuilds hold;
-                for (std::string name : list)
-                {
-                    LLStringUtil::trim(name);
-                    if (LLControlVariable* control = gSavedSettings.getControl(name))
-                    {
-                        control->resetToDefault(true);
-                    }
-                }
-            });
+            [](LLUICtrl*, const LLSD& names) { resetSettings(names.asString()); });
         // Add a .cube by its path, as the Load button does.
         LLUICtrl::CommitCallbackRegistry::defaultRegistrar().add("Luminous.ImportLUT",
             [](LLUICtrl*, const LLSD& path)

@@ -142,6 +142,7 @@
 #include "animationexplorer.h"      // <FS:Zi> Animation Explorer
 #include "fsareasearch.h"
 #include "fsassetblacklist.h"
+#include "luminousnameblock.h"
 #include "fscommon.h"
 #include "fsfloaterplacedetails.h"
 #include "fsradar.h"
@@ -4793,6 +4794,13 @@ void process_object_properties_family(LLMessageSystem *msg, void**user_data)
     {
         NACLAntiSpamRegistry::instance().processObjectPropertiesFamily(msg);
     }
+
+    // <Luminous> name block
+    if (LuminousNameBlock::instanceExists())
+    {
+        LuminousNameBlock::instance().onPropertiesFamily(msg);
+    }
+    // </Luminous>
 }
 // </FS:Ansariel>
 
@@ -4953,6 +4961,14 @@ void process_sound_trigger(LLMessageSystem *msg, void **)
     {
         return;
     }
+
+    // <Luminous> name block
+    if (LuminousNameBlock::instanceExists()
+        && LuminousNameBlock::instance().blockSound(object_id, owner_id, sound_id, parent_id, false))
+    {
+        return;
+    }
+    // </Luminous>
 
     // Don't play sounds from a region with maturity above current agent maturity
     if( !gAgent.canAccessMaturityInRegion( region_handle ) )

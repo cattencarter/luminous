@@ -261,6 +261,10 @@ LLGLSLShader            gLuminousFlareCompositeProgram;  // <Luminous/> Photo mo
 LLGLSLShader            gLuminousDistortionProgram;      // <Luminous/> Photo mode
 LLGLSLShader            gLuminousGlitchProgram;          // <Luminous/> Photo mode
 LLGLSLShader            gLuminousFrameProgram;           // <Luminous/> Photo mode
+LLGLSLShader            gLuminousMotionProgram;          // <Luminous/> MetalFX temporal's object motion (Metal)
+LLGLSLShader            gLuminousSkinnedMotionProgram;   // <Luminous/> its rigged variant
+LLGLSLShader            gLuminousAvatarMotionProgram;    // <Luminous/> its system avatar variant
+LLGLSLShader            gLuminousTextureMotionProgram;   // <Luminous/> its texture animation variant
 LLGLSLShader            gDeferredWLSkyProgram;
 LLGLSLShader            gEnvironmentMapProgram;
 LLGLSLShader            gDeferredWLCloudProgram;
@@ -1763,6 +1767,10 @@ bool LLViewerShaderMgr::loadShadersDeferred()
         gLuminousDistortionProgram.unload();      // <Luminous/>
         gLuminousGlitchProgram.unload();          // <Luminous/>
         gLuminousFrameProgram.unload();           // <Luminous/>
+        gLuminousMotionProgram.unload();          // <Luminous/>
+        gLuminousSkinnedMotionProgram.unload();   // <Luminous/>
+        gLuminousAvatarMotionProgram.unload();    // <Luminous/>
+        gLuminousTextureMotionProgram.unload();   // <Luminous/>
         gDeferredPostTonemapGammaCorrectProgram.unload();
         gNoPostTonemapGammaCorrectProgram.unload();
         gDeferredPostTonemapLegacyGammaCorrectProgram.unload();
@@ -2813,6 +2821,14 @@ bool LLViewerShaderMgr::loadShadersDeferred()
             gDeferredSoftenProgram.addPermutation("HAS_SSAO", "1");
         }
 
+        // <Luminous> softenLightF.glsl's GTAO blocks: the program's own files
+        // see only its own defines, not the global LUMINOUS_GTAO
+        if (LuminousPhotoMode::ambientOcclusion())
+        {
+            gDeferredSoftenProgram.addPermutation("LUMINOUS_GTAO", "1");
+        }
+        // </Luminous>
+
         success = gDeferredSoftenProgram.createShader();
         llassert(success);
     }
@@ -3533,6 +3549,79 @@ bool LLViewerShaderMgr::loadShadersDeferred()
             return true;
         });
     }
+
+    // <Luminous> MetalFX temporal's object motion (luminousobjectmotion.cpp): where a surface is now and was in the
+    // last frame, drawn against the frame's depth. Metal only, and optional: the rigged, the system avatar's and the
+    // plain program each on its own, so one that fails leaves the pass the others' draws, and all failing leave it off;
+    // the texture animation variant draws among the plain program's draws, so only where that one has built too.
+    if (success && LuminousMetal::metal())
+    {
+        gLuminousMotionProgram.mName = "Luminous Motion Shader";
+        gLuminousMotionProgram.mShaderFiles.clear();
+        gLuminousMotionProgram.mShaderFiles.push_back(make_pair("deferred/luminousMotionV.glsl", GL_VERTEX_SHADER));
+        gLuminousMotionProgram.mShaderFiles.push_back(make_pair("deferred/luminousMotionF.glsl", GL_FRAGMENT_SHADER));
+        gLuminousMotionProgram.mShaderLevel = mShaderLevel[SHADER_DEFERRED];
+        gLuminousMotionProgram.clearPermutations();
+        // the last frame's palette is declared in the program's own file, which the shared files' defines do not reach
+        gLuminousMotionProgram.addPermutation("MAX_JOINTS_PER_MESH_OBJECT", std::to_string(LLSkinningUtil::getMaxJointCount()));
+        // the rigged variant first: it takes the program's description as it is before the program is built
+        if (!make_rigged_variant(gLuminousMotionProgram, gLuminousSkinnedMotionProgram))
+        {
+            LL_WARNS("Shader") << "Skinned Luminous motion shader failed to build; MetalFX temporal keeps the camera's "
+                               << "motion for rigged meshes" << LL_ENDL;
+            gLuminousSkinnedMotionProgram.unload();
+        }
+        if (!gLuminousMotionProgram.createShader())
+        {
+            LL_WARNS("Shader") << "Luminous motion shader failed to build; MetalFX temporal keeps the camera's motion for "
+                               << "what is not rigged" << LL_ENDL;
+            gLuminousMotionProgram.unload();
+        }
+        gLuminousAvatarMotionProgram.mName = "Avatar Luminous Motion Shader";
+        gLuminousAvatarMotionProgram.mShaderFiles.clear();
+        gLuminousAvatarMotionProgram.mShaderFiles.push_back(make_pair("deferred/luminousMotionV.glsl", GL_VERTEX_SHADER));
+        gLuminousAvatarMotionProgram.mShaderFiles.push_back(make_pair("deferred/luminousMotionF.glsl", GL_FRAGMENT_SHADER));
+        gLuminousAvatarMotionProgram.mShaderLevel = mShaderLevel[SHADER_DEFERRED];
+        gLuminousAvatarMotionProgram.clearPermutations();
+        gLuminousAvatarMotionProgram.addPermutation("LUMINOUS_AVATAR_SKIN", "1");
+        if (!gLuminousAvatarMotionProgram.createShader())
+        {
+            LL_WARNS("Shader") << "Avatar Luminous motion shader failed to build; MetalFX temporal keeps the camera's "
+                               << "motion for the system avatar" << LL_ENDL;
+            gLuminousAvatarMotionProgram.unload();
+        }
+        gLuminousTextureMotionProgram.mName = "Texture Luminous Motion Shader";
+        gLuminousTextureMotionProgram.mShaderFiles.clear();
+        gLuminousTextureMotionProgram.mShaderFiles.push_back(make_pair("deferred/luminousMotionV.glsl", GL_VERTEX_SHADER));
+        gLuminousTextureMotionProgram.mShaderFiles.push_back(make_pair("deferred/luminousMotionF.glsl", GL_FRAGMENT_SHADER));
+        gLuminousTextureMotionProgram.mShaderLevel = mShaderLevel[SHADER_DEFERRED];
+        gLuminousTextureMotionProgram.clearPermutations();
+        gLuminousTextureMotionProgram.addPermutation("LUMINOUS_TEXTURE_MOTION", "1");
+        if (!gLuminousTextureMotionProgram.createShader())
+        {
+            LL_WARNS("Shader") << "Texture Luminous motion shader failed to build; MetalFX temporal draws smooth "
+                               << "texture animations as frame steps: reactive where LuminousMetalFXObjectReactive is "
+                               << "above 0 and a mask stage can be drawn, otherwise with their rigid motion or the "
+                               << "camera's" << LL_ENDL;
+            gLuminousTextureMotionProgram.unload();
+        }
+        for (LLGLSLShader* program : { &gLuminousSkinnedMotionProgram, &gLuminousAvatarMotionProgram, &gLuminousMotionProgram,
+                                       &gLuminousTextureMotionProgram })
+        {
+            deferOutcome(SHADER_DEFERRED, { program }, [](LLGLSLShader* failed)
+            {
+                if (!failed)
+                {
+                    return true;
+                }
+                LL_WARNS("Shader") << "Failed to create shader '" << failed->mName
+                                   << "'; MetalFX temporal keeps the camera's motion for what it draws" << LL_ENDL;
+                failed->unload();
+                return true;
+            });
+        }
+    }
+    // </Luminous>
 
     if (success)
     {

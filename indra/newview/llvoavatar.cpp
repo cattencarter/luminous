@@ -28,7 +28,9 @@
 
 #include "llvoavatar.h"
 #include "luminousphotomode.h" // <Luminous/>
+#include "luminousmetal.h" // <Luminous/>
 
+#include <cstring> // <Luminous/>
 #include <stdio.h>
 #include <ctype.h>
 #include <sstream>
@@ -6429,6 +6431,78 @@ U32 LLVOAvatar::renderRigid()
     return num_indices;
 }
 
+// <Luminous>
+//-----------------------------------------------------------------------------
+// luminousMotionParts()
+// The parts renderSkinned draws (its opaque parts in the deferred pass, its transparent ones after it) and
+// renderRigid draws, in a view that is not a shadow's or an impostor's, picked by their checks.
+//-----------------------------------------------------------------------------
+F32 LLVOAvatar::luminousMotionParts(std::vector<LLViewerJoint*>& parts)
+{
+    parts.clear();
+    if (!mIsBuilt || mDrawable.isNull() || isUIAvatar())
+    {
+        return mAdjustedPixelArea;
+    }
+
+    auto add = [this, &parts](S32 mesh_id)
+    {
+        if (LLViewerJoint* joint = getViewerJoint(mesh_id))
+        {
+            parts.push_back(joint);
+        }
+    };
+    const bool jellydoll = getOverallAppearance() == AOA_JELLYDOLL;
+    const bool jellydoll_body = jellydoll && !isControlAvatar();
+    const bool head = !isSelf() || gAgent.needsRenderHead();
+
+    // renderSkinned
+    if (!isSelf() || gAgent.needsRenderAvatar())
+    {
+        if (head && (isTextureVisible(TEX_HEAD_BAKED) || jellydoll_body))
+        {
+            add(MESH_ID_HEAD);
+        }
+        if (isTextureVisible(TEX_UPPER_BAKED) || jellydoll_body)
+        {
+            add(MESH_ID_UPPER_BODY);
+        }
+        if (isTextureVisible(TEX_LOWER_BAKED) || jellydoll_body)
+        {
+            add(MESH_ID_LOWER_BODY);
+        }
+        // renderTransparent
+        if (isWearingWearableType(LLWearableType::WT_SKIRT) && isTextureVisible(TEX_SKIRT_BAKED))
+        {
+            add(MESH_ID_SKIRT);
+        }
+        if (head)
+        {
+            if (isTextureVisible(TEX_HEAD_BAKED))
+            {
+                add(MESH_ID_EYELASH);
+            }
+            if (isTextureVisible(TEX_HAIR_BAKED) && !jellydoll)
+            {
+                add(MESH_ID_HAIR);
+            }
+        }
+    }
+
+    // renderRigid
+    if (!isSelf() || (gAgent.needsRenderAvatar() && gAgent.needsRenderHead()))
+    {
+        if (isTextureVisible(TEX_EYES_BAKED) || jellydoll_body)
+        {
+            add(MESH_ID_EYEBALL_LEFT);
+            add(MESH_ID_EYEBALL_RIGHT);
+        }
+    }
+
+    return mAdjustedPixelArea;
+}
+// </Luminous>
+
 U32 LLVOAvatar::renderImpostor(LLColor4U color, S32 diffuse_channel)
 {
     LL_PROFILE_ZONE_SCOPED_CATEGORY_AVATAR; // <FS:Beq/> Tracy accounting for render tracking
@@ -11368,6 +11442,17 @@ const LLVOAvatar::MatrixPaletteCache& LLVOAvatar::updateSkinInfoMatrixPalette(co
     {
         LL_PROFILE_ZONE_SCOPED_CATEGORY_AVATAR;
 
+        // <Luminous> While MetalFX temporal's object motion may be drawn (a frame drawn for the scaler, its switch on)
+        // the last frame's palette is kept beside the new one: mGLMp holds the palette of mFrame whether it was kept
+        // then or not, so it is the last frame's when this entry was built in the frame before
+        const bool keep_last = LuminousMetal::objectMotionOn();
+        const bool built_last_frame = keep_last && entry.mFrame == gFrameCount - 1;
+        if (keep_last)
+        {
+            entry.mGLMp.swap(entry.mLastGLMp);
+        }
+        // </Luminous>
+
         entry.mFrame = gFrameCount;
 
         //build matrix palette
@@ -11402,6 +11487,12 @@ const LLVOAvatar::MatrixPaletteCache& LLVOAvatar::updateSkinInfoMatrixPalette(co
             mp[idx + 10] = m[10];
             mp[idx + 11] = m[14];
         }
+
+        // <Luminous>
+        entry.mLastValid = built_last_frame && count > 0 && entry.mLastGLMp.size() == entry.mGLMp.size();
+        entry.mMoved = entry.mLastValid
+                       && std::memcmp(entry.mGLMp.data(), entry.mLastGLMp.data(), entry.mGLMp.size() * sizeof(F32)) != 0;
+        // </Luminous>
     }
 
     return entry;

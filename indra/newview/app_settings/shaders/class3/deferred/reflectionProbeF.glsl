@@ -36,6 +36,9 @@ uniform int luminous_ssr;
 
 #if defined(SSR)
 float tapScreenSpaceReflection(int totalSamples, vec2 tc, vec3 viewPos, vec3 n, inout vec4 collectedColor, sampler2D source, float glossiness);
+// <Luminous> 1 while the scene map holds no frame to march: in photo mode the reflections are drawn in pictures
+// only (LuminousPhotoMode::screenReflectionsSkippedNow), and the live view keeps the probes' reflections
+uniform int luminous_ssr_skip;
 #endif
 
 uniform samplerCubeArray   reflectionProbes;
@@ -759,7 +762,7 @@ void doProbeSample(inout vec3 ambenv, inout vec3 glossenv,
     glossenv = sampleProbes(pos, normalize(refnormpersp), lod);
 
 #if defined(SSR)
-    if (cube_snapshot != 1 && glossiness >= LUMINOUS_SSR_MIN_GLOSS) // <Luminous/> 0.9 outside photo mode
+    if (cube_snapshot != 1 && luminous_ssr_skip == 0 && glossiness >= LUMINOUS_SSR_MIN_GLOSS) // <Luminous/> 0.9 outside photo mode
     {
         vec4 ssr = vec4(0);
         if (transparent)
@@ -885,7 +888,7 @@ void sampleReflectionProbesLegacy(inout vec3 ambenv, inout vec3 glossenv, inout 
     }
 
 #if defined(SSR)
-    if (cube_snapshot != 1)
+    if (cube_snapshot != 1 && luminous_ssr_skip == 0) // <Luminous/> skipped live in photo mode
     {
         vec4 ssr = vec4(0);
 

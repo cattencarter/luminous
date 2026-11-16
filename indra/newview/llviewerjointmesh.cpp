@@ -188,6 +188,104 @@ void LLViewerJointMesh::uploadJointMatrices()
         stop_glerror();
 }
 
+// <Luminous>
+//-----------------------------------------------------------------------------
+// luminousMotionDraw()
+// What drawShape draws of this mesh, with drawShape's checks of whether it draws.
+//-----------------------------------------------------------------------------
+bool LLViewerJointMesh::luminousMotionDraw(LuminousMotionDraw& draw)
+{
+    if (!mValid || !mMesh || !mFace || !mVisible || !mFace->getVertexBuffer() || mMesh->getNumFaces() == 0
+        || mMesh->mFaceVertexCount == 0)
+    {
+        return false;
+    }
+    draw.buffer = mFace->getVertexBuffer();
+    draw.start = mMesh->mFaceVertexOffset;
+    draw.end = draw.start + mMesh->mFaceVertexCount - 1;
+    draw.count = mMesh->mFaceIndexCount;
+    draw.offset = mMesh->mFaceIndexOffset;
+    draw.skinned = mMesh->hasWeights();
+    return true;
+}
+
+//-----------------------------------------------------------------------------
+// luminousJointMatrices()
+// uploadJointMatrices' matrices without the view: each joint's world matrix (the agent frame) with its pivot
+// added through its rotation, transposed into the same layout.
+//-----------------------------------------------------------------------------
+void LLViewerJointMesh::luminousJointMatrices(F32 matrices[LUMINOUS_JOINT_FLOATS])
+{
+    memset(matrices, 0, sizeof(F32) * LUMINOUS_JOINT_FLOATS);
+    LLPolyMesh* reference_mesh = mMesh ? mMesh->getReferenceMesh() : nullptr;
+    if (!reference_mesh)
+    {
+        return;
+    }
+
+    LLMatrix4 joint_mats[LL_CHARACTER_MAX_JOINTS_PER_MESH];
+    const size_t num_joints = llmin(reference_mesh->mJointRenderData.size(), (size_t)LL_CHARACTER_MAX_JOINTS_PER_MESH);
+    for (size_t joint_num = 0; joint_num < num_joints; joint_num++)
+    {
+        joint_mats[joint_num] = *reference_mesh->mJointRenderData[joint_num]->mWorldMatrix;
+    }
+
+    // the pivots in uploadJointMatrices' order: a chain's parent pivot before its first joint's
+    LLVector4 pivots[LL_CHARACTER_MAX_JOINTS_PER_MESH];
+    bool last_pivot_uploaded = false;
+    S32 j = 0;
+    for (size_t joint_num = 0; joint_num < reference_mesh->mJointRenderData.size(); joint_num++)
+    {
+        LLSkinJoint* sj = reference_mesh->mJointRenderData[joint_num]->mSkinJoint;
+        if (sj)
+        {
+            if (!last_pivot_uploaded)
+            {
+                LLVector4 parent_pivot(sj->mRootToParentJointSkinOffset);
+                parent_pivot.mV[VW] = 0.f;
+                pivots[j++] = parent_pivot;
+                if (j >= LL_CHARACTER_MAX_JOINTS_PER_MESH)
+                {
+                    break;
+                }
+            }
+
+            LLVector4 child_pivot(sj->mRootToJointSkinOffset);
+            child_pivot.mV[VW] = 0.f;
+            pivots[j++] = child_pivot;
+            if (j >= LL_CHARACTER_MAX_JOINTS_PER_MESH)
+            {
+                break;
+            }
+
+            last_pivot_uploaded = true;
+        }
+        else
+        {
+            last_pivot_uploaded = false;
+        }
+    }
+
+    // a pivot past the mesh's joints goes to a matrix that is not given
+    const S32 pivoted = llmin(j, (S32)num_joints);
+    for (S32 i = 0; i < pivoted; i++)
+    {
+        LLVector3 pivot = LLVector3(pivots[i]) * joint_mats[i].getMat3();
+        joint_mats[i].translate(pivot);
+    }
+
+    for (size_t joint_num = 0; joint_num < num_joints; joint_num++)
+    {
+        joint_mats[joint_num].transpose();
+        for (S32 axis = 0; axis < NUM_AXES; axis++)
+        {
+            const U32 offset = LL_CHARACTER_MAX_JOINTS_PER_MESH * axis + (U32)joint_num;
+            memcpy(matrices + offset * 4, joint_mats[joint_num].mMatrix[axis], sizeof(F32) * 4);
+        }
+    }
+}
+// </Luminous>
+
 //--------------------------------------------------------------------
 // DrawElementsBLEND and utility code
 //--------------------------------------------------------------------

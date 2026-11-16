@@ -270,6 +270,8 @@ public:
     // [Viewer Lab] glClearColor for every later clear of a target or of the window's back buffer, as glClearColor sets it,
     // for the owners of glClearColor's call sites.
     static void setClearColor(F32 red, F32 green, F32 blue, F32 alpha);
+    // <Luminous> The colour setClearColor last set, for a caller that sets its own and puts it back after
+    static void getClearColor(F32& red, F32& green, F32& blue, F32& alpha);
 
     // [Viewer Lab] glClear(mask) of the current target, the bound one or else the window's back buffer, through
     // Encoder::clear in the stack's pass; mask in GL's bits (colour and depth; the interface has no stencil); GL's clear

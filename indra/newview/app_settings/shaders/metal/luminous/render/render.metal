@@ -7,6 +7,8 @@
 // attachments, the sum and the HDR frame: it adds the frame and writes the sum back into the frame's
 // colour, its alpha kept, so the frame is tonemapped once, from the average.
 //
+// A render in pieces: each piece's light and depth stored at its place in the whole frame (luminous_piece_store_fs).
+//
 // Reading: one compute pass crops the frame to the picture (the margin's cut, and the render's shape) and
 // box-filters it to the picture's size, as the CPU's reduce() does it for OpenGL, into a texture of the
 // picture's size that is read back: half float for OpenEXR, at the render's exposure, 32-bit float for
@@ -39,6 +41,25 @@ fragment LuminousAverageLast luminous_average_last_fs(LuminousFullscreenOut in [
     LuminousAverageLast out;
     out.sum = sum + frame * params.weight;
     out.frame = float4(out.sum.rgb, frame.a);
+    return out;
+}
+
+// A render's piece: its core's light and depth written at the core's place in the whole frame.
+struct LuminousPieceStored
+{
+    float4 light [[color(0)]];
+    float depth [[depth(any)]];
+};
+
+fragment LuminousPieceStored luminous_piece_store_fs(LuminousFullscreenOut in [[stage_in]],
+                                                     constant LuminousRenderPieceStore& p [[buffer(LUMINOUS_RENDER_BUFFER_PARAMS)]],
+                                                     texture2d<float, access::read> frame [[texture(LUMINOUS_RENDER_TEXTURE_FRAME)]],
+                                                     depth2d<float, access::read> depth [[texture(LUMINOUS_RENDER_TEXTURE_DEPTH)]])
+{
+    const uint2 at = uint2(in.position.xy) - p.to + p.from;
+    LuminousPieceStored out;
+    out.light = frame.read(at);
+    out.depth = depth.read(at);
     return out;
 }
 

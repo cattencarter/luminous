@@ -400,9 +400,19 @@ inline constexpr std::array<std::string_view, 2> METAL_SAFE_MATH_PROGRAMS = { "D
 /// the development knob LL_METAL_SAFE_MATH names.
 bool metalSafeMath(const std::string& program);
 
+/// [Viewer Lab] Whether the program's vertex position is invariant (MSL::Options, compiled with preserveInvariance):
+/// every skinned variant ("Skinned <name>", make_rigged_variant), or every program with the development knob
+/// LL_METAL_INVARIANT. Rigged geometry is drawn more than once with different pipelines -- worn rigged alpha writes
+/// its depth where it covers at least half, then draws its colour against that depth (lldrawpoolalpha.cpp) -- and
+/// only an invariant position puts each vertex at the same depth in both; otherwise whole triangles of the colour pass
+/// fail the depth test and show as holes in mesh hair. Such a program is compiled alone, as a group's library has
+/// one preserveInvariance, unless the knob makes every program invariant.
+bool metalInvariantPosition(const std::string& program);
+
 /// The options of every MSL compilation: MSL 4.0 and the two math constants above; `safe` (metalSafeMath) asks
-/// for Safe math instead, with precise functions when the knob LL_METAL_PRECISE_MATH says so.
-MTLCompileOptions* metalCompileOptions(bool safe = false) API_AVAILABLE(macos(26.0));
+/// for Safe math instead, with precise functions when the knob LL_METAL_PRECISE_MATH says so; `invariant`
+/// (metalInvariantPosition) compiles with preserveInvariance, as the knob LL_METAL_INVARIANT does for every program.
+MTLCompileOptions* metalCompileOptions(bool safe = false, bool invariant = false) API_AVAILABLE(macos(26.0));
 
 /// The key of a clear program for a pass's formats: the color count in bits 0-3, a depth
 /// attachment in bit 4, and each color attachment i's output type in bits 8 + 2i: 0 float, 1 unsigned
@@ -1001,6 +1011,9 @@ public:
     void setVertexBuffer(Buffer* buffer, const VertexStreams& streams) override;
     void setIndexBuffer(Buffer* buffer, IndexType type) override;
     void setTexture(U32 channel, Texture* texture, const SamplerDesc& sampling) override;
+    /// The bias bindForDraw gives the samplings it covers (Encoder::setSceneLodBias); a change resolves every sampler
+    /// place again at its next draw.
+    void setSceneLodBias(F32 bias) override;
     void setUniformBuffer(U32 blockIndex, Buffer* buffer, U64 offset, U64 size) override;
 
     void draw(PrimitiveType type, U32 firstVertex, U32 vertexCount) override;
@@ -1084,6 +1097,8 @@ public:
     std::string lastEncoderLabel() const { return mLastEncoderLabel ? std::string(mLastEncoderLabel.UTF8String) : ""; }
     /// Tests: the stage blocks bindForDraw has copied to the frame's ring.
     U64 ringBlockCopies() const { return mRingBlockCopies; }
+    /// Tests: the 16-bit index lists off a 4-byte boundary drawIndexed has drawn from a copy in the ring.
+    U64 alignedIndexCopies() const { return mAlignedIndexCopies; }
     /// Tests: the argument table places bindForDraw has written.
     U64 tableWrites() const { return mTableWrites; }
     /// Main thread, from the release of a texture or a mip level's view, while the native object still lives: the
@@ -1439,6 +1454,8 @@ private:
     /// binding; never 0. mNextVersion gives the new ones.
     std::array<U64, RESOLVE_CHANNELS> mChannelVersions{};
     U64 mNextVersion = 1;
+    /// setSceneLodBias's bias, rounded to 1/64 and limited; 0: none.
+    F32 mSceneLodBias = 0.f;
     /// By channel below RESOLVE_CHANNELS: what bindForDraw chose last (tests).
     std::array<std::optional<SamplerDesc>, RESOLVE_CHANNELS> mLastChannelSamplers{};
     U64 mResolveMismatches = 0;
@@ -1512,6 +1529,7 @@ private:
     /// the slot's buffer (GL's mBlockRanges).
     std::unordered_map<U32, std::pair<U64, U64>> mBlockRanges;
     U64 mRingBlockCopies = 0;
+    U64 mAlignedIndexCopies = 0;
     U64 mTableWrites = 0;
     U64 mNativeDraws = 0;
     U64 mDiscardedStores = 0;

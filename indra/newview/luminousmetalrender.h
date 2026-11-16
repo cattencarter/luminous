@@ -34,6 +34,8 @@
 #include <string>
 #include <vector>
 
+class LLRenderTarget;
+
 // The render group's native passes (luminousmetalrender.cpp) and what LuminousHDRSnapshot asks of them
 // on Metal. The passes are LuminousMetal::Pass::AverageFrames (the frames averaged as light, PassTargets:
 // frame the HDR frame, other the float sum) and Pass::HDRCapture (one frame read back into the picture,
@@ -77,6 +79,16 @@ namespace LuminousMetalRender
     /// texture the frame is read into, the reads in flight and the sum on the CPU. 0 for an eight-bit picture,
     /// which rawSnapshot reads.
     U64 readBytes(U32 width, U32 height, bool eight_bit, bool light);
+
+    /// A render drawn in pieces: the core of a piece -- width x height from (fromX, fromY) in the piece's frame,
+    /// rows bottom first -- stored at (toX, toY) in the whole frame: the light of frame's first colour (alpha
+    /// included) into whole's colour, the depth of depth's depth attachment into wholeDepth's (the targets that own
+    /// the depths: one that shares a depth has none of its own). Drawn now, on the GPU; nothing is read back. False
+    /// when the pass is not ready or a size does not fit.
+    bool storePiece(LLRenderTarget* frame, LLRenderTarget* depth, LLRenderTarget* whole, LLRenderTarget* wholeDepth,
+                    U32 fromX, U32 fromY, U32 toX, U32 toY, U32 width, U32 height);
+    /// Whether a render can be drawn in pieces: the passes and the pieces' store ready.
+    bool piecesReady();
 }
 
 #endif // LUMINOUS_METAL_RENDER_H

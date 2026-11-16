@@ -207,7 +207,8 @@ void LLViewerTexLayerSetBuffer::midRenderTexLayerSet(bool success, LLRenderTarge
         else
         {
             LLViewerTexLayerSet* layer_set = getViewerTexLayerSet();
-            if (layer_set->isVisible())
+            // <Luminous> a region an invisible alpha hides is uploaded too: its colours
+            // with alpha 0, not IMG_INVISIBLE, so Bakes on Mesh faces show them
             {
                 //<FS:Beq> OpenSim BOM fallback
                 // layer_set->getAvatar()->debugBakedTextureUpload(layer_set->getBakedTexIndex(), false); // false for start of upload, true for finish.
@@ -224,13 +225,7 @@ void LLViewerTexLayerSetBuffer::midRenderTexLayerSet(bool success, LLRenderTarge
                 }
                 // <FS:Beq>
             }
-            else
-            {
-                mUploadPending = false;
-                mNeedsUpload = false;
-                mNeedsUploadTimer.pause();
-                layer_set->getAvatar()->setNewBakedTexture(layer_set->getBakedTexIndex(),IMG_INVISIBLE);
-            }
+            // </Luminous>
         }
     }
     // </FS:Ansariel> [Legacy Bake]

@@ -77,6 +77,13 @@ LLSD FSAssetBlacklistData::toLLSD() const
     data["asset_blacklist_flag"] = flags;
     data["asset_date"] = input_date;
     data["asset_permanent"] = permanent;
+    // <Luminous>
+    if (owner.notNull())
+    {
+        data["asset_owner"] = owner;
+        data["asset_owner_name"] = owner_name;
+    }
+    // </Luminous>
 
     return data;
 }
@@ -94,6 +101,8 @@ FSAssetBlacklistData FSAssetBlacklistData::fromLLSD(const LLSD& data)
     blacklistdata.flags = data.has("asset_blacklist_flag") ? data["asset_blacklist_flag"].asInteger() : 0;
     blacklistdata.date = LLDate(asset_date);
     blacklistdata.permanent = data["asset_permanent"].asBoolean();
+    blacklistdata.owner = data["asset_owner"].asUUID(); // <Luminous>
+    blacklistdata.owner_name = data["asset_owner_name"].asString(); // <Luminous>
 
     return blacklistdata;
 }
@@ -327,7 +336,7 @@ void FSAssetBlacklist::loadBlacklist()
                     {
                         continue;
                     }
-                    else if (type == LLAssetType::AT_OBJECT)
+                    else if (type == LLAssetType::AT_OBJECT && !(entry_data["asset_blacklist_flag"].asInteger() & eBlacklistFlag::NAME))
                     {
                         gObjectList.addDerenderedItem(uid, true);
                     }

@@ -49,6 +49,7 @@ public:
     void close() override;
     bool getVisible() override;
     bool getMinimized() override;
+    bool getOccluded() override; // <Luminous/>
     bool getMaximized() override;
     bool maximize() override;
     void minimize() override;

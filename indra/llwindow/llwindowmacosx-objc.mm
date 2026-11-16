@@ -489,6 +489,14 @@ bool appIsActive()
 {
     return [NSApp isActive];
 }
+
+// Whether no part of the window shows on any screen: covered by other
+// windows, on another Space, minimised, or the display asleep (AppKit's
+// NSWindowOcclusionStateVisible clear).
+bool windowOccluded(NSWindowRef window)
+{
+    return window && !([(LLNSWindow*)window occlusionState] & NSWindowOcclusionStateVisible);
+}
 // </Luminous>
 
 void makeFirstResponder(NSWindowRef window, GLViewRef view)

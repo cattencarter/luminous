@@ -498,15 +498,24 @@ namespace LuminousMetal
             // The shafts' mask: half of the frame, as the reference's (sShaftMask, from the live view's own size).
             const U32 mask_width = std::max(width / 2, 1U);
             const U32 mask_height = std::max(height / 2, 1U);
-            // The half-size sum: half of the full window while the volumetric light or the beams are drawn there,
-            // which they are only above half the window's size (fillAirParams), as the reference's sVolumetric and
-            // sBeams; else the shafts' gather alone, at the mask's size.
+            // The half-size sum: with the volumetric light in it, the size its live budget allows
+            // (LuminousPhotoMode::volumetricLiveSize, as the reference's sVolumetric), the shafts and the beams
+            // drawn into it at that size too (on OpenGL they keep their own: the mask's and sBeams'); with only the
+            // beams, half of the full window, which they are only above half the window's size (fillAirParams), as
+            // the reference's sBeams; else the shafts' gather alone, at the mask's size.
             const F32 live_scale = std::max(params.liveScale, 0.01f);
-            const bool window_half = (vol && params.volHalf != 0) || (beams_drawn && params.beamsHalf != 0);
+            U32 vol_width = 0;
+            U32 vol_height = 0;
+            if (vol_half)
+            {
+                LuminousPhotoMode::volumetricLiveSize(width, height, vol_width, vol_height);
+            }
             const U32 sum_width = full_in_sum ? width
-                                : window_half ? std::max((U32)((F32)width * 0.5f / live_scale), 1U) : mask_width;
+                                : vol_half    ? vol_width
+                                : beams_half  ? std::max((U32)((F32)width * 0.5f / live_scale), 1U) : mask_width;
             const U32 sum_height = full_in_sum ? height
-                                 : window_half ? std::max((U32)((F32)height * 0.5f / live_scale), 1U) : mask_height;
+                                 : vol_half    ? vol_height
+                                 : beams_half  ? std::max((U32)((F32)height * 0.5f / live_scale), 1U) : mask_height;
             Texture* mask = shafts ? poolTexture(*device, sMaskPool, mask_width, mask_height, "luminous shaft mask") : nullptr;
             Texture* sum = any_half ? poolTexture(*device, sAirPool, sum_width, sum_height, "luminous air half") : nullptr;
             if ((shafts && !mask) || (any_half && !sum))

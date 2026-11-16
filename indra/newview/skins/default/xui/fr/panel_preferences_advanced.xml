@@ -7,6 +7,6 @@
 	<check_box label="Afficher le menu Développeur (Utilisez le à vos propres risques !)" name="show_develop_menu_check"/>
 	<check_box label="Désactiver la détection de VRAM par l'analyse WMI sur les systèmes Windows" name="FSDisableWMIProbing"/>
 	<check_box tool_tip="Ce paramètre réduira le chargement dû au rendu des avatars distants mais peut aussi provoquer des animations incorrectes pour ces mêmes avatars" label="Activer la temporisation d'animations (expérimental)" name="UseAnimationTimeSteps"/>
-	<text name="BackgroundYieldTimeText">Durée en millisecondes de temporisation des trames quand [APP_NAME] n'est pas au premier plan (40 par défaut) :</text>
+	<text name="BackgroundYieldTimeText">Durée en millisecondes de temporisation des trames quand [APP_NAME] n'est pas au premier plan (100 par défaut) :</text>
 	<button label="Réinitialiser tous les paramètres" label_selected="Réinitialiser tous les paramètres..." name="clear_settings"/>
 </panel>
